@@ -1,0 +1,79 @@
+.today-summary {
+  margin-bottom: 0;
+}
+
+.today-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.today-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem 1.15rem;
+  border-radius: var(--office-radius);
+  background: var(--office-panel);
+  border: 1px solid var(--office-panel-border);
+  box-shadow: var(--office-shadow);
+  color: var(--office-panel-text);
+  transition: box-shadow 0.15s ease;
+}
+
+.today-card:hover {
+  box-shadow: var(--office-shadow-lg);
+}
+
+.today-card--revenue {
+  border-inline-start: 3px solid var(--office-success);
+}
+
+.today-card--tx {
+  border-inline-start: 3px solid var(--office-accent);
+}
+
+.today-card--refund {
+  border-inline-start: 3px solid var(--office-warn);
+}
+
+.today-card--items {
+  border-inline-start: 3px solid #8b5cf6;
+}
+
+.today-card--tax {
+  border-inline-start: 3px solid var(--office-danger);
+}
+
+.today-card--account {
+  border-inline-start: 3px solid #0ea5e9;
+}
+
+.today-card-icon {
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.today-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.today-card-label {
+  font-size: 0.85rem;
+  color: var(--office-panel-muted);
+  margin-bottom: 0.25rem;
+}
+
+.today-card-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--office-panel-text);
+}
+
+.today-card-sub {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--office-panel-muted);
+}

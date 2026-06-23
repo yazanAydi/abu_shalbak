@@ -1,0 +1,242 @@
+.checkout-page {
+  min-height: 100vh;
+  padding: 0.75rem;
+  box-sizing: border-box;
+}
+
+.checkout-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.checkout-top-left {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.nav-pill {
+  padding: 0.4rem 0.75rem;
+  border-radius: 8px;
+  background: #3f3f46;
+  color: inherit;
+  text-decoration: none;
+  font-size: 1rem;
+}
+
+.checkout-top-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 1.05rem;
+  flex-wrap: wrap;
+}
+
+.checkout-shift-info {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.checkout-shift-pill {
+  font-size: 0.85rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  background: #27272a;
+  border: 1px solid #3f3f46;
+}
+
+@media (prefers-color-scheme: light) {
+  .checkout-shift-pill {
+    background: #f4f4f5;
+    border-color: #d4d4d8;
+  }
+}
+
+.checkout-shift-end-btn {
+  min-height: 36px;
+  padding: 0 0.65rem;
+  border-radius: 8px;
+  border: 1px solid #a16207;
+  background: rgba(234, 179, 8, 0.15);
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.clock {
+  font-variant-numeric: tabular-nums;
+}
+
+.logout-btn {
+  min-height: 44px;
+  padding: 0 1rem;
+  border-radius: 8px;
+  border: 1px solid #71717a;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+.checkout-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.checkout-left {
+  flex: 1 1 65%;
+  min-width: 280px;
+}
+
+.blocked-scan-hint {
+  margin: 0.75rem 0 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 10px;
+  border: 1px solid #3f3f46;
+  background: #1c1917;
+}
+
+@media (prefers-color-scheme: light) {
+  .blocked-scan-hint {
+    background: #fef3c7;
+    border-color: #fcd34d;
+  }
+}
+
+.blocked-scan-title {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #a8a29e;
+  margin-bottom: 0.4rem;
+}
+
+.blocked-scan-name {
+  font-weight: 600;
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+  line-height: 1.35;
+}
+
+.blocked-scan-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.blocked-scan-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  font-size: 1.05rem;
+}
+
+.blocked-scan-price {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: #4ade80;
+}
+
+.checkout-right {
+  flex: 1 1 32%;
+  min-width: 260px;
+  padding: 1rem;
+  border-radius: 12px;
+  background: #27272a;
+  border: 1px solid #3f3f46;
+}
+
+@media (prefers-color-scheme: light) {
+  .checkout-right {
+    background: #f4f4f5;
+    border-color: #d4d4d8;
+  }
+  .nav-pill {
+    background: #e4e4e7;
+    color: #18181b;
+  }
+}
+
+.big-total {
+  font-size: clamp(2rem, 6vw, 3rem);
+  font-weight: 800;
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+.side-lines {
+  margin-bottom: 1rem;
+}
+
+.side-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 1.15rem;
+  margin-bottom: 0.35rem;
+}
+
+.pay-btns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.pay-btn {
+  min-height: 60px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  border-radius: 10px;
+  border: 2px solid #52525b;
+  background: #18181b;
+  color: #fafafa;
+  cursor: pointer;
+}
+
+.pay-btn.active {
+  border-color: #2563eb;
+  background: #1e3a8a;
+}
+
+.checkout-err {
+  color: #f87171;
+  margin-bottom: 0.75rem;
+  font-size: 1rem;
+}
+
+.complete-btn {
+  width: 100%;
+  min-height: 60px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  border: none;
+  border-radius: 10px;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+  margin-bottom: 0.5rem;
+}
+
+.complete-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.complete-btn.secondary {
+  background: #52525b;
+}
+
+.side-cashier {
+  margin-top: 1rem;
+  opacity: 0.8;
+  font-size: 1rem;
+}

@@ -1,0 +1,21 @@
+.print-rcpt-btn {
+  width: 100%;
+  min-height: 60px;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #fff;
+  background: #15803d;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-top: 0.5rem;
+}
+
+.print-rcpt-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.print-rcpt-btn:not(:disabled):hover {
+  background: #166534;
+}

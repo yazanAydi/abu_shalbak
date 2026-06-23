@@ -1,0 +1,67 @@
+/* Checkout page — layout in pos-theme.css; barcode input overrides */
+
+/* Non-blocking negative-stock warning (selling below zero is allowed) */
+.pos-cart-stock-warn {
+  margin: 0.4rem 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--pos-radius-sm);
+  background: rgba(217, 119, 6, 0.14);
+  border: 1px solid rgba(217, 119, 6, 0.5);
+  color: #b45309;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.pos-stock-hint {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--pos-text-dim);
+  margin-top: 2px;
+}
+
+.pos-stock-hint-neg {
+  color: #b45309;
+}
+
+.pos-header-scan .barcode-wrap {
+  margin: 0;
+}
+
+.pos-header-scan .barcode-input {
+  width: 100%;
+  min-height: 48px;
+  font-size: 1.15rem;
+  padding: 0 1rem;
+  border-radius: var(--pos-radius-sm);
+  border: 2px solid var(--pos-border-strong);
+  background: var(--pos-surface);
+  color: var(--pos-text);
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.pos-header-scan .barcode-input::placeholder {
+  color: var(--pos-text-dim);
+}
+
+.pos-header-scan .barcode-input:focus {
+  outline: none;
+  border-color: var(--pos-accent);
+  box-shadow: 0 0 0 3px rgba(var(--pos-accent-rgb), 0.2);
+}
+
+.pos-header-scan .barcode-label {
+  display: none;
+}
+
+.pos-header-scan .barcode-err {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--pos-danger);
+  font-weight: 600;
+}
+
+.pos-refund-unread td {
+  font-weight: 700;
+}

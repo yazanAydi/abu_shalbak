@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    container_name: supermarket-pos
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      DATABASE_PATH: /app/data/supermarket.db
+      BACKUP_DIR: /app/backups
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    restart: unless-stopped

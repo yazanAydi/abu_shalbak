@@ -1,0 +1,576 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import api from "../apiClient";
+import { getAuthHeaders } from "../utils/auth";
+import { ils } from "../utils/format";
+import {
+  PageHeader,
+  Card,
+  CardBody,
+  DataTable,
+  SearchInput,
+  FormField,
+  FormGrid,
+  Input,
+  PrimaryButton,
+  SecondaryButton,
+  DangerButton,
+  ReportToolbar,
+  useToast,
+} from "../components/ui";
+import EditProductModal from "./productDashboard/EditProductModal";
+import DuplicateBarcodeConflict from "./productDashboard/DuplicateBarcodeConflict";
+import EditBarcodeModal from "./productDashboard/EditBarcodeModal";
+import { pickExportColumns } from "../utils/reportExport";
+import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
+import { normalizeBarcode } from "../utils/barcode";
+import "../components/barcode/barcode-scanner.css";
+
+const PAGE = 50;
+
+const emptyForm = {
+  barcode: "",
+  name: "",
+  name_en: "",
+  price: "",
+  cost: "",
+  category: "",
+  stock: "",
+  tax_rate: "",
+  unit: "",
+  expiry_date: "",
+  min_price: "",
+  max_price: "",
+};
+
+function findProductByBarcode(products, barcode) {
+  const code = normalizeBarcode(barcode);
+  if (!code) return null;
+  return (
+    products.find((p) => normalizeBarcode(p.barcode) === code) || null
+  );
+}
+
+function formToPayload(form) {
+  return {
+    barcode: form.barcode.trim(),
+    name: form.name.trim(),
+    name_en: form.name_en?.trim() || null,
+    price: Number(form.price),
+    cost: form.cost === "" ? 0 : Number(form.cost),
+    category: form.category.trim() || null,
+    stock: Number(form.stock),
+    tax_rate: form.tax_rate !== "" ? Number(form.tax_rate) : null,
+    unit: form.unit?.trim() || null,
+    expiry_date: form.expiry_date?.trim() || null,
+    min_price: form.min_price !== "" ? Number(form.min_price) : null,
+    max_price: form.max_price !== "" ? Number(form.max_price) : null,
+  };
+}
+
+function validateAddForm(form) {
+  const name = form.name.trim();
+  if (!form.barcode.trim()) return "الباركود مطلوب";
+  if (!name) return "الاسم مطلوب";
+  if (form.price === "" || !Number.isFinite(Number(form.price)) || Number(form.price) < 0) {
+    return "أدخل سعر بيع صالحاً";
+  }
+  if (form.stock === "" || !Number.isFinite(Number(form.stock))) {
+    return "أدخل مخزوناً صالحاً";
+  }
+  return null;
+}
+
+export default function ProductManagement() {
+  const toast = useToast();
+  const navigate = useNavigate();
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const [uploadFeedback, setUploadFeedback] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [form, setForm] = useState(emptyForm);
+  const [formErr, setFormErr] = useState(null);
+  const [editProduct, setEditProduct] = useState(null);
+  const [conflictProduct, setConflictProduct] = useState(null);
+  const [conflictBusy, setConflictBusy] = useState(false);
+  const [editBarcodeProduct, setEditBarcodeProduct] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/api/products", {
+        headers: getAuthHeaders(),
+      });
+      setProducts(Array.isArray(data) ? data : []);
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter(
+      (p) =>
+        String(p.barcode).toLowerCase().includes(q) ||
+        String(p.name).toLowerCase().includes(q)
+    );
+  }, [products, search]);
+
+  const pageSlice = useMemo(() => {
+    const start = page * PAGE;
+    return filtered.slice(start, start + PAGE);
+  }, [filtered, page]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [search]);
+
+  useEffect(() => {
+    const code = form.barcode.trim();
+    if (!code) {
+      setConflictProduct(null);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setConflictProduct(findProductByBarcode(products, code));
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [form.barcode, products]);
+
+  async function onUpload(ev) {
+    const file = ev.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setUploadFeedback(null);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const { data } = await api.post("/api/admin/products/upload", fd);
+      setUploadFeedback({
+        ok: true,
+        text: data.message || `تمت إضافة ${data.inserted} منتجًا`,
+      });
+      await load();
+    } catch (e) {
+      if (e.response?.status === 401) {
+        setUploadFeedback({
+          ok: false,
+          text:
+            "انتهت الجلسة أو غير صالحة — سجّل الخروج ثم الدخول كمسؤول وأعد رفع الملف.",
+        });
+        return;
+      }
+      const noResponse = !e.response;
+      const net =
+        noResponse &&
+        (e.code === "ERR_NETWORK" ||
+          String(e.message || "").includes("Network Error"));
+      const text = net
+        ? "تعذّر الاتصال بالخادم. شغّل الخادم في طرفية أخرى: من مجلد backend نفّذ npm start — اتركه يعمل (مثلاً المنفذ 5000) ثم أعد المحاولة."
+        : e.response?.data?.detail ||
+          e.response?.data?.error ||
+          e.message ||
+          "فشل الرفع";
+      setUploadFeedback({ ok: false, text });
+    } finally {
+      setUploading(false);
+      ev.target.value = "";
+    }
+  }
+
+  async function addProduct(ev) {
+    ev.preventDefault();
+    setFormErr(null);
+
+    const validationErr = validateAddForm(form);
+    if (validationErr) {
+      setFormErr(validationErr);
+      return;
+    }
+
+    if (conflictProduct) {
+      setFormErr("الباركود مستخدم لمنتج موجود — اختر إجراءً من اللوحة أدناه");
+      return;
+    }
+
+    try {
+      await api.post(
+        "/api/products",
+        formToPayload(form),
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+      setForm(emptyForm);
+      setConflictProduct(null);
+      toast.success("تمت إضافة المنتج");
+      await load();
+    } catch (e) {
+      if (e.response?.status === 409) {
+        const existing = findProductByBarcode(products, form.barcode);
+        if (existing) {
+          setConflictProduct(existing);
+          setFormErr("الباركود مستخدم لمنتج موجود — اختر إجراءً من اللوحة أدناه");
+          return;
+        }
+      }
+      setFormErr(e.response?.data?.error || e.message);
+    }
+  }
+
+  async function handleReplaceConflict() {
+    if (!conflictProduct) return;
+    setFormErr(null);
+
+    const validationErr = validateAddForm(form);
+    if (validationErr) {
+      setFormErr(validationErr);
+      return;
+    }
+
+    setConflictBusy(true);
+    try {
+      await api.put(
+        `/api/products/${conflictProduct.id}`,
+        formToPayload(form),
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+      setForm(emptyForm);
+      setConflictProduct(null);
+      toast.success("تم استبدال المنتج");
+      await load();
+    } catch (e) {
+      setFormErr(e.response?.data?.error || e.message);
+    } finally {
+      setConflictBusy(false);
+    }
+  }
+
+  async function handleDeleteConflict() {
+    if (!conflictProduct) return;
+    if (!window.confirm(`حذف المنتج «${conflictProduct.name}»؟`)) return;
+
+    setConflictBusy(true);
+    setFormErr(null);
+    try {
+      await api.delete(`/api/admin/products/${conflictProduct.id}`, {
+        headers: getAuthHeaders(),
+      });
+      setConflictProduct(null);
+      toast.success("تم الحذف — يمكنك الآن إضافة المنتج");
+      await load();
+    } catch (e) {
+      setFormErr(e.response?.data?.error || e.message);
+    } finally {
+      setConflictBusy(false);
+    }
+  }
+
+  function handleEditBarcodeSaved() {
+    setEditBarcodeProduct(null);
+    setConflictProduct(null);
+    load();
+  }
+
+  async function delProduct(id) {
+    if (!window.confirm("حذف هذا المنتج؟")) return;
+    try {
+      await api.delete(`/api/admin/products/${id}`, {
+        headers: getAuthHeaders(),
+      });
+      toast.success("تم الحذف");
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message);
+    }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE));
+
+  async function toggleActive(p) {
+    const next = Number(p.is_active) === 0 ? 1 : 0;
+    try {
+      await api.patch(
+        `/api/products/${p.id}/active`,
+        { is_active: next },
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+      toast.success(next ? "تم تفعيل المنتج" : "تم إيقاف المنتج");
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message);
+    }
+  }
+
+  const columns = [
+    { key: "barcode", header: "الباركود" },
+    {
+      key: "name",
+      header: "الاسم",
+      render: (p) => (
+        <button
+          type="button"
+          onClick={() => navigate(`/products/${p.id}`)}
+          title="عرض لوحة المنتج 360"
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            color: "var(--office-accent, #0f766e)",
+            fontWeight: 600,
+            cursor: "pointer",
+            font: "inherit",
+            textAlign: "right",
+          }}
+        >
+          {p.name}
+        </button>
+      ),
+    },
+    {
+      key: "price",
+      header: "السعر",
+      className: "num",
+      value: (p) => ils(p.price),
+      render: (p) => ils(p.price),
+    },
+    { key: "stock", header: "المخزون", className: "num" },
+    {
+      key: "is_active",
+      header: "الحالة",
+      value: (p) => (Number(p.is_active) === 0 ? "غير نشط" : "نشط"),
+      render: (p) => (Number(p.is_active) === 0 ? "غير نشط" : "نشط"),
+    },
+    {
+      key: "actions",
+      header: "",
+      render: (p) => (
+        <div className="ui-table__actions">
+          <SecondaryButton size="sm" type="button" onClick={() => navigate(`/products/${p.id}`)}>
+            تفاصيل
+          </SecondaryButton>
+          <SecondaryButton size="sm" type="button" onClick={() => setEditProduct(p)}>
+            تعديل
+          </SecondaryButton>
+          <SecondaryButton size="sm" type="button" onClick={() => toggleActive(p)}>
+            {Number(p.is_active) === 0 ? "تفعيل" : "إيقاف"}
+          </SecondaryButton>
+          <DangerButton size="sm" type="button" onClick={() => delProduct(p.id)}>
+            حذف
+          </DangerButton>
+        </div>
+      ),
+    },
+  ];
+
+  return (
+    <div className="office-page" dir="rtl" lang="ar">
+      <PageHeader
+        title="إدارة المنتجات"
+        subtitle="المنتجات والباركود والمخزون"
+        icon="products"
+        actions={
+          <ReportToolbar
+            title="إدارة المنتجات"
+            subtitle={search.trim() ? `بحث: ${search.trim()}` : undefined}
+            columns={pickExportColumns(columns)}
+            rows={filtered}
+            filename="products"
+            disabled={loading}
+          />
+        }
+      />
+
+      <Card>
+        <CardBody>
+          <h2 className="dashboard-section-title">رفع منتجات (CSV أو Excel)</h2>
+          <p style={{ color: "var(--office-text-muted)", fontSize: "0.9rem" }}>
+            أعمدة CSV: barcode، name، price، cost، category، stock — أو Excel (.xlsx) بعناوين
+            عربية/إنجليزية. يُستخدم الورقة الأولى؛ المخزون 0 إن وُضع فارغًا.
+          </p>
+          <input
+            type="file"
+            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={onUpload}
+            disabled={uploading}
+            style={{ marginTop: "0.75rem" }}
+          />
+          {uploading ? <p>جاري الرفع…</p> : null}
+          {uploadFeedback ? (
+            <p style={{ color: uploadFeedback.ok ? "var(--office-success)" : "var(--office-danger)" }}>
+              {uploadFeedback.text}
+            </p>
+          ) : null}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardBody>
+          <h2 className="dashboard-section-title">إضافة منتج</h2>
+          <form onSubmit={addProduct}>
+            <FormGrid>
+              <FormField label="الباركود" required>
+                <div className="barcode-input-row">
+                  <Input
+                    value={form.barcode}
+                    onChange={(e) => setForm({ ...form, barcode: e.target.value })}
+                    required
+                  />
+                  <CameraBarcodeButton
+                    onScan={(code) =>
+                      setForm((f) => ({ ...f, barcode: normalizeBarcode(code) }))
+                    }
+                  />
+                </div>
+              </FormField>
+              <FormField label="الاسم" required>
+                <Input
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  required
+                />
+              </FormField>
+              <FormField label="سعر البيع" required>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={form.price}
+                  onChange={(e) => setForm({ ...form, price: e.target.value })}
+                  required
+                />
+              </FormField>
+              <FormField label="تكلفة">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={form.cost}
+                  onChange={(e) => setForm({ ...form, cost: e.target.value })}
+                />
+              </FormField>
+              <FormField label="التصنيف">
+                <Input
+                  value={form.category}
+                  onChange={(e) => setForm({ ...form, category: e.target.value })}
+                />
+              </FormField>
+              <FormField label="المخزون" required>
+                <Input
+                  type="number"
+                  value={form.stock}
+                  onChange={(e) => setForm({ ...form, stock: e.target.value })}
+                  required
+                />
+              </FormField>
+              <FormField label="نسبة الضريبة (0–1)">
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={form.tax_rate}
+                  onChange={(e) => setForm({ ...form, tax_rate: e.target.value })}
+                />
+              </FormField>
+              <FormField label="الوحدة">
+                <Input
+                  value={form.unit}
+                  onChange={(e) => setForm({ ...form, unit: e.target.value })}
+                />
+              </FormField>
+              <FormField label="تاريخ الصلاحية">
+                <Input
+                  type="date"
+                  value={form.expiry_date}
+                  onChange={(e) => setForm({ ...form, expiry_date: e.target.value })}
+                />
+              </FormField>
+            </FormGrid>
+            <DuplicateBarcodeConflict
+              existingProduct={conflictProduct}
+              busy={conflictBusy}
+              onReplace={handleReplaceConflict}
+              onDelete={handleDeleteConflict}
+              onEditBarcode={() => setEditBarcodeProduct(conflictProduct)}
+            />
+            {formErr ? (
+              <p style={{ color: "var(--office-danger)", marginTop: "0.5rem" }}>{formErr}</p>
+            ) : null}
+            <PrimaryButton type="submit" style={{ marginTop: "1rem" }}>
+              إضافة المنتج
+            </PrimaryButton>
+          </form>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardBody>
+          <h2 className="dashboard-section-title">المنتجات</h2>
+          <div className="ui-toolbar">
+            <div className="barcode-input-row" style={{ flex: 1, maxWidth: "28rem" }}>
+              <SearchInput
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="بحث بالباركود أو الاسم"
+              />
+              <CameraBarcodeButton
+                onScan={(code) => setSearch(normalizeBarcode(code))}
+              />
+            </div>
+          </div>
+          <DataTable
+            columns={columns}
+            rows={pageSlice}
+            loading={loading}
+            empty="لا توجد منتجات"
+            emptyIcon="products"
+          />
+          {!loading && filtered.length > 0 ? (
+            <div className="ui-toolbar" style={{ marginTop: "1rem", marginBottom: 0 }}>
+              <SecondaryButton
+                type="button"
+                disabled={page <= 0}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                السابق
+              </SecondaryButton>
+              <span style={{ color: "var(--office-text-muted)" }}>
+                صفحة {page + 1} / {totalPages}
+              </span>
+              <SecondaryButton
+                type="button"
+                disabled={page >= totalPages - 1}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                التالي
+              </SecondaryButton>
+            </div>
+          ) : null}
+        </CardBody>
+      </Card>
+
+      <EditProductModal
+        open={!!editProduct}
+        onClose={() => setEditProduct(null)}
+        product={editProduct}
+        onSaved={() => {
+          setEditProduct(null);
+          load();
+        }}
+      />
+
+      <EditBarcodeModal
+        open={!!editBarcodeProduct}
+        onClose={() => setEditBarcodeProduct(null)}
+        product={editBarcodeProduct}
+        onSaved={handleEditBarcodeSaved}
+      />
+    </div>
+  );
+}

@@ -1,0 +1,24 @@
+{
+  "name": "abo-shalbak",
+  "private": true,
+  "scripts": {
+    "start": "concurrently -n api,admin,pos -c blue,green,magenta \"npm run start --prefix backend\" \"npm run start --prefix frontend\" \"npm run start --prefix frontend-pos\"",
+    "start:api": "npm run start --prefix backend",
+    "start:admin": "npm run start --prefix frontend",
+    "start:pos": "npm run start --prefix frontend-pos",
+    "dev": "concurrently -n api,admin,pos -c blue,green,magenta \"npm run dev --prefix backend\" \"npm run start --prefix frontend\" \"npm run start --prefix frontend-pos\"",
+    "build": "npm run build --prefix frontend && npm run build --prefix frontend-pos",
+    "build:admin": "npm run build --prefix frontend",
+    "build:pos": "npm run build --prefix frontend-pos",
+    "build:all": "npm run build:admin && npm run build:pos",
+    "copy:builds": "node -e \"const fs=require('fs');const p=require('path');const r=(s,d)=>{fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const a=p.join(s,e.name),b=p.join(d,e.name);e.isDirectory()?r(a,b):fs.copyFileSync(a,b);}};r('frontend/build','backend/public/admin');r('frontend-pos/build','backend/public/pos');console.log('Copied builds to backend/public/admin and backend/public/pos');\"",
+    "production:build": "npm run build:all && npm run copy:builds",
+    "production:start": "cross-env NODE_ENV=production PORT=3000 node backend/server.js",
+    "start:prod": "npm run build:admin && npm run copy:builds && npm run start --prefix backend",
+    "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend && npm install --prefix frontend-pos"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3"
+  }
+}

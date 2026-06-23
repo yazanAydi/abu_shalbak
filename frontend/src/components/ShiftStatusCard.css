@@ -1,0 +1,99 @@
+.shift-status-card {
+  padding: 1rem;
+  border-radius: var(--office-radius-sm);
+  background: var(--office-panel-elevated);
+  border: 1px solid var(--office-panel-border);
+  margin-bottom: 0;
+  color: var(--office-panel-text);
+}
+
+.shift-status-card--empty {
+  text-align: right;
+  color: var(--office-panel-muted);
+  background: var(--office-panel);
+}
+
+.shift-status-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.shift-status-title {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--office-panel-text);
+}
+
+.shift-status-badge {
+  font-size: 0.85rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.shift-status-badge--active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.shift-status-badge--closed {
+  background: var(--office-btn-secondary);
+  color: var(--office-btn-secondary-text);
+}
+
+.shift-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.shift-status-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  font-size: 0.9rem;
+}
+
+.shift-status-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--office-panel-border);
+}
+
+.shift-status-k {
+  color: var(--office-panel-muted);
+}
+
+.shift-status-v {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--office-panel-text);
+}
+
+.shift-status-v.muted {
+  font-weight: 500;
+  color: var(--office-panel-muted);
+}
+
+.shift-status-link {
+  color: var(--office-accent);
+  font-size: 0.9rem;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.shift-status-link:hover {
+  text-decoration: underline;
+}
+
+.shift-status-empty-msg {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--office-panel-muted);
+}

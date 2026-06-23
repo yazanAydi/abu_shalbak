@@ -1,0 +1,74 @@
+import { Router } from "express";
+import { requireAuth, requirePosAccess } from "../middleware/auth.js";
+import { getAppSettings } from "../utils/settings.js";
+
+async function loadQuickButtonProducts(db, settings) {
+  const { pos_quick_categories: categories, pos_quick_buttons: buttons } = settings;
+  const ids = buttons.map((b) => b.product_id);
+  const byId = new Map();
+  if (ids.length > 0) {
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = await db.all(
+      `SELECT id, barcode, name, price, stock, tax_rate
+       FROM products WHERE id IN (${placeholders}) AND COALESCE(is_active, 1) = 1`,
+      ids
+    );
+    for (const r of rows) byId.set(r.id, r);
+  }
+
+  const buttonsByCategory = {};
+  for (const cat of categories) {
+    buttonsByCategory[cat] = [];
+  }
+  for (const btn of buttons) {
+    const product = byId.get(btn.product_id);
+    if (product && buttonsByCategory[btn.category]) {
+      buttonsByCategory[btn.category].push(product);
+    }
+  }
+  return { categories, buttonsByCategory };
+}
+
+export function createPosRouter(db) {
+  const router = Router();
+
+  router.get("/quick-buttons", requireAuth, requirePosAccess, async (_req, res) => {
+    const settings = await getAppSettings(db);
+    const payload = await loadQuickButtonProducts(db, settings);
+    res.json(payload);
+  });
+
+  router.get("/favorites", requireAuth, requirePosAccess, async (_req, res) => {
+    const settings = await getAppSettings(db);
+    const { buttonsByCategory } = await loadQuickButtonProducts(db, settings);
+    const seen = new Set();
+    const ordered = [];
+    for (const cat of settings.pos_quick_categories) {
+      for (const p of buttonsByCategory[cat] || []) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        ordered.push(p);
+      }
+    }
+    res.json(ordered);
+  });
+
+  router.get("/search", requireAuth, requirePosAccess, async (req, res) => {
+    const q = String(req.query.q || "").trim();
+    if (q.length < 2) {
+      return res.json([]);
+    }
+    const like = `%${q}%`;
+    const rows = await db.all(
+      `SELECT id, barcode, name, price, stock, tax_rate
+       FROM products
+       WHERE COALESCE(is_active, 1) = 1 AND (name LIKE ? OR barcode LIKE ?)
+       ORDER BY name
+       LIMIT 20`,
+      [like, like]
+    );
+    res.json(rows);
+  });
+
+  return router;
+}

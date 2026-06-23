@@ -1,0 +1,56 @@
+@import "./styles/office-theme.css";
+
+body {
+  margin: 0;
+  font-family: var(--office-font, system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif);
+  background: var(--office-bg, #eef4f7);
+  color: var(--office-text, #1e293b);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-size: 0.9em;
+}
+
+/* Refined scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--slate-300, #cbd5e1) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--slate-300, #cbd5e1);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--slate-400, #94a3b8);
+  background-clip: content-box;
+}
+
+/* Global polish for legacy class-based pages so they match the new primitives */
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+}
+.btn-primary:active:not(:disabled),
+.btn-secondary:active,
+.btn-danger:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.btn-primary {
+  box-shadow: 0 1px 2px rgba(var(--office-accent-rgb, 15, 118, 110), 0.4);
+}
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.btn-danger:focus-visible {
+  outline: none;
+  box-shadow: var(--office-focus-ring);
+}

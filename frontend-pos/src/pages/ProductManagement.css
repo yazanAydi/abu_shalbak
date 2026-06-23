@@ -1,0 +1,185 @@
+.pm-page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.pm-top {
+  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.pm-top-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.pm-top-link {
+  padding: 0.35rem 0.7rem;
+  border-radius: 8px;
+  background: #3f3f46;
+  color: inherit;
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+
+.pm-back {
+  color: #60a5fa;
+  text-decoration: none;
+  font-size: 1.05rem;
+}
+
+.pm-section {
+  margin-bottom: 2rem;
+  padding: 1rem;
+  border-radius: 10px;
+  border: 1px solid #3f3f46;
+  background: #18181b;
+}
+
+@media (prefers-color-scheme: light) {
+  .pm-section {
+    background: #fff;
+    border-color: #d4d4d8;
+  }
+}
+
+.pm-hint {
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+
+.pm-msg {
+  color: #4ade80;
+  margin-top: 0.5rem;
+}
+
+.pm-err {
+  color: #f87171;
+}
+
+.pm-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.pm-form input {
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid #52525b;
+  background: #27272a;
+  color: inherit;
+}
+
+.pm-form button {
+  min-height: 44px;
+  padding: 0 1rem;
+  border-radius: 8px;
+  border: none;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+}
+
+.pm-search {
+  width: 100%;
+  max-width: 360px;
+  min-height: 44px;
+  margin-bottom: 0.75rem;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid #52525b;
+  background: #27272a;
+  color: inherit;
+}
+
+.pm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 1rem;
+}
+
+.pm-table th,
+.pm-table td {
+  padding: 0.45rem;
+  border-bottom: 1px solid #3f3f46;
+  text-align: start;
+}
+
+.pm-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.pm-actions button {
+  min-height: 36px;
+  padding: 0 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #52525b;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pm-pager {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.pm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.pm-modal {
+  background: #27272a;
+  padding: 1.25rem;
+  border-radius: 12px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pm-modal input {
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid #52525b;
+  background: #18181b;
+  color: inherit;
+}
+
+.pm-modal-btns {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.pm-modal-btns button {
+  flex: 1;
+  min-height: 44px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+}
+
+.pm-modal-btns button:first-child {
+  background: #2563eb;
+  color: #fff;
+}

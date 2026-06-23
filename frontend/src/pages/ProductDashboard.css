@@ -1,0 +1,232 @@
+.pd-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ── Sticky premium header ───────────────────────────── */
+.pd-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #0f766e 0%, #115e59 60%, #134e4a 100%);
+  color: #f0fdfa;
+  box-shadow: 0 10px 30px rgba(15, 118, 110, 0.25);
+}
+
+.pd-header-main {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex: 1;
+  min-width: 280px;
+}
+
+.pd-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.14);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: #ffffff;
+  overflow: hidden;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.pd-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pd-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.pd-header-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pd-title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.pd-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pd-chip {
+  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: #e6fffb;
+}
+
+.pd-keyfigures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 6px;
+}
+.pd-kf {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pd-kf span {
+  font-size: 0.72rem;
+  color: rgba(240, 253, 250, 0.75);
+}
+.pd-kf strong {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.pd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+.pd-actions .ui-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Sticky summary cards ────────────────────────────── */
+.pd-summary {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  padding: 4px 0;
+  background: var(--office-bg, #f8fafc);
+}
+
+.pd-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+/* ── Tabs ────────────────────────────────────────────── */
+.pd-tabs-wrap {
+  position: sticky;
+  top: 0;
+  z-index: 9;
+  background: var(--office-bg, #f8fafc);
+  padding-top: 4px;
+  overflow-x: auto;
+}
+.pd-tab-content {
+  min-height: 240px;
+}
+
+/* ── Sections / tables ───────────────────────────────── */
+.pd-section-title {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--office-panel-text, #1e293b);
+}
+
+.pd-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.pd-defs {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pd-defs > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px dashed var(--slate-200, #e2e8f0);
+  padding-bottom: 6px;
+}
+.pd-defs dt {
+  color: var(--office-panel-muted, #64748b);
+  font-size: 0.85rem;
+}
+.pd-defs dd {
+  margin: 0;
+  font-weight: 600;
+  color: var(--office-panel-text, #1e293b);
+}
+
+.pd-chart-card {
+  margin-bottom: 16px;
+}
+
+.pd-sticky-table {
+  max-height: 540px;
+  overflow: auto;
+}
+.pd-sticky-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--slate-50, #f8fafc);
+}
+
+.pd-supplier-name {
+  font-weight: 600;
+  margin-inline-end: 8px;
+}
+
+.pd-muted {
+  color: var(--office-panel-muted, #64748b);
+}
+
+.pd-error-banner {
+  background: var(--office-danger-soft, #fef2f2);
+  color: var(--office-danger-hover, #b91c1c);
+  border: 1px solid var(--office-danger, #dc2626);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.pd-tab-state {
+  padding: 8px 0;
+}
+
+@media (max-width: 720px) {
+  .pd-header {
+    flex-direction: column;
+  }
+  .pd-actions {
+    width: 100%;
+  }
+}

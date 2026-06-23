@@ -1,0 +1,102 @@
+.rf-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid #3f3f46;
+}
+
+.rf-title {
+  font-size: 1rem;
+  margin: 0 0 0.5rem 0;
+}
+
+.rf-row {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.rf-input {
+  min-height: 38px;
+  padding: 0 0.5rem;
+  border-radius: 8px;
+  border: 1px solid #52525b;
+  background: #18181b;
+  color: inherit;
+  min-width: 120px;
+}
+
+.rf-input.sm {
+  min-height: 32px;
+  width: 4rem;
+}
+
+.rf-btn {
+  min-height: 38px;
+  padding: 0 0.9rem;
+  border-radius: 8px;
+  border: 1px solid #52525b;
+  background: #3f3f46;
+  color: inherit;
+  cursor: pointer;
+}
+
+.rf-btn.primary {
+  background: #b45309;
+  border-color: #d97706;
+  font-weight: 600;
+}
+
+.rf-err {
+  color: #f87171;
+  font-size: 0.9rem;
+  margin-top: 0.35rem;
+}
+
+.rf-ok {
+  color: #4ade80;
+  margin-top: 0.35rem;
+}
+
+.rf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
+.rf-table th,
+.rf-table td {
+  text-align: right;
+  border-bottom: 1px solid #3f3f46;
+  padding: 0.3rem 0.2rem;
+}
+
+.rf-lb {
+  display: block;
+  margin: 0.4rem 0;
+  font-size: 0.9rem;
+}
+
+.rf-lb .rf-input {
+  display: block;
+  margin-top: 0.2rem;
+  width: 100%;
+  max-width: 220px;
+}
+
+.rf-meta {
+  font-size: 0.85rem;
+  opacity: 0.9;
+  margin: 0.25rem 0;
+}
+
+.rf-muted {
+  font-size: 0.9rem;
+  opacity: 0.85;
+  margin: 0 0 0.5rem;
+}
+
+.rf-panel--disabled {
+  opacity: 0.75;
+}

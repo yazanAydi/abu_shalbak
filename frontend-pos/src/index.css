@@ -1,0 +1,16 @@
+:root {
+  --pos-font: "Cairo", "Tajawal", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+}
+
+body {
+  margin: 0;
+  font-family: var(--pos-font);
+  background: #f4f6f9;
+  color: #1e293b;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+code {
+  font-size: 0.9em;
+}

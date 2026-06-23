@@ -1,0 +1,207 @@
+/* POS login — light retail theme */
+:root {
+  --office-font: "Cairo", "Tajawal", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+  --office-bg: #f4f6f9;
+  --office-surface: #ffffff;
+  --office-border: #e2e8f0;
+  --office-text: #1e293b;
+  --office-text-muted: #64748b;
+  --office-accent: #14b8a6;
+  --office-accent-hover: #0f766e;
+  --office-danger: #dc2626;
+  --office-danger-soft: rgba(220, 38, 38, 0.08);
+  --office-radius: 14px;
+  --office-radius-sm: 8px;
+  --office-shadow: 0 12px 40px rgba(15, 23, 42, 0.1);
+}
+
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: row-reverse;
+  font-family: var(--office-font);
+  background: var(--office-bg);
+}
+
+.login-brand {
+  flex: 1;
+  min-width: 280px;
+  background: linear-gradient(145deg, #0f1419 0%, #134e4a 40%, #0f766e 70%, #14b8a6 100%);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem;
+  text-align: center;
+}
+
+.login-brand h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.login-brand p {
+  margin: 0;
+  font-size: 1.1rem;
+  opacity: 0.92;
+}
+
+.login-brand-tag {
+  margin-top: 2rem;
+  padding: 0.5rem 1.15rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.login-panel {
+  flex: 1;
+  min-width: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: var(--office-bg);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--office-surface);
+  border-radius: var(--office-radius);
+  padding: 2rem 2.25rem;
+  box-shadow: var(--office-shadow);
+  border: 1px solid var(--office-border);
+  color: var(--office-text);
+}
+
+.login-card-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--office-text);
+}
+
+.login-sub {
+  margin: 0 0 1.75rem;
+  font-size: 0.95rem;
+  color: var(--office-text-muted);
+  line-height: 1.5;
+}
+
+.login-label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 1.1rem;
+  color: var(--office-text-muted);
+}
+
+.login-input {
+  display: block;
+  width: 100%;
+  height: 52px;
+  margin-top: 0.4rem;
+  font-size: 1.05rem;
+  padding: 0 1rem;
+  border: 1px solid var(--office-border);
+  border-radius: var(--office-radius-sm);
+  box-sizing: border-box;
+  background: var(--office-bg);
+  color: var(--office-text);
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.login-input::placeholder {
+  color: #64748b;
+}
+
+.login-input:focus {
+  outline: none;
+  border-color: var(--office-accent);
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.28);
+}
+
+.login-input:disabled {
+  opacity: 0.6;
+}
+
+.login-error {
+  color: var(--office-danger);
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.85rem;
+  background: var(--office-danger-soft);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: var(--office-radius-sm);
+}
+
+.login-btn {
+  width: 100%;
+  min-height: 52px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--office-accent-hover);
+  border: none;
+  border-radius: var(--office-radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s ease, transform 0.05s ease;
+  margin-top: 0.25rem;
+}
+
+.login-btn:not(:disabled):hover {
+  background: var(--office-accent);
+}
+
+.login-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.login-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.login-hint {
+  margin-top: 1.5rem;
+  font-size: 0.9rem;
+  text-align: center;
+  color: var(--office-text-muted);
+  line-height: 1.5;
+}
+
+.login-pos-link {
+  color: var(--office-accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.login-pos-link:hover {
+  color: #0d9488;
+  text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .login-page {
+    flex-direction: column;
+  }
+  .login-brand {
+    min-height: 200px;
+    padding: 1.5rem;
+  }
+  .login-brand h1 {
+    font-size: 1.85rem;
+  }
+  .login-panel {
+    padding: 1.5rem;
+  }
+}
