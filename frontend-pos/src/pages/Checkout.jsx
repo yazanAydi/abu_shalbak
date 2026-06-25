@@ -304,6 +304,22 @@ export default function Checkout() {
     setPayModalOpen(true);
   }
 
+  const handleCompleteClickRef = useRef(handleCompleteClick);
+  handleCompleteClickRef.current = handleCompleteClick;
+
+  useEffect(() => {
+    function onKeyDown(ev) {
+      if (!ev.ctrlKey || ev.key.toLowerCase() !== "y") return;
+      if (payModalOpen || endShiftOpen || refundOpen) return;
+      if (!cartItems.length || !shiftReady || isLoading) return;
+      ev.preventDefault();
+      handleCompleteClickRef.current();
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [cartItems.length, shiftReady, isLoading, payModalOpen, endShiftOpen, refundOpen]);
+
   function handlePayModalClose() {
     if (isLoading) return;
     setPayModalOpen(false);

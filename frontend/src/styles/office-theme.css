@@ -365,6 +365,19 @@
   font-weight: 600;
 }
 
+.dashboard-near-expiry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.dashboard-near-expiry-table {
+  margin-top: 0.75rem;
+}
+
 .dashboard-section-title--with-badge {
   display: flex;
   align-items: center;

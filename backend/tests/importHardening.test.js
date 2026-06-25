@@ -6,6 +6,7 @@ import {
   collectBarcodesFromRow,
   isArabicRetailFormat,
   parseArabicRetailMatrix,
+  classifyHeader,
 } from "../utils/productImport.js";
 import {
   extractBarcodesFromText,
@@ -224,6 +225,41 @@ describe("Product import hardening", () => {
       ].sort()
     );
     expect(rows[0].barcodes.find((b) => b.barcode === "7290013586773")?.is_primary).toBe(true);
+  });
+
+  test("classifyHeader maps الرقم to sku not barcode", () => {
+    expect(classifyHeader("الرقم")).toBe("sku");
+    expect(classifyHeader("#")).toBe("sku");
+    expect(classifyHeader("no.")).toBe("sku");
+    expect(classifyHeader("barcode")).toBe("barcode");
+  });
+
+  test("parseArabicRetailMatrix preserves product number as displayed text", () => {
+    const matrix = [
+      ["الرقم", "الاسم", "باركود", "باركود الوحدات", "مفرق"],
+      ["00042", "منتج", "8693029607095", "", 8],
+    ];
+    const rows = parseArabicRetailMatrix(matrix);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._productNumber).toBe("00042");
+    const norm = normalizeProductRow(rows[0]);
+    expect(norm.ok).toBe(true);
+    expect(norm.row.sku).toBe("00042");
+  });
+
+  test("xlsxBufferToHeaderRows preserves الرقم through normalization", () => {
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ["الرقم", "الاسم", "باركود", "باركود الوحدات", "مفرق"],
+      ["00099", "عصير", 7290013586773, "قنينة : 7290001594391", 12],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, "Sheet1");
+    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+    const records = xlsxBufferToHeaderRows(buffer);
+    expect(records).toHaveLength(1);
+    const norm = normalizeProductRow(records[0]);
+    expect(norm.ok).toBe(true);
+    expect(norm.row.sku).toBe("00099");
   });
 
   test("parseArabicRetailMatrix does not scan الرقم as barcode", () => {

@@ -1,6 +1,6 @@
 import Icon from "../icons/Icon";
 
-export default function Tabs({ tabs, active, onChange }) {
+export default function Tabs({ tabs, active, onChange, action = null }) {
   return (
     <div className="ui-tabs" role="tablist">
       {tabs.map((t) => (
@@ -15,6 +15,7 @@ export default function Tabs({ tabs, active, onChange }) {
           {t.label}
         </button>
       ))}
+      {action}
     </div>
   );
 }

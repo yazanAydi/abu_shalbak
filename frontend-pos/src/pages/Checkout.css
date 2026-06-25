@@ -38,6 +38,58 @@
   font-weight: 600;
 }
 
+.pos-header-scan {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pos-product-search {
+  position: relative;
+}
+
+.pos-product-search-input {
+  width: 100%;
+  min-height: 44px;
+  font-size: 1rem;
+  padding: 0 1rem;
+  border-radius: var(--pos-radius-sm);
+  border: 2px solid var(--pos-border-strong);
+  background: var(--pos-surface);
+  color: var(--pos-text);
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.pos-product-search-input::placeholder {
+  color: var(--pos-text-dim);
+}
+
+.pos-product-search-input:focus {
+  outline: none;
+  border-color: var(--pos-accent);
+  box-shadow: 0 0 0 3px rgba(var(--pos-accent-rgb), 0.2);
+}
+
+.pos-product-search-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.pos-product-search-status {
+  cursor: default;
+  color: var(--pos-text-muted);
+}
+
+.pos-product-search-status:hover {
+  background: transparent;
+}
+
 .pos-refund-unread td {
   font-weight: 700;
 }

@@ -37,7 +37,7 @@ TELEGRAM_EXPIRY_ALERT_HOUR=8
 - **الاسترجاعات** (بوت #1): رسالة فورية عند كل طلب. الكاشير ينتظر في نقطة البيع؛ عند الموافقة من التيليجرام تتحدّث شاشته خلال ~3 ثوانٍ.
 - **localhost**: `TELEGRAM_USE_POLLING=1` — الخادم يسحب ضغطات الأزرار من تيليجرام (لا حاجة لـ ngrok).
 - **إنتاج**: أوقف polling (`TELEGRAM_USE_POLLING=0`) وسجّل webhook على بوت الاسترجاع.
-- **الصلاحية** (بوت #2): ملخص يومي للأصناف والدفعات القريبة من الانتهاء (عدد الأيام من إعدادات المتجر → `expiry_alert_days`). إرسال يدوي: `POST /api/telegram/send-expiry-alert` أو زر في إعدادات المتجر.
+- **الصلاحية** (بوت #2): ملخص يومي للأصناف والدفعات القريبة من الانتهاء (عدد الأيام من إعدادات المتجر → `expiry_alert_days`). إرسال يدوي: `POST /api/telegram/send-expiry-alert` أو زر في إعدادات المتجر. للتفاصيل الكاملة (تقارير، دورة الحياة، ما لا يُنفَّذ تلقائياً): `docs/EXPIRATION_PROCESS.md`.
 
 Webhook (بوت الاسترجاع فقط، للإنتاج): `POST /api/telegram/webhook/:secret`  
 Callback: `refund:approve:<requestId>` | `refund:reject:<requestId>`

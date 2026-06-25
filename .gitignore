@@ -6,6 +6,8 @@ node_modules/
 .env
 .env.*
 !.env.example
+!.env.store.example
+!.env.development.example
 
 # ── SQLite database — the shop's live data, NEVER commit ─
 *.db
@@ -13,6 +15,11 @@ node_modules/
 *.db-shm
 /data/*
 !/data/.gitkeep
+!/data/statements/
+!/data/statements/suppliers/
+!/data/statements/suppliers/.gitkeep
+/data/statements/suppliers/*.pdf
+/backend/data/statements/suppliers/*.pdf
 /backend/data/
 /backups/
 /backend/backups/

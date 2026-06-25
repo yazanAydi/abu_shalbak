@@ -83,7 +83,7 @@ export default function CustomerManagement() {
       setMsg("تم الحذف");
       load(search);
     } catch (e) {
-      setError(e.response?.data?.error || "فشل الحذف");
+      setError(e.response?.data?.error || e.message || "فشل الحذف");
     }
   }
 

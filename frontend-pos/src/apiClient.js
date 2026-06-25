@@ -53,10 +53,12 @@ api.interceptors.response.use(
     }
     if (e?.response?.data && typeof e.response.data === "object") {
       const body = e.response.data;
-      if (body.error) e.message = body.error;
+      const msg = body.error || body.data?.error;
+      if (msg) e.message = msg;
     }
     if (e && e.message === "Network Error") {
-      e.message = "تعذّر الاتصال بالخادم. تأكد أن الخادم يعمل على المنفذ 5000";
+      e.message =
+        "تعذّر الاتصال بالخادم. للتطوير: شغّل npm start من جذر المشروع (المنفذ 5000). للمتجر: افتح http://IP:3000/pos";
     }
     return Promise.reject(e);
   }

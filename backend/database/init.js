@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import bcrypt from "bcrypt";
 import { seedDefaultSettings } from "../utils/settings.js";
+import { backfillMissingEntityCodes } from "../utils/entityCodes.js";
 
 /** @param {import("sqlite3").Database} raw */
 function wrapDb(raw) {
@@ -271,6 +272,7 @@ async function migrateVouchersTable(db) {
       check_id        INTEGER REFERENCES bank_checks(id),
       bank_account_id INTEGER REFERENCES bank_accounts(id),
       account_category TEXT,
+      bank_name        TEXT,
       description     TEXT,
       created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -283,6 +285,9 @@ async function migrateVouchersTable(db) {
 
   if (!(await tableHasColumn(db, "vouchers", "voucher_no"))) {
     await db.run("ALTER TABLE vouchers ADD COLUMN voucher_no INTEGER");
+  }
+  if (!(await tableHasColumn(db, "voucher_lines", "bank_name"))) {
+    await db.run("ALTER TABLE voucher_lines ADD COLUMN bank_name TEXT");
   }
 }
 
@@ -353,18 +358,150 @@ async function migrateCustomersErpColumns(db) {
   }
 }
 
+async function migrateCustomerBalanceGroups(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS customer_balance_groups (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug       TEXT NOT NULL UNIQUE,
+      label_ar   TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_system  INTEGER NOT NULL DEFAULT 0,
+      active     INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  const count = await db.get("SELECT COUNT(*) AS c FROM customer_balance_groups");
+  if (count.c === 0) {
+    for (const g of [
+      { slug: "zaboon", label_ar: "أرصدة الزبون", sort_order: 1 },
+      { slug: "mashghilin", label_ar: "أرصدة المشغلين", sort_order: 2 },
+      { slug: "omara", label_ar: "أرصدة العمارة", sort_order: 3 },
+    ]) {
+      await db.run(
+        "INSERT INTO customer_balance_groups (slug, label_ar, sort_order, is_system) VALUES (?, ?, ?, 1)",
+        [g.slug, g.label_ar, g.sort_order]
+      );
+    }
+  }
+
+  if (!(await tableHasColumn(db, "customers", "balance_group_id"))) {
+    await db.run(
+      "ALTER TABLE customers ADD COLUMN balance_group_id INTEGER REFERENCES customer_balance_groups(id)"
+    );
+  }
+
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_customers_balance_group ON customers(balance_group_id);
+  `);
+
+  const groups = await db.all("SELECT id, slug FROM customer_balance_groups");
+  const bySlug = Object.fromEntries(groups.map((g) => [g.slug, g.id]));
+
+  if (bySlug.mashghilin) {
+    await db.run(
+      `UPDATE customers SET balance_group_id = ?
+       WHERE balance_group_id IS NULL AND notes LIKE '%مشغل%'`,
+      [bySlug.mashghilin]
+    );
+  }
+  if (bySlug.omara) {
+    await db.run(
+      `UPDATE customers SET balance_group_id = ?
+       WHERE balance_group_id IS NULL AND notes LIKE '%عمارة%'`,
+      [bySlug.omara]
+    );
+  }
+  if (bySlug.zaboon) {
+    await db.run(
+      `UPDATE customers SET balance_group_id = ?
+       WHERE balance_group_id IS NULL`,
+      [bySlug.zaboon]
+    );
+  }
+}
+
 async function migrateSuppliersErpColumns(db) {
   const cols = [
     ["supplier_code", "TEXT"],
     ["address", "TEXT"],
     ["payment_terms", "TEXT"],
     ["opening_balance", "REAL NOT NULL DEFAULT 0"],
+    ["statement_pdf_updated_at", "TEXT"],
   ];
   for (const [col, type] of cols) {
     if (!(await tableHasColumn(db, "suppliers", col))) {
       await db.run(`ALTER TABLE suppliers ADD COLUMN ${col} ${type}`);
     }
   }
+}
+
+async function migrateSupplierOpeningBalanceMeta(db) {
+  const supplierCols = [
+    ["opening_balance_date", "TEXT"],
+    ["opening_balance_source", "TEXT"],
+    ["opening_balance_excel", "REAL"],
+  ];
+  for (const [col, type] of supplierCols) {
+    if (!(await tableHasColumn(db, "suppliers", col))) {
+      await db.run(`ALTER TABLE suppliers ADD COLUMN ${col} ${type}`);
+    }
+  }
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS party_opening_entries (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      party_type   TEXT NOT NULL,
+      party_id     INTEGER NOT NULL,
+      entry_date   TEXT NOT NULL,
+      description  TEXT NOT NULL,
+      debit        REAL NOT NULL DEFAULT 0,
+      credit       REAL NOT NULL DEFAULT 0,
+      source_type  TEXT NOT NULL,
+      source_id    TEXT,
+      notes        TEXT,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_party_opening_entries_party
+      ON party_opening_entries (party_type, party_id);
+    CREATE INDEX IF NOT EXISTS idx_party_opening_entries_source
+      ON party_opening_entries (party_type, party_id, source_type);
+  `);
+
+  await db.run(
+    `UPDATE suppliers
+     SET opening_balance_excel = -opening_balance
+     WHERE opening_balance_source = 'hesabati_import'
+       AND opening_balance_excel IS NULL`
+  );
+}
+
+async function migrateAccountStatementEntries(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS account_statement_entries (
+      id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+      party_type              TEXT NOT NULL,
+      party_id                INTEGER NOT NULL,
+      import_batch_id         TEXT NOT NULL,
+      legacy_reference_number TEXT,
+      entry_date              TEXT,
+      description             TEXT NOT NULL,
+      debit                   REAL NOT NULL DEFAULT 0,
+      credit                  REAL NOT NULL DEFAULT 0,
+      running_balance         REAL NOT NULL DEFAULT 0,
+      notes                   TEXT,
+      source_type             TEXT NOT NULL DEFAULT 'hesabati_history_import',
+      source_file_name        TEXT,
+      row_order               INTEGER NOT NULL DEFAULT 0,
+      created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ase_party
+      ON account_statement_entries (party_type, party_id);
+    CREATE INDEX IF NOT EXISTS idx_ase_party_date
+      ON account_statement_entries (party_type, party_id, entry_date, row_order);
+    CREATE INDEX IF NOT EXISTS idx_ase_party_source
+      ON account_statement_entries (party_type, party_id, source_type);
+  `);
 }
 
 async function migratePurchasesTables(db) {
@@ -839,6 +976,15 @@ async function migrateInventoryLedgerTable(db) {
   `);
 }
 
+async function migrateEntityCodeSequencesTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS entity_code_sequences (
+      entity_type TEXT PRIMARY KEY,
+      last_seq    INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+}
+
 async function migrateReceiptSequencesTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS receipt_sequences (
@@ -1302,6 +1448,7 @@ export async function initDatabase(dbPath) {
   await migrateTransactionsDiscount(db);
   await migrateInventoryMovementsTable(db);
   await migrateCustomersErpColumns(db);
+  await migrateCustomerBalanceGroups(db);
   await migrateSuppliersErpColumns(db);
   await migratePurchasesTables(db);
   await migrateStockAdjustmentsTables(db);
@@ -1316,6 +1463,7 @@ export async function initDatabase(dbPath) {
   await migrateProductPriceHistoryTable(db);
   await migrateInventoryLedgerTable(db);
   await migrateReceiptSequencesTable(db);
+  await migrateEntityCodeSequencesTable(db);
   await migrateShiftReconciliationExtended(db);
   await migrateCashierShiftsPendingStatus(db);
   await migrateRefundRequestsTable(db);
@@ -1326,12 +1474,16 @@ export async function initDatabase(dbPath) {
   await migrateStoreIdColumns(db);
   await migrateProductBarcodesTable(db);
   await migrateTransactionItemsScannedBarcode(db);
+  await migrateAccountStatementIndexes(db);
+  await migrateSupplierOpeningBalanceMeta(db);
+  await migrateAccountStatementEntries(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);
   await migrateProductBarcodesDigitsOnly(db);
   await migrateProductBarcodesFromProducts(db);
   await seedDefaultSettings(db);
+  await backfillMissingEntityCodes(db);
 
   await recordSchemaVersion(db);
 
@@ -1343,7 +1495,17 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.06-product-barcodes";
+const SCHEMA_VERSION = "2026.06-customer-balance-groups";
+
+async function migrateAccountStatementIndexes(db) {
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at);
+    CREATE INDEX IF NOT EXISTS idx_refunds_customer_created ON refunds(customer_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_pinv_supplier_date ON purchase_invoices(supplier_id, invoice_date);
+    CREATE INDEX IF NOT EXISTS idx_vlines_supplier ON voucher_lines(supplier_id);
+  `);
+}
 
 async function recordSchemaVersion(db) {
   await db.exec(`

@@ -45,6 +45,7 @@ const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 /** Columns whose cell values must never be scanned for barcodes */
 const EXCLUDED_BARCODE_SCAN_FIELDS = new Set([
+  "sku",
   "price",
   "cost",
   "stock",
@@ -66,10 +67,14 @@ function isForbiddenKey(key) {
 }
 
 const HEADER_PATTERNS = [
+  {
+    field: "sku",
+    re: /^الرقم$|^#$|^no\.?$|^item\s*no\.?$|^product\s*no\.?$|^sku$/i,
+  },
   { field: "barcode_units", re: /^باركود الوحدات$|باركود الوحدات|وحدات الباركود/i },
   {
     field: "barcode",
-    re: /^barcodes?$|^باركود$|barcodes?|الباركود|الكود|^code$|sku|رقم الصنف|رقم المنتج|رقم المادة|كود الصنف|كود|bk\.?code|unit barcode|package barcode/i,
+    re: /^barcodes?$|^باركود$|barcodes?|الباركود|الكود|^code$|رقم الصنف|رقم المنتج|رقم المادة|كود الصنف|كود|bk\.?code|unit barcode|package barcode/i,
   },
   { field: "name", re: /name|الاسم|^الاسم$|المادة|البيان|الصنف|صنف|وصف|المنتج|description|item|اسم المنتج/i },
   { field: "name_en", re: /name_en|الاسم الإنجليزي|الاسم انجليزي|english name/i },
@@ -96,7 +101,7 @@ export function classifyHeader(raw) {
     .replace(/^\uFEFF/, "")
     .trim();
   if (!s) return null;
-  if (/^الرقم$/i.test(s) || /^#$/i.test(s) || /^م\s*$/i.test(s) || /^no\.?$/i.test(s)) {
+  if (/^م\s*$/i.test(s)) {
     return null;
   }
   for (const { field, re } of HEADER_PATTERNS) {
@@ -163,6 +168,33 @@ function cellDisplayValue(cell) {
   if (cell.w != null && String(cell.w).trim() !== "") return String(cell.w);
   if (cell.v !== undefined && cell.v !== null) return String(cell.v);
   return "";
+}
+
+/**
+ * @param {unknown} val
+ * @returns {string | null}
+ */
+export function formatProductNumber(val) {
+  if (val === undefined || val === null) return null;
+  const s = String(val).trim();
+  return s || null;
+}
+
+/**
+ * Read cell text as Excel displays it (prefers formatted cell.w).
+ * @param {import('xlsx').WorkSheet | null | undefined} sheet
+ * @param {number} rowIndex
+ * @param {number} col
+ * @param {unknown} fallback
+ */
+export function excelCellDisplayText(sheet, rowIndex, col, fallback) {
+  if (!sheet) return formatProductNumber(fallback) ?? "";
+  const addr = XLSX.utils.encode_cell({ r: rowIndex, c: col });
+  const cell = sheet[addr];
+  if (!cell) return formatProductNumber(fallback) ?? "";
+  if (cell.w != null && String(cell.w).trim() !== "") return String(cell.w).trim();
+  if (cell.v !== undefined && cell.v !== null) return String(cell.v).trim();
+  return formatProductNumber(fallback) ?? "";
 }
 
 /**
@@ -280,7 +312,7 @@ export function parseArabicRetailMatrix(rows, headerRowIndex = 0, sheet = null) 
       _rawMainBarcode: mainBarcodeValue,
       _rawUnitBarcodes: unitBarcodeValue,
       _rawName: row[RETAIL_NAME_COL],
-      _productNumber: row[0] ?? null,
+      _productNumber: excelCellDisplayText(sheet, i, 0, row[0]),
       _barcodesExtracted: barcodes.map((b) => b.barcode),
       _matrixRowIndex: i,
     };
@@ -336,6 +368,7 @@ function detectHeaderAndColumns(matrix) {
     };
     pickFirst("barcode_units");
     pickFirst("barcode");
+    pickFirst("sku");
     pickFirst("name");
     pickFirst("name_en");
     pickFirst("price");
@@ -384,7 +417,11 @@ function rowsFromSheet(sheet, headerRow, colMeta, colMap) {
     const o = {};
     for (const [k, idx] of Object.entries(colMap)) {
       const addr = XLSX.utils.encode_cell({ r, c: idx });
-      o[k] = cellDisplayValue(sheet[addr]).trim();
+      const cell = sheet[addr];
+      o[k] =
+        k === "sku"
+          ? excelCellDisplayText(sheet, r, idx, cell?.v ?? "")
+          : cellDisplayValue(cell).trim();
     }
 
     /** @type {BarcodeRawCell[]} */
@@ -637,6 +674,7 @@ function canonicalizeRow(row) {
     expiry_date: pick("expiry_date"),
     min_price: pick("min_price"),
     max_price: pick("max_price"),
+    sku: pick("sku"),
   };
 }
 
@@ -697,6 +735,7 @@ export function normalizeProductRow(row) {
         expiry_date: null,
         min_price: null,
         max_price: null,
+        sku: formatProductNumber(row._productNumber),
       },
     };
   }
@@ -763,6 +802,7 @@ export function normalizeProductRow(row) {
       expiry_date,
       min_price,
       max_price,
+      sku: formatProductNumber(c.sku),
     },
   };
 }

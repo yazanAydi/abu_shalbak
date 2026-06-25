@@ -104,7 +104,7 @@ export default function PosPaymentModal({
     if (!open) return;
 
     function onKeyDown(ev) {
-      if (ev.key !== "F9") return;
+      if (ev.key !== "F12") return;
       ev.preventDefault();
       handleTarhilRef.current();
     }
@@ -223,7 +223,7 @@ export default function PosPaymentModal({
             {isLoading ? "جاري المعالجة…" : "ترحيل"}
           </button>
         </div>
-        <p className="pos-tarhil-hint">F9 — ترحيل بعد تسليم الباقي للزبون</p>
+        <p className="pos-tarhil-hint">F12 — ترحيل بعد تسليم الباقي للزبون</p>
       </div>
     </div>
   );

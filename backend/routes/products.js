@@ -13,6 +13,7 @@ import {
   syncProductsPrimaryBarcode,
 } from "../utils/productBarcodes.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
+import { ensureEntityCode } from "../utils/entityCodes.js";
 import { recordPriceChange } from "../utils/priceHistory.js";
 import { getSalesByPrice } from "../utils/salesByPrice.js";
 
@@ -44,10 +45,10 @@ function marginPct(price, cost) {
   return round2(((p - c) / p) * 100);
 }
 
-const PRODUCT_LIST_SELECT = `id, barcode, name, name_en, price, cost, stock, category, tax_rate, unit, expiry_date, min_price, max_price,
+const PRODUCT_LIST_SELECT = `id, barcode, name, name_en, price, cost, stock, category, tax_rate, unit, expiry_date, min_price, max_price, sku,
               COALESCE(is_active, 1) AS is_active`;
 
-const PRODUCT_LIST_SELECT_P = `p.id, p.barcode, p.name, p.name_en, p.price, p.cost, p.stock, p.category, p.tax_rate, p.unit, p.expiry_date, p.min_price, p.max_price,
+const PRODUCT_LIST_SELECT_P = `p.id, p.barcode, p.name, p.name_en, p.price, p.cost, p.stock, p.category, p.tax_rate, p.unit, p.expiry_date, p.min_price, p.max_price, p.sku,
               COALESCE(p.is_active, 1) AS is_active`;
 
 export async function searchProducts(db, rawQuery) {
@@ -131,7 +132,7 @@ export function createProductsRouter(db) {
 
     const rows = await db.all(
       `SELECT ${PRODUCT_LIST_SELECT}
-       FROM products ORDER BY name`
+       FROM products ORDER BY id ASC`
     );
     return res.json(rows);
   });
@@ -188,6 +189,7 @@ export function createProductsRouter(db) {
       return res.status(400).json({ error: "نسبة الضريبة يجب أن تكون بين 0 و 1" });
     }
     try {
+      const skuCode = await ensureEntityCode(db, "product", sku);
       const info = await db.run(
         `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -204,7 +206,7 @@ export function createProductsRouter(db) {
           expiry_date ? String(expiry_date).trim() : null,
           min_price != null && min_price !== "" ? Number(min_price) : null,
           max_price != null && max_price !== "" ? Number(max_price) : null,
-          sku ? String(sku).trim() : null,
+          skuCode,
           image_url ? String(image_url).trim() : null,
         ]
       );

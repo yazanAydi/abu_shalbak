@@ -38,6 +38,7 @@ Monorepo supermarket management system for LAN deployment. One Node.js/Express b
 | Inventory | `routes/inventory.js` | Inventory, InventoryCount | `inventory_ledger`, `inventory_movements` |
 | Reports | `routes/reports.js`, `routes/finance.js` | DailyReport, dashboards | source: `transactions`, `transaction_items` |
 | Telegram | `routes/telegram.js`, `services/telegramUpdateService.js` | — | `refund_requests` |
+| Expiry alerts | `services/expiryAlertService.js`, cron in `server.js` | ExpiryReports, StoreSettings | `products`, `product_batches`, `app_settings` |
 | Settings | `routes/settings.js` | StoreSettings | `app_settings` |
 
 ## Stock & money authority
@@ -61,3 +62,5 @@ Monorepo supermarket management system for LAN deployment. One Node.js/Express b
 ```
 
 See `LAN_DEPLOYMENT_CHECKLIST.md` for setup steps.
+
+See `EXPIRATION_PROCESS.md` for expiry tracking, reports, Telegram alerts, and manual write-offs.

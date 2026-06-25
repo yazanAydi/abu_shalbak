@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import BarcodeInput from "../BarcodeInput";
+import PosProductSearch from "./PosProductSearch";
 
 function LiveClock() {
   const [now, setNow] = useState(() => new Date());
@@ -30,6 +31,7 @@ export default function PosHeader({
     <header className="pos-header" dir="rtl" lang="ar">
       <div className="pos-header-scan">
         <BarcodeInput onProductFound={onProductFound} onError={() => {}} />
+        <PosProductSearch onProductFound={onProductFound} />
       </div>
       <div className="pos-header-meta">
         <span className="pos-pill" style={{ fontWeight: 800, color: "var(--pos-accent-strong, #2dd4bf)" }}>

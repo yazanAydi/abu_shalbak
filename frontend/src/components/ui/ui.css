@@ -381,6 +381,16 @@
   border-bottom-color: var(--office-accent);
 }
 .ui-tab svg { width: 16px; height: 16px; }
+.ui-tab--action {
+  margin-inline-start: auto;
+  color: var(--office-accent);
+  border-bottom-color: transparent;
+}
+.ui-tab--action:hover {
+  color: var(--office-accent-hover, var(--office-accent));
+  background: var(--office-accent-soft, rgba(15, 118, 110, 0.08));
+  border-radius: var(--radius-sm, 6px) var(--radius-sm, 6px) 0 0;
+}
 
 /* ── Modal ── */
 .ui-modal-overlay {

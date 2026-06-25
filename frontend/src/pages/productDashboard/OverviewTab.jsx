@@ -26,7 +26,7 @@ export default function OverviewTab({ productId }) {
                   <div><dt>الاسم</dt><dd>{data.basic.name}</dd></div>
                   {data.basic.name_en ? <div><dt>الاسم (EN)</dt><dd>{data.basic.name_en}</dd></div> : null}
                   <div><dt>الباركود</dt><dd>{data.basic.barcode}</dd></div>
-                  <div><dt>SKU</dt><dd>{data.basic.sku || "—"}</dd></div>
+                  <div><dt>الرقم</dt><dd>{data.basic.sku || "—"}</dd></div>
                   <div><dt>التصنيف</dt><dd>{data.basic.category || "—"}</dd></div>
                   <div><dt>الوحدة</dt><dd>{data.basic.unit || "—"}</dd></div>
                   <div><dt>نسبة الضريبة</dt><dd>{data.basic.tax_rate != null ? `${num(Number(data.basic.tax_rate) * 100)}%` : "—"}</dd></div>

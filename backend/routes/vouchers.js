@@ -65,6 +65,11 @@ export function createVouchersRouter(db) {
       }
     }
 
+    const hasParty = lines.some((L) => L.customer_id || L.supplier_id);
+    if (!hasParty) {
+      return res.status(400).json({ error: "يجب اختيار زبون أو مورد", code: "VALIDATION_ERROR" });
+    }
+
     const total = round2(lines.reduce((s, L) => s + Number(L.amount), 0));
 
     await db.run("BEGIN IMMEDIATE");
@@ -91,8 +96,8 @@ export function createVouchersRouter(db) {
         await db.run(
           `INSERT INTO voucher_lines
              (voucher_id, line_type, amount, currency, exchange_rate, amount_nis,
-              customer_id, supplier_id, check_id, bank_account_id, account_category, description)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+              customer_id, supplier_id, check_id, bank_account_id, account_category, bank_name, description)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             voucherId, L.line_type, amt, L.currency || "NIS", rate, amtNis,
             L.customer_id ? Number(L.customer_id) : null,
@@ -100,6 +105,7 @@ export function createVouchersRouter(db) {
             L.check_id ? Number(L.check_id) : null,
             L.bank_account_id ? Number(L.bank_account_id) : null,
             L.account_category || null,
+            L.line_type === "check" && L.bank_name ? String(L.bank_name).trim() : null,
             L.description || null,
           ]
         );

@@ -553,8 +553,93 @@
 }
 .voucher-total { font-size: 1.1rem; font-weight: 700; margin: 0.75rem 0; }
 
+.party-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  background: #e2e8f0;
+  color: #4a5568;
+  margin-inline-end: 0.4rem;
+}
+.party-picker-selected {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #cbd5e0;
+  border-radius: 5px;
+  background: #f7fafc;
+}
+.party-picker-code { color: #718096; font-size: 0.85rem; }
+.party-picker-clear { margin-inline-start: auto; }
+
 /* ── Customer statement ── */
 .statement-view { margin-top: 0.5rem; }
+.hesabati-statement__store {
+  text-align: center;
+  font-weight: 700;
+  font-size: 1rem;
+  margin-bottom: 0.25rem;
+}
+.hesabati-balance--neg,
+.hesabati-statement-table td.hesabati-balance--neg {
+  color: #c53030;
+  font-weight: 600;
+}
+.hesabati-notes {
+  max-width: 180px;
+  white-space: normal;
+  word-break: break-word;
+}
+.hesabati-statement-totals td {
+  background: #f7fafc;
+  border-top: 2px solid var(--office-border, #cbd5e0);
+}
+.hesabati-statement__title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 0.75rem;
+}
+.hesabati-statement__header {
+  margin-bottom: 1rem;
+}
+.hesabati-statement__table-wrap {
+  overflow-x: auto;
+  max-height: 65vh;
+}
+.hesabati-statement-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.hesabati-statement-table th,
+.hesabati-statement-table td {
+  border: 1px solid var(--office-border, #e2e8f0);
+  padding: 0.45rem 0.6rem;
+  text-align: right;
+  vertical-align: top;
+}
+.hesabati-statement-table th {
+  background: #f7fafc;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.hesabati-statement-table td.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+@media print {
+  .hesabati-statement__table-wrap {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 .statement-header {
   display: flex;
   gap: 1rem;

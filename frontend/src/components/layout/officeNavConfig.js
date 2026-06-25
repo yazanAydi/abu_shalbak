@@ -110,6 +110,20 @@ export const OFFICE_NAV = [
     visible: (role) => canViewReports(role),
   },
   {
+    path: "/account-statement",
+    label: "كشف حساب",
+    icon: "vouchers",
+    section: "finance",
+    visible: (role) => canViewReports(role),
+  },
+  {
+    path: "/import-supplier-balances",
+    label: "استيراد أرصدة الموردين",
+    icon: "suppliers",
+    section: "finance",
+    visible: (role) => isAdminRole(role),
+  },
+  {
     path: "/vouchers",
     label: "السندات",
     icon: "vouchers",
@@ -175,4 +189,6 @@ export const ROUTE_TITLES = {
   "/deliveries": "التوصيل والاستلام",
   "/marketing": "التسويق والعروض",
   "/warehouses": "المستودعات",
+  "/account-statement": "كشف حساب",
+  "/import-supplier-balances": "استيراد أرصدة الموردين",
 };

@@ -1,21 +1,62 @@
 import { Modal, SecondaryButton } from "../../components/ui";
 
+const TYPE_LABELS = {
+  hesabati_price_list: "قائمة الأسعار",
+  hesabati_supplier_balances: "أرصدة الموردين",
+  hesabati_customer_balances: "أرصدة الزبائن",
+  hesabati_operator_balances: "أرصدة المشغلين",
+  hesabati_building_balances: "أرصدة العمارة",
+  arabic_retail: "بطاقة الأصناف",
+  generic_products: "منتجات",
+};
+
 /**
  * @param {{ open: boolean, onClose: () => void, data: object | null }} props
  */
 export default function ImportSummaryModal({ open, onClose, data }) {
   if (!data) return null;
 
-  const stats = [
-    { label: "منتجات جديدة", value: data.products_created ?? data.inserted ?? 0 },
-    { label: "منتجات محدّثة", value: data.products_updated ?? 0 },
-    { label: "باركودات مضافة", value: data.barcodes_added ?? 0 },
-    { label: "أكواد داخلية قصيرة", value: data.short_internal_codes_added ?? 0 },
-    { label: "خلايا scientific notation", value: data.scientific_notation_cells_detected ?? 0 },
-    { label: "صفوف بلا باركود", value: data.rows_no_barcode_found ?? 0 },
-    { label: "باركودات مكررة (تُركت)", value: data.duplicate_barcodes_skipped ?? 0 },
-    { label: "صفوف تُركت", value: data.skipped ?? 0 },
-  ];
+  const importType = data.type || data.detected_type || "generic_products";
+  const typeLabel = data.label || TYPE_LABELS[importType] || "استيراد";
+
+  const isProductImport =
+    !importType.includes("balance") &&
+    importType !== "hesabati_customer_balances" &&
+    importType !== "hesabati_supplier_balances" &&
+    importType !== "hesabati_operator_balances" &&
+    importType !== "hesabati_building_balances";
+
+  const isBalanceImport =
+    importType.includes("balance") ||
+    importType === "hesabati_customer_balances" ||
+    importType === "hesabati_supplier_balances" ||
+    importType === "hesabati_operator_balances" ||
+    importType === "hesabati_building_balances";
+
+  /** @type {{ label: string, value: number }[]} */
+  let stats = [];
+  if (isProductImport) {
+    stats = [
+      { label: "منتجات جديدة", value: data.products_created ?? data.created ?? data.inserted ?? 0 },
+      { label: "منتجات محدّثة", value: data.products_updated ?? data.updated ?? 0 },
+      { label: "باركودات مضافة", value: data.barcodes_added ?? 0 },
+      { label: "غير موجود", value: data.not_found ?? 0 },
+      { label: "أكواد داخلية قصيرة", value: data.short_internal_codes_added ?? 0 },
+      { label: "صفوف تُركت", value: data.skipped ?? 0 },
+    ];
+  } else if (isBalanceImport) {
+    stats = [
+      { label: "سجلات جديدة", value: data.created ?? 0 },
+      { label: "سجلات محدّثة", value: data.updated ?? 0 },
+      { label: "صفوف تُركت", value: data.skipped ?? 0 },
+    ];
+  } else {
+    stats = [
+      { label: "جديد", value: data.created ?? data.inserted ?? 0 },
+      { label: "محدّث", value: data.updated ?? 0 },
+      { label: "تُرك", value: data.skipped ?? 0 },
+    ];
+  }
 
   const conflicts = Array.isArray(data.barcode_conflicts) ? data.barcode_conflicts : [];
   const errors = Array.isArray(data.errors) ? data.errors : [];
@@ -25,7 +66,7 @@ export default function ImportSummaryModal({ open, onClose, data }) {
     <Modal
       open={open}
       onClose={onClose}
-      title="ملخص الاستيراد"
+      title={`ملخص الاستيراد — ${typeLabel}`}
       footer={
         <SecondaryButton type="button" onClick={onClose}>
           إغلاق
@@ -90,7 +131,11 @@ export default function ImportSummaryModal({ open, onClose, data }) {
                 {errors.map((e, i) => (
                   <tr key={`${e.row}-${i}`}>
                     <td>{e.row}</td>
-                    <td>{e.reason}{e.barcode ? ` (${e.barcode})` : ""}</td>
+                    <td>
+                      {e.reason || e.message}
+                      {e.barcode ? ` (${e.barcode})` : ""}
+                      {e.name ? ` — ${e.name}` : ""}
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -32,6 +32,15 @@ const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 const LOW_STOCK_THRESHOLD = 5;
 const LOW_STOCK_WIDGET_LIMIT = 12;
+const NEAR_EXPIRY_WIDGET_LIMIT = 12;
+
+function formatDaysUntilExpiry(days) {
+  const d = Number(days);
+  if (!Number.isFinite(d)) return "—";
+  if (d < 0) return `منتهي (${Math.abs(d)})`;
+  if (d === 0) return "ينتهي اليوم";
+  return String(d);
+}
 
 export default function DailyReport() {
   const [loading, setLoading] = useState(true);
@@ -53,6 +62,9 @@ export default function DailyReport() {
   const [lastClosedShift, setLastClosedShift] = useState(null);
   const [recon, setRecon] = useState(null);
   const [lowStockTotal, setLowStockTotal] = useState(0);
+  const [nearExpiryItems, setNearExpiryItems] = useState([]);
+  const [nearExpiryTotal, setNearExpiryTotal] = useState(0);
+  const [nearExpiryDays, setNearExpiryDays] = useState(7);
 
   const fetchChart = useCallback(async (period) => {
     const headers = getAuthHeaders();
@@ -84,7 +96,7 @@ export default function DailyReport() {
           .then((r) => r.data)
           .catch(() => null);
 
-        const [todayRes, productsRes, openShiftsRes, closedShiftsRes, lowStockRes, reconData] =
+        const [todayRes, productsRes, openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData] =
           await Promise.all([
             api.get("/api/reports/today", { headers }),
             api.get(`/api/reports/top-products?date=${todayStr}`, { headers }),
@@ -96,6 +108,9 @@ export default function DailyReport() {
                 { headers }
               )
               .catch(() => ({ data: { products: [], total_count: 0, out_of_stock_count: 0 } })),
+            api
+              .get(`/api/reports/near-expiry?limit=${NEAR_EXPIRY_WIDGET_LIMIT}`, { headers })
+              .catch(() => ({ data: { items: [], total_count: 0, days_threshold: 7 } })),
             reconPromise,
           ]);
 
@@ -137,6 +152,16 @@ export default function DailyReport() {
           Number.isFinite(apiTotal);
 
         setLowStockTotal(hasApiTotal ? apiTotal : lowStockProducts.length);
+
+        const nearExpiryPayload = nearExpiryRes.data;
+        const nearExpiryList = Array.isArray(nearExpiryPayload?.items) ? nearExpiryPayload.items : [];
+        const nearExpiryApiTotal = Number(nearExpiryPayload?.total_count);
+        setNearExpiryItems(nearExpiryList);
+        setNearExpiryTotal(
+          Number.isFinite(nearExpiryApiTotal) ? nearExpiryApiTotal : nearExpiryList.length
+        );
+        setNearExpiryDays(Number(nearExpiryPayload?.days_threshold) || 7);
+
         setRecon(reconData);
         setLastUpdated(new Date());
         setErr(null);
@@ -192,6 +217,7 @@ export default function DailyReport() {
     refundCount: today?.refund_count,
     openShiftsWithDuration: openShifts,
     lowStockCount: lowStockDisplayTotal,
+    nearExpiryCount: nearExpiryTotal,
   });
 
   const topProductsPreview = topProducts.slice(0, 5);
@@ -204,8 +230,9 @@ export default function DailyReport() {
       { label: "الاسترجاعات", value: String(today.refund_count ?? 0) },
       { label: "ورديات مفتوحة", value: String(openShifts.length) },
       { label: "مخزون منخفض", value: String(lowStockDisplayTotal) },
+      { label: "صلاحية قريبة", value: String(nearExpiryTotal) },
     ];
-  }, [today, openShifts.length, lowStockDisplayTotal]);
+  }, [today, openShifts.length, lowStockDisplayTotal, nearExpiryTotal]);
 
   if (loading && !today) {
     return (
@@ -276,8 +303,72 @@ export default function DailyReport() {
             alert={lowStockDisplayTotal > 0}
             icon="inventory"
           />
+          <StatCard
+            label={`صلاحية قريبة (${nearExpiryDays} يوم)`}
+            value={nearExpiryTotal}
+            tone={nearExpiryTotal > 0 ? "orange" : "teal"}
+            alert={nearExpiryTotal > 0}
+            icon="expiry"
+          />
         </div>
       </div>
+
+      {nearExpiryTotal > 0 ? (
+        <Card className="dashboard-near-expiry-panel">
+          <CardBody>
+            <div className="dashboard-near-expiry-header">
+              <h2 className="dashboard-section-title" style={{ border: "none", padding: 0, margin: 0 }}>
+                أصناف قريبة من انتهاء الصلاحية
+              </h2>
+              <Link to="/expiry" className="dashboard-inline-link">
+                تقرير الصلاحية ({nearExpiryTotal})
+              </Link>
+            </div>
+            <p className="dashboard-meta-line muted">
+              حسب فترة التنبيه في الإعدادات: {nearExpiryDays} يوم
+            </p>
+            <table className="data-table dashboard-near-expiry-table">
+              <thead>
+                <tr>
+                  <th>المنتج</th>
+                  <th>الباركود</th>
+                  <th>الكمية</th>
+                  <th>تاريخ الصلاحية</th>
+                  <th>الأيام المتبقية</th>
+                </tr>
+              </thead>
+              <tbody>
+                {nearExpiryItems.map((item) => {
+                  const days = Number(item.days_until_expiry);
+                  const rowClass =
+                    days < 0 ? "expired" : days <= 7 ? "expiring-soon" : "";
+                  const label =
+                    item.kind === "batch" && item.batch_no
+                      ? `${item.name} (دفعة ${item.batch_no})`
+                      : item.name;
+                  return (
+                    <tr key={`${item.kind}-${item.id}`} className={rowClass}>
+                      <td>{label}</td>
+                      <td>{item.barcode || "—"}</td>
+                      <td>{item.quantity}</td>
+                      <td>{item.expiry_date}</td>
+                      <td>{formatDaysUntilExpiry(days)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {nearExpiryTotal > nearExpiryItems.length ? (
+              <p className="dashboard-top-products-more">
+                + {nearExpiryTotal - nearExpiryItems.length} أصناف أخرى —{" "}
+                <Link to="/expiry" className="dashboard-inline-link">
+                  عرض الكل
+                </Link>
+              </p>
+            ) : null}
+          </CardBody>
+        </Card>
+      ) : null}
 
       <div className="dashboard-trend-row">
         <Card>

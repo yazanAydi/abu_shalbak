@@ -41,6 +41,7 @@ export default function PosPaymentPanel({
         >
           {isLoading ? "جاري المعالجة…" : "إتمام البيع"}
         </button>
+        <p className="pos-complete-hint">Ctrl+Y — إتمام البيع</p>
 
         {receiptData?.receipt_text ? (
           <button type="button" className="pos-complete-btn secondary" onClick={onPrintLocal}>

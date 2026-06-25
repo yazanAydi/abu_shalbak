@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly } from "../utils/format";
@@ -7,6 +8,19 @@ import {
   FormField, FormGrid, Input, Textarea, Icon, SearchInput, ReportToolbar, useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import { displayEntityCode, displayListRowNumber } from "../utils/entityCodeDisplay";
+import { supplierBalanceView, SUPPLIER_BALANCE_SUMMARY_LABELS } from "../utils/supplierBalanceDisplay";
+import HesabatiStatementModal from "../components/HesabatiStatementModal";
+import StatementHistoryImportModal from "../components/StatementHistoryImportModal";
+
+function renderSupplierBalance(systemBalance) {
+  const { displayAmount, className } = supplierBalanceView(systemBalance);
+  return <span className={className}>{ils(displayAmount)}</span>;
+}
+
+function supplierBalanceExportValue(systemBalance) {
+  return ils(supplierBalanceView(systemBalance).displayAmount);
+}
 
 const emptyForm = {
   supplier_code: "", name: "", contact_phone: "", contact_email: "",
@@ -25,6 +39,8 @@ export default function SupplierManagement() {
   const [saving, setSaving] = useState(false);
   const [ledger, setLedger] = useState(null);
   const [ledgerSupplier, setLedgerSupplier] = useState(null);
+  const [statementSupplier, setStatementSupplier] = useState(null);
+  const [historyImportSupplier, setHistoryImportSupplier] = useState(null);
   const [balances, setBalances] = useState(null);
 
   const load = useCallback(async (q) => {
@@ -91,23 +107,29 @@ export default function SupplierManagement() {
     try {
       const { data } = await api.get(`/api/suppliers/${s.id}/ledger`, { headers: getAuthHeaders() });
       setLedger(data);
-    } catch (e) { toast.error(e.response?.data?.error || "تعذّر تحميل كشف الحساب"); setLedgerSupplier(null); }
+    } catch (e) { toast.error(e.response?.data?.error || "تعذّر تحميل حركات النظام"); setLedgerSupplier(null); }
+  }
+
+  function openStatementReport(s) {
+    setStatementSupplier(s);
   }
 
   const f = (key) => (e) => setForm((p) => ({ ...p, [key]: e.target.value }));
   const evLabel = { opening: "رصيد افتتاحي", purchase: "فاتورة شراء", purchase_return: "مرتجع شراء", payment: "دفعة" };
 
   const columns = [
-    { key: "supplier_code", header: "الكود", value: (s) => s.supplier_code || "—", render: (s) => s.supplier_code || "—" },
+    { key: "supplier_code", header: "الرقم", className: "num", value: (s) => displayEntityCode(s.supplier_code), render: (s, i) => displayListRowNumber(0, 0, i) },
     { key: "name", header: "الاسم", value: (s) => s.name, render: (s) => <strong>{s.name}</strong> },
     { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "—", render: (s) => s.contact_phone || "—" },
     { key: "payment_terms", header: "شروط الدفع", value: (s) => s.payment_terms || "—", render: (s) => s.payment_terms || "—" },
-    { key: "balance", header: "الرصيد (مستحق)", align: "left", className: "num", value: (s) => ils(s.balance), render: (s) => <span className={s.balance > 0 ? "negative" : s.balance < 0 ? "positive" : ""}>{ils(s.balance)}</span> },
+    { key: "balance", header: "الرصيد (مستحق)", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
     {
       key: "actions", header: "إجراءات",
       render: (s) => (
         <div className="ui-table__actions">
-          <Button variant="ghost" size="sm" icon="vouchers" onClick={() => openLedger(s)}>كشف</Button>
+          <Button variant="ghost" size="sm" icon="finance" onClick={() => openStatementReport(s)}>عرض التقرير</Button>
+          <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportSupplier(s)}>استيراد كشف قديم</Button>
+          <Button variant="ghost" size="sm" icon="vouchers" onClick={() => openLedger(s)}>حركات النظام</Button>
           <Button variant="ghost" size="sm" icon="edit" onClick={() => startEdit(s)}>تعديل</Button>
           <Button variant="ghost" size="sm" icon="trash" onClick={() => remove(s)} />
         </div>
@@ -116,10 +138,10 @@ export default function SupplierManagement() {
   ];
 
   const balanceColumns = [
-    { key: "supplier_code", header: "الكود", value: (s) => s.supplier_code || "—", render: (s) => s.supplier_code || "—" },
+    { key: "supplier_code", header: "الرقم", className: "num", value: (s) => displayEntityCode(s.supplier_code), render: (s, i) => displayListRowNumber(0, 0, i) },
     { key: "name", header: "الاسم" },
     { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "—", render: (s) => s.contact_phone || "—" },
-    { key: "balance", header: "الرصيد", align: "left", className: "num", value: (s) => ils(s.balance), render: (s) => <span className={s.balance > 0 ? "negative" : "positive"}>{ils(s.balance)}</span> },
+    { key: "balance", header: "الرصيد", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
   ];
 
   const reportConfig = useMemo(() => {
@@ -130,8 +152,8 @@ export default function SupplierManagement() {
         rows: balances.suppliers || [],
         filename: "supplier-balances",
         summary: [
-          { label: "إجمالي المستحق للموردين", value: ils(balances.total_payable) },
-          { label: "دفعات مقدمة", value: ils(balances.total_advance) },
+          { label: SUPPLIER_BALANCE_SUMMARY_LABELS.payable, value: ils(balances.total_payable) },
+          { label: SUPPLIER_BALANCE_SUMMARY_LABELS.receivable, value: ils(balances.total_advance) },
         ],
       };
     }
@@ -164,6 +186,18 @@ export default function SupplierManagement() {
         }
       />
 
+      <Card>
+        <CardBody>
+          <h3 style={{ marginTop: 0 }}>استيراد أرصدة الموردين من حساباتي</h3>
+          <p style={{ color: "var(--office-text-muted)" }}>
+            استيراد الرصيد الافتتاحي مع معاينة قبل الحفظ — لا يُنشئ فواتير مشتريات.
+          </p>
+          <Link to="/import-supplier-balances">
+            <Button icon="suppliers">فتح صفحة الاستيراد</Button>
+          </Link>
+        </CardBody>
+      </Card>
+
       <Tabs active={tab} onChange={setTab} tabs={[
         { id: "list", label: "الموردون", icon: "suppliers" },
         { id: "balances", label: "تقرير الأرصدة", icon: "finance" },
@@ -173,7 +207,7 @@ export default function SupplierManagement() {
         <>
           <div className="ui-toolbar">
             <SearchInput
-              placeholder="بحث بالاسم أو الهاتف أو الكود…"
+              placeholder="بحث بالاسم أو الهاتف أو الرقم…"
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
@@ -190,11 +224,11 @@ export default function SupplierManagement() {
           <div className="ui-stat-grid">
             <div className="ui-stat">
               <div className="ui-stat__icon ui-stat__icon--red"><Icon name="finance" /></div>
-              <div><div className="ui-stat__label">إجمالي المستحق للموردين</div><div className="ui-stat__value">{ils(balances.total_payable)}</div></div>
+              <div><div className="ui-stat__label">{SUPPLIER_BALANCE_SUMMARY_LABELS.payable}</div><div className="ui-stat__value">{ils(balances.total_payable)}</div></div>
             </div>
             <div className="ui-stat">
               <div className="ui-stat__icon ui-stat__icon--green"><Icon name="finance" /></div>
-              <div><div className="ui-stat__label">دفعات مقدمة</div><div className="ui-stat__value">{ils(balances.total_advance)}</div></div>
+              <div><div className="ui-stat__label">{SUPPLIER_BALANCE_SUMMARY_LABELS.receivable}</div><div className="ui-stat__value">{ils(balances.total_advance)}</div></div>
             </div>
           </div>
           <DataTable
@@ -218,7 +252,7 @@ export default function SupplierManagement() {
       >
         <form onSubmit={save}>
           <FormGrid>
-            <FormField label="كود المورد"><Input value={form.supplier_code} onChange={f("supplier_code")} /></FormField>
+            <FormField label="رقم المورد"><Input value={form.supplier_code} onChange={f("supplier_code")} placeholder="يُولَّد تلقائياً إن تُرك فارغاً" /></FormField>
             <FormField label="الاسم" required><Input required value={form.name} onChange={f("name")} /></FormField>
             <FormField label="الهاتف"><Input value={form.contact_phone} onChange={f("contact_phone")} /></FormField>
             <FormField label="البريد الإلكتروني"><Input value={form.contact_email} onChange={f("contact_email")} /></FormField>
@@ -232,15 +266,15 @@ export default function SupplierManagement() {
 
       <Modal
         open={!!ledgerSupplier}
-        title={ledgerSupplier ? `كشف حساب: ${ledgerSupplier.name}` : ""}
+        title={ledgerSupplier ? `حركات النظام: ${ledgerSupplier.name}` : ""}
         onClose={() => { setLedgerSupplier(null); setLedger(null); }}
         size="lg"
       >
         {ledger && (
           <>
             <div className="detail-header">
-              <div>الرصيد الحالي: <strong className={ledger.closing_balance > 0 ? "negative" : ""}>{ils(ledger.closing_balance)}</strong></div>
-              <div>الرصيد الافتتاحي: <strong>{ils(ledger.supplier.opening_balance)}</strong></div>
+              <div>الرصيد الحالي: <strong className={supplierBalanceView(ledger.closing_balance).className}>{ils(supplierBalanceView(ledger.closing_balance).displayAmount)}</strong></div>
+              <div>الرصيد الافتتاحي: <strong>{ils(supplierBalanceView(ledger.supplier.opening_balance).displayAmount)}</strong></div>
             </div>
             <DataTable
               columns={[
@@ -249,7 +283,7 @@ export default function SupplierManagement() {
                 { key: "ref_id", header: "المرجع", render: (e) => (e.ref_id ? `#${e.ref_id}` : "—") },
                 { key: "credit", header: "دائن (له)", align: "left", className: "num", render: (e) => (e.credit > 0 ? ils(e.credit) : "—") },
                 { key: "debit", header: "مدين (دفع)", align: "left", className: "num", render: (e) => (e.debit > 0 ? ils(e.debit) : "—") },
-                { key: "running_balance", header: "الرصيد", align: "left", className: "num", render: (e) => ils(e.running_balance) },
+                { key: "running_balance", header: "الرصيد", align: "left", className: "num", render: (e) => renderSupplierBalance(e.running_balance) },
               ]}
               rows={[ledger.opening, ...ledger.events]}
               rowKey={(e, i) => i}
@@ -258,6 +292,21 @@ export default function SupplierManagement() {
           </>
         )}
       </Modal>
+
+      <HesabatiStatementModal
+        open={!!statementSupplier}
+        partyType="supplier"
+        party={statementSupplier}
+        onClose={() => setStatementSupplier(null)}
+      />
+
+      <StatementHistoryImportModal
+        open={!!historyImportSupplier}
+        partyType="supplier"
+        party={historyImportSupplier}
+        onClose={() => setHistoryImportSupplier(null)}
+        onSuccess={() => load(search)}
+      />
     </div>
   );
 }

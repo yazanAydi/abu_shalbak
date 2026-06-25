@@ -7,34 +7,19 @@ import { createApp } from "./app.js";
 import { createBackup, pruneBackups } from "./utils/backup.js";
 import { sendExpiryAlert } from "./services/expiryAlertService.js";
 import { startTelegramPolling } from "./services/telegramPolling.js";
+import { resolveDatabasePath } from "./utils/dbPath.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.PORT) || 5000;
 
-/**
- * Resolve the ONE official database file. In production an explicit
- * DATABASE_PATH (or legacy DB_PATH) is required and the process fails fast if
- * it is missing, so the live data file can never be ambiguous. In development
- * we fall back to ../data/supermarket.db. The resolved ABSOLUTE path is always
- * logged so operators can confirm which file is in use.
- */
-function resolveDbPath() {
-  const explicit =
-    (process.env.DATABASE_PATH && String(process.env.DATABASE_PATH).trim()) ||
-    (process.env.DB_PATH && String(process.env.DB_PATH).trim());
-  if (explicit) return path.resolve(explicit);
-
-  if (process.env.NODE_ENV === "production") {
-    console.error(
-      "[fatal] DATABASE_PATH is required in production. Set it to the absolute path of the official database file, e.g. DATABASE_PATH=C:\\abo_shalbak\\data\\supermarket.db"
-    );
-    process.exit(1);
-  }
-  return path.resolve(__dirname, "..", "data", "supermarket.db");
+let dbPath;
+try {
+  dbPath = resolveDatabasePath(__dirname);
+} catch (err) {
+  console.error(`[fatal] ${err.message}`);
+  process.exit(1);
 }
-
-const dbPath = resolveDbPath();
 console.log(`[db] Using database file: ${dbPath}`);
 
 let db;

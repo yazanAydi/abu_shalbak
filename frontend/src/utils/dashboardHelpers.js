@@ -108,6 +108,7 @@ export function buildDashboardAlerts(input) {
     refundCount,
     openShiftsWithDuration,
     lowStockCount,
+    nearExpiryCount,
   } = input;
 
   if (lastClosedShift && lastClosedShift.variance != null) {
@@ -187,6 +188,16 @@ export function buildDashboardAlerts(input) {
       body: `${lowStockCount} منتج بمخزون ضعيف أو نافد`,
       link: `/manage-products`,
       linkLabel: "المنتجات",
+    });
+  }
+
+  if (Number(nearExpiryCount) > 0) {
+    out.push({
+      severity: "warning",
+      title: "⏳ صلاحية قريبة",
+      body: `${nearExpiryCount} صنف أو دفعة ضمن فترة التنبيه`,
+      link: `/expiry`,
+      linkLabel: "تقرير الصلاحية",
     });
   }
 

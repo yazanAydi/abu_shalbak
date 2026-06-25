@@ -1,9 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import "./ShiftModal.css";
-
-const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 /**
  * @param {object} props
@@ -12,20 +10,8 @@ const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
  * @param {() => void} [props.onRequestEndShift]
  */
 export default function ShiftStart({ onSuccess, openShiftId, onRequestEndShift }) {
-  const [openingCash, setOpeningCash] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
-  const [settingsLoading, setSettingsLoading] = useState(true);
-
-  useEffect(() => {
-    api
-      .get("/api/settings", { headers: getAuthHeaders() })
-      .then(({ data }) => {
-        setOpeningCash(Number(data.default_opening_cash) || 0);
-      })
-      .catch(() => setOpeningCash(0))
-      .finally(() => setSettingsLoading(false));
-  }, []);
 
   async function startShift(e) {
     e.preventDefault();
@@ -69,13 +55,9 @@ export default function ShiftStart({ onSuccess, openShiftId, onRequestEndShift }
   return (
     <form className="shift-modal-card" onSubmit={startShift} dir="rtl" lang="ar">
       <h2 className="shift-modal-title">بدء الوردية</h2>
-      <p className="shift-modal-meta">
-        النقد عند الافتتاح:{" "}
-        {settingsLoading ? "…" : ils(openingCash ?? 0)}
-      </p>
-      <p className="shift-modal-hint">يحدّد المدير مبلغ الافتتاح من الإعدادات.</p>
+      <p className="shift-modal-hint">اضغط الزر أدناه لبدء وردية جديدة.</p>
       {err ? <div className="shift-modal-err">{err}</div> : null}
-      <button type="submit" className="shift-modal-primary" disabled={loading || settingsLoading}>
+      <button type="submit" className="shift-modal-primary" disabled={loading}>
         {loading ? "جاري الحفظ…" : "بدء الوردية"}
       </button>
     </form>

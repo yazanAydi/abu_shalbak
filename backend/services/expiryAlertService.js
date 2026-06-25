@@ -5,6 +5,15 @@ import {
   sendExpiryAlertMessages,
 } from "../utils/telegram.js";
 
+export async function resolveExpiryAlertDays(db) {
+  const settings = await getAppSettings(db);
+  const envDays = Number(process.env.TELEGRAM_EXPIRY_DAYS);
+  return (
+    settings.expiry_alert_days ??
+    (Number.isFinite(envDays) && envDays > 0 ? envDays : 7)
+  );
+}
+
 export async function fetchNearExpiryItems(db, days) {
   const d = Math.max(1, Math.min(365, Number(days) || 7));
 
@@ -40,11 +49,7 @@ export async function sendExpiryAlert(db) {
     return { sent: false, reason: "telegram_not_configured" };
   }
 
-  const settings = await getAppSettings(db);
-  const envDays = Number(process.env.TELEGRAM_EXPIRY_DAYS);
-  const days =
-    settings.expiry_alert_days ??
-    (Number.isFinite(envDays) && envDays > 0 ? envDays : 7);
+  const days = await resolveExpiryAlertDays(db);
 
   const items = await fetchNearExpiryItems(db, days);
   const count = items.products.length + items.batches.length;

@@ -1,5 +1,4 @@
 import { Router } from "express";
-import multer from "multer";
 import bcrypt from "bcrypt";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import { isValidRole, USER_ROLES } from "../utils/roles.js";
@@ -10,7 +9,17 @@ import {
   DEBUG_IMPORT_PRODUCT_NAME,
   DEBUG_BARCODE,
 } from "../utils/productImport.js";
+import { detectFromBuffer } from "../utils/importDetect.js";
+import { importUploadMiddleware, requireImportFile } from "../utils/importUpload.js";
+import { importPriceListFromBuffer } from "../utils/priceListImport.js";
+import {
+  handleCustomerBalanceUpload,
+  handleSupplierBalanceUpload,
+  handleSupplierBalancePreview,
+  handleSupplierBalanceConfirm,
+} from "./hesabatiUploadHandlers.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
+import { assignEntityCodeIfMissing, ensureEntityCode, renumberAllEntityCodesBatch } from "../utils/entityCodes.js";
 import { createBackup } from "../utils/backup.js";
 import { syncProductsPrimaryBarcode } from "../utils/productBarcodes.js";
 import path from "path";
@@ -74,64 +83,75 @@ async function findPrimaryBarcodeOwner(db, primaryBc, productId) {
   );
 }
 
-const ALLOWED_IMPORT_MIMES = new Set([
-  "text/csv",
-  "application/csv",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/octet-stream", // some browsers send this for .csv/.xlsx
-  "",
-]);
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  // 10MB is ample for product catalogs; smaller cap reduces DoS surface.
-  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
-  fileFilter: (_req, file, cb) => {
-    const name = String(file.originalname || "").toLowerCase();
-    const okExt = name.endsWith(".csv") || name.endsWith(".xlsx");
-    const okMime = ALLOWED_IMPORT_MIMES.has(String(file.mimetype || ""));
-    if (okExt && okMime) return cb(null, true);
-    cb(new Error("صيغة الملف غير مدعومة. استخدم CSV أو XLSX فقط."));
-  },
-});
-
 export function createAdminRouter(db, dbPath) {
   const router = Router();
 
   router.use(requireAuth, requireAdmin);
 
+  router.post("/import/detect", importUploadMiddleware(), async (req, res) => {
+    const file = requireImportFile(req, res);
+    if (!file) return;
+    try {
+      const detected = detectFromBuffer(file.buffer, file.originalname || "");
+      res.json({ success: true, ...detected });
+    } catch (e) {
+      res.status(400).json({ error: e.message || "فشل تحليل الملف" });
+    }
+  });
+
+  router.post("/customers/upload", importUploadMiddleware(), async (req, res) => {
+    await handleCustomerBalanceUpload(db, req, res);
+  });
+
+  router.post("/suppliers/upload", importUploadMiddleware(), async (req, res) => {
+    await handleSupplierBalanceUpload(db, req, res);
+  });
+
+  router.post("/import/supplier-balances/preview", importUploadMiddleware(), async (req, res) => {
+    await handleSupplierBalancePreview(db, req, res);
+  });
+
+  router.post("/import/supplier-balances/confirm", importUploadMiddleware(), async (req, res) => {
+    await handleSupplierBalanceConfirm(db, req, res);
+  });
+
   router.post(
     "/products/upload",
-    (req, res, next) => {
-      upload.single("file")(req, res, (err) => {
-        if (err) {
-          return res.status(400).json({
-            error: err.message || "فشل الرفع",
-            code: err.code,
-          });
-        }
-        next();
-      });
-    },
+    importUploadMiddleware(),
     async (req, res, next) => {
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ error: "الملف مطلوب (اسم الحقل: file)" });
-    }
+    const file = requireImportFile(req, res);
+    if (!file) return;
 
-    const name = String(req.file.originalname || "").toLowerCase();
-    const mime = String(req.file.mimetype || "");
+    const name = String(file.originalname || "").toLowerCase();
+    const mime = String(file.mimetype || "");
     const isXlsx =
       name.endsWith(".xlsx") ||
       mime ===
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
+    if (isXlsx) {
+      const detected = detectFromBuffer(file.buffer, file.originalname || "");
+      if (detected.type === "hesabati_price_list") {
+        try {
+          const summary = await importPriceListFromBuffer(db, file.buffer, file.originalname || "");
+          await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_UPDATE, "products", null, null, {
+            import_type: summary.type,
+            updated: summary.updated,
+            created: summary.created,
+          });
+          return res.json({ success: true, ...summary });
+        } catch (e) {
+          return res.status(400).json({ error: e.message || "فشل استيراد قائمة الأسعار" });
+        }
+      }
+    }
+
     let records;
     try {
       if (isXlsx) {
-        records = xlsxBufferToHeaderRows(req.file.buffer);
+        records = xlsxBufferToHeaderRows(file.buffer);
       } else {
-        records = csvBufferToRecords(req.file.buffer);
+        records = csvBufferToRecords(file.buffer);
       }
     } catch (e) {
       return res.status(400).json({
@@ -228,6 +248,7 @@ export function createAdminRouter(db, dbPath) {
           expiry_date,
           min_price,
           max_price,
+          sku,
           shortCodes,
           _barcodeRawCells,
           _barcodesExtracted,
@@ -273,6 +294,7 @@ export function createAdminRouter(db, dbPath) {
                WHERE id = ?`,
               [...productFields, productId]
             );
+            await assignEntityCodeIfMissing(db, "product", productId);
           } else {
             await db.run(
               `UPDATE products SET barcode = ?, name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
@@ -280,6 +302,7 @@ export function createAdminRouter(db, dbPath) {
                WHERE id = ?`,
               [primaryBc, ...productFields, productId]
             );
+            await assignEntityCodeIfMissing(db, "product", productId);
           }
           products_updated++;
         } else {
@@ -295,12 +318,14 @@ export function createAdminRouter(db, dbPath) {
                WHERE id = ?`,
               [...productFields, productId]
             );
+            await assignEntityCodeIfMissing(db, "product", productId);
             products_updated++;
           } else {
+            const insertSku = await ensureEntityCode(db, "product", null);
             const info = await db.run(
-              `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [primaryBc, ...productFields]
+              `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [primaryBc, ...productFields, insertSku]
             );
             productId = info.lastID;
             products_created++;
@@ -596,6 +621,21 @@ export function createAdminRouter(db, dbPath) {
       const result = await createBackup(resolvedPath);
       await logAudit(db, req, AUDIT_ACTIONS.BACKUP_CREATE, "backup", null, null, result);
       res.status(201).json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/renumber-entity-codes", async (req, res, next) => {
+    try {
+      const raw = req.body?.types ?? req.body?.type ?? "product";
+      const types = Array.isArray(raw) ? raw : [raw];
+      const counts = await renumberAllEntityCodesBatch(db, types);
+      await logAudit(db, req, AUDIT_ACTIONS.SETTINGS_UPDATE, "entity_codes", null, null, counts);
+      res.json({
+        message: "تم إعادة ترقيم السجلات",
+        counts,
+      });
     } catch (e) {
       next(e);
     }

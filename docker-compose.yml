@@ -5,8 +5,9 @@ services:
     ports:
       - "3000:3000"
     env_file:
-      - .env
+      - .env.store
     environment:
+      ABO_ENV: store
       NODE_ENV: production
       HOST: "0.0.0.0"
       PORT: "3000"

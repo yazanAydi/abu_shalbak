@@ -48,8 +48,9 @@ try {
   for (const rec of records) {
     const norm = normalizeProductRow(rec);
     if (!norm.ok) continue;
-    const { barcode, barcodes, name, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price } =
+    const { barcode, barcodes, name, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku } =
       norm.row;
+    const skuVal = sku ? String(sku).trim() : null;
 
     let productId = null;
     for (const { barcode: bc } of barcodes) {
@@ -73,17 +74,25 @@ try {
     }
 
     if (productId) {
-      await db.run(
-        `UPDATE products SET barcode = ?, name = ?, price = ?, cost = ?, category = ?, stock = ?,
-            tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ? WHERE id = ?`,
-        [barcode, name, price, cost, category, stock, tax_rate ?? null, unit ?? null, expiry_date ?? null, min_price ?? null, max_price ?? null, productId]
-      );
+      if (skuVal) {
+        await db.run(
+          `UPDATE products SET barcode = ?, sku = ?, name = ?, price = ?, cost = ?, category = ?, stock = ?,
+              tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ? WHERE id = ?`,
+          [barcode, skuVal, name, price, cost, category, stock, tax_rate ?? null, unit ?? null, expiry_date ?? null, min_price ?? null, max_price ?? null, productId]
+        );
+      } else {
+        await db.run(
+          `UPDATE products SET barcode = ?, name = ?, price = ?, cost = ?, category = ?, stock = ?,
+              tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ? WHERE id = ?`,
+          [barcode, name, price, cost, category, stock, tax_rate ?? null, unit ?? null, expiry_date ?? null, min_price ?? null, max_price ?? null, productId]
+        );
+      }
       products_updated++;
     } else {
       const info = await db.run(
-        `INSERT INTO products (barcode, name, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [barcode, name, price, cost, category, stock, tax_rate ?? null, unit ?? null, expiry_date ?? null, min_price ?? null, max_price ?? null]
+        `INSERT INTO products (barcode, name, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [barcode, name, price, cost, category, stock, tax_rate ?? null, unit ?? null, expiry_date ?? null, min_price ?? null, max_price ?? null, skuVal]
       );
       productId = info.lastID;
       products_created++;

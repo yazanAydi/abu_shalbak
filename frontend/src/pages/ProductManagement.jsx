@@ -27,12 +27,14 @@ import { pickExportColumns } from "../utils/reportExport";
 import "./productDashboard/productBarcodes.css";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import { normalizeBarcode } from "../utils/barcode";
+import { displayEntityCode, displayListRowNumber } from "../utils/entityCodeDisplay";
 import "../components/barcode/barcode-scanner.css";
 
 const PAGE = 50;
 
 const emptyForm = {
   barcode: "",
+  sku: "",
   name: "",
   name_en: "",
   price: "",
@@ -64,6 +66,7 @@ async function lookupProductByBarcodeApi(barcode) {
 function formToPayload(form) {
   return {
     barcode: form.barcode.trim(),
+    sku: form.sku?.trim() || null,
     name: form.name.trim(),
     name_en: form.name_en?.trim() || null,
     price: Number(form.price),
@@ -352,6 +355,13 @@ export default function ProductManagement() {
   const columns = [
     { key: "barcode", header: "الباركود" },
     {
+      key: "sku",
+      header: "الرقم",
+      className: "num",
+      value: (p) => displayEntityCode(p.sku),
+      render: (p, i) => displayListRowNumber(page, PAGE, i),
+    },
+    {
       key: "name",
       header: "الاسم",
       render: (p) => (
@@ -432,8 +442,8 @@ export default function ProductManagement() {
         <CardBody>
           <h2 className="dashboard-section-title">رفع منتجات (CSV أو Excel)</h2>
           <p style={{ color: "var(--office-text-muted)", fontSize: "0.9rem" }}>
-            أعمدة CSV: barcode، name، price، cost، category، stock — أو Excel (.xlsx) بعناوين
-            عربية/إنجليزية. يُستخدم الورقة الأولى؛ المخزون 0 إن وُضع فارغًا.
+            بطاقة الأصناف أو قائمة الأسعار من حساباتي (.xlsx)، أو CSV بعناوين عربية/إنجليزية.
+            يُكتشف نوع الملف تلقائياً.
           </p>
           <input
             type="file"
@@ -469,6 +479,13 @@ export default function ProductManagement() {
                     }
                   />
                 </div>
+              </FormField>
+              <FormField label="الرقم">
+                <Input
+                  value={form.sku}
+                  onChange={(e) => setForm({ ...form, sku: e.target.value })}
+                  placeholder="يُولَّد تلقائياً إن تُرك فارغاً"
+                />
               </FormField>
               <FormField label="الاسم" required>
                 <Input

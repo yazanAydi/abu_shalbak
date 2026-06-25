@@ -10,6 +10,16 @@ import {
   mergeSalesAndRefunds,
 } from "../utils/salesByPrice.js";
 import { round2 } from "../utils/money.js";
+import {
+  fetchNearExpiryItems,
+  resolveExpiryAlertDays,
+} from "../services/expiryAlertService.js";
+import {
+  getAccountStatement,
+  getAccountStatementExport,
+  parseStatementDate,
+} from "../utils/accountStatementService.js";
+import XLSX from "xlsx";
 
 function parseDateParam(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return null;
@@ -206,6 +216,50 @@ export function createReportsRouter(db) {
     });
   });
 
+  router.get("/near-expiry", async (req, res) => {
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
+    const days = await resolveExpiryAlertDays(db);
+    const { products, batches } = await fetchNearExpiryItems(db, days);
+
+    const items = [
+      ...products.map((r) => ({
+        kind: "product",
+        id: r.id,
+        name: r.name,
+        barcode: r.barcode ?? null,
+        unit: r.unit ?? null,
+        quantity: Number(r.stock) || 0,
+        expiry_date: r.expiry_date,
+        days_until_expiry: r.days_until_expiry,
+      })),
+      ...batches.map((r) => ({
+        kind: "batch",
+        id: r.id,
+        name: r.product_name,
+        barcode: r.barcode ?? null,
+        batch_no: r.batch_no ?? null,
+        quantity: Number(r.quantity) || 0,
+        expiry_date: r.expiry_date,
+        days_until_expiry: r.days_until_expiry,
+      })),
+    ].sort((a, b) => {
+      const dayDiff = Number(a.days_until_expiry) - Number(b.days_until_expiry);
+      if (dayDiff !== 0) return dayDiff;
+      return String(a.expiry_date).localeCompare(String(b.expiry_date));
+    });
+
+    const totalCount = items.length;
+    const expiredCount = items.filter((r) => Number(r.days_until_expiry) < 0).length;
+
+    res.json({
+      days_threshold: days,
+      limit,
+      total_count: totalCount,
+      expired_count: expiredCount,
+      items: items.slice(0, limit),
+    });
+  });
+
   router.get("/low-stock", async (req, res) => {
     const threshold = Math.max(0, Number(req.query.threshold) || 5);
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 15));
@@ -386,6 +440,91 @@ export function createReportsRouter(db) {
       rows,
       summary,
     });
+  });
+
+  router.get("/account-statement", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+    const partyType = String(req.query.partyType || req.query.party_type || "").toLowerCase();
+    const partyId = Number(req.query.partyId || req.query.party_id);
+    const from = parseStatementDate(req.query.from);
+    const to = parseStatementDate(req.query.to);
+    const page = req.query.page ? Number(req.query.page) : undefined;
+    const pageSize = req.query.pageSize || req.query.page_size ? Number(req.query.pageSize || req.query.page_size) : undefined;
+    const exportAll = String(req.query.export || "") === "1";
+
+    if (!partyType || !partyId) {
+      return res.status(400).json({
+        error: "partyType و partyId مطلوبان",
+        code: "VALIDATION_ERROR",
+      });
+    }
+    if (req.query.from && !from) {
+      return res.status(400).json({ error: "from تاريخ غير صالح", code: "VALIDATION_ERROR" });
+    }
+    if (req.query.to && !to) {
+      return res.status(400).json({ error: "to تاريخ غير صالح", code: "VALIDATION_ERROR" });
+    }
+
+    try {
+      const fn = exportAll ? getAccountStatementExport : getAccountStatement;
+      const report = await fn(db, {
+        partyType,
+        partyId,
+        from,
+        to,
+        page,
+        pageSize: exportAll ? undefined : pageSize ?? 100,
+        useDefaultRange: !from && !to,
+      });
+      res.json(report);
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message, code: e.code || "INTERNAL_ERROR" });
+    }
+  });
+
+  router.get("/account-statement/excel", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+    const partyType = String(req.query.partyType || req.query.party_type || "").toLowerCase();
+    const partyId = Number(req.query.partyId || req.query.party_id);
+    const from = parseStatementDate(req.query.from);
+    const to = parseStatementDate(req.query.to);
+
+    if (!partyType || !partyId) {
+      return res.status(400).json({ error: "partyType و partyId مطلوبان", code: "VALIDATION_ERROR" });
+    }
+
+    try {
+      const report = await getAccountStatementExport(db, {
+        partyType,
+        partyId,
+        from,
+        to,
+        useDefaultRange: !from && !to,
+      });
+      const sheetRows = [
+        ["الرقم", "البيان", "التاريخ", "مدين", "دائن", "الرصيد", "ملاحظات"],
+        ...report.rows.map((r) => [
+          r.referenceNumber || r.line_no || "",
+          r.description,
+          r.date || "",
+          r.debit || 0,
+          r.credit || 0,
+          r.runningBalanceFormatted || r.runningBalance,
+          r.notes || "",
+        ]),
+        [],
+        ["", "", "", report.totals.debit, report.totals.credit, report.totals.finalBalanceFormatted, "الإجمالي"],
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(sheetRows);
+      ws["!rtl"] = true;
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "كشف حساب");
+      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+      const fname = `account-statement-${partyType}-${partyId}.xlsx`;
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${fname}"`);
+      res.send(buf);
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message, code: e.code || "INTERNAL_ERROR" });
+    }
   });
 
   return router;

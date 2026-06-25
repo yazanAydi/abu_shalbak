@@ -30,6 +30,8 @@ const Marketing = lazy(() => import("./pages/Marketing"));
 const Warehouses = lazy(() => import("./pages/Warehouses"));
 const BanksChecks = lazy(() => import("./pages/BanksChecks"));
 const VouchersPage = lazy(() => import("./pages/VouchersPage"));
+const AccountStatement = lazy(() => import("./pages/AccountStatement"));
+const SupplierBalanceImport = lazy(() => import("./pages/SupplierBalanceImport"));
 
 function PageFallback() {
   return (
@@ -230,6 +232,22 @@ function App() {
             element={
               <OfficeRoute requireReports>
                 <BanksChecks />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/account-statement"
+            element={
+              <OfficeRoute requireReports>
+                <AccountStatement />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/import-supplier-balances"
+            element={
+              <OfficeRoute adminOnly>
+                <SupplierBalanceImport />
               </OfficeRoute>
             }
           />
