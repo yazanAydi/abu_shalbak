@@ -1,24 +1,75 @@
 import { parse } from "csv-parse/sync";
 import XLSX from "xlsx";
+import {
+  extractBarcodeEntries,
+  extractBarcodesFromText,
+  extractBarcodesFromValue,
+  normalizeBarcodeInput,
+  parsePrice,
+  pickPrimaryBarcode,
+  uniqueBarcodeEntries,
+  valueToText,
+} from "./barcode.js";
 
-/** @typedef {{ barcode: string, name: string, price: number, cost: number, category: string | null, stock: number }} ProductRow */
+/** @typedef {{ barcode: string, label: string | null }[]} BarcodeEntry */
+/** @typedef {{ col: number, header: string, raw: string, formatted: string, fromScientific: boolean }} BarcodeRawCell */
+/**
+ * @typedef {{
+ *   barcode: string,
+ *   barcodes: BarcodeEntry,
+ *   name: string,
+ *   price: number,
+ *   cost: number,
+ *   category: string | null,
+ *   stock: number,
+ *   shortCodes: string[],
+ *   scientificCellsDetected: number,
+ *   _barcodeRawCells?: BarcodeRawCell[],
+ *   _barcodesExtracted?: string[],
+ * }} ProductRow
+ */
 
-/** Hard cap on data rows accepted from a single import file (DoS guard). */
 export const MAX_IMPORT_ROWS = 50000;
 
-/** Keys that must never be copied from untrusted input (prototype pollution). */
+/** Log full import trace when product name matches this substring */
+export const DEBUG_IMPORT_PRODUCT_NAME = "عصير بريجات";
+export const DEBUG_BARCODE = "6223001858911";
+
+/** Fixed column indices for Arabic retail layout (A=0 … E=4) */
+const RETAIL_NAME_COL = 1;
+const RETAIL_MAIN_BARCODE_COL = 2;
+const RETAIL_UNIT_BARCODE_COL = 3;
+const RETAIL_PRICE_COL = 4;
+
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
+/** Columns whose cell values must never be scanned for barcodes */
+const EXCLUDED_BARCODE_SCAN_FIELDS = new Set([
+  "price",
+  "cost",
+  "stock",
+  "tax_rate",
+  "min_price",
+  "max_price",
+]);
+
+const BARCODE_SCAN_HEADER_RE =
+  /barcodes?|باركود|الباركود|كود\s*الصنف|كود|unit\s*barcode|package\s*barcode|وحدات\s*الباركود|باركود\s*الوحدات|bk\.?code|sku|رقم\s*الصنف|رقم\s*المنتج|رقم\s*المادة/i;
+
+const EXCLUDED_HEADER_RE =
+  /price|cost|stock|quantity|qty|السعر|التكلفة|الكمية|المخزون|سعر|amount|قيمة|₪|tax_rate|^tax$|الضريبة|min_price|max_price|السعر\s*الأدنى|السعر\s*الأقصى/i;
+
+const ARABIC_LABEL_CELL_RE = /(علبة|حبة|قنينة|كيس|جالون|كرتونة)\s*[:：]/;
 
 function isForbiddenKey(key) {
   return FORBIDDEN_KEYS.has(String(key).trim().toLowerCase());
 }
 
 const HEADER_PATTERNS = [
-  /* Before main "barcode" — column "باركود الوحدات" must not match as barcode */
   { field: "barcode_units", re: /^باركود الوحدات$|باركود الوحدات|وحدات الباركود/i },
   {
     field: "barcode",
-    re: /^باركود$|barcode|الباركود|الكود|^code$|sku|رقم الصنف|رقم المنتج|رقم المادة|كود|bk\.?code/i,
+    re: /^barcodes?$|^باركود$|barcodes?|الباركود|الكود|^code$|sku|رقم الصنف|رقم المنتج|رقم المادة|كود الصنف|كود|bk\.?code|unit barcode|package barcode/i,
   },
   { field: "name", re: /name|الاسم|^الاسم$|المادة|البيان|الصنف|صنف|وصف|المنتج|description|item|اسم المنتج/i },
   { field: "name_en", re: /name_en|الاسم الإنجليزي|الاسم انجليزي|english name/i },
@@ -27,7 +78,7 @@ const HEADER_PATTERNS = [
     re: /price|السعر|سعر|سعر البيع|بيع|المبيع|المبلغ|مفرق|تسعيرة|amount|قيمة|شيكل|₪/i,
   },
   { field: "cost", re: /cost|التكلفة|تكلفة|شراء|سعر الشراء/i },
-  { field: "stock", re: /stock|المخزون|الكمية|كمية|qty|quantity|رصيد/i },
+  { field: "stock", re: /stock|المخزون|الكمية|qty|quantity|رصيد/i },
   { field: "category", re: /category|cat|التصنيف|الفئة|فئة|قسم|نوع/i },
   { field: "tax_rate", re: /tax_rate|^tax$|الضريبة|نسبة الضريبة|ضريبة/i },
   { field: "unit", re: /^unit$|الوحدة|وحدة القياس|unit_name|الحجم/i },
@@ -45,7 +96,6 @@ export function classifyHeader(raw) {
     .replace(/^\uFEFF/, "")
     .trim();
   if (!s) return null;
-  // Sequence / line number columns — not product barcode
   if (/^الرقم$/i.test(s) || /^#$/i.test(s) || /^م\s*$/i.test(s) || /^no\.?$/i.test(s)) {
     return null;
   }
@@ -56,8 +106,212 @@ export function classifyHeader(raw) {
 }
 
 /**
+ * @param {string} headerText
+ * @param {string | null} field
+ */
+export function isBarcodeScanColumn(headerText, field) {
+  if (field && EXCLUDED_BARCODE_SCAN_FIELDS.has(field)) return false;
+  const h = String(headerText ?? "").trim();
+  if (!h) return false;
+  if (EXCLUDED_HEADER_RE.test(h)) return false;
+  if (field === "barcode" || field === "barcode_units") return true;
+  return BARCODE_SCAN_HEADER_RE.test(h);
+}
+
+/**
+ * @param {string} headerText
+ * @param {string | null} field
+ */
+export function isExcludedFromBarcodeScan(headerText, field) {
+  if (field && EXCLUDED_BARCODE_SCAN_FIELDS.has(field)) return true;
+  const h = String(headerText ?? "").trim();
+  if (!h) return false;
+  return EXCLUDED_HEADER_RE.test(h);
+}
+
+/**
+ * @param {import('xlsx').CellObject | undefined} cell
+ * @returns {{ raw: string, formatted: string, fromScientific: boolean }}
+ */
+export function cellTextsForBarcode(cell) {
+  if (!cell) return { raw: "", formatted: "", fromScientific: false };
+
+  let raw = "";
+  if (typeof cell.v === "number" && Number.isFinite(cell.v)) {
+    raw = String(Math.trunc(cell.v));
+  } else if (cell.v !== undefined && cell.v !== null) {
+    raw = String(cell.v);
+  }
+
+  const formatted = cell.w != null ? String(cell.w) : raw;
+  const fromScientific =
+    /[eE]\+?\d+/.test(formatted) ||
+    (typeof cell.v === "number" && Math.abs(cell.v) >= 1e6 && /[eE]/.test(formatted));
+
+  return { raw, formatted, fromScientific };
+}
+
+/**
+ * @param {import('xlsx').CellObject | undefined} cell
+ * @returns {string}
+ */
+function cellDisplayValue(cell) {
+  if (!cell) return "";
+  if (typeof cell.v === "number" && Number.isFinite(cell.v)) {
+    return String(cell.v);
+  }
+  if (cell.w != null && String(cell.w).trim() !== "") return String(cell.w);
+  if (cell.v !== undefined && cell.v !== null) return String(cell.v);
+  return "";
+}
+
+/**
  * @param {unknown[][]} matrix
- * @returns {{ headerRow: number, colMap: Record<string, number> } | null}
+ * @returns {number}
+ */
+export function findArabicRetailHeaderRow(matrix) {
+  for (let r = 0; r < Math.min(matrix.length, 10); r++) {
+    const row = matrix[r] || [];
+    const nameHeader = String(row[RETAIL_NAME_COL] ?? "").trim();
+    const unitHeader = String(row[RETAIL_UNIT_BARCODE_COL] ?? "").trim();
+    if (nameHeader === "الاسم" && unitHeader.includes("باركود الوحدات")) {
+      return r;
+    }
+  }
+  if (isArabicRetailFormat(matrix[0])) return 0;
+  return -1;
+}
+
+/**
+ * @param {unknown[]} headerRow
+ */
+export function isArabicRetailFormat(headerRow) {
+  const row = headerRow || [];
+  return (
+    String(row[RETAIL_NAME_COL] ?? "").trim() === "الاسم" &&
+    String(row[RETAIL_MAIN_BARCODE_COL] ?? "").trim() === "باركود" &&
+    String(row[RETAIL_UNIT_BARCODE_COL] ?? "").trim().includes("باركود الوحدات") &&
+    String(row[RETAIL_PRICE_COL] ?? "").trim() === "مفرق"
+  );
+}
+
+/**
+ * Read barcode column text from XLSX sheet cells (prefers cell.w / multiline strings).
+ * @param {import('xlsx').WorkSheet | null | undefined} sheet
+ * @param {number} rowIndex
+ * @param {number} col
+ * @param {unknown} fallback
+ */
+function retailBarcodeCellText(sheet, rowIndex, col, fallback) {
+  if (!sheet) return valueToText(fallback);
+  const addr = XLSX.utils.encode_cell({ r: rowIndex, c: col });
+  const cell = sheet[addr];
+  if (!cell) return valueToText(fallback);
+  if (typeof cell.v === "string") return cell.v;
+  const { raw, formatted } = cellTextsForBarcode(cell);
+  if (formatted && /[:\n\r]/.test(formatted)) return formatted;
+  if (raw) return raw;
+  return valueToText(fallback);
+}
+
+/**
+ * @param {unknown[][]} rows
+ * @param {number} [headerRowIndex]
+ * @param {import('xlsx').WorkSheet | null} [sheet]
+ * @returns {Record<string, unknown>[]}
+ */
+export function parseArabicRetailMatrix(rows, headerRowIndex = 0, sheet = null) {
+  const dataRowCount = rows.length - headerRowIndex - 1;
+  if (dataRowCount > MAX_IMPORT_ROWS) {
+    throw new Error(
+      `الملف يحتوي صفوفاً أكثر من الحد المسموح (${MAX_IMPORT_ROWS}). قسّم الملف إلى أجزاء أصغر.`
+    );
+  }
+
+  console.info(
+    `[import] path=arabic_retail_fixed headerRow=${headerRowIndex} matrixRows=${rows.length}`
+  );
+
+  const out = [];
+
+  for (let i = headerRowIndex + 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const productName = valueToText(row[RETAIL_NAME_COL]).trim();
+    if (!productName) continue;
+
+    const mainBarcodeValue = retailBarcodeCellText(
+      sheet,
+      i,
+      RETAIL_MAIN_BARCODE_COL,
+      row[RETAIL_MAIN_BARCODE_COL]
+    );
+    const unitBarcodeValue = retailBarcodeCellText(
+      sheet,
+      i,
+      RETAIL_UNIT_BARCODE_COL,
+      row[RETAIL_UNIT_BARCODE_COL]
+    );
+    const retailPriceValue = row[RETAIL_PRICE_COL];
+
+    const primaryEntries = extractBarcodeEntries(mainBarcodeValue, "أساسي");
+    const unitEntries = extractBarcodeEntries(unitBarcodeValue, null);
+    const allBarcodeEntries = uniqueBarcodeEntries([...primaryEntries, ...unitEntries]);
+
+    const primaryBarcode = String(
+      primaryEntries[0]?.barcode ?? allBarcodeEntries[0]?.barcode ?? ""
+    ).trim();
+
+    if (allBarcodeEntries.length === 0) continue;
+
+    const barcodes = allBarcodeEntries.map((e) => ({
+      barcode: e.barcode,
+      label: e.label,
+      is_primary: e.barcode === primaryBarcode,
+    }));
+
+    const parsed = {
+      name: productName,
+      price: parsePrice(retailPriceValue),
+      stock: 0,
+      cost: 0,
+      barcode: primaryBarcode,
+      barcodes,
+      _importFormat: "arabic_retail",
+      _rawMainBarcode: mainBarcodeValue,
+      _rawUnitBarcodes: unitBarcodeValue,
+      _rawName: row[RETAIL_NAME_COL],
+      _productNumber: row[0] ?? null,
+      _barcodesExtracted: barcodes.map((b) => b.barcode),
+      _matrixRowIndex: i,
+    };
+
+    if (productName.includes(DEBUG_IMPORT_PRODUCT_NAME)) {
+      console.info(
+        `[import][debug] parse row=${i + 1} name=${JSON.stringify(row[RETAIL_NAME_COL])} rawMain=${JSON.stringify({ type: typeof mainBarcodeValue, value: mainBarcodeValue })} rawUnit=${JSON.stringify({ type: typeof unitBarcodeValue, value: unitBarcodeValue })} extracted=${JSON.stringify(parsed._barcodesExtracted)}`
+      );
+    }
+
+    if (parsed._barcodesExtracted.includes(DEBUG_BARCODE)) {
+      console.info(
+        `[import][debug-barcode] parse row=${i + 1} name=${JSON.stringify(productName)} extracted=true barcodes=${JSON.stringify(parsed._barcodesExtracted)} rawUnit=${JSON.stringify(unitBarcodeValue)}`
+      );
+    } else if (
+      String(unitBarcodeValue).includes(DEBUG_BARCODE) ||
+      String(mainBarcodeValue).includes(DEBUG_BARCODE)
+    ) {
+      console.info(
+        `[import][debug-barcode] parse row=${i + 1} name=${JSON.stringify(productName)} extracted=false rawMain=${JSON.stringify(mainBarcodeValue)} rawUnit=${JSON.stringify(unitBarcodeValue)}`
+      );
+    }
+
+    out.push(parsed);
+  }
+
+  return out;
+}
+
+/**
+ * @param {unknown[][]} matrix
  */
 function detectHeaderAndColumns(matrix) {
   let best = null;
@@ -65,11 +319,14 @@ function detectHeaderAndColumns(matrix) {
     const row = matrix[r] || [];
     /** @type {Record<string, number>} */
     const colMap = {};
-    /** Prefer real barcode column over stray matches: باركود before generic كود */
+    /** @type {{ c: number, h: string, field: string | null }[]} */
+    const colMeta = [];
     const candidates = [];
     for (let c = 0; c < row.length; c++) {
+      const h = String(row[c] ?? "").trim();
       const field = classifyHeader(row[c]);
-      if (field) candidates.push({ field, c, h: String(row[c] ?? "").trim() });
+      colMeta.push({ c, h, field });
+      if (field) candidates.push({ field, c, h });
     }
     const pickFirst = (f) => {
       const list = candidates.filter((x) => x.field === f);
@@ -95,36 +352,80 @@ function detectHeaderAndColumns(matrix) {
     }
     const score = Object.keys(colMap).length;
     if (score >= 2 && (!best || score > best.score)) {
-      best = { headerRow: r, colMap, score };
+      best = { headerRow: r, colMap, colMeta, score };
     }
   }
-  if (!best || !best.colMap.barcode || !best.colMap.name) {
+  if (!best || best.colMap.barcode === undefined || best.colMap.name === undefined) {
     return null;
   }
-  return { headerRow: best.headerRow, colMap: best.colMap };
+  return best;
 }
 
 /**
- * @param {unknown[][]} matrix
+ * @param {import('xlsx').WorkSheet} sheet
  * @param {number} headerRow
+ * @param {{ c: number, h: string, field: string | null }[]} colMeta
  * @param {Record<string, number>} colMap
- * @returns {Record<string, string>[]}
  */
-function rowsFromMatrix(matrix, headerRow, colMap) {
+function rowsFromSheet(sheet, headerRow, colMeta, colMap) {
+  const ref = sheet["!ref"];
+  if (!ref) return [];
+  const range = XLSX.utils.decode_range(ref);
   const out = [];
-  if (matrix.length - headerRow - 1 > MAX_IMPORT_ROWS) {
+  const dataRows = range.e.r - headerRow;
+  if (dataRows > MAX_IMPORT_ROWS) {
     throw new Error(
       `الملف يحتوي صفوفاً أكثر من الحد المسموح (${MAX_IMPORT_ROWS}). قسّم الملف إلى أجزاء أصغر.`
     );
   }
-  for (let r = headerRow + 1; r < matrix.length; r++) {
-    const line = matrix[r] || [];
+
+  for (let r = headerRow + 1; r <= range.e.r; r++) {
     /** @type {Record<string, string>} */
     const o = {};
     for (const [k, idx] of Object.entries(colMap)) {
-      const v = line[idx];
-      o[k] = v === undefined || v === null ? "" : String(v).trim();
+      const addr = XLSX.utils.encode_cell({ r, c: idx });
+      o[k] = cellDisplayValue(sheet[addr]).trim();
     }
+
+    /** @type {BarcodeRawCell[]} */
+    const barcodeRawCells = [];
+    let scientificCellsDetected = 0;
+
+    const headerByCol = new Map(colMeta.map((m) => [m.c, m]));
+
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      const cell = sheet[addr];
+      if (!cell) continue;
+
+      const meta = headerByCol.get(c);
+      const h = meta?.h ?? "";
+      const field = meta?.field ?? null;
+
+      const { raw, formatted, fromScientific } = cellTextsForBarcode(cell);
+      const scanText = `${raw} ${formatted}`.trim();
+      if (!scanText) continue;
+
+      const excluded = isExcludedFromBarcodeScan(h, field);
+      const barcodeCol = isBarcodeScanColumn(h, field);
+      const labelCell = ARABIC_LABEL_CELL_RE.test(scanText);
+
+      if (excluded && !labelCell) continue;
+      if (!barcodeCol && !labelCell) continue;
+
+      if (fromScientific) scientificCellsDetected++;
+
+      barcodeRawCells.push({
+        col: c,
+        header: h || `col${c}`,
+        raw,
+        formatted,
+        fromScientific,
+      });
+    }
+
+    o._barcodeRawCells = barcodeRawCells;
+    o._scientificCellsDetected = String(scientificCellsDetected);
     out.push(o);
   }
   return out;
@@ -132,26 +433,37 @@ function rowsFromMatrix(matrix, headerRow, colMap) {
 
 /**
  * @param {Buffer} buffer
- * @returns {Record<string, string>[]}
  */
 export function xlsxBufferToHeaderRows(buffer) {
-  // cellFormula:false → never parse/evaluate spreadsheet formulas; we only read
-  // cached cell values as plain data.
   const wb = XLSX.read(buffer, {
     type: "buffer",
-    cellDates: true,
+    cellDates: false,
     cellFormula: false,
     cellHTML: false,
     bookVBA: false,
+    cellNF: true,
   });
   const name = wb.SheetNames[0];
   const sheet = wb.Sheets[name];
+  if (!sheet) return [];
+
   const matrix = XLSX.utils.sheet_to_json(sheet, {
     header: 1,
-    defval: "",
-    raw: false,
+    raw: true,
+    defval: null,
+    blankrows: false,
   });
   if (!Array.isArray(matrix) || matrix.length === 0) return [];
+
+  const headerRowIndex = findArabicRetailHeaderRow(matrix);
+  if (headerRowIndex >= 0) {
+    console.info(
+      `[import] format=retail headers=${JSON.stringify(matrix[headerRowIndex])}`
+    );
+    return parseArabicRetailMatrix(matrix, headerRowIndex, sheet);
+  }
+
+  console.info(`[import] format=generic headers=${JSON.stringify(matrix[0])}`);
 
   const det = detectHeaderAndColumns(matrix);
   if (!det) {
@@ -159,12 +471,59 @@ export function xlsxBufferToHeaderRows(buffer) {
       "تعذّر العثور على أعمدة الباركود واسم المنتج. أضف عناوين مثل: barcode, name, price أو ما يعادلها بالعربية."
     );
   }
-  return rowsFromMatrix(matrix, det.headerRow, det.colMap);
+  return rowsFromSheet(sheet, det.headerRow, det.colMeta, det.colMap);
+}
+
+/**
+ * @param {Record<string, unknown>} rec
+ * @param {string[]} headers
+ */
+function enrichCsvRecord(rec, headers) {
+  const clean = {};
+  for (const [k, v] of Object.entries(rec)) {
+    if (isForbiddenKey(k)) continue;
+    clean[k] = v;
+  }
+
+  /** @type {BarcodeRawCell[]} */
+  const barcodeRawCells = [];
+  let scientificCellsDetected = 0;
+
+  for (const h of headers) {
+    if (isForbiddenKey(h)) continue;
+    const field = classifyHeader(h);
+    const val = rec[h];
+    if (val === undefined || val === null || String(val).trim() === "") continue;
+
+    const raw = typeof val === "number" ? String(Math.trunc(val)) : String(val);
+    const formatted = raw;
+    const fromScientific = /[eE]\+?\d+/.test(formatted);
+    const scanText = raw;
+    const excluded = isExcludedFromBarcodeScan(h, field);
+    const barcodeCol = isBarcodeScanColumn(h, field);
+    const labelCell = ARABIC_LABEL_CELL_RE.test(scanText);
+
+    if (excluded && !labelCell) continue;
+    if (!barcodeCol && !labelCell) continue;
+
+    if (fromScientific) scientificCellsDetected++;
+
+    barcodeRawCells.push({
+      col: headers.indexOf(h),
+      header: h,
+      raw,
+      formatted,
+      fromScientific,
+    });
+  }
+
+  clean._barcodeRawCells = barcodeRawCells;
+  clean._scientificCellsDetected = String(scientificCellsDetected);
+  return clean;
 }
 
 /**
  * @param {Buffer} buffer
- * @returns {Record<string, string>[]}
  */
 export function csvBufferToRecords(buffer) {
   const raw = buffer.toString("utf8").trim();
@@ -180,56 +539,8 @@ export function csvBufferToRecords(buffer) {
       `الملف يحتوي صفوفاً أكثر من الحد المسموح (${MAX_IMPORT_ROWS}). قسّم الملف إلى أجزاء أصغر.`
     );
   }
-  // Strip any prototype-pollution keys that a crafted header could introduce.
-  return records.map((rec) => {
-    const clean = {};
-    for (const [k, v] of Object.entries(rec)) {
-      if (isForbiddenKey(k)) continue;
-      clean[k] = v;
-    }
-    return clean;
-  });
-}
-
-/**
- * Excel sometimes exports long barcodes as scientific strings.
- * @param {unknown} val
- * @returns {string}
- */
-function normalizeBarcodeValue(val) {
-  if (val === undefined || val === null || val === "") return "";
-  if (typeof val === "number" && Number.isFinite(val)) {
-    if (Math.abs(val) >= 1e6) return String(Math.round(val));
-    return String(val);
-  }
-  let s = String(val).trim().replace(/,/g, "");
-  if (/^[\d.]+[eE][+-]?\d+$/.test(s)) {
-    const n = parseFloat(s);
-    return Number.isFinite(n) ? String(Math.round(n)) : s;
-  }
-  return s;
-}
-
-/**
- * Parse numbers from cells like "12 شبقل", "1.5 شبقل", or plain "3.50"
- * @param {unknown} val
- * @returns {number}
- */
-/**
- * Long EANs in "باركود الوحدات" as text: "علبة : 6253503521433"
- * @param {string} text
- * @returns {string | null}
- */
-/**
- * Longest run of 4–14 digits (EAN/UPC/local codes). Picks real code from ": 2100002" or "علبة: 625…".
- * @param {string} text
- * @returns {string | null}
- */
-function longestDigitBarcode(text) {
-  const s = String(text ?? "");
-  const matches = s.match(/\d{4,14}/g);
-  if (!matches) return null;
-  return matches.sort((a, b) => b.length - a.length)[0] || null;
+  const headers = records.length ? Object.keys(records[0]) : [];
+  return records.map((rec) => enrichCsvRecord(rec, headers));
 }
 
 function parseMoneyCell(val) {
@@ -242,14 +553,52 @@ function parseMoneyCell(val) {
 }
 
 /**
- * Map spreadsheet/CSV row keys to canonical fields (English or Arabic headers).
+ * Merge barcodes from raw cell metadata.
  * @param {Record<string, unknown>} row
- * @returns {Record<string, string>}
  */
+export function collectBarcodesFromRow(row) {
+  /** @type {BarcodeRawCell[]} */
+  const rawCells = Array.isArray(row._barcodeRawCells) ? row._barcodeRawCells : [];
+
+  /** @type {Map<string, string | null>} */
+  const byCode = new Map();
+  let scientificCellsDetected = Number(row._scientificCellsDetected) || 0;
+
+  for (const cell of rawCells) {
+    const texts = new Set([cell.raw, cell.formatted].filter(Boolean));
+    for (const t of texts) {
+      for (const entry of extractBarcodesFromText(t)) {
+        if (!byCode.has(entry.barcode)) byCode.set(entry.barcode, entry.label);
+      }
+      for (const code of extractBarcodesFromValue(t)) {
+        if (!byCode.has(code)) byCode.set(code, null);
+      }
+    }
+  }
+
+  if (byCode.size === 0 && row._allCellsText) {
+    for (const entry of extractBarcodesFromText(String(row._allCellsText))) {
+      if (!byCode.has(entry.barcode)) byCode.set(entry.barcode, entry.label);
+    }
+  }
+
+  const barcodes = [...byCode.entries()].map(([barcode, label]) => ({ barcode, label }));
+  const shortCodes = barcodes.filter((b) => b.barcode.length >= 4 && b.barcode.length <= 7).map((b) => b.barcode);
+
+  return {
+    barcodes,
+    shortCodes,
+    scientificCellsDetected,
+    rawCells,
+    extracted: barcodes.map((b) => b.barcode),
+  };
+}
+
 function canonicalizeRow(row) {
   /** @type {Record<string, string>} */
   const canon = {};
   for (const [k, v] of Object.entries(row)) {
+    if (k.startsWith("_")) continue;
     const field = classifyHeader(k);
     if (field && canon[field] === undefined) {
       canon[field] = v === undefined || v === null ? "" : String(v).trim();
@@ -257,7 +606,7 @@ function canonicalizeRow(row) {
   }
   const lower = Object.create(null);
   for (const [k, v] of Object.entries(row)) {
-    if (isForbiddenKey(k)) continue;
+    if (isForbiddenKey(k) || k.startsWith("_")) continue;
     lower[String(k).trim().toLowerCase()] = v;
   }
   const pick = (key) =>
@@ -266,25 +615,17 @@ function canonicalizeRow(row) {
       : lower[key] !== undefined && lower[key] !== null
         ? String(lower[key]).trim()
         : "";
-  const mainRaw = pick("barcode");
-  const unitsRaw = pick("barcode_units");
-  const mergedDigits = longestDigitBarcode(`${unitsRaw} ${mainRaw}`);
-  const mainDigits = longestDigitBarcode(mainRaw);
-  const unitDigits = longestDigitBarcode(unitsRaw);
-  let barcode = "";
-  if (unitDigits && unitDigits.length >= 8) {
-    barcode = unitDigits;
-  } else if (mergedDigits) {
-    barcode = mergedDigits;
-  } else if (mainDigits) {
-    barcode = mainDigits;
-  } else if (unitDigits) {
-    barcode = unitDigits;
-  } else {
-    barcode = normalizeBarcodeValue(mainRaw);
-  }
+
+  const collected = collectBarcodesFromRow(row);
+  const primary = pickPrimaryBarcode(collected.barcodes);
+
   return {
-    barcode,
+    barcode: primary || "",
+    barcodes: collected.barcodes,
+    shortCodes: collected.shortCodes,
+    scientificCellsDetected: collected.scientificCellsDetected,
+    _barcodeRawCells: collected.rawCells,
+    _barcodesExtracted: collected.extracted,
     name: pick("name"),
     name_en: pick("name_en"),
     price: pick("price"),
@@ -301,11 +642,68 @@ function canonicalizeRow(row) {
 
 /**
  * @param {Record<string, unknown>} row
- * @returns {{ ok: true, row: ProductRow } | { ok: false, reason: string }}
  */
 export function normalizeProductRow(row) {
+  if (row._importFormat === "arabic_retail") {
+    const name = String(row.name ?? "").trim();
+    const price = Number(row.price) || 0;
+    /** @type {{ barcode: string, label: string | null, is_primary?: boolean }[]} */
+    const barcodes = Array.isArray(row.barcodes) ? row.barcodes : [];
+    const primary =
+      String(row.barcode ?? "").trim() ||
+      barcodes.find((b) => b.is_primary)?.barcode ||
+      barcodes[0]?.barcode ||
+      "";
+
+    if (!primary || !name) {
+      return {
+        ok: false,
+        reason: !primary ? "لم يُعثر على باركود في الصف" : "الاسم مفقود",
+        noBarcode: !primary,
+        _barcodesExtracted: row._barcodesExtracted,
+        _rawMainBarcode: row._rawMainBarcode,
+        _rawUnitBarcodes: row._rawUnitBarcodes,
+      };
+    }
+
+    const shortCodes = barcodes
+      .filter((b) => b.barcode.length >= 4 && b.barcode.length <= 7)
+      .map((b) => b.barcode);
+
+    return {
+      ok: true,
+      row: {
+        barcode: primary,
+        barcodes: barcodes.map((b) => ({
+          barcode: b.barcode,
+          label: b.label ?? null,
+          is_primary: b.is_primary === true || b.barcode === primary,
+        })),
+        shortCodes,
+        scientificCellsDetected: 0,
+        _importFormat: "arabic_retail",
+        _rawMainBarcode: row._rawMainBarcode,
+        _rawUnitBarcodes: row._rawUnitBarcodes,
+        _rawName: row._rawName,
+        _barcodesExtracted: row._barcodesExtracted ?? barcodes.map((b) => b.barcode),
+        name,
+        name_en: null,
+        price,
+        cost: 0,
+        category: null,
+        stock: 0,
+        tax_rate: null,
+        unit: null,
+        expiry_date: null,
+        min_price: null,
+        max_price: null,
+      },
+    };
+  }
+
   const c = canonicalizeRow(row);
-  const barcode = normalizeBarcodeValue(c.barcode);
+  const barcodes = c.barcodes?.length ? c.barcodes : [];
+  const primary = pickPrimaryBarcode(barcodes) || (c.barcode ? normalizeBarcodeInput(c.barcode) : "");
   const name = c.name;
   const price = c.price !== "" ? parseMoneyCell(c.price) : NaN;
   const stockRaw = c.stock !== "" ? parseMoneyCell(c.stock) : NaN;
@@ -316,8 +714,20 @@ export function normalizeProductRow(row) {
       ? String(c.category).trim()
       : null;
 
-  if (!barcode || !name || Number.isNaN(price)) {
-    return { ok: false, reason: "الباركود أو الاسم أو السعر الصالح مفقود" };
+  if (!primary || !name || Number.isNaN(price)) {
+    const reason = !primary
+      ? "لم يُعثر على باركود في الصف"
+      : !name
+        ? "الاسم مفقود"
+        : "السعر الصالح مفقود";
+    return {
+      ok: false,
+      reason,
+      noBarcode: !primary,
+      _barcodeRawCells: c._barcodeRawCells,
+      _barcodesExtracted: c._barcodesExtracted,
+      scientificCellsDetected: c.scientificCellsDetected,
+    };
   }
 
   const taxRateRaw = c.tax_rate !== "" ? parseMoneyCell(c.tax_rate) : null;
@@ -336,7 +746,12 @@ export function normalizeProductRow(row) {
   return {
     ok: true,
     row: {
-      barcode,
+      barcode: primary,
+      barcodes,
+      shortCodes: c.shortCodes || [],
+      scientificCellsDetected: c.scientificCellsDetected || 0,
+      _barcodeRawCells: c._barcodeRawCells,
+      _barcodesExtracted: c._barcodesExtracted,
       name,
       name_en,
       price,
@@ -351,3 +766,9 @@ export function normalizeProductRow(row) {
     },
   };
 }
+
+export {
+  extractBarcodesFromText,
+  extractBarcodesFromValue,
+  pickPrimaryBarcode,
+};

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import { searchProductsApi } from "../utils/productSearch";
 import { ils } from "../utils/format";
 import {
   PageHeader,
@@ -21,7 +22,9 @@ import {
 import EditProductModal from "./productDashboard/EditProductModal";
 import DuplicateBarcodeConflict from "./productDashboard/DuplicateBarcodeConflict";
 import EditBarcodeModal from "./productDashboard/EditBarcodeModal";
+import ImportSummaryModal from "./productDashboard/ImportSummaryModal";
 import { pickExportColumns } from "../utils/reportExport";
+import "./productDashboard/productBarcodes.css";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import { normalizeBarcode } from "../utils/barcode";
 import "../components/barcode/barcode-scanner.css";
@@ -43,12 +46,19 @@ const emptyForm = {
   max_price: "",
 };
 
-function findProductByBarcode(products, barcode) {
+
+async function lookupProductByBarcodeApi(barcode) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
-  return (
-    products.find((p) => normalizeBarcode(p.barcode) === code) || null
-  );
+  try {
+    const { data } = await api.get(`/api/products/${encodeURIComponent(code)}`, {
+      headers: getAuthHeaders(),
+    });
+    return data;
+  } catch (e) {
+    if (e.response?.status === 404) return null;
+    throw e;
+  }
 }
 
 function formToPayload(form) {
@@ -85,11 +95,14 @@ export default function ProductManagement() {
   const toast = useToast();
   const navigate = useNavigate();
   const [products, setProducts] = useState([]);
+  const [searchResults, setSearchResults] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [uploadFeedback, setUploadFeedback] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [importSummary, setImportSummary] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [formErr, setFormErr] = useState(null);
   const [editProduct, setEditProduct] = useState(null);
@@ -104,6 +117,7 @@ export default function ProductManagement() {
         headers: getAuthHeaders(),
       });
       setProducts(Array.isArray(data) ? data : []);
+      setSearchResults(null);
     } catch (e) {
       toast.error(e.response?.data?.error || e.message);
     } finally {
@@ -115,15 +129,35 @@ export default function ProductManagement() {
     load();
   }, [load]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter(
-      (p) =>
-        String(p.barcode).toLowerCase().includes(q) ||
-        String(p.name).toLowerCase().includes(q)
-    );
-  }, [products, search]);
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) {
+      setSearchResults(null);
+      setSearchLoading(false);
+      return undefined;
+    }
+
+    setSearchLoading(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const rows = await searchProductsApi(q, { limit: 500 });
+        setSearchResults(rows);
+      } catch (e) {
+        toast.error(e.response?.data?.error || e.message);
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [search, toast]);
+
+  const isSearchActive = Boolean(search.trim());
+  const filtered = isSearchActive ? (searchResults ?? []) : products;
+  const listLoading = isSearchActive
+    ? searchLoading || searchResults === null
+    : loading;
 
   const pageSlice = useMemo(() => {
     const start = page * PAGE;
@@ -140,11 +174,16 @@ export default function ProductManagement() {
       setConflictProduct(null);
       return undefined;
     }
-    const timer = window.setTimeout(() => {
-      setConflictProduct(findProductByBarcode(products, code));
+    const timer = window.setTimeout(async () => {
+      try {
+        const hit = await lookupProductByBarcodeApi(code);
+        setConflictProduct(hit);
+      } catch {
+        setConflictProduct(null);
+      }
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [form.barcode, products]);
+  }, [form.barcode]);
 
   async function onUpload(ev) {
     const file = ev.target.files?.[0];
@@ -159,6 +198,7 @@ export default function ProductManagement() {
         ok: true,
         text: data.message || `تمت إضافة ${data.inserted} منتجًا`,
       });
+      setImportSummary(data);
       await load();
     } catch (e) {
       if (e.response?.status === 401) {
@@ -214,7 +254,7 @@ export default function ProductManagement() {
       await load();
     } catch (e) {
       if (e.response?.status === 409) {
-        const existing = findProductByBarcode(products, form.barcode);
+        const existing = await lookupProductByBarcodeApi(form.barcode);
         if (existing) {
           setConflictProduct(existing);
           setFormErr("الباركود مستخدم لمنتج موجود — اختر إجراءً من اللوحة أدناه");
@@ -383,7 +423,7 @@ export default function ProductManagement() {
             columns={pickExportColumns(columns)}
             rows={filtered}
             filename="products"
-            disabled={loading}
+            disabled={listLoading}
           />
         }
       />
@@ -527,11 +567,11 @@ export default function ProductManagement() {
           <DataTable
             columns={columns}
             rows={pageSlice}
-            loading={loading}
+            loading={listLoading}
             empty="لا توجد منتجات"
             emptyIcon="products"
           />
-          {!loading && filtered.length > 0 ? (
+          {!listLoading && filtered.length > 0 ? (
             <div className="ui-toolbar" style={{ marginTop: "1rem", marginBottom: 0 }}>
               <SecondaryButton
                 type="button"
@@ -554,6 +594,12 @@ export default function ProductManagement() {
           ) : null}
         </CardBody>
       </Card>
+
+      <ImportSummaryModal
+        open={!!importSummary}
+        onClose={() => setImportSummary(null)}
+        data={importSummary}
+      />
 
       <EditProductModal
         open={!!editProduct}

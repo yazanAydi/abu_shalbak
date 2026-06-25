@@ -10,6 +10,8 @@ export const checkoutItemSchema = z.object({
   product_id: z.coerce.number().int().positive(),
   quantity: z.coerce.number().positive(),
   price: z.coerce.number().min(0),
+  scanned_barcode: z.string().trim().min(1).max(50).optional().nullable(),
+  product_barcode_id: z.coerce.number().int().positive().optional().nullable(),
 });
 
 export const checkoutSchema = z.object({

@@ -1,0 +1,100 @@
+.import-summary-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.import-summary-stat {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--office-border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--office-surface-muted, #f8fafc);
+}
+
+.import-summary-stat-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--office-text-muted, #64748b);
+  margin-bottom: 0.25rem;
+}
+
+.import-summary-conflict-note {
+  margin: 0 0 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.import-summary-table-wrap {
+  overflow-x: auto;
+  max-height: 220px;
+  margin-bottom: 1rem;
+}
+
+.import-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.import-summary-table th,
+.import-summary-table td {
+  border: 1px solid var(--office-border, #e2e8f0);
+  padding: 0.4rem 0.55rem;
+  text-align: right;
+}
+
+.import-summary-table th {
+  background: var(--office-surface-muted, #f1f5f9);
+}
+
+.product-barcodes-section {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--office-border, #e2e8f0);
+}
+
+.product-barcodes-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+}
+
+.product-barcodes-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--office-border, #e2e8f0);
+}
+
+.product-barcodes-item:last-child {
+  border-bottom: none;
+}
+
+.product-barcodes-primary-badge {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: var(--office-success-bg, #ecfdf5);
+  color: var(--office-success, #059669);
+}
+
+.product-barcodes-add-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+  align-items: flex-end;
+}
+
+.product-barcodes-add-row .form-field {
+  flex: 1;
+  min-width: 120px;
+}

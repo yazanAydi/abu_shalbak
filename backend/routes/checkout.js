@@ -156,9 +156,28 @@ export function createCheckoutRouter(db) {
         });
       }
 
+      let scannedBarcode = line.scanned_barcode != null ? String(line.scanned_barcode).trim() : null;
+      let productBarcodeId = line.product_barcode_id != null ? Number(line.product_barcode_id) : null;
+      if (productBarcodeId) {
+        const pb = await db.get(
+          "SELECT id, barcode, product_id FROM product_barcodes WHERE id = ?",
+          [productBarcodeId]
+        );
+        if (!pb || Number(pb.product_id) !== productId) {
+          return res.status(400).json({
+            error: "معرّف الباركود لا يطابق المنتج",
+            code: "BARCODE_PRODUCT_MISMATCH",
+            product_id: productId,
+          });
+        }
+        if (!scannedBarcode) scannedBarcode = pb.barcode;
+      }
+
       normalized.push({
         product_id: productId,
         barcode: p.barcode,
+        scanned_barcode: scannedBarcode || null,
+        product_barcode_id: productBarcodeId || null,
         name: p.name,
         category: p.category,
         quantity: qty,
@@ -240,8 +259,8 @@ export function createCheckoutRouter(db) {
           await db.run(
             `INSERT INTO transaction_items
                (transaction_id, product_id, barcode, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,
-                unit_cost_at_sale, gross_profit, discount_at_sale)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                unit_cost_at_sale, gross_profit, discount_at_sale, scanned_barcode, product_barcode_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               transactionId,
               L.product_id,
@@ -256,6 +275,8 @@ export function createCheckoutRouter(db) {
               L.cost,
               grossProfit,
               0,
+              L.scanned_barcode,
+              L.product_barcode_id,
             ]
           );
         }

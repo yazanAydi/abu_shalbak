@@ -1,31 +1,14 @@
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
-/** Estimated stock after this line is sold. Negative is allowed (warning only). */
-function estimatedAfter(it) {
-  const stock = Number(it.stock);
-  if (!Number.isFinite(stock)) return null;
-  return stock - Number(it.quantity || 0);
-}
-
 export default function PosCartTable({
   cartItems,
   displayTotal,
   onQuantityChange,
   onRemoveItem,
 }) {
-  const negativeLines = cartItems.filter((it) => {
-    const after = estimatedAfter(it);
-    return after != null && after < 0;
-  });
-
   return (
     <section className="pos-cart-panel" aria-label="سلة المشتريات">
       <div className="pos-cart-total-banner">{ils(displayTotal)}</div>
-      {negativeLines.length > 0 ? (
-        <div className="pos-cart-stock-warn" role="status" aria-live="polite">
-          تنبيه: المخزون سيصبح بالسالب لـ {negativeLines.length} صنف — البيع مسموح وسيستمر
-        </div>
-      ) : null}
       <div className="pos-cart-scroll">
         <table className="pos-cart-table">
           <thead>
@@ -51,17 +34,6 @@ export default function PosCartTable({
                   <td>{i + 1}</td>
                   <td className="pos-col-name" title={it.name}>
                     {it.name}
-                    {(() => {
-                      const after = estimatedAfter(it);
-                      if (after == null) return null;
-                      return (
-                        <span
-                          className={`pos-stock-hint${after < 0 ? " pos-stock-hint-neg" : ""}`}
-                        >
-                          مخزون: {Number(it.stock)} ← {after}
-                        </span>
-                      );
-                    })()}
                   </td>
                   <td>
                     <div className="pos-qty-controls">

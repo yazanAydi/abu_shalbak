@@ -120,6 +120,52 @@ async function migrateTransactionItemsPriceSnapshots(db) {
   `);
 }
 
+async function migrateTransactionItemsScannedBarcode(db) {
+  const cols = [
+    ["scanned_barcode", "TEXT"],
+    ["product_barcode_id", "INTEGER REFERENCES product_barcodes(id)"],
+  ];
+  for (const [col, type] of cols) {
+    if (!(await tableHasColumn(db, "transaction_items", col))) {
+      await db.run(`ALTER TABLE transaction_items ADD COLUMN ${col} ${type}`);
+    }
+  }
+}
+
+async function migrateProductBarcodesTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS product_barcodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      barcode TEXT NOT NULL UNIQUE,
+      label TEXT,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_barcodes_product ON product_barcodes(product_id);
+    CREATE INDEX IF NOT EXISTS idx_product_barcodes_barcode ON product_barcodes(barcode);
+  `);
+}
+
+/** Copy products.barcode into product_barcodes (one primary row per product). */
+async function migrateProductBarcodesFromProducts(db) {
+  const rows = await db.all("SELECT id, barcode FROM products WHERE barcode IS NOT NULL AND trim(barcode) != ''");
+  for (const { id, barcode } of rows) {
+    const cleaned = bestDigitBarcodeValue(barcode) || String(barcode).trim();
+    if (!cleaned) continue;
+    const existing = await db.get("SELECT id FROM product_barcodes WHERE barcode = ?", [cleaned]);
+    if (existing) continue;
+    const hasPrimary = await db.get(
+      "SELECT id FROM product_barcodes WHERE product_id = ? AND is_primary = 1",
+      [id]
+    );
+    await db.run(
+      "INSERT INTO product_barcodes (product_id, barcode, is_primary) VALUES (?, ?, ?)",
+      [id, cleaned, hasPrimary ? 0 : 1]
+    );
+  }
+}
+
 async function migrateCustomersTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS customers (
@@ -1278,10 +1324,13 @@ export async function initDatabase(dbPath) {
   await migrateMustChangePasswordColumn(db);
   await migrateStoresTable(db);
   await migrateStoreIdColumns(db);
+  await migrateProductBarcodesTable(db);
+  await migrateTransactionItemsScannedBarcode(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);
   await migrateProductBarcodesDigitsOnly(db);
+  await migrateProductBarcodesFromProducts(db);
   await seedDefaultSettings(db);
 
   await recordSchemaVersion(db);
@@ -1294,7 +1343,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.06-init-authoritative";
+const SCHEMA_VERSION = "2026.06-product-barcodes";
 
 async function recordSchemaVersion(db) {
   await db.exec(`

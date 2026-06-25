@@ -168,7 +168,10 @@ export default function ProductDashboard() {
               </StatusBadge>
             </div>
             <div className="pd-chips">
-              <span className="pd-chip">باركود: {product?.barcode}</span>
+              <span className="pd-chip">
+                باركود: {product?.barcode}
+                {product?.barcode_count > 1 ? ` (+${product.barcode_count - 1})` : ""}
+              </span>
               <span className="pd-chip">SKU: {product?.sku || "—"}</span>
               {product?.category ? <span className="pd-chip">التصنيف: {product.category}</span> : null}
               {product?.unit ? <span className="pd-chip">الوحدة: {product.unit}</span> : null}

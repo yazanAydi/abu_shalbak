@@ -7,13 +7,72 @@ import {
   csvBufferToRecords,
   normalizeProductRow,
   xlsxBufferToHeaderRows,
+  DEBUG_IMPORT_PRODUCT_NAME,
+  DEBUG_BARCODE,
 } from "../utils/productImport.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { createBackup } from "../utils/backup.js";
+import { syncProductsPrimaryBarcode } from "../utils/productBarcodes.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Prefer primary-barcode matches before unit-barcode aliases (avoids wrong product merge).
+ * @param {object} db
+ * @param {string} primaryBc
+ * @param {{ barcode: string }[]} barcodes
+ */
+async function resolveImportProductId(db, primaryBc, barcodes) {
+  const primary = String(primaryBc ?? "").trim();
+
+  if (primary) {
+    const fromProducts = await db.get(
+      `SELECT id AS product_id FROM products WHERE CAST(barcode AS TEXT) = ?`,
+      [primary]
+    );
+    if (fromProducts) return fromProducts.product_id;
+
+    const fromPrimaryPb = await db.get(
+      `SELECT product_id FROM product_barcodes WHERE barcode = ? AND is_primary = 1`,
+      [primary]
+    );
+    if (fromPrimaryPb) return fromPrimaryPb.product_id;
+  }
+
+  for (const { barcode: bc } of barcodes) {
+    const hit = await db.get(
+      `SELECT pb.product_id FROM product_barcodes pb WHERE pb.barcode = ?`,
+      [bc]
+    );
+    if (hit) return hit.product_id;
+  }
+
+  for (const { barcode: bc } of barcodes) {
+    const hit = await db.get(
+      `SELECT id AS product_id FROM products WHERE CAST(barcode AS TEXT) = ?`,
+      [bc]
+    );
+    if (hit) return hit.product_id;
+  }
+
+  return null;
+}
+
+/**
+ * @param {object} db
+ * @param {string} primaryBc
+ * @param {number} productId
+ */
+async function findPrimaryBarcodeOwner(db, primaryBc, productId) {
+  const primary = String(primaryBc ?? "").trim();
+  if (!primary) return null;
+  return db.get(
+    `SELECT id, name FROM products WHERE CAST(barcode AS TEXT) = ? AND id != ?`,
+    [primary, productId]
+  );
+}
 
 const ALLOWED_IMPORT_MIMES = new Set([
   "text/csv",
@@ -86,54 +145,270 @@ export function createAdminRouter(db, dbPath) {
     }
 
     const errors = [];
-    let inserted = 0;
+    let products_created = 0;
+    let products_updated = 0;
+    let barcodes_added = 0;
+    let duplicate_barcodes_skipped = 0;
+    let short_internal_codes_added = 0;
+    let scientific_notation_cells_detected = 0;
+    let rows_no_barcode_found = 0;
     let skipped = 0;
+    /** @type {{ row: number, barcode: string, existing_product_id: number, existing_product_name: string }[]} */
+    const barcode_conflicts = [];
 
-    /** Barcodes already queued in this upload — avoids SQLITE_CONSTRAINT when the file repeats a barcode */
     const seenInFile = new Set();
 
+    /** @type {{ rowNum: number, row: object }[]} */
     const validRows = [];
     for (let i = 0; i < records.length; i++) {
       const row = records[i];
       const norm = normalizeProductRow(row);
+      const rowNum = i + 2;
+
       if (!norm.ok) {
-        errors.push({ row: i + 2, reason: norm.reason });
-        skipped++;
-        continue;
-      }
-      const { barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price } = norm.row;
-
-      if (seenInFile.has(barcode)) {
-        errors.push({
-          row: i + 2,
-          barcode,
-          reason: "باركود مكرر في الملف — تُركت أول مرة",
-        });
+        if (norm.noBarcode) rows_no_barcode_found++;
+        scientific_notation_cells_detected += Number(row._scientificCellsDetected) || 0;
+        console.info(
+          `[import] row=${rowNum} name="${row.name ?? ""}" rawCells=${JSON.stringify(norm._barcodeRawCells ?? row._barcodeRawCells ?? [])} extracted=${JSON.stringify(norm._barcodesExtracted ?? [])} skipped=validation reason="${norm.reason}"`
+        );
+        errors.push({ row: rowNum, reason: norm.reason });
         skipped++;
         continue;
       }
 
-      const dup = await db.get("SELECT id FROM products WHERE barcode = ?", [barcode]);
-      if (dup) {
-        errors.push({ row: i + 2, barcode, reason: "الباركود مكرر — موجود في قاعدة البيانات" });
+      scientific_notation_cells_detected += norm.row.scientificCellsDetected || 0;
+
+      /** @type {{ barcode: string, label: string | null, is_primary?: boolean }[]} */
+      const rowBarcodes = norm.row.barcodes;
+      const filteredBarcodes = [];
+      for (const entry of rowBarcodes) {
+        const bc = String(entry.barcode ?? "").trim();
+        if (!bc) continue;
+        if (seenInFile.has(bc)) {
+          errors.push({
+            row: rowNum,
+            barcode: bc,
+            reason: "باركود مكرر في الملف — تُركت أول مرة",
+          });
+          continue;
+        }
+        filteredBarcodes.push({ ...entry, barcode: bc });
+      }
+
+      if (filteredBarcodes.length === 0) {
         skipped++;
         continue;
       }
 
-      seenInFile.add(barcode);
-      validRows.push({ barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price });
+      for (const { barcode: bc } of filteredBarcodes) {
+        seenInFile.add(bc);
+      }
+      validRows.push({
+        rowNum,
+        row: { ...norm.row, barcodes: filteredBarcodes },
+      });
     }
 
     try {
       await db.run("BEGIN IMMEDIATE");
-      for (const r of validRows) {
-        await db.run(
-          `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [r.barcode, r.name, r.name_en ?? null, r.price, r.cost, r.category, r.stock,
-           r.tax_rate ?? null, r.unit ?? null, r.expiry_date ?? null, r.min_price ?? null, r.max_price ?? null]
-        );
-        inserted++;
+      for (const { rowNum, row } of validRows) {
+        await db.run("SAVEPOINT import_row");
+        try {
+        const {
+          barcode,
+          barcodes,
+          name,
+          name_en,
+          price,
+          cost,
+          category,
+          stock,
+          tax_rate,
+          unit,
+          expiry_date,
+          min_price,
+          max_price,
+          shortCodes,
+          _barcodeRawCells,
+          _barcodesExtracted,
+          _rawMainBarcode,
+          _rawUnitBarcodes,
+        } = row;
+
+        const rowSkippedDupes = [];
+        const rowConflicts = [];
+        /** @type {string[]} */
+        const insertedBarcodes = [];
+
+        const primaryBc = String(barcode ?? "").trim();
+        let productId = await resolveImportProductId(db, primaryBc, barcodes);
+
+        const productFields = [
+          name,
+          name_en ?? null,
+          price,
+          cost,
+          category,
+          stock,
+          tax_rate ?? null,
+          unit ?? null,
+          expiry_date ?? null,
+          min_price ?? null,
+          max_price ?? null,
+        ];
+
+        if (productId) {
+          const primaryOwner = await findPrimaryBarcodeOwner(db, primaryBc, productId);
+          if (primaryOwner) {
+            barcode_conflicts.push({
+              row: rowNum,
+              barcode: primaryBc,
+              existing_product_id: primaryOwner.id,
+              existing_product_name: primaryOwner.name,
+            });
+            rowConflicts.push(primaryBc);
+            await db.run(
+              `UPDATE products SET name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
+                  tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ?
+               WHERE id = ?`,
+              [...productFields, productId]
+            );
+          } else {
+            await db.run(
+              `UPDATE products SET barcode = ?, name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
+                  tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ?
+               WHERE id = ?`,
+              [primaryBc, ...productFields, productId]
+            );
+          }
+          products_updated++;
+        } else {
+          const existingPrimary = await db.get(
+            `SELECT id AS product_id, name FROM products WHERE CAST(barcode AS TEXT) = ?`,
+            [primaryBc]
+          );
+          if (existingPrimary) {
+            productId = existingPrimary.product_id;
+            await db.run(
+              `UPDATE products SET name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
+                  tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ?
+               WHERE id = ?`,
+              [...productFields, productId]
+            );
+            products_updated++;
+          } else {
+            const info = await db.run(
+              `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [primaryBc, ...productFields]
+            );
+            productId = info.lastID;
+            products_created++;
+          }
+        }
+
+        for (const entry of barcodes) {
+          const bc = String(entry.barcode ?? "").trim();
+          if (!bc) continue;
+          const label = entry.label;
+          try {
+            const existing = await db.get(
+              `SELECT pb.id, pb.product_id, p.name AS product_name
+               FROM product_barcodes pb JOIN products p ON p.id = pb.product_id
+               WHERE pb.barcode = ?`,
+              [bc]
+            );
+            if (existing) {
+              if (Number(existing.product_id) === Number(productId)) {
+                duplicate_barcodes_skipped++;
+                rowSkippedDupes.push(bc);
+                if (bc === DEBUG_BARCODE) {
+                  console.info(
+                    `[import][debug-barcode] insert row=${rowNum} action=skippedDuplicate product_id=${productId} product_name=${JSON.stringify(name)}`
+                  );
+                }
+              } else {
+                barcode_conflicts.push({
+                  row: rowNum,
+                  barcode: bc,
+                  existing_product_id: existing.product_id,
+                  existing_product_name: existing.product_name,
+                });
+                rowConflicts.push(bc);
+                if (bc === DEBUG_BARCODE) {
+                  console.info(
+                    `[import][debug-barcode] insert row=${rowNum} action=conflict existing_product_id=${existing.product_id} existing_product_name=${JSON.stringify(existing.product_name)}`
+                  );
+                }
+              }
+              continue;
+            }
+
+            const isPrimary = entry.is_primary === true || bc === String(barcode ?? "").trim() ? 1 : 0;
+            if (isPrimary) {
+              await db.run("UPDATE product_barcodes SET is_primary = 0 WHERE product_id = ?", [productId]);
+            }
+            await db.run(
+              "INSERT INTO product_barcodes (product_id, barcode, label, is_primary) VALUES (?, ?, ?, ?)",
+              [productId, bc, label ?? null, isPrimary]
+            );
+            barcodes_added++;
+            insertedBarcodes.push(bc);
+            if (bc === DEBUG_BARCODE) {
+              console.info(
+                `[import][debug-barcode] insert row=${rowNum} action=inserted product_id=${productId} product_name=${JSON.stringify(name)}`
+              );
+            }
+            if (bc.length >= 4 && bc.length <= 7) {
+              short_internal_codes_added++;
+            }
+          } catch (insertErr) {
+            console.info(`[import] row=${rowNum} barcode=${bc} insertError=${insertErr.message}`);
+            errors.push({ row: rowNum, barcode: bc, reason: insertErr.message || "فشل إدراج الباركود" });
+          }
+        }
+
+        await syncProductsPrimaryBarcode(db, productId);
+
+        const extractedList = _barcodesExtracted ?? barcodes.map((b) => b.barcode);
+        const shouldLogImportRow = rowNum <= 21 || barcodes.length > 1;
+        if (shouldLogImportRow) {
+          console.info(
+            `[import] row=${rowNum} name="${name}" rawMain=${JSON.stringify(_rawMainBarcode ?? null)} rawUnit=${JSON.stringify(_rawUnitBarcodes ?? null)} rawCells=${JSON.stringify(_barcodeRawCells ?? [])} extracted=${JSON.stringify(extractedList)} inserted=${JSON.stringify(insertedBarcodes)} skippedDupes=${JSON.stringify(rowSkippedDupes)} conflicts=${JSON.stringify(rowConflicts)} shortCodes=${JSON.stringify(shortCodes ?? [])}`
+          );
+        }
+
+        if (name.includes(DEBUG_IMPORT_PRODUCT_NAME)) {
+          console.info(
+            `[import][debug] insert row=${rowNum} name=${JSON.stringify(name)} rawName=${JSON.stringify(row._rawName ?? name)} rawMain=${JSON.stringify({ type: typeof _rawMainBarcode, value: _rawMainBarcode })} rawUnit=${JSON.stringify({ type: typeof _rawUnitBarcodes, value: _rawUnitBarcodes })} extracted=${JSON.stringify(extractedList)} product_id=${productId} inserted=${JSON.stringify(insertedBarcodes)} skippedDupes=${JSON.stringify(rowSkippedDupes)} conflicts=${JSON.stringify(rowConflicts)}`
+          );
+        }
+
+        if (
+          extractedList.includes(DEBUG_BARCODE) ||
+          insertedBarcodes.includes(DEBUG_BARCODE) ||
+          rowSkippedDupes.includes(DEBUG_BARCODE) ||
+          rowConflicts.includes(DEBUG_BARCODE)
+        ) {
+          console.info(
+            `[import][debug-barcode] insert summary row=${rowNum} product_id=${productId} name=${JSON.stringify(name)} extracted=${extractedList.includes(DEBUG_BARCODE)} inserted=${insertedBarcodes.includes(DEBUG_BARCODE)} skippedDup=${rowSkippedDupes.includes(DEBUG_BARCODE)} conflict=${rowConflicts.includes(DEBUG_BARCODE)}`
+          );
+        }
+        await db.run("RELEASE SAVEPOINT import_row");
+        } catch (rowErr) {
+          try {
+            await db.run("ROLLBACK TO SAVEPOINT import_row");
+          } catch (_) {}
+          console.info(`[import] row=${rowNum} fatalError=${rowErr.message}`);
+          errors.push({
+            row: rowNum,
+            reason:
+              rowErr.code === "SQLITE_CONSTRAINT"
+                ? `تعارض باركود: ${rowErr.message}`
+                : rowErr.message || "فشل استيراد الصف",
+          });
+          skipped++;
+        }
       }
       await db.run("COMMIT");
     } catch (e) {
@@ -143,12 +418,21 @@ export function createAdminRouter(db, dbPath) {
       return next(e);
     }
 
+    const inserted = products_created;
     res.json({
       success: true,
       inserted,
+      products_created,
+      products_updated,
+      barcodes_added,
+      short_internal_codes_added,
+      scientific_notation_cells_detected,
+      rows_no_barcode_found,
+      duplicate_barcodes_skipped,
+      barcode_conflicts,
       skipped,
       errors,
-      message: `تم رفع ${inserted} منتجاً بنجاح`,
+      message: `تم استيراد ${products_created} منتجاً جديداً وتحديث ${products_updated} — ${barcodes_added} باركود مضاف`,
     });
     }
   );

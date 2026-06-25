@@ -60,12 +60,14 @@ export function createPosRouter(db) {
     }
     const like = `%${q}%`;
     const rows = await db.all(
-      `SELECT id, barcode, name, price, stock, tax_rate
-       FROM products
-       WHERE COALESCE(is_active, 1) = 1 AND (name LIKE ? OR barcode LIKE ?)
-       ORDER BY name
+      `SELECT DISTINCT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate
+       FROM products p
+       LEFT JOIN product_barcodes pb ON pb.product_id = p.id
+       WHERE COALESCE(p.is_active, 1) = 1
+         AND (p.name LIKE ? OR p.barcode LIKE ? OR pb.barcode LIKE ?)
+       ORDER BY p.name
        LIMIT 20`,
-      [like, like]
+      [like, like, like]
     );
     res.json(rows);
   });

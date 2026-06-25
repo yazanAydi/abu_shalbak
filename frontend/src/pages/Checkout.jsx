@@ -57,6 +57,8 @@ function checkoutReducer(state, action) {
           {
             id: pid,
             barcode: product.barcode,
+            scanned_barcode: product.scanned_barcode ?? product.matched_barcode ?? null,
+            product_barcode_id: product.product_barcode_id ?? null,
             name: product.name,
             price,
             stock: stockNum,
@@ -228,6 +230,9 @@ export default function Checkout() {
         product_id: c.id,
         quantity: c.quantity,
         price: c.price,
+        ...(c.scanned_barcode
+          ? { scanned_barcode: c.scanned_barcode, product_barcode_id: c.product_barcode_id ?? undefined }
+          : {}),
       }));
       const { data } = await api.post(
         "/api/checkout",

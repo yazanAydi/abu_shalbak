@@ -3,17 +3,21 @@ import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
 import { isAdminRole } from "../utils/roles";
+import { searchProductsApi } from "../utils/productSearch";
 import "./ProductManagement.css";
 
 const PAGE = 50;
 
 export default function ProductManagement() {
   const [products, setProducts] = useState([]);
+  const [searchResults, setSearchResults] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [uploadFeedback, setUploadFeedback] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [importSummary, setImportSummary] = useState(null);
   const [form, setForm] = useState({
     barcode: "",
     name: "",
@@ -50,15 +54,35 @@ export default function ProductManagement() {
     load();
   }, [load]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter(
-      (p) =>
-        String(p.barcode).toLowerCase().includes(q) ||
-        String(p.name).toLowerCase().includes(q)
-    );
-  }, [products, search]);
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) {
+      setSearchResults(null);
+      setSearchLoading(false);
+      return undefined;
+    }
+
+    setSearchLoading(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const rows = await searchProductsApi(q, { limit: 500 });
+        setSearchResults(rows);
+      } catch (e) {
+        window.alert(e.response?.data?.error || e.message);
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  const isSearchActive = Boolean(search.trim());
+  const filtered = isSearchActive ? (searchResults ?? []) : products;
+  const listLoading = isSearchActive
+    ? searchLoading || searchResults === null
+    : loading;
 
   const pageSlice = useMemo(() => {
     const start = page * PAGE;
@@ -82,6 +106,7 @@ export default function ProductManagement() {
         ok: true,
         text: data.message || `تمت إضافة ${data.inserted} منتجًا`,
       });
+      setImportSummary(data);
       await load();
     } catch (e) {
       if (e.response?.status === 401) {
@@ -241,6 +266,35 @@ export default function ProductManagement() {
             {uploadFeedback.text}
           </p>
         ) : null}
+        {importSummary ? (
+          <div className="pm-import-summary">
+            <p><strong>ملخص الاستيراد</strong></p>
+            <ul>
+              <li>منتجات جديدة: {importSummary.products_created ?? importSummary.inserted ?? 0}</li>
+              <li>منتجات محدّثة: {importSummary.products_updated ?? 0}</li>
+              <li>باركودات مضافة: {importSummary.barcodes_added ?? 0}</li>
+              <li>أكواد داخلية قصيرة: {importSummary.short_internal_codes_added ?? 0}</li>
+              <li>خلايا scientific notation: {importSummary.scientific_notation_cells_detected ?? 0}</li>
+              <li>صفوف بلا باركود: {importSummary.rows_no_barcode_found ?? 0}</li>
+              <li>باركودات مكررة (تُركت): {importSummary.duplicate_barcodes_skipped ?? 0}</li>
+            </ul>
+            {(importSummary.barcode_conflicts?.length ?? 0) > 0 ? (
+              <>
+                <p>تعارضات الباركود:</p>
+                <ul>
+                  {importSummary.barcode_conflicts.map((c, i) => (
+                    <li key={`${c.barcode}-${i}`}>
+                      صف {c.row}: {c.barcode} → {c.existing_product_name}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+            <button type="button" className="pm-link-btn" onClick={() => setImportSummary(null)}>
+              إغلاق الملخص
+            </button>
+          </div>
+        ) : null}
       </section>
 
       <section className="pm-section">
@@ -318,7 +372,7 @@ export default function ProductManagement() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        {loading ? (
+        {listLoading ? (
           <p>جاري التحميل…</p>
         ) : (
           <>

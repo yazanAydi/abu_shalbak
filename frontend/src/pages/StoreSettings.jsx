@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import { searchProductsApi } from "../utils/productSearch";
 import {
   PageHeader,
   Card,
@@ -36,6 +37,7 @@ export default function StoreSettings() {
   const [favoriteLabels, setFavoriteLabels] = useState({});
   const [newCategoryName, setNewCategoryName] = useState("");
   const [productSearch, setProductSearch] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
   const [allProducts, setAllProducts] = useState([]);
   const [pendingProduct, setPendingProduct] = useState(null);
   const [pendingCategory, setPendingCategory] = useState("");
@@ -80,7 +82,27 @@ export default function StoreSettings() {
       .catch(() => setError("تعذّر تحميل الإعدادات"));
   }, []);
 
-  const favoriteIds = quickButtons.map((b) => b.product_id);
+  const favoriteIds = useMemo(() => quickButtons.map((b) => b.product_id), [quickButtons]);
+
+  useEffect(() => {
+    const q = productSearch.trim();
+    if (!q) {
+      setSearchResults([]);
+      return undefined;
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        const rows = await searchProductsApi(q, {
+          limit: 12,
+          excludeIds: favoriteIds,
+        });
+        setSearchResults(rows);
+      } catch {
+        setSearchResults([]);
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [productSearch, favoriteIds]);
 
   function openAddModal(product) {
     if (quickButtons.length >= MAX_QUICK_BUTTONS) {
@@ -139,17 +161,6 @@ export default function StoreSettings() {
     );
     setError(null);
   }
-
-  const searchResults = productSearch.trim()
-    ? allProducts
-        .filter(
-          (p) =>
-            !favoriteIds.includes(p.id) &&
-            (p.name.includes(productSearch) ||
-              (p.barcode && String(p.barcode).includes(productSearch)))
-        )
-        .slice(0, 12)
-    : [];
 
   function onChange(key, value) {
     setForm((p) => ({ ...p, [key]: value }));

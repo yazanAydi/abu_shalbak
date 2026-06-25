@@ -2,8 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-
-const ils = (n) => `₪${Number(n ?? 0).toFixed(2)}`;
+import { searchProductsApi } from "../utils/productSearch";
 
 export default function InventoryCount() {
   const [sessions, setSessions] = useState([]);
@@ -12,6 +11,7 @@ export default function InventoryCount() {
   const [activeSession, setActiveSession] = useState(null);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [countedQty, setCountedQty] = useState("");
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -30,6 +30,29 @@ export default function InventoryCount() {
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
 
+  useEffect(() => {
+    const q = search.trim();
+    if (q.length < 2) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return undefined;
+    }
+
+    setSearchLoading(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const rows = await searchProductsApi(q, { limit: 15 });
+        setSearchResults(rows);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
   async function loadSession(id) {
     const { data } = await api.get(`/api/inventory/counts/${id}`, { headers: getAuthHeaders() });
     setActiveSession(data);
@@ -45,20 +68,6 @@ export default function InventoryCount() {
     } catch (e) {
       setError(e.response?.data?.error || "فشل فتح جلسة");
     }
-  }
-
-  async function searchProducts(q) {
-    if (!q || q.length < 2) { setSearchResults([]); return; }
-    try {
-      const { data } = await api.get(`/api/products`, { headers: getAuthHeaders() });
-      const lower = q.toLowerCase();
-      setSearchResults(
-        data.filter((p) =>
-          p.name.includes(q) || (p.barcode && p.barcode.includes(q)) ||
-          (p.name_en && p.name_en.toLowerCase().includes(lower))
-        ).slice(0, 15)
-      );
-    } catch { setSearchResults([]); }
   }
 
   async function addCountLine(session, product) {
@@ -132,13 +141,16 @@ export default function InventoryCount() {
                 type="text"
                 placeholder="ابحث عن منتج بالاسم أو الباركود…"
                 value={search}
-                onChange={(e) => { setSearch(e.target.value); searchProducts(e.target.value); }}
+                onChange={(e) => setSearch(e.target.value)}
               />
-              {searchResults.length > 0 && (
+              {searchLoading && search.trim().length >= 2 && (
+                <p className="empty-msg" style={{ marginTop: 8 }}>جاري البحث…</p>
+              )}
+              {!searchLoading && searchResults.length > 0 && (
                 <ul className="search-dropdown">
                   {searchResults.map((p) => (
                     <li key={p.id} onClick={() => { setSelectedProduct(p); setSearchResults([]); setSearch(p.name); }}>
-                      {p.name} — {p.barcode} (نظام: {p.stock})
+                      {p.name} — {p.matched_barcode || p.barcode} (نظام: {p.stock})
                     </li>
                   ))}
                 </ul>
