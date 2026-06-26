@@ -31,14 +31,7 @@ export default function PosQuickGrid({ onProductFound }) {
   }, []);
 
   function tap(p) {
-    onProductFound({
-      id: p.id,
-      barcode: p.barcode,
-      name: p.name,
-      price: p.price,
-      stock: p.stock,
-      tax_rate: p.tax_rate,
-    });
+    onProductFound({ product: p, ...p, unit_id: p.unit_id });
   }
 
   const items =

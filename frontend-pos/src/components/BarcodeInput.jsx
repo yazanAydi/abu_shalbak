@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import { focusBarcodeInput } from "../utils/focusBarcodeInput";
+import {
+  beginProductNotFound,
+  playProductNotFound,
+  unlockPosAudio,
+  warmPosSounds,
+} from "../utils/posSounds";
 import "./BarcodeInput.css";
+
+const notFoundCache = new Set();
 
 function normalizeBarcode(raw) {
   let t = String(raw ?? "")
@@ -14,6 +23,14 @@ function normalizeBarcode(raw) {
     String(ch.charCodeAt(0) - 0x06f0)
   );
   return t;
+}
+
+function isNotFoundError(e) {
+  const status = e.response?.status;
+  const apiError = e.response?.data?.error || e.message || "";
+  return (
+    status === 404 || /غير موجود|لم يُعثر|not found/i.test(String(apiError))
+  );
 }
 
 export default function BarcodeInput({ onProductFound, onError }) {
@@ -40,25 +57,64 @@ export default function BarcodeInput({ onProductFound, onError }) {
     async (raw) => {
       const code = normalizeBarcode(raw);
       if (!code) return;
+      unlockPosAudio();
+      warmPosSounds();
+
+      const notFoundMsg = `لم يُعثر على المنتج (${code}) — أضفه من «إدارة المنتجات» أو جرّب 1234567890`;
+      let cancelPendingError = null;
+
+      if (notFoundCache.has(code)) {
+        playProductNotFound();
+        setErr(notFoundMsg);
+        clearErrLater();
+        setValue("");
+        setTimeout(() => focusBarcodeInput(), 0);
+        try {
+          const { data } = await api.get(
+            `/api/products/by-barcode/${encodeURIComponent(code)}`,
+            { headers: { ...getAuthHeaders() } }
+          );
+          notFoundCache.delete(code);
+          setErr("");
+          onProductFoundRef.current?.(data);
+        } catch (e) {
+          if (!isNotFoundError(e)) {
+            const apiError = e.response?.data?.error || e.message || "تعذّر البحث";
+            setErr(apiError);
+            onError?.(apiError);
+            clearErrLater();
+          }
+        }
+        return;
+      }
+
+      cancelPendingError = beginProductNotFound();
+
       try {
         const { data } = await api.get(
-          `/api/products/${encodeURIComponent(code)}`,
+          `/api/products/by-barcode/${encodeURIComponent(code)}`,
           { headers: { ...getAuthHeaders() } }
         );
+        cancelPendingError?.();
         onProductFoundRef.current?.(data);
         setValue("");
         setErr("");
-        setTimeout(() => inputRef.current?.focus(), 0);
+        setTimeout(() => focusBarcodeInput(), 0);
       } catch (e) {
-        const msg =
-          e.response?.status === 404
-            ? `لم يُعثر على المنتج (${code}) — أضفه من «إدارة المنتجات» أو جرّب 1234567890`
-            : e.response?.data?.error || e.message || "تعذّر البحث";
+        const notFound = isNotFoundError(e);
+        if (notFound) {
+          notFoundCache.add(code);
+        } else {
+          cancelPendingError?.();
+        }
+        const msg = notFound
+          ? notFoundMsg
+          : e.response?.data?.error || e.message || "تعذّر البحث";
         setErr(msg);
         onError?.(msg);
         clearErrLater();
         setValue("");
-        setTimeout(() => inputRef.current?.focus(), 0);
+        setTimeout(() => focusBarcodeInput(), 0);
       }
     },
     [onError, clearErrLater]

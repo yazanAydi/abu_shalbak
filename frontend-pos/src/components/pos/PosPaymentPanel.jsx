@@ -1,3 +1,5 @@
+import { POS_SHORTCUTS } from "../../config/posShortcuts";
+
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 export default function PosPaymentPanel({
@@ -41,7 +43,7 @@ export default function PosPaymentPanel({
         >
           {isLoading ? "جاري المعالجة…" : "إتمام البيع"}
         </button>
-        <p className="pos-complete-hint">Ctrl+Y — إتمام البيع</p>
+        <p className="pos-complete-hint">{POS_SHORTCUTS.completeSale.key} — إتمام البيع</p>
 
         {receiptData?.receipt_text ? (
           <button type="button" className="pos-complete-btn secondary" onClick={onPrintLocal}>

@@ -6,6 +6,10 @@ import PosCartTable from "../components/pos/PosCartTable";
 import PosQuickGrid from "../components/pos/PosQuickGrid";
 import PosPaymentPanel from "../components/pos/PosPaymentPanel";
 import PosPaymentModal from "../components/pos/PosPaymentModal";
+import PosClearCartModal from "../components/pos/PosClearCartModal";
+import PosSuspendedSalesModal from "../components/pos/PosSuspendedSalesModal";
+import PosSuspendedDetailModal from "../components/pos/PosSuspendedDetailModal";
+import PosRestoreConflictModal from "../components/pos/PosRestoreConflictModal";
 import PosRefundModal from "../components/pos/PosRefundModal";
 import PosRefundNotifications from "../components/pos/PosRefundNotifications";
 import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
@@ -14,13 +18,23 @@ import ShiftStart from "../components/ShiftStart";
 import ShiftEnd from "../components/ShiftEnd";
 import { printReceipt } from "../utils/printReceipt";
 import { estimateCartTotals } from "../utils/posTotals";
+import { checkoutReducer, checkoutInitialState } from "../utils/checkoutCartReducer";
+import {
+  formatShortcutHint,
+  mergePosShortcutsFromSettings,
+} from "../config/posShortcuts";
+import { matchesShortcut, shouldHandlePosShortcut } from "../utils/posKeyboard";
+import { focusBarcodeInput } from "../utils/focusBarcodeInput";
+import { playCheckoutDone, playScanSuccess, unlockPosAudio, warmPosSounds } from "../utils/posSounds";
+import {
+  cartItemsToSuspendPayload,
+  suspendedItemsToCartItems,
+} from "../utils/suspendedCart";
 import "../components/ShiftModal.css";
 import "./pos-theme.css";
 import "./Checkout.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
-
-const sameId = (a, b) => Number(a) === Number(b);
 
 function newIdempotencyKey() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -31,156 +45,102 @@ function newIdempotencyKey() {
     .slice(2)}`;
 }
 
-const initialState = {
-  cartItems: [],
-  error: null,
-  blockedScan: null,
-  receiptData: null,
-};
-
-function checkoutReducer(state, action) {
-  switch (action.type) {
-    case "ADD_PRODUCT": {
-      const product = action.product;
-      const pid = Number(product.id);
-      const price = Number(product.price);
-      const stockNum = Number(product.stock);
-      const prev = state.cartItems;
-      const idx = prev.findIndex((x) => sameId(x.id, pid));
-
-      if (idx >= 0) {
-        const row = { ...prev[idx] };
-        const newQty = row.quantity + 1;
-        row.quantity = newQty;
-        row.subtotal = newQty * row.price;
-        const cartItems = [...prev];
-        cartItems[idx] = row;
-        return {
-          ...state,
-          cartItems,
-          error: null,
-          blockedScan: null,
-          receiptData: null,
-        };
-      }
-
-      return {
-        ...state,
-        cartItems: [
-          ...prev,
-          {
-            id: pid,
-            barcode: product.barcode,
-            scanned_barcode: product.scanned_barcode ?? product.matched_barcode ?? null,
-            product_barcode_id: product.product_barcode_id ?? null,
-            name: product.name,
-            price,
-            stock: stockNum,
-            tax_rate: product.tax_rate ?? null,
-            quantity: 1,
-            subtotal: price,
-          },
-        ],
-        error: null,
-        blockedScan: null,
-        receiptData: null,
-      };
-    }
-    case "REMOVE_ITEM":
-      return {
-        ...state,
-        cartItems: state.cartItems.filter((x) => !sameId(x.id, action.id)),
-      };
-    case "CHANGE_QTY": {
-      const { id, newQty } = action;
-      if (newQty < 1) return state;
-      const idx = state.cartItems.findIndex((x) => sameId(x.id, id));
-      if (idx < 0) return state;
-      const prev = state.cartItems;
-      const next = [...prev];
-      const row = { ...next[idx] };
-      row.quantity = newQty;
-      row.subtotal = newQty * row.price;
-      next[idx] = row;
-      return {
-        ...state,
-        cartItems: next,
-        error: null,
-        blockedScan: null,
-      };
-    }
-    case "CLEAR_CART":
-      return {
-        ...state,
-        cartItems: [],
-        error: null,
-        blockedScan: null,
-        receiptData: null,
-      };
-    case "CHECKOUT_SUCCESS":
-      return {
-        ...state,
-        cartItems: [],
-        error: null,
-        blockedScan: null,
-        receiptData: action.data,
-      };
-    case "CHECKOUT_ERROR": {
-      const d = action.payload;
-      const errMsg = d?.error || action.fallback || "فشل إتمام البيع";
-      return {
-        ...state,
-        error: errMsg,
-        blockedScan:
-          d && d.name != null && d.price != null
-            ? {
-                name: d.name,
-                price: Number(d.price),
-                stock: Number(d.stock),
-              }
-            : null,
-      };
-    }
-    case "CLEAR_SALE_ERR":
-      return { ...state, error: null, blockedScan: null };
-    default:
-      return state;
+function extractApiError(e, fallback) {
+  const body = e?.response?.data;
+  if (body && typeof body === "object" && body.error) return String(body.error);
+  if (e?.message && !/^Request failed with status code \d+$/.test(e.message)) {
+    return e.message;
   }
+  return fallback;
 }
 
 export default function Checkout() {
   const navigate = useNavigate();
   const user = getUser();
-  const [state, dispatch] = useReducer(checkoutReducer, initialState);
-  const { cartItems, error, blockedScan, receiptData } = state;
+  const [state, dispatch] = useReducer(checkoutReducer, checkoutInitialState);
+  const { cartItems, lastScannedCartKey, error, blockedScan, receiptData } = state;
 
   const [appSettings, setAppSettings] = useState(null);
   const [selectedPayment, setSelectedPayment] = useState(null);
   const [customerId, setCustomerId] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [payModalOpen, setPayModalOpen] = useState(false);
+  const [clearCartOpen, setClearCartOpen] = useState(false);
   const [shiftLoading, setShiftLoading] = useState(true);
   const [activeShift, setActiveShift] = useState(null);
   const [shiftTxCount, setShiftTxCount] = useState(0);
+  const [suspendedCount, setSuspendedCount] = useState(0);
+  const [suspendedSales, setSuspendedSales] = useState([]);
   const [endShiftOpen, setEndShiftOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
+  const [holdLoading, setHoldLoading] = useState(false);
+  const [posActionError, setPosActionError] = useState("");
+  const [suspendedModalOpen, setSuspendedModalOpen] = useState(false);
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [suspendedDetail, setSuspendedDetail] = useState(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+  const [restoreConflictOpen, setRestoreConflictOpen] = useState(false);
+  const [pendingRestoreId, setPendingRestoreId] = useState(null);
+  const [activeSuspendedSaleId, setActiveSuspendedSaleId] = useState(null);
+
+  const posActionErrorTimerRef = useRef(null);
+
+  const showPosActionError = useCallback((message) => {
+    if (posActionErrorTimerRef.current) {
+      window.clearTimeout(posActionErrorTimerRef.current);
+    }
+    setPosActionError(message);
+    posActionErrorTimerRef.current = window.setTimeout(() => {
+      setPosActionError("");
+      posActionErrorTimerRef.current = null;
+    }, 5000);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (posActionErrorTimerRef.current) {
+        window.clearTimeout(posActionErrorTimerRef.current);
+      }
+    },
+    []
+  );
 
   const posNeedsShift = requiresShiftForPos(user?.role);
   const shiftReady = !posNeedsShift || (!!activeShift && !shiftLoading);
 
-  // One key per cart state: reused across retries of the SAME cart so the
-  // server dedupes double submissions; reset whenever the cart changes.
+  const shortcuts = useMemo(
+    () => mergePosShortcutsFromSettings(appSettings),
+    [appSettings]
+  );
+
   const idempotencyKeyRef = useRef(null);
   useEffect(() => {
     idempotencyKeyRef.current = null;
   }, [cartItems]);
 
   useEffect(() => {
+    warmPosSounds();
     api
       .get("/api/settings", { headers: getAuthHeaders() })
       .then(({ data }) => setAppSettings(data))
       .catch(() => setAppSettings(null));
   }, []);
+
+  const loadSuspendedList = useCallback(async () => {
+    if (!shiftReady) {
+      setSuspendedCount(0);
+      setSuspendedSales([]);
+      return;
+    }
+    try {
+      const { data } = await api.get("/api/suspended-sales", { headers: getAuthHeaders() });
+      setSuspendedCount(Number(data.count) || 0);
+      setSuspendedSales(data.sales || []);
+    } catch {
+      setSuspendedCount(0);
+      setSuspendedSales([]);
+    }
+  }, [shiftReady]);
 
   const loadShift = useCallback(async () => {
     if (!posNeedsShift) {
@@ -194,9 +154,11 @@ export default function Checkout() {
       });
       setActiveShift(data.shift);
       setShiftTxCount(Number(data.transactions_count) || 0);
+      setSuspendedCount(Number(data.suspended_sales_count) || 0);
     } catch {
       setActiveShift(null);
       setShiftTxCount(0);
+      setSuspendedCount(0);
     } finally {
       setShiftLoading(false);
     }
@@ -205,6 +167,10 @@ export default function Checkout() {
   useEffect(() => {
     loadShift();
   }, [loadShift]);
+
+  useEffect(() => {
+    if (shiftReady) loadSuspendedList();
+  }, [shiftReady, loadSuspendedList]);
 
   const estimated = useMemo(
     () => estimateCartTotals(cartItems, appSettings),
@@ -215,82 +181,192 @@ export default function Checkout() {
 
   const addToCart = useCallback((product) => {
     dispatch({ type: "ADD_PRODUCT", product });
+    playScanSuccess();
   }, []);
 
-  const removeFromCart = useCallback((itemId) => {
-    dispatch({ type: "REMOVE_ITEM", id: itemId });
+  const removeFromCart = useCallback((cartKey) => {
+    dispatch({ type: "REMOVE_ITEM", cartKey });
+    focusBarcodeInput();
   }, []);
 
-  const changeQuantity = useCallback((itemId, newQty) => {
+  const changeQuantity = useCallback((cartKey, newQty) => {
     if (newQty < 1) return;
-    dispatch({ type: "CHANGE_QTY", id: itemId, newQty });
+    dispatch({ type: "CHANGE_QTY", cartKey, newQty });
+    focusBarcodeInput();
   }, []);
 
-  const clearCart = useCallback(() => {
+  const changeUnit = useCallback((cartKey, unitId) => {
+    dispatch({ type: "CHANGE_UNIT", cartKey, unitId });
+    focusBarcodeInput();
+  }, []);
+
+  const resetInvoiceState = useCallback(() => {
     dispatch({ type: "CLEAR_CART" });
     setSelectedPayment(null);
     setCustomerId(null);
     setPayModalOpen(false);
+    setActiveSuspendedSaleId(null);
+    focusBarcodeInput();
   }, []);
 
-  async function completeSale() {
-    if (!cartItems.length || !selectedPayment || isLoading) return;
-    if (selectedPayment === "on_account" && !customerId) {
-      dispatch({
-        type: "CHECKOUT_ERROR",
-        fallback: "اختر عميلاً للبيع على الذمة",
-      });
-      return;
-    }
-    dispatch({ type: "CLEAR_SALE_ERR" });
-    setIsLoading(true);
-    // Reuse the existing key on retry; mint one for a fresh attempt.
-    if (!idempotencyKeyRef.current) {
-      idempotencyKeyRef.current = newIdempotencyKey();
-    }
-    let receiptToPrint = null;
-    try {
-      const items = cartItems.map((c) => ({
-        product_id: c.id,
-        quantity: c.quantity,
-        price: c.price,
-        ...(c.scanned_barcode
-          ? { scanned_barcode: c.scanned_barcode, product_barcode_id: c.product_barcode_id ?? undefined }
-          : {}),
-      }));
-      const body = {
-        items,
-        payment_method: selectedPayment,
-        idempotency_key: idempotencyKeyRef.current,
-      };
-      if (customerId) body.customer_id = customerId;
+  const requestClearCart = useCallback(() => {
+    if (!cartItems.length) return;
+    setClearCartOpen(true);
+  }, [cartItems.length]);
 
-      const { data } = await api.post("/api/checkout", body, {
-        headers: {
-          ...getAuthHeaders(),
-          "Content-Type": "application/json",
-        },
+  const undoLastScan = useCallback(() => {
+    if (!state.scanHistory?.length) return;
+    dispatch({ type: "UNDO_LAST_SCAN" });
+    focusBarcodeInput();
+  }, [state.scanHistory?.length]);
+
+  const suspendCartItems = useCallback(async (items, note) => {
+    const { data } = await api.post(
+      "/api/suspended-sales",
+      { note: note?.trim() || null, items: cartItemsToSuspendPayload(items) },
+      { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+    );
+    return data;
+  }, []);
+
+  const fetchSuspendedDetail = useCallback(async (id) => {
+    const { data } = await api.get(`/api/suspended-sales/${id}`, {
+      headers: getAuthHeaders(),
+    });
+    return data;
+  }, []);
+
+  const applyRestoreFromDetail = useCallback(
+    (detail, mode) => {
+      const cartRows = suspendedItemsToCartItems(detail.items);
+      if (mode === "merge") {
+        dispatch({ type: "MERGE_CART", cartItems: cartRows });
+      } else {
+        dispatch({ type: "LOAD_CART", cartItems: cartRows });
+      }
+      setActiveSuspendedSaleId(detail.id);
+      setSuspendedModalOpen(false);
+      setRestoreConflictOpen(false);
+      setPendingRestoreId(null);
+      setDetailModalOpen(false);
+      focusBarcodeInput();
+    },
+    []
+  );
+
+  const restoreSuspendedSale = useCallback(
+    async (id, mode = "load") => {
+      const detail = await fetchSuspendedDetail(id);
+      applyRestoreFromDetail(detail, mode);
+      await loadSuspendedList();
+      await loadShift();
+    },
+    [applyRestoreFromDetail, fetchSuspendedDetail, loadShift, loadSuspendedList]
+  );
+
+  const requestRestore = useCallback(
+    (id) => {
+      if (cartItems.length > 0) {
+        setPendingRestoreId(id);
+        setRestoreConflictOpen(true);
+        return;
+      }
+      restoreSuspendedSale(id, "load").catch((e) => {
+        showPosActionError(extractApiError(e, "فشل استرجاع الفاتورة"));
       });
-      dispatch({ type: "CHECKOUT_SUCCESS", data });
-      receiptToPrint = data?.receipt_text || null;
-      idempotencyKeyRef.current = null; // next sale gets a fresh key
-      setSelectedPayment(null);
-      setCustomerId(null);
-      setPayModalOpen(false);
-      loadShift();
-    } catch (e) {
-      dispatch({
-        type: "CHECKOUT_ERROR",
-        payload: e.response?.data,
-        fallback: e.message || "فشل إتمام البيع",
-      });
-    } finally {
-      setIsLoading(false);
-    }
-    if (receiptToPrint) {
-      printReceipt(receiptToPrint);
-    }
-  }
+    },
+    [cartItems.length, restoreSuspendedSale, showPosActionError]
+  );
+
+  const syncSuspendedCart = useCallback(
+    async (saleId, items) => {
+      await api.put(
+        `/api/suspended-sales/${saleId}`,
+        { items: cartItemsToSuspendPayload(items) },
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+    },
+    []
+  );
+
+  const completeSale = useCallback(
+    async (paymentPayload = null) => {
+      const pay = paymentPayload || { payment_method: selectedPayment };
+      if (!cartItems.length || !pay.payment_method || isLoading) return;
+      if (pay.payment_method === "on_account" && !customerId) {
+        dispatch({
+          type: "CHECKOUT_ERROR",
+          fallback: "اختر عميلاً للبيع على الذمة",
+        });
+        return;
+      }
+      dispatch({ type: "CLEAR_SALE_ERR" });
+      setIsLoading(true);
+      unlockPosAudio();
+      if (!idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = newIdempotencyKey();
+      }
+      let receiptToPrint = null;
+      try {
+        const items = cartItems.map((c) => ({
+          product_id: c.id,
+          unit_id: c.unitId,
+          quantity: c.quantity,
+          price: c.price,
+          ...(c.scanned_barcode ? { scanned_barcode: c.scanned_barcode } : {}),
+        }));
+        const body = {
+          items,
+          idempotency_key: idempotencyKeyRef.current,
+          ...pay,
+        };
+        if (customerId) body.customer_id = customerId;
+        if (activeSuspendedSaleId) {
+          await syncSuspendedCart(activeSuspendedSaleId, cartItems);
+          body.suspended_sale_id = activeSuspendedSaleId;
+        }
+
+        const { data } = await api.post("/api/checkout", body, {
+          headers: {
+            ...getAuthHeaders(),
+            "Content-Type": "application/json",
+          },
+        });
+        dispatch({ type: "CHECKOUT_SUCCESS", data });
+        playCheckoutDone();
+        receiptToPrint = data?.receipt_text || null;
+        idempotencyKeyRef.current = null;
+        setSelectedPayment(null);
+        setCustomerId(null);
+        setPayModalOpen(false);
+        setActiveSuspendedSaleId(null);
+        loadShift();
+        loadSuspendedList();
+        focusBarcodeInput();
+      } catch (e) {
+        dispatch({
+          type: "CHECKOUT_ERROR",
+          payload: e.response?.data,
+          fallback: e.message || "فشل إتمام البيع",
+        });
+      } finally {
+        setIsLoading(false);
+      }
+      if (receiptToPrint) {
+        printReceipt(receiptToPrint);
+      }
+    },
+    [
+      cartItems,
+      customerId,
+      isLoading,
+      loadShift,
+      loadSuspendedList,
+      selectedPayment,
+      activeSuspendedSaleId,
+      syncSuspendedCart,
+    ]
+  );
 
   function doPrintLocal() {
     if (receiptData?.receipt_text) printReceipt(receiptData.receipt_text);
@@ -304,27 +380,169 @@ export default function Checkout() {
     setPayModalOpen(true);
   }
 
+  async function holdCartNow() {
+    if (!cartItems.length || !shiftReady || holdLoading) return;
+    setHoldLoading(true);
+    try {
+      await suspendCartItems(cartItems, null);
+      dispatch({ type: "CLEAR_CART" });
+      setActiveSuspendedSaleId(null);
+      await loadSuspendedList();
+      await loadShift();
+      focusBarcodeInput();
+    } catch (e) {
+      const status = e?.response?.status;
+      const msg =
+        status === 404
+          ? "خدمة تعليق الفاتورة غير متوفرة — أعد تشغيل الخادم أو حدّث Docker"
+          : extractApiError(e, "فشل تعليق الفاتورة");
+      showPosActionError(msg);
+    } finally {
+      setHoldLoading(false);
+    }
+  }
+
+  async function openSuspendedList() {
+    await loadSuspendedList();
+    setSuspendedModalOpen(true);
+    setDeleteConfirmId(null);
+  }
+
+  async function viewSuspendedDetails(id) {
+    try {
+      const detail = await fetchSuspendedDetail(id);
+      setSuspendedDetail(detail);
+      setDetailModalOpen(true);
+    } catch (e) {
+      showPosActionError(extractApiError(e, "تعذّر تحميل التفاصيل"));
+    }
+  }
+
+  async function confirmDeleteSuspended(id) {
+    try {
+      await api.delete(`/api/suspended-sales/${id}`, { headers: getAuthHeaders() });
+      setDeleteConfirmId(null);
+      if (activeSuspendedSaleId === id) setActiveSuspendedSaleId(null);
+      await loadSuspendedList();
+      await loadShift();
+      focusBarcodeInput();
+    } catch (e) {
+      showPosActionError(extractApiError(e, "فشل حذف الفاتورة المعلقة"));
+    }
+  }
+
+  async function handleHoldAndRestore() {
+    if (!pendingRestoreId) return;
+    setHoldLoading(true);
+    try {
+      if (cartItems.length) {
+        await suspendCartItems(cartItems, null);
+      }
+      await restoreSuspendedSale(pendingRestoreId, "load");
+    } catch (e) {
+      showPosActionError(extractApiError(e, "فشل استرجاع الفاتورة"));
+    } finally {
+      setHoldLoading(false);
+    }
+  }
+
+  function handleMergeRestore() {
+    if (!pendingRestoreId) return;
+    restoreSuspendedSale(pendingRestoreId, "merge").catch((e) => {
+      showPosActionError(extractApiError(e, "فشل دمج الفاتورة"));
+    });
+  }
+
   const handleCompleteClickRef = useRef(handleCompleteClick);
   handleCompleteClickRef.current = handleCompleteClick;
 
+  const undoLastScanRef = useRef(undoLastScan);
+  undoLastScanRef.current = undoLastScan;
+
+  const requestClearCartRef = useRef(requestClearCart);
+  requestClearCartRef.current = requestClearCart;
+
+  const holdCartNowRef = useRef(holdCartNow);
+  holdCartNowRef.current = holdCartNow;
+
+  const openSuspendedListRef = useRef(openSuspendedList);
+  openSuspendedListRef.current = openSuspendedList;
+
+  const shortcutsBlocked =
+    payModalOpen ||
+    endShiftOpen ||
+    refundOpen ||
+    clearCartOpen ||
+    suspendedModalOpen ||
+    detailModalOpen ||
+    restoreConflictOpen;
+
   useEffect(() => {
     function onKeyDown(ev) {
-      if (!ev.ctrlKey || ev.key.toLowerCase() !== "y") return;
-      if (payModalOpen || endShiftOpen || refundOpen) return;
-      if (!cartItems.length || !shiftReady || isLoading) return;
-      ev.preventDefault();
-      handleCompleteClickRef.current();
+      if (shortcutsBlocked) return;
+      if (!shouldHandlePosShortcut(ev)) return;
+
+      if (matchesShortcut(ev, shortcuts.undoLastScan.key)) {
+        if (!cartItems.length || isLoading) return;
+        ev.preventDefault();
+        undoLastScanRef.current();
+        return;
+      }
+
+      if (matchesShortcut(ev, shortcuts.newInvoice.key)) {
+        ev.preventDefault();
+        requestClearCartRef.current();
+        return;
+      }
+
+      if (shortcuts.holdCart.key && matchesShortcut(ev, shortcuts.holdCart.key)) {
+        ev.preventDefault();
+        holdCartNowRef.current();
+        return;
+      }
+
+      if (
+        shortcuts.suspendedCarts.key &&
+        matchesShortcut(ev, shortcuts.suspendedCarts.key)
+      ) {
+        ev.preventDefault();
+        openSuspendedListRef.current();
+        return;
+      }
+
+      if (matchesShortcut(ev, shortcuts.completeSale.key)) {
+        if (!cartItems.length || !shiftReady || isLoading) return;
+        ev.preventDefault();
+        handleCompleteClickRef.current();
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cartItems.length, shiftReady, isLoading, payModalOpen, endShiftOpen, refundOpen]);
+  }, [cartItems.length, shiftReady, isLoading, shortcutsBlocked, shortcuts]);
+
+  useEffect(() => {
+    function onKeyDown(ev) {
+      if (ev.key !== "Enter") return;
+      if (shortcutsBlocked) return;
+      const active = document.activeElement;
+      if (!active || active.tagName !== "BUTTON") return;
+      if (!active.closest(".pos-cart-panel")) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      focusBarcodeInput();
+    }
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [shortcutsBlocked]);
 
   function handlePayModalClose() {
     if (isLoading) return;
     setPayModalOpen(false);
     setSelectedPayment(null);
     setCustomerId(null);
+    focusBarcodeInput();
   }
 
   const canComplete = cartItems.length > 0 && !isLoading && shiftReady;
@@ -342,6 +560,14 @@ export default function Checkout() {
 
       <PosRefundNotifications />
 
+      {suspendedCount > 0 ? (
+        <div className="pos-suspended-banner" role="status">
+          يوجد فواتير معلقة ({suspendedCount})
+        </div>
+      ) : null}
+
+      {posActionError ? <div className="pos-action-error">{posActionError}</div> : null}
+
       {blockedScan ? (
         <div className="pos-blocked">
           آخر مسح: {blockedScan.name} — {ils(blockedScan.price)} (متوفر: {blockedScan.stock})
@@ -351,17 +577,36 @@ export default function Checkout() {
       <div className="pos-main">
         <PosCartTable
           cartItems={cartItems}
-          displayTotal={total}
+          scrollToCartKey={lastScannedCartKey}
           onQuantityChange={changeQuantity}
           onRemoveItem={removeFromCart}
+          onUnitChange={changeUnit}
         />
         <PosQuickGrid onProductFound={addToCart} />
       </div>
 
       <footer className="pos-footer">
         <div className="pos-toolbar">
-          <button type="button" className="pos-toolbar-btn" onClick={clearCart}>
+          <button type="button" className="pos-toolbar-btn" onClick={requestClearCart}>
             مسح السلة
+          </button>
+          <button
+            type="button"
+            className="pos-toolbar-btn"
+            onClick={holdCartNow}
+            disabled={holdLoading || !shiftReady}
+          >
+            {holdLoading ? "جاري التعليق…" : "تعليق الفاتورة"}
+          </button>
+          <button
+            type="button"
+            className="pos-toolbar-btn pos-toolbar-btn--badge"
+            onClick={openSuspendedList}
+          >
+            الفواتير المعلقة
+            {suspendedCount > 0 ? (
+              <span className="pos-toolbar-badge">({suspendedCount})</span>
+            ) : null}
           </button>
           <button type="button" className="pos-toolbar-btn" onClick={() => setRefundOpen(true)}>
             استرجاع
@@ -369,6 +614,16 @@ export default function Checkout() {
           <a href="/my-refunds" className="pos-toolbar-btn">
             طلباتي
           </a>
+        </div>
+        <div className="pos-shortcut-hints">
+          <span>{formatShortcutHint(shortcuts.undoLastScan)}</span>
+          <span>{formatShortcutHint(shortcuts.newInvoice)}</span>
+          {shortcuts.holdCart.key ? (
+            <span>{formatShortcutHint(shortcuts.holdCart)}</span>
+          ) : null}
+          {shortcuts.suspendedCarts.key ? (
+            <span>{formatShortcutHint(shortcuts.suspendedCarts)}</span>
+          ) : null}
         </div>
         <PosPaymentPanel
           subtotal={subtotal}
@@ -382,6 +637,54 @@ export default function Checkout() {
           onPrintLocal={doPrintLocal}
         />
       </footer>
+
+      <PosClearCartModal
+        open={clearCartOpen}
+        onClose={() => {
+          setClearCartOpen(false);
+          focusBarcodeInput();
+        }}
+        onConfirm={() => {
+          setClearCartOpen(false);
+          resetInvoiceState();
+        }}
+      />
+
+      <PosSuspendedSalesModal
+        open={suspendedModalOpen}
+        sales={suspendedSales}
+        onClose={() => {
+          setSuspendedModalOpen(false);
+          setDeleteConfirmId(null);
+          focusBarcodeInput();
+        }}
+        onRestore={requestRestore}
+        onDelete={(id) => setDeleteConfirmId(id)}
+        onViewDetails={viewSuspendedDetails}
+        deleteConfirmId={deleteConfirmId}
+        onConfirmDelete={confirmDeleteSuspended}
+        onCancelDelete={() => setDeleteConfirmId(null)}
+      />
+
+      <PosSuspendedDetailModal
+        open={detailModalOpen}
+        detail={suspendedDetail}
+        onClose={() => {
+          setDetailModalOpen(false);
+          focusBarcodeInput();
+        }}
+      />
+
+      <PosRestoreConflictModal
+        open={restoreConflictOpen}
+        onHoldAndRestore={handleHoldAndRestore}
+        onMerge={handleMergeRestore}
+        onCancel={() => {
+          setRestoreConflictOpen(false);
+          setPendingRestoreId(null);
+          focusBarcodeInput();
+        }}
+      />
 
       <PosRefundModal
         open={refundOpen}
@@ -411,6 +714,7 @@ export default function Checkout() {
         <ShiftEnd
           shiftId={activeShift.id}
           txCount={shiftTxCount}
+          suspendedCount={suspendedCount}
           open={endShiftOpen}
           onClose={() => setEndShiftOpen(false)}
           onSuccess={() => {
@@ -431,3 +735,5 @@ export default function Checkout() {
     </div>
   );
 }
+
+export { checkoutReducer, checkoutInitialState };

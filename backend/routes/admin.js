@@ -22,6 +22,10 @@ import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { assignEntityCodeIfMissing, ensureEntityCode, renumberAllEntityCodesBatch } from "../utils/entityCodes.js";
 import { createBackup } from "../utils/backup.js";
 import { syncProductsPrimaryBarcode } from "../utils/productBarcodes.js";
+import { persistProductImportRows } from "../utils/productUnitsImport.js";
+import { repairProductUnitPrices } from "../utils/productUnits.js";
+import { looksLikePackOnlyProduct } from "../utils/unitNames.js";
+import { digitsOnly, normalizeBarcodeInput } from "../utils/barcode.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -216,7 +220,19 @@ export function createAdminRouter(db, dbPath) {
       }
 
       if (filteredBarcodes.length === 0) {
-        skipped++;
+        const primaryBc = digitsOnly(normalizeBarcodeInput(norm.row.barcode));
+        if (primaryBc && seenInFile.has(primaryBc) && looksLikePackOnlyProduct(norm.row.name)) {
+          validRows.push({
+            rowNum,
+            row: {
+              ...norm.row,
+              barcodes: [{ barcode: primaryBc, label: null, is_primary: true }],
+              _packLinkRow: true,
+            },
+          });
+        } else {
+          skipped++;
+        }
         continue;
       }
 
@@ -229,211 +245,19 @@ export function createAdminRouter(db, dbPath) {
       });
     }
 
+    /** @type {Awaited<ReturnType<typeof persistProductImportRows>> | null} */
+    let importResult = null;
     try {
       await db.run("BEGIN IMMEDIATE");
-      for (const { rowNum, row } of validRows) {
-        await db.run("SAVEPOINT import_row");
-        try {
-        const {
-          barcode,
-          barcodes,
-          name,
-          name_en,
-          price,
-          cost,
-          category,
-          stock,
-          tax_rate,
-          unit,
-          expiry_date,
-          min_price,
-          max_price,
-          sku,
-          shortCodes,
-          _barcodeRawCells,
-          _barcodesExtracted,
-          _rawMainBarcode,
-          _rawUnitBarcodes,
-        } = row;
-
-        const rowSkippedDupes = [];
-        const rowConflicts = [];
-        /** @type {string[]} */
-        const insertedBarcodes = [];
-
-        const primaryBc = String(barcode ?? "").trim();
-        let productId = await resolveImportProductId(db, primaryBc, barcodes);
-
-        const productFields = [
-          name,
-          name_en ?? null,
-          price,
-          cost,
-          category,
-          stock,
-          tax_rate ?? null,
-          unit ?? null,
-          expiry_date ?? null,
-          min_price ?? null,
-          max_price ?? null,
-        ];
-
-        if (productId) {
-          const primaryOwner = await findPrimaryBarcodeOwner(db, primaryBc, productId);
-          if (primaryOwner) {
-            barcode_conflicts.push({
-              row: rowNum,
-              barcode: primaryBc,
-              existing_product_id: primaryOwner.id,
-              existing_product_name: primaryOwner.name,
-            });
-            rowConflicts.push(primaryBc);
-            await db.run(
-              `UPDATE products SET name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
-                  tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ?
-               WHERE id = ?`,
-              [...productFields, productId]
-            );
-            await assignEntityCodeIfMissing(db, "product", productId);
-          } else {
-            await db.run(
-              `UPDATE products SET barcode = ?, name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
-                  tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ?
-               WHERE id = ?`,
-              [primaryBc, ...productFields, productId]
-            );
-            await assignEntityCodeIfMissing(db, "product", productId);
-          }
-          products_updated++;
-        } else {
-          const existingPrimary = await db.get(
-            `SELECT id AS product_id, name FROM products WHERE CAST(barcode AS TEXT) = ?`,
-            [primaryBc]
-          );
-          if (existingPrimary) {
-            productId = existingPrimary.product_id;
-            await db.run(
-              `UPDATE products SET name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
-                  tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ?
-               WHERE id = ?`,
-              [...productFields, productId]
-            );
-            await assignEntityCodeIfMissing(db, "product", productId);
-            products_updated++;
-          } else {
-            const insertSku = await ensureEntityCode(db, "product", null);
-            const info = await db.run(
-              `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [primaryBc, ...productFields, insertSku]
-            );
-            productId = info.lastID;
-            products_created++;
-          }
-        }
-
-        for (const entry of barcodes) {
-          const bc = String(entry.barcode ?? "").trim();
-          if (!bc) continue;
-          const label = entry.label;
-          try {
-            const existing = await db.get(
-              `SELECT pb.id, pb.product_id, p.name AS product_name
-               FROM product_barcodes pb JOIN products p ON p.id = pb.product_id
-               WHERE pb.barcode = ?`,
-              [bc]
-            );
-            if (existing) {
-              if (Number(existing.product_id) === Number(productId)) {
-                duplicate_barcodes_skipped++;
-                rowSkippedDupes.push(bc);
-                if (bc === DEBUG_BARCODE) {
-                  console.info(
-                    `[import][debug-barcode] insert row=${rowNum} action=skippedDuplicate product_id=${productId} product_name=${JSON.stringify(name)}`
-                  );
-                }
-              } else {
-                barcode_conflicts.push({
-                  row: rowNum,
-                  barcode: bc,
-                  existing_product_id: existing.product_id,
-                  existing_product_name: existing.product_name,
-                });
-                rowConflicts.push(bc);
-                if (bc === DEBUG_BARCODE) {
-                  console.info(
-                    `[import][debug-barcode] insert row=${rowNum} action=conflict existing_product_id=${existing.product_id} existing_product_name=${JSON.stringify(existing.product_name)}`
-                  );
-                }
-              }
-              continue;
-            }
-
-            const isPrimary = entry.is_primary === true || bc === String(barcode ?? "").trim() ? 1 : 0;
-            if (isPrimary) {
-              await db.run("UPDATE product_barcodes SET is_primary = 0 WHERE product_id = ?", [productId]);
-            }
-            await db.run(
-              "INSERT INTO product_barcodes (product_id, barcode, label, is_primary) VALUES (?, ?, ?, ?)",
-              [productId, bc, label ?? null, isPrimary]
-            );
-            barcodes_added++;
-            insertedBarcodes.push(bc);
-            if (bc === DEBUG_BARCODE) {
-              console.info(
-                `[import][debug-barcode] insert row=${rowNum} action=inserted product_id=${productId} product_name=${JSON.stringify(name)}`
-              );
-            }
-            if (bc.length >= 4 && bc.length <= 7) {
-              short_internal_codes_added++;
-            }
-          } catch (insertErr) {
-            console.info(`[import] row=${rowNum} barcode=${bc} insertError=${insertErr.message}`);
-            errors.push({ row: rowNum, barcode: bc, reason: insertErr.message || "فشل إدراج الباركود" });
-          }
-        }
-
-        await syncProductsPrimaryBarcode(db, productId);
-
-        const extractedList = _barcodesExtracted ?? barcodes.map((b) => b.barcode);
-        const shouldLogImportRow = rowNum <= 21 || barcodes.length > 1;
-        if (shouldLogImportRow) {
-          console.info(
-            `[import] row=${rowNum} name="${name}" rawMain=${JSON.stringify(_rawMainBarcode ?? null)} rawUnit=${JSON.stringify(_rawUnitBarcodes ?? null)} rawCells=${JSON.stringify(_barcodeRawCells ?? [])} extracted=${JSON.stringify(extractedList)} inserted=${JSON.stringify(insertedBarcodes)} skippedDupes=${JSON.stringify(rowSkippedDupes)} conflicts=${JSON.stringify(rowConflicts)} shortCodes=${JSON.stringify(shortCodes ?? [])}`
-          );
-        }
-
-        if (name.includes(DEBUG_IMPORT_PRODUCT_NAME)) {
-          console.info(
-            `[import][debug] insert row=${rowNum} name=${JSON.stringify(name)} rawName=${JSON.stringify(row._rawName ?? name)} rawMain=${JSON.stringify({ type: typeof _rawMainBarcode, value: _rawMainBarcode })} rawUnit=${JSON.stringify({ type: typeof _rawUnitBarcodes, value: _rawUnitBarcodes })} extracted=${JSON.stringify(extractedList)} product_id=${productId} inserted=${JSON.stringify(insertedBarcodes)} skippedDupes=${JSON.stringify(rowSkippedDupes)} conflicts=${JSON.stringify(rowConflicts)}`
-          );
-        }
-
-        if (
-          extractedList.includes(DEBUG_BARCODE) ||
-          insertedBarcodes.includes(DEBUG_BARCODE) ||
-          rowSkippedDupes.includes(DEBUG_BARCODE) ||
-          rowConflicts.includes(DEBUG_BARCODE)
-        ) {
-          console.info(
-            `[import][debug-barcode] insert summary row=${rowNum} product_id=${productId} name=${JSON.stringify(name)} extracted=${extractedList.includes(DEBUG_BARCODE)} inserted=${insertedBarcodes.includes(DEBUG_BARCODE)} skippedDup=${rowSkippedDupes.includes(DEBUG_BARCODE)} conflict=${rowConflicts.includes(DEBUG_BARCODE)}`
-          );
-        }
-        await db.run("RELEASE SAVEPOINT import_row");
-        } catch (rowErr) {
-          try {
-            await db.run("ROLLBACK TO SAVEPOINT import_row");
-          } catch (_) {}
-          console.info(`[import] row=${rowNum} fatalError=${rowErr.message}`);
-          errors.push({
-            row: rowNum,
-            reason:
-              rowErr.code === "SQLITE_CONSTRAINT"
-                ? `تعارض باركود: ${rowErr.message}`
-                : rowErr.message || "فشل استيراد الصف",
-          });
-          skipped++;
-        }
+      importResult = await persistProductImportRows(db, validRows);
+      products_created = importResult.products_created;
+      products_updated = importResult.products_updated;
+      barcodes_added = importResult.barcodes_added;
+      duplicate_barcodes_skipped = importResult.duplicate_barcodes_skipped;
+      barcode_conflicts.push(...importResult.barcode_conflicts);
+      if (importResult.row_errors?.length) {
+        errors.push(...importResult.row_errors);
+        skipped += importResult.row_errors.length;
       }
       await db.run("COMMIT");
     } catch (e) {
@@ -449,6 +273,9 @@ export function createAdminRouter(db, dbPath) {
       inserted,
       products_created,
       products_updated,
+      units_upserted: importResult?.units_upserted ?? 0,
+      needs_review_count: importResult?.needs_review_count ?? 0,
+      absorbed_rows: importResult?.absorbed_rows ?? 0,
       barcodes_added,
       short_internal_codes_added,
       scientific_notation_cells_detected,
@@ -457,10 +284,24 @@ export function createAdminRouter(db, dbPath) {
       barcode_conflicts,
       skipped,
       errors,
-      message: `تم استيراد ${products_created} منتجاً جديداً وتحديث ${products_updated} — ${barcodes_added} باركود مضاف`,
+      message: `تم استيراد ${products_created} منتجاً جديداً وتحديث ${products_updated} — ${importResult?.units_upserted ?? 0} وحدة`,
     });
     }
   );
+
+  router.post("/products/repair-unit-prices", async (_req, res, next) => {
+    try {
+      const result = await repairProductUnitPrices(db);
+      res.json({
+        success: true,
+        updated: result.updated,
+        needs_review_count: result.needs_review_count,
+        message: `تم تحديث ${result.updated} وحدة`,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
 
   router.delete("/products/:id", async (req, res, next) => {
     try {

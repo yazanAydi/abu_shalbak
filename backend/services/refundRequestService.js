@@ -15,6 +15,12 @@ function round2(n) {
   return Math.round(Number(n) * 100) / 100;
 }
 
+function lineKey(it) {
+  const pid = Number(it.product_id);
+  const uid = Number(it.unit_id ?? it.product_unit_id ?? 0);
+  return `${pid}:${uid}`;
+}
+
 function mergeItemsIntoMap(map, itemsJson) {
   const arr = parseItemsJson(itemsJson);
   if (!Array.isArray(arr)) return;
@@ -22,7 +28,8 @@ function mergeItemsIntoMap(map, itemsJson) {
     const pid = Number(it.product_id);
     const q = Number(it.quantity) || 0;
     if (!pid || q <= 0) continue;
-    map.set(pid, (map.get(pid) || 0) + q);
+    const key = lineKey(it);
+    map.set(key, (map.get(key) || 0) + q);
   }
 }
 
@@ -53,10 +60,11 @@ export async function applyApprovedRefundEffects(db, refund) {
     const q = Number(L.quantity) || 0;
     const pid = Number(L.product_id);
     if (pid && q > 0) {
+      const conversion = Math.max(0.0001, Number(L.conversion_to_base) || 1);
       await recordMovement(db, {
         productId: pid,
         movementType: "refund",
-        quantity: q,
+        quantity: q * conversion,
         refType: "refund",
         refId: refund.id,
         notes: `استرجاع #${refund.id}`,
@@ -94,25 +102,53 @@ async function buildRefundLines(db, transactionId, lines) {
   for (const it of origItems || []) {
     const pid = Number(it.product_id);
     if (!pid) continue;
-    origMap.set(pid, {
+    const key = lineKey(it);
+    origMap.set(key, {
       ...it,
       quantity: Number(it.quantity) || 0,
       price: round2(Number(it.price) || 0),
+      conversion_to_base: Math.max(0.0001, Number(it.conversion_to_base) || 1),
     });
   }
   const refundedSoFar = await refundedQtyByProduct(db, transactionId);
   const refundLines = [];
   for (const L of lines) {
     const pid = Number(L.product_id);
+    const unitId = Number(L.unit_id ?? L.product_unit_id ?? 0);
     const want = Math.max(0, Number(L.quantity) || 0);
     if (!pid || want <= 0) continue;
-    const orig = origMap.get(pid);
+    const key = `${pid}:${unitId}`;
+    const orig = origMap.get(key) || (unitId === 0 ? origMap.get(`${pid}:0`) : null);
+    if (!orig && unitId === 0) {
+      for (const [k, v] of origMap.entries()) {
+        if (k.startsWith(`${pid}:`)) {
+          const cap = v.quantity - (refundedSoFar.get(k) || 0);
+          if (want <= cap) {
+            refundLines.push({
+              product_id: pid,
+              unit_id: Number(k.split(":")[1]) || null,
+              barcode: v.barcode,
+              name: v.name,
+              unit_name: v.unit_name,
+              quantity: want,
+              price: v.price,
+              tax_rate: v.tax_rate,
+              conversion_to_base: v.conversion_to_base,
+              lineTotal: round2(want * v.price),
+            });
+            refundedSoFar.set(k, (refundedSoFar.get(k) || 0) + want);
+            break;
+          }
+        }
+      }
+      continue;
+    }
     if (!orig) {
       const err = new Error(`المنتج ${pid} ليس في البيع الأصلي`);
       err.status = 400;
       throw err;
     }
-    const cap = orig.quantity - (refundedSoFar.get(pid) || 0);
+    const cap = orig.quantity - (refundedSoFar.get(key) || 0);
     if (want > cap) {
       const err = new Error(`الكمية كبيرة جداً للمنتج ${pid}`);
       err.status = 400;
@@ -121,14 +157,17 @@ async function buildRefundLines(db, transactionId, lines) {
     }
     refundLines.push({
       product_id: pid,
+      unit_id: unitId || null,
       barcode: orig.barcode,
       name: orig.name,
+      unit_name: orig.unit_name,
       quantity: want,
       price: orig.price,
       tax_rate: orig.tax_rate,
+      conversion_to_base: orig.conversion_to_base,
       lineTotal: round2(want * orig.price),
     });
-    refundedSoFar.set(pid, (refundedSoFar.get(pid) || 0) + want);
+    refundedSoFar.set(key, (refundedSoFar.get(key) || 0) + want);
   }
   if (refundLines.length === 0) {
     const err = new Error("لا توجد أسطر إرجاع صالحة");
@@ -151,10 +190,13 @@ async function buildRefundLines(db, transactionId, lines) {
     itemsJson: JSON.stringify(
       refundLines.map((x) => ({
         product_id: x.product_id,
+        unit_id: x.unit_id,
         barcode: x.barcode,
         name: x.name,
+        unit_name: x.unit_name,
         quantity: x.quantity,
         price: x.price,
+        conversion_to_base: x.conversion_to_base,
       }))
     ),
   };

@@ -12,6 +12,15 @@ import {
   ensureProductBarcodeOnCreate,
   syncProductsPrimaryBarcode,
 } from "../utils/productBarcodes.js";
+import { buildBarcodeLookupResponse } from "../utils/productUnitLookup.js";
+import {
+  deleteProductUnit,
+  formatProductUnit,
+  getDefaultUnit,
+  loadUnitsForProduct,
+  syncProductFromDefaultUnit,
+  upsertProductUnit,
+} from "../utils/productUnits.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { ensureEntityCode } from "../utils/entityCodes.js";
 import { recordPriceChange } from "../utils/priceHistory.js";
@@ -46,10 +55,10 @@ function marginPct(price, cost) {
 }
 
 const PRODUCT_LIST_SELECT = `id, barcode, name, name_en, price, cost, stock, category, tax_rate, unit, expiry_date, min_price, max_price, sku,
-              COALESCE(is_active, 1) AS is_active`;
+              COALESCE(is_active, 1) AS is_active, COALESCE(needs_review, 0) AS needs_review`;
 
 const PRODUCT_LIST_SELECT_P = `p.id, p.barcode, p.name, p.name_en, p.price, p.cost, p.stock, p.category, p.tax_rate, p.unit, p.expiry_date, p.min_price, p.max_price, p.sku,
-              COALESCE(p.is_active, 1) AS is_active`;
+              COALESCE(p.is_active, 1) AS is_active, COALESCE(p.needs_review, 0) AS needs_review`;
 
 export async function searchProducts(db, rawQuery) {
   const normalized = normalizeBarcodeInput(String(rawQuery ?? "").trim());
@@ -64,6 +73,19 @@ export async function searchProducts(db, rawQuery) {
   const byId = new Map();
 
   if (/^\d+$/.test(normalized)) {
+    const fromUnits = await db.all(
+      `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P},
+              pu.barcode AS matched_barcode, pu.unit_name AS matched_barcode_label,
+              pu.id AS unit_id, pu.price AS unit_price, pu.conversion_to_base
+       FROM product_units pu
+       JOIN products p ON p.id = pu.product_id
+       WHERE pu.barcode = ?`,
+      [normalized]
+    );
+    for (const row of fromUnits) {
+      byId.set(row.id, { ...row, price: row.unit_price ?? row.price });
+    }
+
     const fromPb = await db.all(
       `SELECT ${PRODUCT_LIST_SELECT_P},
               pb.barcode AS matched_barcode, pb.label AS matched_barcode_label
@@ -137,37 +159,56 @@ export function createProductsRouter(db) {
     return res.json(rows);
   });
 
-  router.get("/:barcode", requireAuth, async (req, res) => {
+  router.get("/by-barcode/:barcode", requireAuth, async (req, res) => {
     const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
-    const found = await findProductByBarcode(db, barcode);
-    if (!found) {
+    const payload = await buildBarcodeLookupResponse(db, barcode);
+    if (!payload) {
       return res.status(404).json({ error: "المنتج غير موجود" });
     }
-    const row = found.product;
-    if (Number(row.is_active) === 0) {
+    if (payload.inactive) {
       return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
     }
-    res.json({
-      id: row.id,
-      barcode: row.barcode,
-      primary_barcode: row.barcode,
-      name: row.name,
-      name_en: row.name_en ?? null,
-      price: row.price,
-      cost: row.cost,
-      stock: row.stock,
-      category: row.category,
-      tax_rate: row.tax_rate ?? null,
-      unit: row.unit ?? null,
-      expiry_date: row.expiry_date ?? null,
-      min_price: row.min_price ?? null,
-      max_price: row.max_price ?? null,
-      sku: row.sku ?? null,
-      image_url: row.image_url ?? null,
-      scanned_barcode: found.scannedBarcode,
-      product_barcode_id: found.productBarcodeId,
-      matched_barcode: found.matchedBarcode,
-    });
+    return res.json(payload);
+  });
+
+  router.get("/:barcode", requireAuth, async (req, res) => {
+    const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
+    const payload = await buildBarcodeLookupResponse(db, barcode);
+    if (!payload) {
+      const found = await findProductByBarcode(db, barcode);
+      if (!found) {
+        return res.status(404).json({ error: "المنتج غير موجود" });
+      }
+      const row = found.product;
+      if (Number(row.is_active) === 0) {
+        return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
+      }
+      return res.json({
+        id: row.id,
+        barcode: row.barcode,
+        primary_barcode: row.barcode,
+        name: row.name,
+        name_en: row.name_en ?? null,
+        price: row.price,
+        cost: row.cost,
+        stock: row.stock,
+        category: row.category,
+        tax_rate: row.tax_rate ?? null,
+        unit: row.unit ?? null,
+        expiry_date: row.expiry_date ?? null,
+        min_price: row.min_price ?? null,
+        max_price: row.max_price ?? null,
+        sku: row.sku ?? null,
+        image_url: row.image_url ?? null,
+        scanned_barcode: found.scannedBarcode,
+        product_barcode_id: found.productBarcodeId,
+        matched_barcode: found.matchedBarcode,
+      });
+    }
+    if (payload.inactive) {
+      return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
+    }
+    res.json(payload);
   });
 
   router.post("/", requireAuth, requireAdmin, async (req, res) => {
@@ -179,6 +220,10 @@ export function createProductsRouter(db) {
       return res.status(400).json({ error: "السعر غير صالح" });
     }
     const bcNorm = digitsOnly(normalizeBarcodeInput(barcode));
+    const unitDup = await db.get("SELECT product_id FROM product_units WHERE barcode = ?", [bcNorm]);
+    if (unitDup) {
+      return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
+    }
     const pbDup = await db.get("SELECT product_id FROM product_barcodes WHERE barcode = ?", [bcNorm]);
     if (pbDup) {
       return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
@@ -211,6 +256,14 @@ export function createProductsRouter(db) {
         ]
       );
       await ensureProductBarcodeOnCreate(db, info.lastID, barcode);
+      await upsertProductUnit(db, info.lastID, {
+        unit_name: unit || "حبة",
+        barcode,
+        price: Number(price),
+        cost: c,
+        conversion_to_base: 1,
+        is_default: true,
+      });
       const row = await db.get("SELECT * FROM products WHERE id = ?", [info.lastID]);
       await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_CREATE, "products", row.id, null, { name: row.name, price: row.price, stock: row.stock });
       if (Number(row.price) > 0) {
@@ -275,6 +328,7 @@ export function createProductsRouter(db) {
     const sku = b.sku !== undefined ? (b.sku ? String(b.sku).trim() : null) : existing.sku;
     const image_url = b.image_url !== undefined ? (b.image_url ? String(b.image_url).trim() : null) : existing.image_url;
     const priceChanged = round2(existing.price) !== round2(price);
+    const costChanged = round2(existing.cost) !== round2(cost);
     try {
       await db.run(
         `UPDATE products SET barcode = ?, price = ?, stock = ?, name = ?, name_en = ?, category = ?, unit = ?,
@@ -302,8 +356,24 @@ export function createProductsRouter(db) {
       await syncProductsPrimaryBarcode(db, Number(id));
     }
     const row = await db.get("SELECT * FROM products WHERE id = ?", [id]);
+    if (priceChanged || costChanged) {
+      const defaultUnit = await getDefaultUnit(db, Number(id));
+      if (defaultUnit) {
+        if (priceChanged) {
+          await db.run("UPDATE product_units SET price = ?, updated_at = datetime('now') WHERE id = ?", [
+            round2(price),
+            defaultUnit.id,
+          ]);
+        }
+        if (costChanged) {
+          await db.run("UPDATE product_units SET cost = ?, updated_at = datetime('now') WHERE id = ?", [
+            round2(cost),
+            defaultUnit.id,
+          ]);
+        }
+      }
+    }
     if (priceChanged) {
-      // recordPriceChange writes both the price-history row AND the PRICE_CHANGE audit log
       await recordPriceChange(db, req, {
         productId: Number(id),
         oldPrice: existing.price,
@@ -326,6 +396,86 @@ export function createProductsRouter(db) {
     const row = await db.get("SELECT * FROM products WHERE id = ?", [id]);
     await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_UPDATE, "products", id, existing, row);
     res.json(row);
+  });
+
+  // ════════════════════ Product units (admin-only) ════════════════════
+
+  router.get("/:id/units", requireAuth, requireAdmin, async (req, res) => {
+    const product = await loadProductById(req.params.id);
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
+    const units = await loadUnitsForProduct(db, product.id);
+    res.json({ product_id: product.id, units });
+  });
+
+  router.post("/:id/units", requireAuth, requireAdmin, async (req, res) => {
+    const product = await loadProductById(req.params.id);
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
+    const b = req.body || {};
+    if (!b.barcode) return res.status(400).json({ error: "الباركود مطلوب" });
+    try {
+      const row = await upsertProductUnit(db, product.id, {
+        unit_name: b.unit_name || b.unitName,
+        barcode: b.barcode,
+        price: b.price ?? product.price,
+        cost: b.cost ?? product.cost,
+        conversion_to_base: b.conversion_to_base ?? 1,
+        is_default: b.is_default === true,
+        alias_barcodes: b.alias_barcodes,
+      });
+      res.status(201).json(formatProductUnit(row));
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  });
+
+  router.put("/:id/units/:unitId", requireAuth, requireAdmin, async (req, res) => {
+    const product = await loadProductById(req.params.id);
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
+    const unitId = parsePositiveInt(req.params.unitId);
+    if (!unitId) return res.status(400).json({ error: "معرّف غير صالح" });
+    const existing = await db.get("SELECT * FROM product_units WHERE id = ? AND product_id = ?", [
+      unitId,
+      product.id,
+    ]);
+    if (!existing) return res.status(404).json({ error: "الوحدة غير موجودة" });
+    const b = req.body || {};
+    try {
+      const row = await upsertProductUnit(db, product.id, {
+        unit_name: b.unit_name ?? existing.unit_name,
+        barcode: b.barcode ?? existing.barcode,
+        price: b.price ?? existing.price,
+        cost: b.cost ?? existing.cost,
+        conversion_to_base: b.conversion_to_base ?? existing.conversion_to_base,
+        is_default: b.is_default === true || Number(existing.is_default) === 1,
+      });
+      if (b.is_default === true) {
+        await db.run("UPDATE product_units SET is_default = 0 WHERE product_id = ? AND id != ?", [
+          product.id,
+          unitId,
+        ]);
+        await db.run("UPDATE product_units SET is_default = 1 WHERE id = ?", [unitId]);
+        await syncProductFromDefaultUnit(db, product.id);
+      }
+      res.json(formatProductUnit(row));
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  });
+
+  router.delete("/:id/units/:unitId", requireAuth, requireAdmin, async (req, res) => {
+    const product = await loadProductById(req.params.id);
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
+    const unitId = parsePositiveInt(req.params.unitId);
+    if (!unitId) return res.status(400).json({ error: "معرّف غير صالح" });
+    try {
+      await deleteProductUnit(db, product.id, unitId);
+      res.json({ success: true });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
   });
 
   // ════════════════════ Product barcodes (admin-only) ════════════════════
@@ -824,6 +974,13 @@ export function createProductsRouter(db) {
     try {
       await db.run("BEGIN IMMEDIATE");
       await db.run("UPDATE products SET price = ? WHERE id = ?", [round2(newPrice), product.id]);
+      const defaultUnit = await getDefaultUnit(db, product.id);
+      if (defaultUnit) {
+        await db.run("UPDATE product_units SET price = ?, updated_at = datetime('now') WHERE id = ?", [
+          round2(newPrice),
+          defaultUnit.id,
+        ]);
+      }
       await recordPriceChange(db, req, {
         productId: product.id,
         oldPrice,

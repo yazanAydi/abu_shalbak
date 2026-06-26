@@ -6,10 +6,12 @@ import {
   extractBarcodesFromValue,
   normalizeBarcodeInput,
   parsePrice,
+  parseUnitBarcodeLines,
   pickPrimaryBarcode,
   uniqueBarcodeEntries,
   valueToText,
 } from "./barcode.js";
+import { normalizeUnitName } from "./unitNames.js";
 
 /** @typedef {{ barcode: string, label: string | null }[]} BarcodeEntry */
 /** @typedef {{ col: number, header: string, raw: string, formatted: string, fromScientific: boolean }} BarcodeRawCell */
@@ -204,14 +206,47 @@ export function excelCellDisplayText(sheet, rowIndex, col, fallback) {
 export function findArabicRetailHeaderRow(matrix) {
   for (let r = 0; r < Math.min(matrix.length, 10); r++) {
     const row = matrix[r] || [];
-    const nameHeader = String(row[RETAIL_NAME_COL] ?? "").trim();
-    const unitHeader = String(row[RETAIL_UNIT_BARCODE_COL] ?? "").trim();
-    if (nameHeader === "الاسم" && unitHeader.includes("باركود الوحدات")) {
+    if (isArabicRetailFormat(row) || isExtendedArabicRetailFormat(row)) {
       return r;
     }
   }
-  if (isArabicRetailFormat(matrix[0])) return 0;
+  if (isArabicRetailFormat(matrix[0]) || isExtendedArabicRetailFormat(matrix[0])) return 0;
   return -1;
+}
+
+/**
+ * @param {unknown[]} headerRow
+ */
+export function isExtendedArabicRetailFormat(headerRow) {
+  const row = headerRow || [];
+  const headers = row.map((h) => String(h ?? "").trim());
+  const hasName = headers.some((h) => h === "الاسم");
+  const hasBarcode = headers.some((h) => h === "باركود");
+  const hasUnitBarcodes = headers.some((h) => h.includes("باركود الوحدات"));
+  const hasPrice = headers.some((h) => h === "مفرق");
+  return hasName && hasBarcode && hasUnitBarcodes && hasPrice;
+}
+
+/**
+ * @param {unknown[]} headerRow
+ * @returns {Record<string, number>}
+ */
+export function mapExtendedArabicRetailColumns(headerRow) {
+  /** @type {Record<string, number>} */
+  const colMap = {};
+  const row = headerRow || [];
+  for (let c = 0; c < row.length; c++) {
+    const h = String(row[c] ?? "").trim();
+    if (h === "الاسم") colMap.name = c;
+    else if (h === "باركود") colMap.barcode = c;
+    else if (h.includes("باركود الوحدات")) colMap.barcode_units = c;
+    else if (h === "مفرق") colMap.price = c;
+    else if (h === "التكلفة") colMap.cost = c;
+    else if (h === "الرصيد الحالي" || h === "المخزون") colMap.stock = c;
+    else if (h === "التصنيف") colMap.category = c;
+    else if (h === "الرقم") colMap.sku = c;
+  }
+  return colMap;
 }
 
 /**
@@ -253,6 +288,10 @@ function retailBarcodeCellText(sheet, rowIndex, col, fallback) {
  * @returns {Record<string, unknown>[]}
  */
 export function parseArabicRetailMatrix(rows, headerRowIndex = 0, sheet = null) {
+  const headerRow = rows[headerRowIndex] || [];
+  const extended = isExtendedArabicRetailFormat(headerRow) && !isArabicRetailFormat(headerRow);
+  const colMap = extended ? mapExtendedArabicRetailColumns(headerRow) : null;
+
   const dataRowCount = rows.length - headerRowIndex - 1;
   if (dataRowCount > MAX_IMPORT_ROWS) {
     throw new Error(
@@ -261,30 +300,30 @@ export function parseArabicRetailMatrix(rows, headerRowIndex = 0, sheet = null) 
   }
 
   console.info(
-    `[import] path=arabic_retail_fixed headerRow=${headerRowIndex} matrixRows=${rows.length}`
+    `[import] path=${extended ? "arabic_retail_extended" : "arabic_retail_fixed"} headerRow=${headerRowIndex} matrixRows=${rows.length}`
   );
 
   const out = [];
 
   for (let i = headerRowIndex + 1; i < rows.length; i++) {
     const row = rows[i] || [];
-    const productName = valueToText(row[RETAIL_NAME_COL]).trim();
+    const nameCol = colMap?.name ?? RETAIL_NAME_COL;
+    const mainBcCol = colMap?.barcode ?? RETAIL_MAIN_BARCODE_COL;
+    const unitBcCol = colMap?.barcode_units ?? RETAIL_UNIT_BARCODE_COL;
+    const priceCol = colMap?.price ?? RETAIL_PRICE_COL;
+    const costCol = colMap?.cost;
+    const stockCol = colMap?.stock;
+    const categoryCol = colMap?.category;
+    const skuCol = colMap?.sku ?? 0;
+
+    const productName = valueToText(row[nameCol]).trim();
     if (!productName) continue;
 
-    const mainBarcodeValue = retailBarcodeCellText(
-      sheet,
-      i,
-      RETAIL_MAIN_BARCODE_COL,
-      row[RETAIL_MAIN_BARCODE_COL]
-    );
-    const unitBarcodeValue = retailBarcodeCellText(
-      sheet,
-      i,
-      RETAIL_UNIT_BARCODE_COL,
-      row[RETAIL_UNIT_BARCODE_COL]
-    );
-    const retailPriceValue = row[RETAIL_PRICE_COL];
+    const mainBarcodeValue = retailBarcodeCellText(sheet, i, mainBcCol, row[mainBcCol]);
+    const unitBarcodeValue = retailBarcodeCellText(sheet, i, unitBcCol, row[unitBcCol]);
+    const retailPriceValue = row[priceCol];
 
+    const unitLines = parseUnitBarcodeLines(unitBarcodeValue);
     const primaryEntries = extractBarcodeEntries(mainBarcodeValue, "أساسي");
     const unitEntries = extractBarcodeEntries(unitBarcodeValue, null);
     const allBarcodeEntries = uniqueBarcodeEntries([...primaryEntries, ...unitEntries]);
@@ -295,24 +334,53 @@ export function parseArabicRetailMatrix(rows, headerRowIndex = 0, sheet = null) 
 
     if (allBarcodeEntries.length === 0) continue;
 
-    const barcodes = allBarcodeEntries.map((e) => ({
-      barcode: e.barcode,
-      label: e.label,
-      is_primary: e.barcode === primaryBarcode,
-    }));
+    /** @type {{ barcode: string, label: string | null, is_primary?: boolean }[]} */
+    const barcodes = [];
+    const seenBc = new Set();
+    for (const line of unitLines) {
+      const unitName = normalizeUnitName(line.unitName);
+      for (const bc of line.barcodes) {
+        if (seenBc.has(bc)) continue;
+        seenBc.add(bc);
+        barcodes.push({
+          barcode: bc,
+          label: unitName,
+          is_primary: bc === primaryBarcode,
+        });
+      }
+    }
+    for (const e of allBarcodeEntries) {
+      if (seenBc.has(e.barcode)) continue;
+      seenBc.add(e.barcode);
+      barcodes.push({
+        barcode: e.barcode,
+        label: e.label ? normalizeUnitName(e.label) : null,
+        is_primary: e.barcode === primaryBarcode,
+      });
+    }
+
+    const stockRaw = stockCol != null ? parseMoneyCell(row[stockCol]) : NaN;
+    const stock = Number.isNaN(stockRaw) ? 0 : Math.max(0, Math.floor(stockRaw));
+    const costRaw = costCol != null ? parseMoneyCell(row[costCol]) : NaN;
+    const cost = Number.isNaN(costRaw) ? 0 : costRaw;
+    const category =
+      categoryCol != null && String(row[categoryCol] ?? "").trim()
+        ? String(row[categoryCol]).trim()
+        : null;
 
     const parsed = {
       name: productName,
       price: parsePrice(retailPriceValue),
-      stock: 0,
-      cost: 0,
+      stock,
+      cost,
+      category,
       barcode: primaryBarcode,
       barcodes,
       _importFormat: "arabic_retail",
       _rawMainBarcode: mainBarcodeValue,
       _rawUnitBarcodes: unitBarcodeValue,
-      _rawName: row[RETAIL_NAME_COL],
-      _productNumber: excelCellDisplayText(sheet, i, 0, row[0]),
+      _rawName: row[nameCol],
+      _productNumber: excelCellDisplayText(sheet, i, skuCol, row[skuCol]),
       _barcodesExtracted: barcodes.map((b) => b.barcode),
       _matrixRowIndex: i,
     };
@@ -727,9 +795,9 @@ export function normalizeProductRow(row) {
         name,
         name_en: null,
         price,
-        cost: 0,
-        category: null,
-        stock: 0,
+        cost: Number(row.cost) || 0,
+        category: row.category ?? null,
+        stock: Number(row.stock) || 0,
         tax_rate: null,
         unit: null,
         expiry_date: null,

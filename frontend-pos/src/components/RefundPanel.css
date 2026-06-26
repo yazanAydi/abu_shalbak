@@ -182,9 +182,10 @@
 }
 
 .rf-sale-row {
+  position: relative;
   width: 100%;
   text-align: right;
-  padding: 0.7rem 0.85rem;
+  padding: 0.7rem 0.85rem 1.85rem;
   border-radius: var(--pos-radius-sm);
   border: 1px solid var(--pos-border-strong);
   background: var(--pos-surface-2);
@@ -239,6 +240,17 @@
   font-size: 0.82rem;
   color: var(--pos-text-muted);
   line-height: 1.45;
+}
+
+.rf-sale-time {
+  position: absolute;
+  bottom: 0.65rem;
+  left: 0.85rem;
+  font-size: 0.8rem;
+  color: var(--pos-text-muted);
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 .rf-sale-badge {

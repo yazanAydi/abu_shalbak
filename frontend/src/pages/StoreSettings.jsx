@@ -23,6 +23,8 @@ const LABELS = {
   default_opening_cash: "النقد الافتتاحي الافتراضي (₪)",
   shift_variance_threshold: "حد الفارق في الوردية (₪)",
   expiry_alert_days: "تنبيه الصلاحية عبر تيليجرام (أيام)",
+  pos_shortcut_hold_cart: "اختصار تعليق الفاتورة (مثل F6 أو Ctrl+H)",
+  pos_shortcut_suspended_carts: "اختصار الفواتير المعلقة (مثل F7 أو Ctrl+L)",
 };
 
 const OTHER_CATEGORY = "أخرى";
@@ -64,6 +66,8 @@ export default function StoreSettings() {
           default_opening_cash: data.default_opening_cash ?? 0,
           shift_variance_threshold: data.shift_variance_threshold ?? 50,
           expiry_alert_days: data.expiry_alert_days ?? 7,
+          pos_shortcut_hold_cart: data.pos_shortcut_hold_cart ?? "",
+          pos_shortcut_suspended_carts: data.pos_shortcut_suspended_carts ?? "",
         });
         const categories = Array.isArray(data.pos_quick_categories)
           ? data.pos_quick_categories
@@ -386,6 +390,30 @@ export default function StoreSettings() {
               <PrimaryButton type="button" onClick={addCategory}>
                 إضافة قسم
               </PrimaryButton>
+            </div>
+          </section>
+
+          <section className="settings-favorites">
+            <h2>اختصارات نقطة البيع</h2>
+            <div className="settings-grid">
+              <div className="settings-row">
+                <label>{LABELS.pos_shortcut_hold_cart}</label>
+                <input
+                  type="text"
+                  value={form.pos_shortcut_hold_cart}
+                  onChange={(e) => onChange("pos_shortcut_hold_cart", e.target.value)}
+                  placeholder="اتركه فارغاً لتعطيل الاختصار"
+                />
+              </div>
+              <div className="settings-row">
+                <label>{LABELS.pos_shortcut_suspended_carts}</label>
+                <input
+                  type="text"
+                  value={form.pos_shortcut_suspended_carts}
+                  onChange={(e) => onChange("pos_shortcut_suspended_carts", e.target.value)}
+                  placeholder="اتركه فارغاً لتعطيل الاختصار"
+                />
+              </div>
             </div>
           </section>
 

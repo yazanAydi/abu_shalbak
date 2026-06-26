@@ -112,6 +112,7 @@ export default function ProductManagement() {
   const [conflictProduct, setConflictProduct] = useState(null);
   const [conflictBusy, setConflictBusy] = useState(false);
   const [editBarcodeProduct, setEditBarcodeProduct] = useState(null);
+  const [showNeedsReviewOnly, setShowNeedsReviewOnly] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -157,7 +158,10 @@ export default function ProductManagement() {
   }, [search, toast]);
 
   const isSearchActive = Boolean(search.trim());
-  const filtered = isSearchActive ? (searchResults ?? []) : products;
+  const baseList = isSearchActive ? (searchResults ?? []) : products;
+  const filtered = showNeedsReviewOnly
+    ? baseList.filter((p) => Number(p.needs_review) === 1)
+    : baseList;
   const listLoading = isSearchActive
     ? searchLoading || searchResults === null
     : loading;
@@ -381,6 +385,11 @@ export default function ProductManagement() {
           }}
         >
           {p.name}
+          {Number(p.needs_review) === 1 ? (
+            <span style={{ marginInlineStart: "0.35rem", color: "#b45309", fontSize: "0.85em" }}>
+              (يحتاج مراجعة)
+            </span>
+          ) : null}
         </button>
       ),
     },
@@ -580,6 +589,14 @@ export default function ProductManagement() {
                 onScan={(code) => setSearch(normalizeBarcode(code))}
               />
             </div>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.35rem", whiteSpace: "nowrap" }}>
+              <input
+                type="checkbox"
+                checked={showNeedsReviewOnly}
+                onChange={(e) => setShowNeedsReviewOnly(e.target.checked)}
+              />
+              يحتاج مراجعة فقط
+            </label>
           </div>
           <DataTable
             columns={columns}

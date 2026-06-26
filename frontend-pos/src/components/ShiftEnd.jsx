@@ -11,7 +11,7 @@ import "./ShiftModal.css";
  * @param {() => void} props.onClose
  * @param {() => void} props.onSuccess
  */
-export default function ShiftEnd({ shiftId, txCount = 0, open, onClose, onSuccess }) {
+export default function ShiftEnd({ shiftId, txCount = 0, suspendedCount = 0, open, onClose, onSuccess }) {
   const [notes, setNotes] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -48,6 +48,11 @@ export default function ShiftEnd({ shiftId, txCount = 0, open, onClose, onSucces
       <form className="shift-modal-panel" onSubmit={submitEnd}>
         <h2 className="shift-modal-title">إنهاء الوردية</h2>
         <p className="shift-modal-meta">عدد المبيعات في هذه الوردية: {txCount}</p>
+        {suspendedCount > 0 ? (
+          <p className="shift-modal-hint shift-modal-warn">
+            يوجد {suspendedCount} فاتورة معلقة غير مكتملة — لن تُحسب كمبيعات حتى يتم الدفع.
+          </p>
+        ) : null}
         <p className="shift-modal-hint">
           سيقوم المدير بعد النقد في الدرج وإغلاق الوردية نهائياً.
         </p>

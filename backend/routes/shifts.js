@@ -5,6 +5,8 @@ import { getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { refundedQtyByProduct } from "../services/refundRequestService.js";
+import { sumShiftCashPayments, sumShiftCardPayments } from "../utils/salePayments.js";
+import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -18,10 +20,7 @@ function parseDate(s) {
 async function computeExpectedCash(db, shiftId, openingCash) {
   const sid = Number(shiftId);
   const open = round2(Number(openingCash) || 0);
-  const cashSalesRow = await db.get(
-    `SELECT COALESCE(SUM(total), 0) AS s FROM transactions WHERE shift_id = ? AND payment_method = 'cash'`,
-    [sid]
-  );
+  const cashSales = await sumShiftCashPayments(db, sid);
   const cashRefundsRow = await db.get(
     `SELECT COALESCE(SUM(total), 0) AS s FROM refunds WHERE shift_id = ? AND payment_method = 'cash' AND status = 'approved'`,
     [sid]
@@ -30,23 +29,19 @@ async function computeExpectedCash(db, shiftId, openingCash) {
     `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'adjustment'`,
     [sid]
   );
-  const cashSales = round2(Number(cashSalesRow?.s) || 0);
   const cashRefunds = round2(Number(cashRefundsRow?.s) || 0);
   const adjustments = round2(Number(adjRow?.s) || 0);
   return round2(open + cashSales - cashRefunds + adjustments);
 }
 
 async function computeShiftTotals(db, shiftId) {
-  const cardRow = await db.get(
-    `SELECT COALESCE(SUM(total), 0) AS s FROM transactions WHERE shift_id = ? AND payment_method = 'visa'`,
-    [shiftId]
-  );
+  const card_total = await sumShiftCardPayments(db, shiftId);
   const refundRow = await db.get(
     `SELECT COALESCE(SUM(total), 0) AS s FROM refunds WHERE shift_id = ? AND status = 'approved'`,
     [shiftId]
   );
   return {
-    card_total: round2(Number(cardRow?.s) || 0),
+    card_total,
     refund_total: round2(Number(refundRow?.s) || 0),
   };
 }
@@ -86,8 +81,13 @@ async function buildSaleSummary(db, tx) {
   let fully_refunded = items.length > 0;
   for (const it of items) {
     const pid = Number(it.product_id);
+    const uid = Number(it.unit_id ?? it.product_unit_id ?? 0);
     const sold = Number(it.quantity) || 0;
-    const ref = already.get(pid) || 0;
+    const ref =
+      already.get(`${pid}:${uid}`) ??
+      already.get(`${pid}:0`) ??
+      already.get(pid) ??
+      0;
     if (Math.max(0, sold - ref) > 0) {
       fully_refunded = false;
       break;
@@ -224,6 +224,7 @@ export function createShiftsRouter(db) {
       `SELECT COUNT(*) AS c FROM transactions WHERE shift_id = ?`,
       [shift.id]
     );
+    const suspendedSummary = await getSuspendedSalesSummary(db, shift.id);
     res.json({
       shift: {
         id: shift.id,
@@ -233,6 +234,7 @@ export function createShiftsRouter(db) {
         status: shift.status,
       },
       transactions_count: Number(cnt?.c) || 0,
+      ...suspendedSummary,
     });
   });
 
@@ -607,12 +609,15 @@ export function createShiftsRouter(db) {
               variance: null,
             };
 
+    const suspended_summary = await getSuspendedSalesSummary(db, shiftId);
+
     res.json({
       shift,
       transactions,
       refunds,
       cash_movements,
       summary,
+      suspended_summary,
     });
   });
 

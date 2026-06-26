@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
+import api from "../../apiClient";
+import { getAuthHeaders } from "../../utils/auth";
 import { searchProductsApi } from "../../utils/productSearch";
+import { mapLookupToCartProduct } from "../../utils/cartProduct";
+import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -31,20 +35,24 @@ export default function PosProductSearch({ onProductFound }) {
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  function pickProduct(product) {
-    onProductFound({
-      id: product.id,
-      barcode: product.barcode,
-      name: product.name,
-      price: product.price,
-      stock: product.stock,
-      tax_rate: product.tax_rate,
-    });
+  async function pickProduct(product) {
+    const code = product.matched_barcode || product.barcode;
+    try {
+      if (code) {
+        const { data } = await api.get(
+          `/api/products/by-barcode/${encodeURIComponent(String(code))}`,
+          { headers: getAuthHeaders() }
+        );
+        onProductFound(mapLookupToCartProduct(data));
+      } else {
+        onProductFound(mapLookupToCartProduct({ product, ...product }));
+      }
+    } catch {
+      onProductFound(mapLookupToCartProduct({ product, ...product }));
+    }
     setQuery("");
     setResults([]);
-    setTimeout(() => {
-      document.querySelector(".barcode-input")?.focus();
-    }, 0);
+    setTimeout(() => focusBarcodeInput(), 0);
   }
 
   const trimmed = query.trim();

@@ -33,6 +33,16 @@ export async function createTestContext() {
      VALUES ('9990001', 'Test Product', 10, 5, 'Test', 100)`
   );
 
+  await db.run(
+    `INSERT INTO product_barcodes (product_id, barcode, is_primary) VALUES (?, '9990001', 1)`,
+    [productIns.lastID]
+  );
+  await db.run(
+    `INSERT INTO product_units (product_id, unit_name, barcode, price, cost, conversion_to_base, is_default)
+     VALUES (?, 'حبة', '9990001', 10, 5, 1, 1)`,
+    [productIns.lastID]
+  );
+
   const app = createApp(db, dbPath);
   return { app, db, dbPath, tmpDir, productId: productIns.lastID };
 }

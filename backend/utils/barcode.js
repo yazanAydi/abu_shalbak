@@ -91,9 +91,40 @@ export function uniqueBarcodeEntries(entries) {
 
 /** @param {unknown} value */
 export function parsePrice(value) {
-  const text = normalizeArabicDigits(valueToText(value));
+  const text = normalizeArabicDigits(valueToText(value)).replace(/شبقل|₪|شيكل|shekel/gi, " ");
   const match = text.match(/\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : 0;
+}
+
+const UNIT_LINE_RE = /(?:^|\r?\n)\s*([^:\n\r\d]{0,40}?)\s*[:：]\s*([^\r\n]+)/g;
+const BARCODE_TOKEN_RE = /\d{4,14}/g;
+
+/**
+ * Parse unit barcode lines: unit_name : barcode1 barcode2 ...
+ * @param {unknown} value
+ * @returns {{ unitName: string, barcodes: string[] }[]}
+ */
+export function parseUnitBarcodeLines(value) {
+  const text = normalizeArabicDigits(valueToText(value)).replace(/[\u200B-\u200D\uFEFF\u200E\u200F]/g, "");
+  /** @type {{ unitName: string, barcodes: string[] }[]} */
+  const lines = [];
+  let match;
+  const lineRe = new RegExp(UNIT_LINE_RE.source, "g");
+  while ((match = lineRe.exec(text)) !== null) {
+    const unitName = String(match[1] ?? "").trim();
+    const afterColon = String(match[2] ?? "");
+    const barcodes = [];
+    let bm;
+    const tokenRe = new RegExp(BARCODE_TOKEN_RE.source, "g");
+    while ((bm = tokenRe.exec(afterColon)) !== null) {
+      const code = bm[0];
+      if (!barcodes.includes(code)) barcodes.push(code);
+    }
+    if (barcodes.length) {
+      lines.push({ unitName, barcodes });
+    }
+  }
+  return lines;
 }
 
 /** @param {unknown} value */
@@ -122,6 +153,34 @@ export function scientificToInteger(value) {
 /** Digits only — for matching ": 2100002" vs scanned "2100002" */
 export function digitsOnly(s) {
   return String(s ?? "").replace(/\D/g, "");
+}
+
+/**
+ * String barcode for DB storage — avoids float/scientific corruption; preserves leading zeros.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function preserveBarcodeString(raw) {
+  if (raw === null || raw === undefined) return "";
+  if (typeof raw === "number") {
+    if (Number.isInteger(raw)) return raw.toFixed(0);
+    return String(raw);
+  }
+  return normalizeBarcodeInput(raw);
+}
+
+/**
+ * Lookup keys for barcode index (exact digits + leading-zero-stripped variant).
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+export function barcodeIndexKeys(raw) {
+  const digits = digitsOnly(preserveBarcodeString(raw));
+  if (!digits) return [];
+  const keys = new Set([digits]);
+  const stripped = digits.replace(/^0+/, "") || "0";
+  if (stripped !== digits) keys.add(stripped);
+  return [...keys];
 }
 
 const DIGIT_EXTRACT_RE = /(^|[^\d])(\d{4,14})(?!\d)/g;

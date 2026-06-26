@@ -355,13 +355,17 @@ export function createFinanceRouter(db) {
     const day = parseDateParam(String(req.query.date || ""));
     if (!day) return res.status(400).json({ error: "مطلوب date=YYYY-MM-DD" });
     const cashR = await db.get(
-      `SELECT COALESCE(SUM(total),0) t, COUNT(*) n FROM transactions
-       WHERE date(created_at) = ? AND payment_method = 'cash'`,
+      `SELECT COALESCE(SUM(sp.amount),0) t, COUNT(DISTINCT sp.transaction_id) n
+       FROM sale_payments sp
+       INNER JOIN transactions t ON t.id = sp.transaction_id
+       WHERE date(t.created_at) = ? AND sp.payment_method = 'cash'`,
       [day]
     );
     const cardR = await db.get(
-      `SELECT COALESCE(SUM(total),0) t, COUNT(*) n FROM transactions
-       WHERE date(created_at) = ? AND payment_method = 'visa'`,
+      `SELECT COALESCE(SUM(sp.amount),0) t, COUNT(DISTINCT sp.transaction_id) n
+       FROM sale_payments sp
+       INNER JOIN transactions t ON t.id = sp.transaction_id
+       WHERE date(t.created_at) = ? AND sp.payment_method = 'visa'`,
       [day]
     );
     const refCash = await db.get(
@@ -397,13 +401,15 @@ export function createFinanceRouter(db) {
     const day = parseDateParam(recon_date) || (typeof recon_date === "string" ? recon_date.slice(0, 10) : null);
     if (!day) return res.status(400).json({ error: "مطلوب recon_date (YYYY-MM-DD)" });
     const cashR = await db.get(
-      `SELECT COALESCE(SUM(total),0) t FROM transactions
-       WHERE date(created_at) = ? AND payment_method = 'cash'`,
+      `SELECT COALESCE(SUM(sp.amount),0) t FROM sale_payments sp
+       INNER JOIN transactions t ON t.id = sp.transaction_id
+       WHERE date(t.created_at) = ? AND sp.payment_method = 'cash'`,
       [day]
     );
     const cardR = await db.get(
-      `SELECT COALESCE(SUM(total),0) t FROM transactions
-       WHERE date(created_at) = ? AND payment_method = 'visa'`,
+      `SELECT COALESCE(SUM(sp.amount),0) t FROM sale_payments sp
+       INNER JOIN transactions t ON t.id = sp.transaction_id
+       WHERE date(t.created_at) = ? AND sp.payment_method = 'visa'`,
       [day]
     );
     const refCash = await db.get(

@@ -30,20 +30,20 @@ export default function PosHeader({
   return (
     <header className="pos-header" dir="rtl" lang="ar">
       <div className="pos-header-scan">
-        <BarcodeInput onProductFound={onProductFound} onError={() => {}} />
-        <PosProductSearch onProductFound={onProductFound} />
+        <div className="pos-header-scan-row">
+          <BarcodeInput onProductFound={onProductFound} onError={() => {}} />
+          <PosProductSearch onProductFound={onProductFound} />
+        </div>
       </div>
-      <div className="pos-header-meta">
-        <span className="pos-pill" style={{ fontWeight: 800, color: "var(--pos-accent-strong, #2dd4bf)" }}>
-          أبو شلبك
-        </span>
+      <div className="pos-header-meta pos-header-meta--compact">
         {posNeedsShift && activeShift ? (
           <>
             <span className="pos-pill">
               وردية {activeShift.start_time?.replace("T", " ").slice(0, 16) || "—"}
+              <span className="pos-meta-divider"> · </span>
+              مبيعات: {shiftTxCount}
             </span>
-            <span className="pos-pill">مبيعات: {shiftTxCount}</span>
-            <button type="button" className="pos-btn-ghost pos-btn-warn" onClick={onEndShift}>
+            <button type="button" className="pos-btn-ghost pos-btn-warn pos-btn-ghost--compact" onClick={onEndShift}>
               إغلاق الوردية
             </button>
           </>

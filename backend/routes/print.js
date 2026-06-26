@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess } from "../middleware/auth.js";
 import { buildReceiptText } from "../utils/receipt.js";
+import { getAppSettings } from "../utils/settings.js";
+import { loadSalePayments } from "../utils/salePayments.js";
 
 export function createPrintRouter(db) {
   const router = Router();
@@ -26,6 +28,8 @@ export function createPrintRouter(db) {
     const cashier = await db.get("SELECT username FROM users WHERE id = ?", [
       tx.cashier_id,
     ]);
+    const payments = await loadSalePayments(db, tid);
+    const settings = await getAppSettings(db);
 
     const lines = (Array.isArray(items) ? items : []).map((it) => ({
       name: it.name || `صنف ${it.product_id}`,
@@ -41,8 +45,11 @@ export function createPrintRouter(db) {
       cashierName: cashier?.username || "",
       lines,
       subtotal: Number(tx.subtotal),
+      tax: Number(tx.tax),
       total: Number(tx.total),
       paymentMethod: tx.payment_method,
+      payments,
+      settings,
     });
 
     res.json({

@@ -9,11 +9,16 @@ async function loadQuickButtonProducts(db, settings) {
   if (ids.length > 0) {
     const placeholders = ids.map(() => "?").join(",");
     const rows = await db.all(
-      `SELECT id, barcode, name, price, stock, tax_rate
-       FROM products WHERE id IN (${placeholders}) AND COALESCE(is_active, 1) = 1`,
+      `SELECT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate,
+              pu.id AS unit_id, pu.unit_name, pu.price AS unit_price, pu.conversion_to_base
+       FROM products p
+       LEFT JOIN product_units pu ON pu.product_id = p.id AND pu.is_default = 1
+       WHERE p.id IN (${placeholders}) AND COALESCE(p.is_active, 1) = 1`,
       ids
     );
-    for (const r of rows) byId.set(r.id, r);
+    for (const r of rows) {
+      byId.set(r.id, { ...r, price: r.unit_price ?? r.price });
+    }
   }
 
   const buttonsByCategory = {};
@@ -60,16 +65,24 @@ export function createPosRouter(db) {
     }
     const like = `%${q}%`;
     const rows = await db.all(
-      `SELECT DISTINCT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate
+      `SELECT DISTINCT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate,
+              pu.id AS unit_id, pu.unit_name, pu.price AS unit_price, pu.conversion_to_base
        FROM products p
+       LEFT JOIN product_units pu ON pu.product_id = p.id AND pu.is_default = 1
        LEFT JOIN product_barcodes pb ON pb.product_id = p.id
+       LEFT JOIN product_units pu2 ON pu2.product_id = p.id
        WHERE COALESCE(p.is_active, 1) = 1
-         AND (p.name LIKE ? OR p.barcode LIKE ? OR pb.barcode LIKE ?)
+         AND (p.name LIKE ? OR p.barcode LIKE ? OR pb.barcode LIKE ? OR pu2.barcode LIKE ?)
        ORDER BY p.name
        LIMIT 20`,
-      [like, like, like]
+      [like, like, like, like]
     );
-    res.json(rows);
+    res.json(
+      rows.map((r) => ({
+        ...r,
+        price: r.unit_price ?? r.price,
+      }))
+    );
   });
 
   return router;

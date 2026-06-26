@@ -1,11 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../../apiClient";
+import { POS_SHORTCUTS } from "../../config/posShortcuts";
+import { matchesShortcut } from "../../utils/posKeyboard";
 import "../ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
+const TOLERANCE = 0.005;
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
+}
+
+function getMixedErrorMessage(cashInput, visaInput, mixedPaid, total) {
+  if (cashInput == null || visaInput == null) {
+    return "أدخل مبالغ النقد والفيزا";
+  }
+  if (visaInput > total + TOLERANCE) {
+    return "مبلغ الفيزا أكبر من إجمالي الفاتورة";
+  }
+  if (mixedPaid < total - TOLERANCE) {
+    return "المبلغ المدفوع أقل من إجمالي الفاتورة";
+  }
+  if (visaInput > TOLERANCE && Math.abs(mixedPaid - total) > TOLERANCE) {
+    return "مجموع النقد والفيزا يجب أن يساوي إجمالي الفاتورة";
+  }
+  return "تحقق من مبالغ النقد والفيزا — يجب أن يغطي المجموع الفاتورة";
+}
+
+function parseAmount(raw) {
+  if (raw === "" || raw == null) return null;
+  const n = Number(String(raw).replace(",", "."));
+  return Number.isFinite(n) ? round2(n) : null;
 }
 
 export default function PosPaymentModal({
@@ -21,7 +46,10 @@ export default function PosPaymentModal({
   onClose,
 }) {
   const [amountTendered, setAmountTendered] = useState("");
+  const [cashAmount, setCashAmount] = useState("");
+  const [visaAmount, setVisaAmount] = useState("");
   const [cashErr, setCashErr] = useState("");
+  const [mixedErr, setMixedErr] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
   const [customerResults, setCustomerResults] = useState([]);
   const [selectedCustomerName, setSelectedCustomerName] = useState("");
@@ -42,7 +70,10 @@ export default function PosPaymentModal({
   useEffect(() => {
     if (!open) return;
     setAmountTendered("");
+    setCashAmount("");
+    setVisaAmount("");
     setCashErr("");
+    setMixedErr("");
     setCustomerQuery("");
     setCustomerResults([]);
     setSelectedCustomerName("");
@@ -63,20 +94,76 @@ export default function PosPaymentModal({
     return () => clearTimeout(t);
   }, [customerQuery, selectedPayment, searchCustomers]);
 
-  const tenderedNum = Number(String(amountTendered).replace(",", "."));
+  const tenderedNum = parseAmount(amountTendered);
+  const cashInput = parseAmount(cashAmount);
+  const visaInput = parseAmount(visaAmount);
+
   const changeDue =
-    amountTendered !== "" && !Number.isNaN(tenderedNum)
+    selectedPayment === "cash" && tenderedNum != null
       ? Math.max(0, round2(tenderedNum - total))
       : null;
 
+  const mixedPaid =
+    cashInput != null || visaInput != null
+      ? round2((cashInput ?? 0) + (visaInput ?? 0))
+      : null;
+  const mixedRemaining =
+    mixedPaid != null ? Math.max(0, round2(total - mixedPaid)) : null;
+  const mixedCashApplied =
+    cashInput != null && visaInput != null
+      ? round2(Math.min(cashInput, Math.max(0, total - visaInput)))
+      : null;
+  const mixedChange =
+    mixedCashApplied != null && cashInput != null
+      ? Math.max(0, round2(cashInput - mixedCashApplied))
+      : null;
+  const mixedMatched =
+    mixedPaid != null &&
+    visaInput != null &&
+    visaInput > TOLERANCE &&
+    Math.abs(mixedPaid - total) <= TOLERANCE;
+
   const cashValid =
     selectedPayment !== "cash" ||
-    (amountTendered !== "" && !Number.isNaN(tenderedNum) && tenderedNum >= total);
+    (tenderedNum != null && tenderedNum >= total);
+
+  const mixedValid =
+    selectedPayment !== "mixed" ||
+    (cashInput != null &&
+      visaInput != null &&
+      cashInput >= 0 &&
+      visaInput >= 0 &&
+      visaInput <= total + TOLERANCE &&
+      mixedPaid >= total - TOLERANCE &&
+      (visaInput <= TOLERANCE || Math.abs(mixedPaid - total) <= TOLERANCE));
+
+  function handleCashAmountChange(raw) {
+    setCashAmount(raw);
+    setMixedErr("");
+    const cash = parseAmount(raw);
+    if (cash == null) {
+      setVisaAmount("");
+      return;
+    }
+    setVisaAmount(String(round2(Math.max(0, total - cash))));
+  }
+
+  function handleVisaAmountChange(raw) {
+    setVisaAmount(raw);
+    setMixedErr("");
+    const visa = parseAmount(raw);
+    if (visa == null) {
+      setCashAmount("");
+      return;
+    }
+    setCashAmount(String(round2(Math.max(0, total - visa))));
+  }
 
   const canTarhil =
     !!selectedPayment &&
     !isLoading &&
     cashValid &&
+    mixedValid &&
     (selectedPayment !== "on_account" || !!customerId);
 
   function pickCustomer(c) {
@@ -91,11 +178,48 @@ export default function PosPaymentModal({
       if (selectedPayment === "cash" && !cashValid) {
         setCashErr("المبلغ المستلم يجب أن يكون أكبر من أو يساوي الإجمالي");
       }
+      if (selectedPayment === "mixed" && !mixedValid) {
+        setMixedErr(getMixedErrorMessage(cashInput, visaInput, mixedPaid, total));
+      }
       return;
     }
     setCashErr("");
-    onTarhil();
-  }, [canTarhil, cashValid, onTarhil, selectedPayment]);
+    setMixedErr("");
+
+    if (selectedPayment === "mixed") {
+      const cashApplied = round2(Math.max(0, total - visaInput));
+      onTarhil({
+        payments: [
+          { method: "cash", amount: cashApplied },
+          { method: "visa", amount: visaInput },
+        ],
+        payment_method: "mixed",
+        cash_tendered: cashInput,
+      });
+      return;
+    }
+
+    if (selectedPayment === "cash") {
+      onTarhil({
+        payment_method: "cash",
+        cash_tendered: tenderedNum,
+      });
+      return;
+    }
+
+    onTarhil({ payment_method: selectedPayment });
+  }, [
+    canTarhil,
+    cashInput,
+    cashValid,
+    mixedPaid,
+    mixedValid,
+    onTarhil,
+    selectedPayment,
+    tenderedNum,
+    total,
+    visaInput,
+  ]);
 
   const handleTarhilRef = useRef(handleTarhil);
   handleTarhilRef.current = handleTarhil;
@@ -104,7 +228,7 @@ export default function PosPaymentModal({
     if (!open) return;
 
     function onKeyDown(ev) {
-      if (ev.key !== "F12") return;
+      if (!matchesShortcut(ev, POS_SHORTCUTS.submitPayment.key)) return;
       ev.preventDefault();
       handleTarhilRef.current();
     }
@@ -124,8 +248,9 @@ export default function PosPaymentModal({
 
         <div className="pos-pay-methods pos-payment-modal-methods">
           {[
-            ["cash", "نقد"],
-            ["visa", "بطاقة"],
+            ["cash", "نقدي"],
+            ["visa", "فيزا"],
+            ["mixed", "مختلط / دفع متعدد"],
             ["on_account", "ذمة"],
           ].map(([key, label]) => (
             <button
@@ -170,6 +295,48 @@ export default function PosPaymentModal({
           </div>
         ) : null}
 
+        {selectedPayment === "mixed" ? (
+          <div className="pos-mixed-pay">
+            <div className="pos-mixed-summary">
+              <span>الإجمالي: {ils(total)}</span>
+            </div>
+            <label>
+              نقدي
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={cashAmount}
+                onChange={(e) => handleCashAmountChange(e.target.value)}
+                placeholder="0.00"
+                autoFocus
+              />
+            </label>
+            <label>
+              فيزا
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={visaAmount}
+                onChange={(e) => handleVisaAmountChange(e.target.value)}
+                placeholder="0.00"
+              />
+            </label>
+            <div
+              className={
+                mixedMatched ? "pos-mixed-totals pos-mixed-totals--matched" : "pos-mixed-totals"
+              }
+            >
+              <span>المدفوع: {mixedPaid != null ? ils(mixedPaid) : "—"}</span>
+              <span>المتبقي: {mixedRemaining != null ? ils(mixedRemaining) : "—"}</span>
+              {mixedChange != null && mixedChange > 0 ? (
+                <span>الباقي (نقد): {ils(mixedChange)}</span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
         {selectedPayment === "on_account" ? (
           <div className="pos-customer-pick">
             <input
@@ -203,6 +370,7 @@ export default function PosPaymentModal({
         ) : null}
 
         {cashErr ? <div className="shift-modal-err">{cashErr}</div> : null}
+        {mixedErr ? <div className="shift-modal-err">{mixedErr}</div> : null}
         {error ? <p className="pos-err">{error}</p> : null}
 
         <div className="shift-modal-actions">
@@ -223,7 +391,9 @@ export default function PosPaymentModal({
             {isLoading ? "جاري المعالجة…" : "ترحيل"}
           </button>
         </div>
-        <p className="pos-tarhil-hint">F12 — ترحيل بعد تسليم الباقي للزبون</p>
+        <p className="pos-tarhil-hint">
+          {POS_SHORTCUTS.submitPayment.key} — ترحيل بعد تسليم الباقي للزبون
+        </p>
       </div>
     </div>
   );

@@ -8,18 +8,36 @@ export const loginSchema = z.object({
 
 export const checkoutItemSchema = z.object({
   product_id: z.coerce.number().int().positive(),
+  unit_id: z.coerce.number().int().positive().optional().nullable(),
   quantity: z.coerce.number().positive(),
   price: z.coerce.number().min(0),
   scanned_barcode: z.string().trim().min(1).max(50).optional().nullable(),
   product_barcode_id: z.coerce.number().int().positive().optional().nullable(),
+  product_unit_id: z.coerce.number().int().positive().optional().nullable(),
 });
 
-export const checkoutSchema = z.object({
+export const checkoutPaymentLineSchema = z.object({
+  method: z.enum(["cash", "visa", "on_account"]),
+  amount: z.coerce.number().nonnegative(),
+});
+
+export const checkoutSchema = z
+  .object({
+    items: z.array(checkoutItemSchema).min(1),
+    payment_method: z.enum(["cash", "visa", "on_account", "mixed"]).optional(),
+    payments: z.array(checkoutPaymentLineSchema).min(1).optional(),
+    customer_id: z.number().int().positive().optional().nullable(),
+    cash_tendered: z.coerce.number().nonnegative().optional().nullable(),
+    idempotency_key: z.string().trim().min(8).max(100).optional().nullable(),
+    suspended_sale_id: z.coerce.number().int().positive().optional().nullable(),
+  })
+  .refine((data) => data.payment_method || (data.payments && data.payments.length > 0), {
+    message: "payment_method أو payments مطلوب",
+  });
+
+export const suspendedSaleCreateSchema = z.object({
+  note: z.string().trim().max(500).optional().nullable(),
   items: z.array(checkoutItemSchema).min(1),
-  payment_method: z.enum(["cash", "visa", "on_account"]),
-  customer_id: z.number().int().positive().optional().nullable(),
-  // Optional client-generated key to dedupe retries / double submissions.
-  idempotency_key: z.string().trim().min(8).max(100).optional().nullable(),
 });
 
 export const refundItemSchema = z.object({

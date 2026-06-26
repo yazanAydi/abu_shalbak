@@ -10,6 +10,77 @@ function padLeft(s, w) {
   return str.length >= w ? str.slice(-w) : " ".repeat(w - str.length) + str;
 }
 
+function ils(n) {
+  return `\u20AA${Number(n).toFixed(2)}`;
+}
+
+function methodLabel(method) {
+  if (method === "cash") return "نقدي";
+  if (method === "visa") return "فيزا";
+  if (method === "on_account") return "ذمة";
+  return String(method || "");
+}
+
+function buildPaymentSection(opts) {
+  const total = Number(opts.total) || 0;
+  const payments = Array.isArray(opts.payments) ? opts.payments : null;
+
+  if (payments && payments.length > 0) {
+    const lines = ["طريقة الدفع:"];
+    const visa = payments.filter((p) => p.method === "visa");
+    const cash = payments.filter((p) => p.method === "cash");
+    const onAccount = payments.filter((p) => p.method === "on_account");
+
+    for (const p of visa) {
+      lines.push(`فيزا: ${ils(p.amount)}`);
+    }
+    for (const p of cash) {
+      lines.push(`نقدي: ${ils(p.amount)}`);
+    }
+    for (const p of onAccount) {
+      lines.push(`ذمة: ${ils(p.amount)}`);
+    }
+
+    const paidSum = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+    lines.push(`المجموع المدفوع: ${ils(paidSum)}`);
+
+    const cashApplied = cash.reduce((s, p) => s + Number(p.amount || 0), 0);
+    let change = 0;
+    if (opts.cashTendered != null && Number.isFinite(Number(opts.cashTendered))) {
+      change = Math.max(0, Math.round((Number(opts.cashTendered) - cashApplied) * 100) / 100);
+    }
+    lines.push(`الباقي: ${ils(change)}`);
+    return lines;
+  }
+
+  const payLabel =
+    opts.paymentMethod === "cash"
+      ? "نقد"
+      : opts.paymentMethod === "visa"
+        ? "بطاقة"
+        : opts.paymentMethod === "on_account"
+          ? "ذمة"
+          : opts.paymentMethod === "mixed"
+            ? "مختلط"
+            : String(opts.paymentMethod || "");
+
+  if (opts.paymentMethod === "cash" && opts.cashTendered != null) {
+    const cashApplied = total;
+    const change = Math.max(
+      0,
+      Math.round((Number(opts.cashTendered) - cashApplied) * 100) / 100
+    );
+    return [
+      "طريقة الدفع:",
+      `نقدي: ${ils(cashApplied)}`,
+      `المجموع المدفوع: ${ils(Number(opts.cashTendered))}`,
+      `الباقي: ${ils(change)}`,
+    ];
+  }
+
+  return [`الدفع: ${payLabel}`];
+}
+
 /**
  * @param {object} opts
  * @param {number}   opts.transactionId
@@ -20,6 +91,8 @@ function padLeft(s, w) {
  * @param {number}   opts.tax
  * @param {number}   opts.total
  * @param {string}   opts.paymentMethod
+ * @param {Array<{method:string, amount:number}>} [opts.payments]
+ * @param {number}   [opts.cashTendered]
  * @param {object}   [opts.settings]
  */
 export function buildReceiptText(opts) {
@@ -29,14 +102,7 @@ export function buildReceiptText(opts) {
 
   const sep = "═".repeat(LINE);
   const thin = "─".repeat(LINE);
-  const payLabel =
-    opts.paymentMethod === "cash"
-      ? "نقد"
-      : opts.paymentMethod === "visa"
-        ? "بطاقة"
-        : opts.paymentMethod === "on_account"
-          ? "ذمة"
-          : String(opts.paymentMethod || "");
+  const paymentLines = buildPaymentSection(opts);
 
   const lines = [
     sep,
@@ -72,7 +138,7 @@ export function buildReceiptText(opts) {
     thin,
     `${padRight("الإجمالي:", 34)}${padLeft(opts.total.toFixed(2), 10)}`,
     sep,
-    `الدفع: ${payLabel}`,
+    ...paymentLines,
     sep,
     padRight("شكراً لزيارتكم", LINE),
     sep
@@ -80,3 +146,5 @@ export function buildReceiptText(opts) {
 
   return lines.join("\n");
 }
+
+export { methodLabel, ils as receiptIls };

@@ -15,6 +15,8 @@ export const SETTING_KEYS = {
   default_opening_cash: "default_opening_cash",
   refund_telegram_manager_user_id: "refund_telegram_manager_user_id",
   expiry_alert_days: "expiry_alert_days",
+  pos_shortcut_hold_cart: "pos_shortcut_hold_cart",
+  pos_shortcut_suspended_carts: "pos_shortcut_suspended_carts",
 };
 
 const MAX_POS_FAVORITES = 24;
@@ -35,6 +37,8 @@ const DEFAULTS = {
   [SETTING_KEYS.default_opening_cash]: 0,
   [SETTING_KEYS.refund_telegram_manager_user_id]: 0,
   [SETTING_KEYS.expiry_alert_days]: 7,
+  [SETTING_KEYS.pos_shortcut_hold_cart]: "",
+  [SETTING_KEYS.pos_shortcut_suspended_carts]: "",
 };
 
 function parseFavoriteIds(raw) {
@@ -169,6 +173,9 @@ function parseValue(key, raw, context = {}) {
       return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULTS[key];
     }
     default:
+      if (key === SETTING_KEYS.pos_shortcut_hold_cart || key === SETTING_KEYS.pos_shortcut_suspended_carts) {
+        return String(raw ?? "");
+      }
       return String(raw);
   }
 }
@@ -217,6 +224,14 @@ export async function getAppSettings(db) {
       const n = parseValue(SETTING_KEYS.expiry_alert_days, map[SETTING_KEYS.expiry_alert_days]);
       return n >= 1 && n <= 365 ? n : DEFAULTS[SETTING_KEYS.expiry_alert_days];
     })(),
+    pos_shortcut_hold_cart: parseValue(
+      SETTING_KEYS.pos_shortcut_hold_cart,
+      map[SETTING_KEYS.pos_shortcut_hold_cart]
+    ),
+    pos_shortcut_suspended_carts: parseValue(
+      SETTING_KEYS.pos_shortcut_suspended_carts,
+      map[SETTING_KEYS.pos_shortcut_suspended_carts]
+    ),
   };
 }
 
@@ -299,6 +314,8 @@ export async function updateAppSettings(db, patch) {
       }
       return String(n);
     },
+    [SETTING_KEYS.pos_shortcut_hold_cart]: (v) => String(v ?? "").trim().slice(0, 40),
+    [SETTING_KEYS.pos_shortcut_suspended_carts]: (v) => String(v ?? "").trim().slice(0, 40),
   };
 
   for (const [key, converter] of Object.entries(allowed)) {
@@ -331,6 +348,8 @@ export async function seedDefaultSettings(db) {
     [SETTING_KEYS.default_opening_cash, "0"],
     [SETTING_KEYS.refund_telegram_manager_user_id, "0"],
     [SETTING_KEYS.expiry_alert_days, "7"],
+    [SETTING_KEYS.pos_shortcut_hold_cart, ""],
+    [SETTING_KEYS.pos_shortcut_suspended_carts, ""],
   ];
   for (const [key, value] of defaults) {
     const ex = await db.get("SELECT 1 AS x FROM app_settings WHERE key = ? LIMIT 1", [key]);

@@ -28,6 +28,7 @@ import { createExpensesRouter } from "./routes/expenses.js";
 import { createDeliveriesRouter } from "./routes/deliveries.js";
 import { createMarketingRouter } from "./routes/marketing.js";
 import { createWarehousesRouter } from "./routes/warehouses.js";
+import { createSuspendedSalesRouter } from "./routes/suspendedSales.js";
 import { createDebugRouter } from "./routes/debug.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { responseEnvelope } from "./middleware/responseEnvelope.js";
@@ -78,6 +79,7 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/deliveries", createDeliveriesRouter(db));
   router.use("/marketing", createMarketingRouter(db));
   router.use("/warehouses", createWarehousesRouter(db));
+  router.use("/suspended-sales", createSuspendedSalesRouter(db));
   router.use("/debug", createDebugRouter(db));
   router.use("/", createPrintRouter(db));
 }

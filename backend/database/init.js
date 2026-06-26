@@ -4,6 +4,7 @@ import fs from "fs";
 import bcrypt from "bcrypt";
 import { seedDefaultSettings } from "../utils/settings.js";
 import { backfillMissingEntityCodes } from "../utils/entityCodes.js";
+import { migrateProductBarcodesToUnits } from "../utils/productUnits.js";
 
 /** @param {import("sqlite3").Database} raw */
 function wrapDb(raw) {
@@ -146,6 +147,75 @@ async function migrateProductBarcodesTable(db) {
     CREATE INDEX IF NOT EXISTS idx_product_barcodes_product ON product_barcodes(product_id);
     CREATE INDEX IF NOT EXISTS idx_product_barcodes_barcode ON product_barcodes(barcode);
   `);
+}
+
+async function migrateProductUnitsTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS product_units (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id         INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      unit_name          TEXT NOT NULL,
+      barcode            TEXT NOT NULL UNIQUE,
+      price              REAL NOT NULL DEFAULT 0,
+      cost               REAL NOT NULL DEFAULT 0,
+      conversion_to_base REAL NOT NULL DEFAULT 1,
+      is_default         INTEGER NOT NULL DEFAULT 0,
+      source_row_id      INTEGER,
+      created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(product_id, unit_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_units_product ON product_units(product_id);
+    CREATE INDEX IF NOT EXISTS idx_product_units_barcode ON product_units(barcode);
+
+    CREATE TABLE IF NOT EXISTS product_unit_barcodes (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_unit_id INTEGER NOT NULL REFERENCES product_units(id) ON DELETE CASCADE,
+      barcode         TEXT NOT NULL UNIQUE,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_unit_barcodes_unit ON product_unit_barcodes(product_unit_id);
+    CREATE INDEX IF NOT EXISTS idx_product_unit_barcodes_barcode ON product_unit_barcodes(barcode);
+  `);
+}
+
+async function migrateProductUnitPricingRepair(db) {
+  const hadColumn = await tableHasColumn(db, "product_units", "needs_review");
+  if (!hadColumn) {
+    await db.run(`ALTER TABLE product_units ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0`);
+    const { repairProductUnitPrices } = await import("../utils/productUnits.js");
+    const result = await repairProductUnitPrices(db);
+    if (result.updated > 0) {
+      console.info(
+        `[migrate] repairProductUnitPrices: updated=${result.updated} needs_review=${result.needs_review_count}`
+      );
+    }
+  }
+}
+
+async function migrateProductsUnitColumns(db) {
+  const cols = [
+    ["needs_review", "INTEGER NOT NULL DEFAULT 0"],
+    ["updated_at", "TEXT"],
+  ];
+  for (const [col, type] of cols) {
+    if (!(await tableHasColumn(db, "products", col))) {
+      await db.run(`ALTER TABLE products ADD COLUMN ${col} ${type}`);
+    }
+  }
+}
+
+async function migrateTransactionItemsProductUnit(db) {
+  const cols = [
+    ["product_unit_id", "INTEGER REFERENCES product_units(id)"],
+    ["unit_name", "TEXT"],
+    ["conversion_to_base", "REAL"],
+  ];
+  for (const [col, type] of cols) {
+    if (!(await tableHasColumn(db, "transaction_items", col))) {
+      await db.run(`ALTER TABLE transaction_items ADD COLUMN ${col} ${type}`);
+    }
+  }
 }
 
 /** Copy products.barcode into product_barcodes (one primary row per product). */
@@ -1096,6 +1166,49 @@ async function migrateCashierShiftsPendingStatus(db) {
   `);
 }
 
+async function migrateSuspendedSalesTables(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS suspended_sales (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      note TEXT,
+      subtotal REAL NOT NULL,
+      discount REAL NOT NULL DEFAULT 0,
+      tax REAL NOT NULL,
+      total REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'suspended' CHECK (status IN ('suspended', 'completed', 'deleted')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_suspended_sales_shift_status
+      ON suspended_sales(shift_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_suspended_sales_cashier_status
+      ON suspended_sales(cashier_id, status);
+
+    CREATE TABLE IF NOT EXISTS suspended_sale_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      suspended_sale_id INTEGER NOT NULL REFERENCES suspended_sales(id) ON DELETE CASCADE,
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      product_unit_id INTEGER NOT NULL REFERENCES product_units(id),
+      product_name_snapshot TEXT NOT NULL,
+      unit_name_snapshot TEXT NOT NULL,
+      barcode_snapshot TEXT,
+      quantity REAL NOT NULL,
+      unit_price_snapshot REAL NOT NULL,
+      total_price REAL NOT NULL,
+      conversion_to_base REAL NOT NULL DEFAULT 1,
+      tax_rate_snapshot REAL NOT NULL DEFAULT 0,
+      scanned_barcode_snapshot TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_suspended_sale_items_sale
+      ON suspended_sale_items(suspended_sale_id);
+  `);
+}
+
 async function migrateRefundRequestsTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS refund_requests (
@@ -1473,15 +1586,23 @@ export async function initDatabase(dbPath) {
   await migrateStoresTable(db);
   await migrateStoreIdColumns(db);
   await migrateProductBarcodesTable(db);
+  await migrateProductUnitsTable(db);
+  await migrateProductsUnitColumns(db);
+  await migrateProductUnitPricingRepair(db);
   await migrateTransactionItemsScannedBarcode(db);
+  await migrateTransactionItemsProductUnit(db);
   await migrateAccountStatementIndexes(db);
   await migrateSupplierOpeningBalanceMeta(db);
   await migrateAccountStatementEntries(db);
+  await migrateTransactionsPaymentMethodExpanded(db);
+  await migrateSalePaymentsTable(db);
+  await migrateSuspendedSalesTables(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);
   await migrateProductBarcodesDigitsOnly(db);
   await migrateProductBarcodesFromProducts(db);
+  await migrateProductBarcodesToUnits(db);
   await seedDefaultSettings(db);
   await backfillMissingEntityCodes(db);
 
@@ -1495,7 +1616,75 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.06-customer-balance-groups";
+const SCHEMA_VERSION = "2026.06-suspended-sales";
+
+async function migrateTransactionsPaymentMethodExpanded(db) {
+  const txChk = await db.get(`SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'`);
+  if (!txChk?.sql || txChk.sql.includes("'mixed'")) return;
+
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE transactions_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      items_json TEXT NOT NULL,
+      subtotal REAL NOT NULL,
+      tax REAL NOT NULL,
+      total REAL NOT NULL,
+      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'visa', 'on_account', 'mixed')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      shift_id INTEGER REFERENCES cashier_shifts(id),
+      customer_id INTEGER REFERENCES customers(id),
+      discount REAL NOT NULL DEFAULT 0,
+      receipt_number TEXT,
+      status TEXT NOT NULL DEFAULT 'completed',
+      store_id INTEGER NOT NULL DEFAULT 1,
+      idempotency_key TEXT
+    );
+    INSERT INTO transactions_new (
+      id, cashier_id, items_json, subtotal, tax, total, payment_method, created_at,
+      shift_id, customer_id, discount, receipt_number, status, store_id, idempotency_key
+    )
+    SELECT
+      id, cashier_id, items_json, subtotal, tax, total, payment_method, created_at,
+      shift_id, customer_id, discount, receipt_number, status, store_id, idempotency_key
+    FROM transactions;
+    DROP TABLE transactions;
+    ALTER TABLE transactions_new RENAME TO transactions;
+    CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at);
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+async function migrateSalePaymentsTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS sale_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'visa', 'on_account')),
+      amount REAL NOT NULL CHECK (amount >= 0),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_sale_payments_tx ON sale_payments(transaction_id);
+    CREATE INDEX IF NOT EXISTS idx_sale_payments_method ON sale_payments(payment_method);
+  `);
+
+  const txs = await db.all("SELECT id, payment_method, total FROM transactions");
+  for (const tx of txs) {
+    const existing = await db.get(
+      "SELECT 1 AS x FROM sale_payments WHERE transaction_id = ? LIMIT 1",
+      [tx.id]
+    );
+    if (existing) continue;
+    const allowed = ["cash", "visa", "on_account"];
+    const pm = allowed.includes(tx.payment_method) ? tx.payment_method : "cash";
+    await db.run(
+      "INSERT INTO sale_payments (transaction_id, payment_method, amount) VALUES (?, ?, ?)",
+      [tx.id, pm, Number(tx.total) || 0]
+    );
+  }
+}
 
 async function migrateAccountStatementIndexes(db) {
   await db.exec(`

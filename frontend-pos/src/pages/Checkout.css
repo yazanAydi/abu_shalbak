@@ -4,13 +4,27 @@
   margin: 0;
 }
 
+.pos-header-scan {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.pos-header-scan-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  align-items: start;
+}
+
 .pos-header-scan .barcode-input {
   width: 100%;
-  min-height: 48px;
-  font-size: 1.15rem;
-  padding: 0 1rem;
+  min-height: 42px;
+  font-size: 1.05rem;
+  padding: 0 0.85rem;
   border-radius: var(--pos-radius-sm);
-  border: 2px solid var(--pos-border-strong);
+  border: 1px solid var(--pos-border-strong);
   background: var(--pos-surface);
   color: var(--pos-text);
   box-sizing: border-box;
@@ -24,7 +38,7 @@
 .pos-header-scan .barcode-input:focus {
   outline: none;
   border-color: var(--pos-accent);
-  box-shadow: 0 0 0 3px rgba(var(--pos-accent-rgb), 0.2);
+  box-shadow: 0 0 0 2px rgba(var(--pos-accent-rgb), 0.15);
 }
 
 .pos-header-scan .barcode-label {
@@ -38,23 +52,17 @@
   font-weight: 600;
 }
 
-.pos-header-scan {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
 .pos-product-search {
   position: relative;
 }
 
 .pos-product-search-input {
   width: 100%;
-  min-height: 44px;
-  font-size: 1rem;
-  padding: 0 1rem;
+  min-height: 42px;
+  font-size: 0.95rem;
+  padding: 0 0.85rem;
   border-radius: var(--pos-radius-sm);
-  border: 2px solid var(--pos-border-strong);
+  border: 1px solid var(--pos-border-strong);
   background: var(--pos-surface);
   color: var(--pos-text);
   box-sizing: border-box;
@@ -68,7 +76,7 @@
 .pos-product-search-input:focus {
   outline: none;
   border-color: var(--pos-accent);
-  box-shadow: 0 0 0 3px rgba(var(--pos-accent-rgb), 0.2);
+  box-shadow: 0 0 0 2px rgba(var(--pos-accent-rgb), 0.15);
 }
 
 .pos-product-search-dropdown {
@@ -92,4 +100,151 @@
 
 .pos-refund-unread td {
   font-weight: 700;
+}
+
+.pos-unit-select {
+  max-width: 11rem;
+  width: 100%;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.35rem;
+  border-radius: var(--pos-radius-sm);
+  border: 1px solid var(--pos-border-strong);
+  background: var(--pos-surface);
+  color: var(--pos-text);
+}
+
+.pos-col-unit {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.pos-suspended-banner {
+  flex-shrink: 0;
+  padding: 0.3rem 0.75rem;
+  background: rgba(var(--pos-accent-rgb), 0.1);
+  color: var(--pos-text-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.pos-toolbar-btn--badge {
+  position: relative;
+}
+
+.pos-toolbar-badge {
+  margin-left: 0.35rem;
+  font-weight: 700;
+  color: var(--pos-accent);
+}
+
+.pos-modal-panel--wide {
+  max-width: 36rem;
+  width: 100%;
+}
+
+.pos-suspended-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.pos-suspended-item {
+  border: 1px solid var(--pos-border-strong);
+  border-radius: var(--pos-radius-sm);
+  padding: 0.65rem 0.75rem;
+  background: var(--pos-surface);
+}
+
+.pos-suspended-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.pos-suspended-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  font-size: 0.85rem;
+  color: var(--pos-text-muted);
+  margin-top: 0.25rem;
+}
+
+.pos-suspended-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+}
+
+.pos-suspended-actions,
+.pos-suspended-delete-confirm {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.pos-suspended-delete-confirm p {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.pos-suspended-stock-warn {
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+  border-radius: var(--pos-radius-sm);
+  background: rgba(220, 53, 69, 0.1);
+  font-size: 0.85rem;
+}
+
+.pos-suspended-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
+.pos-suspended-detail-table th,
+.pos-suspended-detail-table td {
+  border: 1px solid var(--pos-border-strong);
+  padding: 0.35rem 0.5rem;
+  text-align: right;
+}
+
+.pos-restore-conflict-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pos-hold-empty-msg {
+  padding: 0.35rem 1rem;
+  color: var(--pos-danger);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.pos-action-error {
+  flex-shrink: 0;
+  padding: 0.3rem 0.75rem;
+  background: rgba(220, 53, 69, 0.1);
+  color: var(--pos-danger);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.pos-stock-warn-msg {
+  padding: 0.35rem 1rem;
+  background: rgba(255, 193, 7, 0.15);
+  color: var(--pos-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: center;
 }

@@ -180,7 +180,6 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                           <span className="rf-sale-total">{ils(sale.total)}</span>
                         </div>
                         <div className="rf-sale-row-meta">
-                          <span>{formatSaleTime(sale.created_at)}</span>
                           <span>{PM_AR[sale.payment_method] || sale.payment_method}</span>
                           {sale.item_count > 0 ? <span>{sale.item_count} صنف</span> : null}
                         </div>
@@ -188,6 +187,7 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                           <p className="rf-sale-preview">{sale.items_preview}</p>
                         ) : null}
                         {disabled ? <span className="rf-sale-badge">مسترجع بالكامل</span> : null}
+                        <span className="rf-sale-time">{formatSaleTime(sale.created_at)}</span>
                       </button>
                     </li>
                   );

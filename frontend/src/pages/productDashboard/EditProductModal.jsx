@@ -9,7 +9,7 @@ import {
   SecondaryButton,
   useToast,
 } from "../../components/ui";
-import ProductBarcodesSection from "./ProductBarcodesSection";
+import ProductUnitsSection from "./ProductUnitsSection";
 import "./productBarcodes.css";
 
 const emptyForm = {
@@ -178,7 +178,7 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
           />
         </FormField>
       </FormGrid>
-      <ProductBarcodesSection productId={product?.id ?? null} onChanged={onSaved} />
+      <ProductUnitsSection productId={product?.id ?? null} onChanged={onSaved} />
       {err ? (
         <p style={{ color: "var(--office-danger, #dc2626)", marginBottom: 0, marginTop: "0.75rem" }}>
           {err}

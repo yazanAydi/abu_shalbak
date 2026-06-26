@@ -20,6 +20,7 @@ import {
   parseStatementDate,
 } from "../utils/accountStatementService.js";
 import XLSX from "xlsx";
+import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
 
 function parseDateParam(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return null;
@@ -48,34 +49,19 @@ async function aggregateDay(db, dateStr) {
     [dateStr]
   );
 
+  const paymentAgg = await aggregatePaymentLinesForDate(db, dateStr);
+
   let total_sales = 0;
   let total_tax = 0;
   let total_net = 0;
   let total_transactions = rows.length;
-  let cash_transactions = 0;
-  let card_transactions = 0;
-  let on_account_transactions = 0;
-  let cash_total = 0;
-  let card_total = 0;
-  let on_account_total = 0;
   const productMap = new Map();
 
   for (const r of rows) {
     total_sales = round2(total_sales + Number(r.total));
     total_tax = round2(total_tax + Number(r.tax || 0));
     total_net = round2(total_net + Number(r.subtotal || r.total));
-    if (r.payment_method === "cash") {
-      cash_transactions++;
-      cash_total = round2(cash_total + Number(r.total));
-    } else if (r.payment_method === "on_account") {
-      on_account_transactions++;
-      on_account_total = round2(on_account_total + Number(r.total));
-    } else {
-      card_transactions++;
-      card_total = round2(card_total + Number(r.total));
-    }
 
-    // Prefer normalized items for analytics (Phase 2+)
     const txItems = await db.all(
       "SELECT * FROM transaction_items WHERE transaction_id = ?",
       [r.id]
@@ -130,6 +116,9 @@ async function aggregateDay(db, dateStr) {
     else refund_card = round2(refund_card + Number(r.total));
   }
   const net_sales = round2(total_sales - refunds_total);
+  const cash_total = paymentAgg.cash_total;
+  const card_total = paymentAgg.card_total;
+  const on_account_total = paymentAgg.on_account_total;
   const net_cash_total = round2(cash_total - refund_cash);
   const net_card_total = round2(card_total - refund_card);
 
@@ -140,9 +129,10 @@ async function aggregateDay(db, dateStr) {
     total_tax: round2(total_tax),
     total_net: round2(total_net),
     total_transactions,
-    cash_transactions,
-    card_transactions,
-    on_account_transactions,
+    cash_transactions: paymentAgg.cash_transactions,
+    card_transactions: paymentAgg.card_transactions,
+    on_account_transactions: paymentAgg.on_account_transactions,
+    mixed_sales_count: paymentAgg.mixed_sales_count,
     cash_total: round2(cash_total),
     card_total: round2(card_total),
     on_account_total: round2(on_account_total),

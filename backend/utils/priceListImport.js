@@ -160,6 +160,11 @@ export async function applyPriceListImport(db, rows, options = {}) {
            WHERE id = ?`,
           [row.price, row.min_price, row.max_price, productId]
         );
+        await db.run(
+          `UPDATE product_units SET price = ?, updated_at = datetime('now')
+           WHERE product_id = ? AND is_default = 1`,
+          [row.price, productId]
+        );
         await assignEntityCodeIfMissing(db, "product", productId);
         updated++;
         continue;
