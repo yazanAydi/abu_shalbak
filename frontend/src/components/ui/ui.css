@@ -1,5 +1,16 @@
 /* أبو شلبك — reusable UI primitives. RTL-first, theme-token driven. */
 
+/* ── Mobile tap reliability: remove 300ms delay / double-tap-zoom interference ── */
+button,
+a,
+.ui-btn,
+.ui-tab,
+.ui-modal__close,
+[role="button"] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(0, 0, 0, 0.08);
+}
+
 /* ── Button ── */
 .ui-btn {
   display: inline-flex;
@@ -316,6 +327,72 @@
   font-size: 0.78rem;
   color: var(--office-panel-muted);
 }
+
+/* ── Searchable select (combobox) ── */
+.ui-combobox {
+  position: relative;
+  width: 100%;
+}
+.ui-combobox__input {
+  cursor: text;
+  padding-inline-end: 1.7rem;
+}
+.ui-combobox::after {
+  content: "";
+  position: absolute;
+  inset-inline-end: 0.75rem;
+  top: 50%;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 2px solid var(--office-panel-muted);
+  border-bottom: 2px solid var(--office-panel-muted);
+  transform: translateY(-65%) rotate(45deg);
+  pointer-events: none;
+}
+.ui-combobox--disabled .ui-combobox__input {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.ui-combobox__list {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0.25rem;
+  position: absolute;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
+  z-index: 40;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--office-input-bg);
+  border: 1px solid var(--office-input-border);
+  border-radius: var(--office-radius-sm);
+  box-shadow: var(--office-shadow-md, 0 8px 24px rgba(0, 0, 0, 0.18));
+}
+.ui-combobox__option {
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--office-radius-sm);
+  cursor: pointer;
+  font-size: 0.92rem;
+  color: var(--office-panel-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ui-combobox__option.is-active {
+  background: var(--office-accent-soft, rgba(var(--office-accent-rgb, 56, 132, 99), 0.14));
+}
+.ui-combobox__option.is-selected {
+  font-weight: 600;
+}
+.ui-combobox__option.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ui-combobox__empty {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.88rem;
+  color: var(--office-panel-muted);
+}
 .ui-form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -629,6 +706,13 @@
     min-height: 44px;
     padding: 0.75rem 1rem;
     font-size: 0.95rem;
+  }
+
+  .ui-modal__close {
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
   }
 
   .ui-input,

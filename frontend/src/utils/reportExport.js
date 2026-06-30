@@ -57,7 +57,7 @@ export { cellValue };
 export function pickExportColumns(columns) {
   return (columns || [])
     .filter((c) => {
-      if (!c.key || c.key === "actions" || c.key === "view") return false;
+      if (!c.key || c.key === "actions" || c.key === "view" || c.key === "select") return false;
       if (c.header === "" || c.header == null) return false;
       return true;
     })

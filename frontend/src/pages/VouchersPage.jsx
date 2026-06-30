@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { voucherPartyName } from "../utils/partySearch";
 import PartyPicker from "../components/PartyPicker";
-import { PageHeader, ReportToolbar } from "../components/ui";
+import { PageHeader, ReportToolbar, Select } from "../components/ui";
 
 const ils = (n) => `₪${Number(n ?? 0).toFixed(2)}`;
 const TYPE_AR = { receipt: "سند قبض", payment: "سند صرف" };
@@ -38,7 +39,9 @@ export default function VouchersPage() {
   const [party, setParty] = useState(null);
   const [saving, setSaving] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [editId, setEditId] = useState(null);
   const [filter, setFilter] = useState({ type: "", status: "" });
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,6 +56,17 @@ export default function VouchersPage() {
   }, [filter]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Deep-link drill-down from the supplier statement: open the matching voucher.
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (!id) return;
+    loadDetail({ id });
+    const next = new URLSearchParams(searchParams);
+    next.delete("id");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function addLine() { setLines((p) => [...p, { ...emptyLine }]); }
   function removeLine(i) { setLines((p) => p.filter((_, idx) => idx !== i)); }
@@ -74,24 +88,31 @@ export default function VouchersPage() {
     }
     setSaving(true);
     setError(null);
+    const payload = {
+      voucher_type: voucherType,
+      voucher_date: voucherDate,
+      notes,
+      lines: lines.map((L) => ({
+        ...L,
+        amount: Number(L.amount),
+        customer_id: party.type === "customer" ? party.id : null,
+        supplier_id: party.type === "supplier" ? party.id : null,
+      })),
+    };
     try {
-      await api.post("/api/vouchers", {
-        voucher_type: voucherType,
-        voucher_date: voucherDate,
-        notes,
-        lines: lines.map((L) => ({
-          ...L,
-          amount: Number(L.amount),
-          customer_id: party.type === "customer" ? party.id : null,
-          supplier_id: party.type === "supplier" ? party.id : null,
-        })),
-      }, { headers: getAuthHeaders() });
-      setMsg("تم إنشاء السند");
+      if (editId) {
+        await api.put(`/api/vouchers/${editId}`, payload, { headers: getAuthHeaders() });
+        setMsg("تم تعديل المسودة");
+      } else {
+        await api.post("/api/vouchers", payload, { headers: getAuthHeaders() });
+        setMsg("تم إنشاء السند");
+      }
       setShowForm(false);
+      setEditId(null);
       resetForm(setLines, setNotes, setParty);
       load();
     } catch (e) {
-      setError(e.response?.data?.error || "فشل الإنشاء");
+      setError(e.response?.data?.error || (editId ? "فشل التعديل" : "فشل الإنشاء"));
     } finally {
       setSaving(false);
     }
@@ -121,7 +142,34 @@ export default function VouchersPage() {
 
   async function loadDetail(v) {
     const { data } = await api.get(`/api/vouchers/${v.id}`, { headers: getAuthHeaders() });
-    setDetail(data);
+    if (data.status === "draft") {
+      fillFormFromDoc(data);
+    } else {
+      setDetail(data);
+    }
+  }
+
+  function fillFormFromDoc(data) {
+    setVoucherType(data.voucher_type);
+    setVoucherDate(data.voucher_date?.slice(0, 10) || new Date().toISOString().slice(0, 10));
+    setNotes(data.notes || "");
+    const firstWithParty = data.lines?.find((L) => L.customer_id || L.supplier_id);
+    if (firstWithParty?.customer_id) {
+      setParty({ type: "customer", id: firstWithParty.customer_id, name: firstWithParty.customer_name, badge: "زبون" });
+    } else if (firstWithParty?.supplier_id) {
+      setParty({ type: "supplier", id: firstWithParty.supplier_id, name: firstWithParty.supplier_name, badge: "مورد" });
+    } else {
+      setParty(null);
+    }
+    setLines((data.lines || []).map((L) => ({
+      line_type: L.line_type,
+      amount: L.amount,
+      currency: L.currency || "NIS",
+      bank_name: L.bank_name || "",
+      description: L.description || "",
+    })));
+    setEditId(data.id);
+    setShowForm(true);
   }
 
   const total = lines.reduce((s, L) => s + (Number(L.amount) || 0), 0);
@@ -177,14 +225,14 @@ export default function VouchersPage() {
         </div>
       ) : showForm ? (
         <form className="voucher-form" onSubmit={submit}>
-          <h2>سند جديد</h2>
+          <h2>{editId ? "تعديل المسودة" : "سند جديد"}</h2>
           <div className="form-grid">
             <div className="form-field">
               <label>النوع</label>
-              <select value={voucherType} onChange={(e) => setVoucherType(e.target.value)}>
+              <Select value={voucherType} onChange={(e) => setVoucherType(e.target.value)}>
                 <option value="receipt">سند قبض</option>
                 <option value="payment">سند صرف</option>
-              </select>
+              </Select>
             </div>
             <div className="form-field"><label>التاريخ</label>
               <input type="date" value={voucherDate} onChange={(e) => setVoucherDate(e.target.value)} />
@@ -202,18 +250,18 @@ export default function VouchersPage() {
           <h3>أسطر السند</h3>
           {lines.map((L, i) => (
             <div key={i} className="voucher-line-row">
-              <select value={L.line_type} onChange={(e) => updateLine(i, "line_type", e.target.value)}>
+              <Select value={L.line_type} onChange={(e) => updateLine(i, "line_type", e.target.value)}>
                 <option value="cash">نقدي</option>
                 <option value="check">شيك</option>
                 <option value="bank">بنك</option>
-              </select>
+              </Select>
               <input type="number" min="0.01" step="0.01" placeholder="المبلغ *" required
                 value={L.amount} onChange={(e) => updateLine(i, "amount", e.target.value)} />
-              <select value={L.currency} onChange={(e) => updateLine(i, "currency", e.target.value)}>
+              <Select value={L.currency} onChange={(e) => updateLine(i, "currency", e.target.value)}>
                 <option value="NIS">₪</option>
                 <option value="USD">$</option>
                 <option value="JOD">د.أ</option>
-              </select>
+              </Select>
               {L.line_type === "check" && (
                 <input
                   placeholder="اسم البنك"
@@ -232,24 +280,24 @@ export default function VouchersPage() {
           <button type="button" className="btn-secondary" onClick={addLine}>+ سطر</button>
 
           <div className="form-actions">
-            <button type="submit" className="btn-primary" disabled={saving}>{saving ? "جاري الحفظ…" : "حفظ كمسودة"}</button>
-            <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); resetForm(setLines, setNotes, setParty); }}>إلغاء</button>
+            <button type="submit" className="btn-primary" disabled={saving}>{saving ? "جاري الحفظ…" : editId ? "حفظ التعديلات" : "حفظ كمسودة"}</button>
+            <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); setEditId(null); resetForm(setLines, setNotes, setParty); }}>إلغاء</button>
           </div>
         </form>
       ) : (
         <>
           <div className="filter-row">
-            <select value={filter.type} onChange={(e) => setFilter((p) => ({ ...p, type: e.target.value }))}>
+            <Select value={filter.type} onChange={(e) => setFilter((p) => ({ ...p, type: e.target.value }))}>
               <option value="">كل الأنواع</option>
               <option value="receipt">قبض</option>
               <option value="payment">صرف</option>
-            </select>
-            <select value={filter.status} onChange={(e) => setFilter((p) => ({ ...p, status: e.target.value }))}>
+            </Select>
+            <Select value={filter.status} onChange={(e) => setFilter((p) => ({ ...p, status: e.target.value }))}>
               <option value="">كل الحالات</option>
               <option value="draft">مسودة</option>
               <option value="posted">مرحّل</option>
-            </select>
-            <button className="btn-primary" onClick={() => { setParty(null); setShowForm(true); }}>+ سند جديد</button>
+            </Select>
+            <button className="btn-primary" onClick={() => { setEditId(null); resetForm(setLines, setNotes, setParty); setVoucherType("receipt"); setVoucherDate(new Date().toISOString().slice(0, 10)); setShowForm(true); }}>+ سند جديد</button>
           </div>
 
           {loading ? <p>جاري التحميل…</p> : vouchers.length === 0 ? (

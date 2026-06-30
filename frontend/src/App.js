@@ -23,6 +23,7 @@ const ExpiryReports = lazy(() => import("./pages/ExpiryReports"));
 const SalesByPrice = lazy(() => import("./pages/SalesByPrice"));
 const CustomerManagement = lazy(() => import("./pages/CustomerManagement"));
 const SupplierManagement = lazy(() => import("./pages/SupplierManagement"));
+const SupplierStatement = lazy(() => import("./pages/SupplierStatement"));
 const Purchases = lazy(() => import("./pages/Purchases"));
 const Expenses = lazy(() => import("./pages/Expenses"));
 const Deliveries = lazy(() => import("./pages/Deliveries"));
@@ -184,6 +185,14 @@ function App() {
             element={
               <OfficeRoute adminOnly>
                 <SupplierManagement />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/suppliers/:supplierId/statement"
+            element={
+              <OfficeRoute requireReports>
+                <SupplierStatement />
               </OfficeRoute>
             }
           />

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { PageHeader, ReportToolbar } from "../components/ui";
+import { PageHeader, ReportToolbar, Select } from "../components/ui";
 
 const ils = (n, cur) => `${cur || "₪"}${Number(n ?? 0).toFixed(2)}`;
 
@@ -149,18 +149,18 @@ export default function BanksChecks() {
       {tab === "checks" && (
         <>
           <div className="filter-row">
-            <select value={filter.type} onChange={(e) => setFilter((p) => ({ ...p, type: e.target.value }))}>
+            <Select value={filter.type} onChange={(e) => setFilter((p) => ({ ...p, type: e.target.value }))}>
               <option value="">كل الأنواع</option>
               <option value="received">مستلمة</option>
               <option value="issued">صادرة</option>
-            </select>
-            <select value={filter.status} onChange={(e) => setFilter((p) => ({ ...p, status: e.target.value }))}>
+            </Select>
+            <Select value={filter.status} onChange={(e) => setFilter((p) => ({ ...p, status: e.target.value }))}>
               <option value="">كل الحالات</option>
               <option value="pending">قيد الانتظار</option>
               <option value="cleared">مصروف</option>
               <option value="bounced">مرتد</option>
               <option value="cancelled">ملغي</option>
-            </select>
+            </Select>
             <button className="btn-primary" onClick={() => setShowCheckForm(true)}>+ شيك جديد</button>
           </div>
 
@@ -170,10 +170,10 @@ export default function BanksChecks() {
               <div className="form-grid">
                 <div className="form-field">
                   <label>النوع</label>
-                  <select value={checkForm.check_type} onChange={fc("check_type")}>
+                  <Select value={checkForm.check_type} onChange={fc("check_type")}>
                     <option value="received">شيك مستلم</option>
                     <option value="issued">شيك صادر</option>
-                  </select>
+                  </Select>
                 </div>
                 <div className="form-field"><label>رقم الشيك</label><input value={checkForm.check_no} onChange={fc("check_no")} /></div>
                 <div className="form-field"><label>اسم البنك</label><input value={checkForm.bank_name} onChange={fc("bank_name")} /></div>
@@ -181,19 +181,19 @@ export default function BanksChecks() {
                 <div className="form-field"><label>المبلغ *</label><input required type="number" min="0.01" step="0.01" value={checkForm.amount} onChange={fc("amount")} /></div>
                 <div className="form-field">
                   <label>العملة</label>
-                  <select value={checkForm.currency} onChange={fc("currency")}>
+                  <Select value={checkForm.currency} onChange={fc("currency")}>
                     <option value="NIS">شيكل</option>
                     <option value="USD">دولار</option>
                     <option value="JOD">دينار</option>
-                  </select>
+                  </Select>
                 </div>
                 <div className="form-field"><label>تاريخ الاستحقاق</label><input type="date" value={checkForm.due_date} onChange={fc("due_date")} /></div>
                 <div className="form-field">
                   <label>الحساب البنكي</label>
-                  <select value={checkForm.bank_account_id} onChange={fc("bank_account_id")}>
+                  <Select value={checkForm.bank_account_id} onChange={fc("bank_account_id")}>
                     <option value="">— اختر حساباً —</option>
                     {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                  </select>
+                  </Select>
                 </div>
                 <div className="form-field"><label>ملاحظات</label><textarea value={checkForm.notes} onChange={fc("notes")} /></div>
               </div>

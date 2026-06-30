@@ -6,6 +6,12 @@ import { getAppSettings } from "../utils/settings.js";
 
 const requireReports = requireRoles("admin", "accountant");
 
+// Unit cost is derived (total ÷ qty) and can be a long fraction (e.g. 42/52).
+// Keep extra precision so cost of goods sold / weighted-average cost stay accurate.
+function round6(n) {
+  return Math.round((Number(n) || 0) * 1e6) / 1e6;
+}
+
 async function nextNo(db, table, col) {
   // SQLINJECTION_REGRESSION: table/col must be hardcoded allowlist only — never user input
   const ALLOWED = {
@@ -27,9 +33,11 @@ function normalizeItems(items) {
   for (const it of items) {
     const pid = Number(it.product_id);
     const qty = Number(it.quantity);
-    const cost = round2(Number(it.unit_cost) || 0);
+    // total_cost is the supplier cost for the whole line quantity (not per unit).
+    const totalCost = round2(Number(it.total_cost) || 0);
     if (!pid || !Number.isFinite(qty) || qty <= 0) return null;
-    out.push({ product_id: pid, quantity: qty, unit_cost: cost, vat_rate: Number(it.vat_rate) });
+    const unitCost = round6(totalCost / qty);
+    out.push({ product_id: pid, quantity: qty, total_cost: totalCost, unit_cost: unitCost, vat_rate: Number(it.vat_rate) });
   }
   return out;
 }
@@ -69,7 +77,7 @@ export function createPurchasesRouter(db) {
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
     const norm = normalizeItems(items);
     if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
-    const total = round2(norm.reduce((s, i) => s + i.quantity * i.unit_cost, 0));
+    const total = round2(norm.reduce((s, i) => s + i.total_cost, 0));
     await db.run("BEGIN IMMEDIATE");
     try {
       const no = await nextNo(db, "purchase_orders", "order_no");
@@ -80,14 +88,46 @@ export function createPurchasesRouter(db) {
       );
       for (const i of norm) {
         await db.run(
-          `INSERT INTO purchase_order_items (order_id, product_id, quantity, unit_cost, line_total)
-           VALUES (?, ?, ?, ?, ?)`,
-          [ins.lastID, i.product_id, i.quantity, i.unit_cost, round2(i.quantity * i.unit_cost)]
+          `INSERT INTO purchase_order_items (order_id, product_id, quantity, total_cost, unit_cost, line_total)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost]
         );
       }
       await db.run("COMMIT");
       const row = await db.get("SELECT * FROM purchase_orders WHERE id = ?", [ins.lastID]);
       res.status(201).json(row);
+    } catch (e) {
+      try { await db.run("ROLLBACK"); } catch (_) {}
+      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+    }
+  });
+
+  router.put("/orders/:id", requireAuth, requireAdmin, async (req, res) => {
+    const order = await db.get("SELECT * FROM purchase_orders WHERE id = ?", [req.params.id]);
+    if (!order) return res.status(404).json({ error: "أمر الشراء غير موجود", code: "NOT_FOUND" });
+    if (order.status === "received") return res.status(400).json({ error: "لا يمكن تعديل أمر مستلم", code: "LOCKED" });
+    const { supplier_id, order_date, notes, items } = req.body || {};
+    const sid = Number(supplier_id);
+    if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
+    const norm = normalizeItems(items);
+    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const total = round2(norm.reduce((s, i) => s + i.total_cost, 0));
+    await db.run("BEGIN IMMEDIATE");
+    try {
+      await db.run(
+        `UPDATE purchase_orders SET supplier_id = ?, order_date = ?, total_amount = ?, notes = ? WHERE id = ?`,
+        [sid, order_date || order.order_date, total, notes || null, order.id]
+      );
+      await db.run("DELETE FROM purchase_order_items WHERE order_id = ?", [order.id]);
+      for (const i of norm) {
+        await db.run(
+          `INSERT INTO purchase_order_items (order_id, product_id, quantity, total_cost, unit_cost, line_total)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [order.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost]
+        );
+      }
+      await db.run("COMMIT");
+      res.json(await db.get("SELECT * FROM purchase_orders WHERE id = ?", [order.id]));
     } catch (e) {
       try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });
@@ -136,7 +176,7 @@ export function createPurchasesRouter(db) {
     let subtotal = 0, vat = 0;
     const lines = norm.map((i) => {
       const rate = Number.isFinite(i.vat_rate) ? i.vat_rate : def;
-      const net = round2(i.quantity * i.unit_cost);
+      const net = round2(i.total_cost);
       const lineVat = round2(net * rate);
       subtotal = round2(subtotal + net);
       vat = round2(vat + lineVat);
@@ -165,14 +205,49 @@ export function createPurchasesRouter(db) {
       for (const i of lines) {
         await db.run(
           `INSERT INTO purchase_invoice_items
-             (invoice_id, product_id, quantity, unit_cost, vat_rate, line_net, line_vat, line_total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [ins.lastID, i.product_id, i.quantity, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total]
+             (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total]
         );
       }
       await db.run("COMMIT");
       const row = await db.get("SELECT * FROM purchase_invoices WHERE id = ?", [ins.lastID]);
       res.status(201).json(row);
+    } catch (e) {
+      try { await db.run("ROLLBACK"); } catch (_) {}
+      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+    }
+  });
+
+  router.put("/invoices/:id", requireAuth, requireAdmin, async (req, res) => {
+    const inv = await db.get("SELECT * FROM purchase_invoices WHERE id = ?", [req.params.id]);
+    if (!inv) return res.status(404).json({ error: "الفاتورة غير موجودة", code: "NOT_FOUND" });
+    if (inv.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل فاتورة مرحّلة", code: "ALREADY_POSTED" });
+    const { supplier_id, ref_text, invoice_date, notes, items } = req.body || {};
+    const sid = Number(supplier_id);
+    if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
+    const norm = normalizeItems(items);
+    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const { subtotal, vat, total, lines } = await computeInvoiceTotals(db, norm);
+    await db.run("BEGIN IMMEDIATE");
+    try {
+      await db.run(
+        `UPDATE purchase_invoices
+           SET supplier_id = ?, ref_text = ?, invoice_date = ?, notes = ?, subtotal = ?, vat = ?, total = ?
+         WHERE id = ?`,
+        [sid, ref_text || null, invoice_date || inv.invoice_date, notes || null, subtotal, vat, total, inv.id]
+      );
+      await db.run("DELETE FROM purchase_invoice_items WHERE invoice_id = ?", [inv.id]);
+      for (const i of lines) {
+        await db.run(
+          `INSERT INTO purchase_invoice_items
+             (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [inv.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total]
+        );
+      }
+      await db.run("COMMIT");
+      res.json(await db.get("SELECT * FROM purchase_invoices WHERE id = ?", [inv.id]));
     } catch (e) {
       try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });
@@ -276,7 +351,7 @@ export function createPurchasesRouter(db) {
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
     const norm = normalizeItems(items);
     if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
-    const total = round2(norm.reduce((s, i) => s + i.quantity * i.unit_cost, 0));
+    const total = round2(norm.reduce((s, i) => s + i.total_cost, 0));
     await db.run("BEGIN IMMEDIATE");
     try {
       const no = await nextNo(db, "purchase_returns", "return_no");
@@ -287,13 +362,47 @@ export function createPurchasesRouter(db) {
       );
       for (const i of norm) {
         await db.run(
-          `INSERT INTO purchase_return_items (return_id, product_id, quantity, unit_cost, line_total)
-           VALUES (?, ?, ?, ?, ?)`,
-          [ins.lastID, i.product_id, i.quantity, i.unit_cost, round2(i.quantity * i.unit_cost)]
+          `INSERT INTO purchase_return_items (return_id, product_id, quantity, total_cost, unit_cost, line_total)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost]
         );
       }
       await db.run("COMMIT");
       res.status(201).json(await db.get("SELECT * FROM purchase_returns WHERE id = ?", [ins.lastID]));
+    } catch (e) {
+      try { await db.run("ROLLBACK"); } catch (_) {}
+      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+    }
+  });
+
+  router.put("/returns/:id", requireAuth, requireAdmin, async (req, res) => {
+    const ret = await db.get("SELECT * FROM purchase_returns WHERE id = ?", [req.params.id]);
+    if (!ret) return res.status(404).json({ error: "المرتجع غير موجود", code: "NOT_FOUND" });
+    if (ret.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل مرتجع مرحّل", code: "ALREADY_POSTED" });
+    const { supplier_id, return_date, notes, items } = req.body || {};
+    const sid = Number(supplier_id);
+    if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
+    const norm = normalizeItems(items);
+    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const total = round2(norm.reduce((s, i) => s + i.total_cost, 0));
+    await db.run("BEGIN IMMEDIATE");
+    try {
+      await db.run(
+        `UPDATE purchase_returns
+           SET supplier_id = ?, return_date = ?, notes = ?, total = ?
+         WHERE id = ?`,
+        [sid, return_date || ret.return_date, notes || null, total, ret.id]
+      );
+      await db.run("DELETE FROM purchase_return_items WHERE return_id = ?", [ret.id]);
+      for (const i of norm) {
+        await db.run(
+          `INSERT INTO purchase_return_items (return_id, product_id, quantity, total_cost, unit_cost, line_total)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [ret.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost]
+        );
+      }
+      await db.run("COMMIT");
+      res.json(await db.get("SELECT * FROM purchase_returns WHERE id = ?", [ret.id]));
     } catch (e) {
       try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });

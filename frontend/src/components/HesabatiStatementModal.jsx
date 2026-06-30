@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import api from "../apiClient";
 import AccountStatementView from "./AccountStatementView";
+import SupplierPurchaseItemsView from "./SupplierPurchaseItemsView";
 import StatementHistoryImportModal from "./StatementHistoryImportModal";
 import { printAccountStatement, downloadAccountStatementExcel } from "../utils/accountStatementPrint";
 import { exportToCsv } from "../utils/reportExport";
 import { getDisplayRows } from "./AccountStatementView";
-import { Button, Modal, SecondaryButton } from "./ui";
+import { Button, Modal, SecondaryButton, Tabs } from "./ui";
 
 /**
  * @param {{
@@ -21,6 +22,7 @@ export default function HesabatiStatementModal({ open, partyType, party, onClose
   const [report, setReport] = useState(null);
   const [historyImportOpen, setHistoryImportOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [activeTab, setActiveTab] = useState("statement");
 
   const loadReport = useCallback(async () => {
     if (!party?.id) return;
@@ -41,6 +43,7 @@ export default function HesabatiStatementModal({ open, partyType, party, onClose
     if (!open || !party?.id) {
       setReport(null);
       setError(null);
+      setActiveTab("statement");
       return;
     }
     loadReport();
@@ -87,7 +90,7 @@ export default function HesabatiStatementModal({ open, partyType, party, onClose
             <SecondaryButton type="button" onClick={() => setHistoryImportOpen(true)}>
               استيراد كشف حساب قديم
             </SecondaryButton>
-            {report ? (
+            {report && activeTab === "statement" ? (
               <>
                 <SecondaryButton type="button" onClick={handlePrint}>طباعة</SecondaryButton>
                 <SecondaryButton type="button" onClick={handlePrint}>PDF</SecondaryButton>
@@ -99,9 +102,25 @@ export default function HesabatiStatementModal({ open, partyType, party, onClose
           </>
         }
       >
-        {loading ? <p>جاري التحميل…</p> : null}
-        {error ? <p style={{ color: "var(--office-danger)" }}>{error}</p> : null}
-        {report ? <AccountStatementView report={report} partyType={partyType} /> : null}
+        {partyType === "supplier" ? (
+          <Tabs
+            active={activeTab}
+            onChange={setActiveTab}
+            tabs={[
+              { id: "statement", label: "كشف الحساب", icon: "finance" },
+              { id: "purchases", label: "المنتجات المشتراة", icon: "products" },
+            ]}
+          />
+        ) : null}
+        {activeTab === "statement" ? (
+          <>
+            {loading ? <p>جاري التحميل…</p> : null}
+            {error ? <p style={{ color: "var(--office-danger)" }}>{error}</p> : null}
+            {report ? <AccountStatementView report={report} partyType={partyType} /> : null}
+          </>
+        ) : (
+          <SupplierPurchaseItemsView supplierId={party?.id} />
+        )}
       </Modal>
 
       <StatementHistoryImportModal

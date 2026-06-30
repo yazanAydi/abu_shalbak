@@ -1,4 +1,5 @@
 import "./RefundsManagement.css";
+import { Select } from "./ui";
 
 const STATUS_OPTS = [
   { value: "", label: "الكل" },
@@ -53,7 +54,7 @@ export default function RefundFilters({ filters, onChange, onSearch, onReset }) 
         </label>
         <label className="rf-flab">
           الحالة
-          <select
+          <Select
             className="rf-finput"
             value={filters.status}
             onChange={(e) => set("status", e.target.value)}
@@ -63,7 +64,7 @@ export default function RefundFilters({ filters, onChange, onSearch, onReset }) 
                 {o.label}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="rf-flab">
           المبلغ من ({`\u20AA`})

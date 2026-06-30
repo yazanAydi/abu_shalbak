@@ -574,6 +574,23 @@ async function migrateAccountStatementEntries(db) {
   `);
 }
 
+async function migrateSupplierAdjustmentsTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS supplier_adjustments (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+      entry_date  TEXT NOT NULL,
+      debit       REAL NOT NULL DEFAULT 0,
+      credit      REAL NOT NULL DEFAULT 0,
+      notes       TEXT,
+      created_by  INTEGER REFERENCES users(id),
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_supplier_adjustments_supplier
+      ON supplier_adjustments (supplier_id, entry_date);
+  `);
+}
+
 async function migratePurchasesTables(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS purchase_orders (
@@ -592,6 +609,7 @@ async function migratePurchasesTables(db) {
       order_id    INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
       product_id  INTEGER NOT NULL REFERENCES products(id),
       quantity    REAL NOT NULL,
+      total_cost  REAL NOT NULL DEFAULT 0,
       unit_cost   REAL NOT NULL DEFAULT 0,
       line_total  REAL NOT NULL DEFAULT 0
     );
@@ -618,6 +636,7 @@ async function migratePurchasesTables(db) {
       invoice_id  INTEGER NOT NULL REFERENCES purchase_invoices(id) ON DELETE CASCADE,
       product_id  INTEGER NOT NULL REFERENCES products(id),
       quantity    REAL NOT NULL,
+      total_cost  REAL NOT NULL DEFAULT 0,
       unit_cost   REAL NOT NULL DEFAULT 0,
       vat_rate    REAL NOT NULL DEFAULT 0,
       line_net    REAL NOT NULL DEFAULT 0,
@@ -643,6 +662,7 @@ async function migratePurchasesTables(db) {
       return_id   INTEGER NOT NULL REFERENCES purchase_returns(id) ON DELETE CASCADE,
       product_id  INTEGER NOT NULL REFERENCES products(id),
       quantity    REAL NOT NULL,
+      total_cost  REAL NOT NULL DEFAULT 0,
       unit_cost   REAL NOT NULL DEFAULT 0,
       line_total  REAL NOT NULL DEFAULT 0
     );
@@ -654,6 +674,13 @@ async function migratePurchasesTables(db) {
     CREATE INDEX IF NOT EXISTS idx_pret_supplier ON purchase_returns(supplier_id);
     CREATE INDEX IF NOT EXISTS idx_preti_return  ON purchase_return_items(return_id);
   `);
+
+  // total_cost = supplier cost of the whole line quantity (unit_cost is derived per-unit).
+  for (const t of ["purchase_order_items", "purchase_invoice_items", "purchase_return_items"]) {
+    if (!(await tableHasColumn(db, t, "total_cost"))) {
+      await db.run(`ALTER TABLE ${t} ADD COLUMN total_cost REAL NOT NULL DEFAULT 0`);
+    }
+  }
 }
 
 async function migrateStockAdjustmentsTables(db) {
@@ -1594,6 +1621,7 @@ export async function initDatabase(dbPath) {
   await migrateAccountStatementIndexes(db);
   await migrateSupplierOpeningBalanceMeta(db);
   await migrateAccountStatementEntries(db);
+  await migrateSupplierAdjustmentsTable(db);
   await migrateTransactionsPaymentMethodExpanded(db);
   await migrateSalePaymentsTable(db);
   await migrateSuspendedSalesTables(db);

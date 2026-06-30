@@ -3,8 +3,6 @@ import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
 import { isAdminRole } from "../utils/roles";
-
-const CASHIER_NAME_DEBOUNCE_MS = 300;
 import RefundMetrics from "../components/RefundMetrics";
 import RefundFilters from "../components/RefundFilters";
 import RefundTable from "../components/RefundTable";
@@ -12,6 +10,8 @@ import RefundDetailsModal from "../components/RefundDetailsModal";
 import { formatRefundReason, statusLabelAr, ils as refundIls } from "../utils/refundHelpers";
 import { PageHeader, ReportToolbar } from "../components/ui";
 import "../components/RefundsManagement.css";
+
+const CASHIER_NAME_DEBOUNCE_MS = 300;
 
 const REFUND_COLUMNS = [
   { key: "id", header: "#" },

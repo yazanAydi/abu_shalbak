@@ -29,6 +29,7 @@ function Adjustments() {
   const [items, setItems] = useState([]);
   const [saving, setSaving] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [editId, setEditId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -46,12 +47,19 @@ function Adjustments() {
     if (items.length === 0) { toast.error("أضف أصنافاً"); return; }
     setSaving(true);
     try {
-      await api.post("/api/inventory/adjustments", {
-        adjustment_type: type, adjustment_date: date, notes, post,
+      const payload = {
+        adjustment_type: type, adjustment_date: date, notes,
         items: items.map((it) => ({ product_id: it.product_id, quantity: Number(it.quantity), unit_cost: Number(it.unit_cost) || null })),
-      }, { headers: getAuthHeaders() });
-      toast.success(post ? "تم الترحيل" : "حُفظت كمسودة");
-      setShow(false); setItems([]); setNotes(""); load();
+      };
+      if (editId) {
+        await api.put(`/api/inventory/adjustments/${editId}`, payload, { headers: getAuthHeaders() });
+        if (post) await api.post(`/api/inventory/adjustments/${editId}/post`, {}, { headers: getAuthHeaders() });
+        toast.success(post ? "تم الترحيل" : "تم تعديل المسودة");
+      } else {
+        await api.post("/api/inventory/adjustments", { ...payload, post }, { headers: getAuthHeaders() });
+        toast.success(post ? "تم الترحيل" : "حُفظت كمسودة");
+      }
+      setShow(false); setItems([]); setNotes(""); setEditId(null); load();
     } catch (e) { toast.error(e.response?.data?.error || "فشل الحفظ"); }
     finally { setSaving(false); }
   }
@@ -67,7 +75,25 @@ function Adjustments() {
     catch (e) { toast.error(e.response?.data?.error || "فشل"); }
   }
   async function openDetail(id) {
-    try { const { data } = await api.get(`/api/inventory/adjustments/${id}`, { headers: getAuthHeaders() }); setDetail(data); } catch { /* */ }
+    try {
+      const { data } = await api.get(`/api/inventory/adjustments/${id}`, { headers: getAuthHeaders() });
+      if (data.status === "draft") fillFormFromDoc(data);
+      else setDetail(data);
+    } catch { /* */ }
+  }
+
+  function fillFormFromDoc(data) {
+    setType(data.adjustment_type);
+    setDate(data.adjustment_date?.slice(0, 10) || new Date().toISOString().slice(0, 10));
+    setNotes(data.notes || "");
+    setItems((data.items || []).map((it) => ({
+      product_id: it.product_id,
+      name: it.name,
+      quantity: it.quantity,
+      unit_cost: it.unit_cost ?? 0,
+    })));
+    setEditId(data.id);
+    setShow(true);
   }
 
   const adjColumns = [
@@ -89,7 +115,7 @@ function Adjustments() {
     <>
       <div className="ui-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <ReportToolbar title="تسويات المخزون" columns={pickExportColumns(adjColumns)} rows={list} filename="inventory-adjustments" disabled={loading} />
-        <Button icon="plus" onClick={() => { setShow(true); setItems([]); }}>تسوية جديدة</Button>
+        <Button icon="plus" onClick={() => { setEditId(null); setType("in"); setDate(new Date().toISOString().slice(0, 10)); setNotes(""); setItems([]); setShow(true); }}>تسوية جديدة</Button>
       </div>
       <DataTable
         loading={loading}
@@ -99,11 +125,11 @@ function Adjustments() {
         empty="لا توجد تسويات"
       />
 
-      <Modal open={show} title="تسوية مخزون" onClose={() => setShow(false)} size="lg"
+      <Modal open={show} title={editId ? "تعديل التسوية" : "تسوية مخزون"} onClose={() => { setShow(false); setEditId(null); }} size="lg"
         footer={<>
-          <Button onClick={() => save(true)} disabled={saving}>ترحيل مباشر</Button>
-          <Button variant="secondary" onClick={() => save(false)} disabled={saving}>حفظ كمسودة</Button>
-          <Button variant="ghost" onClick={() => setShow(false)}>إلغاء</Button>
+          <Button onClick={() => save(true)} disabled={saving}>{editId ? "ترحيل" : "ترحيل مباشر"}</Button>
+          <Button variant="secondary" onClick={() => save(false)} disabled={saving}>{editId ? "حفظ التعديلات" : "حفظ كمسودة"}</Button>
+          <Button variant="ghost" onClick={() => { setShow(false); setEditId(null); }}>إلغاء</Button>
         </>}>
         <FormGrid>
           <FormField label="نوع التسوية"><Select value={type} onChange={(e) => setType(e.target.value)}>{Object.entries(ADJ_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></FormField>

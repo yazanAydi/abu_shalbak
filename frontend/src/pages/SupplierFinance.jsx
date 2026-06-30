@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
 import { isAdminRole } from "../utils/roles";
-import { PageHeader, ReportToolbar } from "../components/ui";
+import { PageHeader, ReportToolbar, Select } from "../components/ui";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -504,7 +504,7 @@ export default function SupplierFinance() {
       <section className="sf-card">
         <h2 className="sf-h2">مصاريف التشغيل (إيجار، رواتب، …)</h2>
         <div className="sf-pay-form">
-          <select
+          <Select
             className="sf-input"
             value={opexForm.category}
             onChange={(e) => setOpexForm((f) => ({ ...f, category: e.target.value }))}
@@ -514,7 +514,7 @@ export default function SupplierFinance() {
                 {v}
               </option>
             ))}
-          </select>
+          </Select>
           <input
             className="sf-input"
             type="number"
@@ -528,7 +528,7 @@ export default function SupplierFinance() {
             value={opexForm.paid_on}
             onChange={(e) => setOpexForm((f) => ({ ...f, paid_on: e.target.value }))}
           />
-          <select
+          <Select
             className="sf-input"
             value={opexForm.payment_method}
             onChange={(e) => setOpexForm((f) => ({ ...f, payment_method: e.target.value }))}
@@ -538,7 +538,7 @@ export default function SupplierFinance() {
                 {m.ar}
               </option>
             ))}
-          </select>
+          </Select>
           <button type="button" className="sf-btn" onClick={addOpex}>
             إضافة
           </button>
@@ -629,7 +629,7 @@ export default function SupplierFinance() {
       <section className="sf-card">
         <h2 className="sf-h2">فواتير موردين (ذمم / مستحقات)</h2>
         <div className="sf-form-grid">
-          <select
+          <Select
             className="sf-input"
             value={invForm.supplier_id}
             onChange={(e) => setInvForm((f) => ({ ...f, supplier_id: e.target.value }))}
@@ -640,7 +640,7 @@ export default function SupplierFinance() {
                 {s.name}
               </option>
             ))}
-          </select>
+          </Select>
           <input
             className="sf-input"
             placeholder="مرجع فاتورة"
@@ -885,7 +885,7 @@ export default function SupplierFinance() {
         <div className="sf-pay-form">
           <label>
             مورد
-            <select
+            <Select
               className="sf-input"
               value={payForm.supplier_id}
               onChange={(e) => setPayForm((f) => ({ ...f, supplier_id: e.target.value }))}
@@ -896,7 +896,7 @@ export default function SupplierFinance() {
                   {s.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label>
             المبلغ
@@ -920,7 +920,7 @@ export default function SupplierFinance() {
           </label>
           <label>
             طريقة الدفع
-            <select
+            <Select
               className="sf-input"
               value={payForm.payment_method}
               onChange={(e) => setPayForm((f) => ({ ...f, payment_method: e.target.value }))}
@@ -930,11 +930,11 @@ export default function SupplierFinance() {
                   {m.ar}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className="sf-note-field">
             فاتورة مورد (اختياري — يحدّث المدفوع)
-            <select
+            <Select
               className="sf-input"
               value={payForm.invoice_id}
               onChange={(e) => setPayForm((f) => ({ ...f, invoice_id: e.target.value }))}
@@ -951,7 +951,7 @@ export default function SupplierFinance() {
                     #{i.id} {i.ref_text || ""} (متبقي {ils(i.amount_total - i.amount_paid)})
                   </option>
                 ))}
-            </select>
+            </Select>
           </label>
           <label className="sf-note-field">
             مرجع / ملاحظة

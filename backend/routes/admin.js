@@ -303,14 +303,64 @@ export function createAdminRouter(db, dbPath) {
     }
   });
 
+  // Delete a product while preserving all related history rows (sales,
+  // inventory, purchases, etc.). Those child rows reference products(id) and
+  // most are NOT NULL, so we drop the product with foreign-key enforcement
+  // temporarily disabled, leaving the historical records intact. FK enforcement
+  // is per-connection, so we always restore it in `finally`.
   router.delete("/products/:id", async (req, res, next) => {
     try {
       const existing = await db.get("SELECT * FROM products WHERE id = ?", [req.params.id]);
       if (!existing) return res.status(404).json({ error: "غير موجود" });
-      const info = await db.run("DELETE FROM products WHERE id = ?", [req.params.id]);
+      let info;
+      await db.exec("PRAGMA foreign_keys = OFF;");
+      try {
+        info = await db.run("DELETE FROM products WHERE id = ?", [req.params.id]);
+      } finally {
+        await db.exec("PRAGMA foreign_keys = ON;");
+      }
       if (info.changes === 0) return res.status(404).json({ error: "غير موجود" });
       await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_DELETE, "products", req.params.id, existing, null);
       res.status(204).send();
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Bulk delete used by the "delete selected" / "delete all" buttons. Done in a
+  // single request (with FK enforcement disabled once) to avoid racy per-request
+  // PRAGMA toggling on the shared connection. Related history rows are kept.
+  router.post("/products/bulk-delete", async (req, res, next) => {
+    const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const ids = [...new Set(rawIds.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0))];
+    if (ids.length === 0) {
+      return res.status(400).json({ error: "لا توجد منتجات للحذف" });
+    }
+    try {
+      const placeholders = ids.map(() => "?").join(",");
+      const existingRows = await db.all(
+        `SELECT * FROM products WHERE id IN (${placeholders})`,
+        ids
+      );
+      let deleted = 0;
+      await db.exec("PRAGMA foreign_keys = OFF;");
+      try {
+        await db.exec("BEGIN");
+        for (const id of ids) {
+          const info = await db.run("DELETE FROM products WHERE id = ?", [id]);
+          deleted += info.changes;
+        }
+        await db.exec("COMMIT");
+      } catch (e) {
+        await db.exec("ROLLBACK").catch(() => {});
+        throw e;
+      } finally {
+        await db.exec("PRAGMA foreign_keys = ON;");
+      }
+      for (const row of existingRows) {
+        await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_DELETE, "products", row.id, row, null);
+      }
+      res.json({ success: true, deleted });
     } catch (e) {
       next(e);
     }

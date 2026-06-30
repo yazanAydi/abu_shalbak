@@ -281,6 +281,49 @@ export function createInventoryRouter(db) {
     }
   });
 
+  router.put("/adjustments/:id", requireAuth, requireAdmin, async (req, res, next) => {
+    const adj = await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [req.params.id]);
+    if (!adj) return res.status(404).json({ error: "التسوية غير موجودة", code: "NOT_FOUND" });
+    if (adj.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل تسوية مرحّلة", code: "ALREADY_POSTED" });
+    const { adjustment_type, adjustment_date, notes, items } = req.body || {};
+    if (!ADJ_TYPES.includes(adjustment_type)) {
+      return res.status(400).json({ error: "نوع التسوية غير صالح", code: "VALIDATION_ERROR" });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "أصناف التسوية مطلوبة", code: "VALIDATION_ERROR" });
+    }
+    const norm = [];
+    for (const it of items) {
+      const pid = Number(it.product_id);
+      const q = Number(it.quantity);
+      if (!pid || !Number.isFinite(q) || q === 0) {
+        return res.status(400).json({ error: "كمية غير صالحة", code: "VALIDATION_ERROR" });
+      }
+      norm.push({ product_id: pid, quantity: q, unit_cost: it.unit_cost != null ? round2(Number(it.unit_cost)) : null, notes: it.notes || null });
+    }
+
+    await db.run("BEGIN IMMEDIATE");
+    try {
+      await db.run(
+        `UPDATE stock_adjustments SET adjustment_type = ?, adjustment_date = ?, notes = ? WHERE id = ?`,
+        [adjustment_type, adjustment_date || adj.adjustment_date, notes || null, adj.id]
+      );
+      await db.run("DELETE FROM stock_adjustment_items WHERE adjustment_id = ?", [adj.id]);
+      for (const it of norm) {
+        await db.run(
+          `INSERT INTO stock_adjustment_items (adjustment_id, product_id, quantity, unit_cost, notes)
+           VALUES (?, ?, ?, ?, ?)`,
+          [adj.id, it.product_id, it.quantity, it.unit_cost, it.notes]
+        );
+      }
+      await db.run("COMMIT");
+      res.json(await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [adj.id]));
+    } catch (e) {
+      try { await db.run("ROLLBACK"); } catch (_) {}
+      next(e);
+    }
+  });
+
   router.delete("/adjustments/:id", requireAuth, requireAdmin, async (req, res) => {
     const adj = await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [req.params.id]);
     if (!adj) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });

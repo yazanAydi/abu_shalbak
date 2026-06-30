@@ -24,6 +24,7 @@ export default function DataTable({
   emptyIcon,
   emptyHint,
   rowClassName,
+  onRowClick,
 }) {
   if (loading) {
     return (
@@ -55,7 +56,11 @@ export default function DataTable({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={rowKey(row, i)} className={rowClassName ? rowClassName(row) : undefined}>
+            <tr
+              key={rowKey(row, i)}
+              className={rowClassName ? rowClassName(row) : undefined}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+            >
               {columns.map((c) => (
                 <td
                   key={c.key}

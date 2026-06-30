@@ -1,3 +1,5 @@
+import SearchableSelect from "./SearchableSelect";
+
 export function FormField({ label, required, hint, children, className = "" }) {
   return (
     <div className={`ui-field ${className}`}>
@@ -17,12 +19,8 @@ export function Input({ className = "", ...rest }) {
   return <input className={`ui-input ${className}`} {...rest} />;
 }
 
-export function Select({ className = "", children, ...rest }) {
-  return (
-    <select className={`ui-select ${className}`} {...rest}>
-      {children}
-    </select>
-  );
+export function Select(props) {
+  return <SearchableSelect {...props} />;
 }
 
 export function Textarea({ className = "", ...rest }) {

@@ -27,6 +27,7 @@ export default function Warehouses() {
   const [transferForm, setTransferForm] = useState({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: new Date().toISOString().slice(0, 10), notes: "" });
   const [transferItems, setTransferItems] = useState([]);
   const [detail, setDetail] = useState(null);
+  const [editId, setEditId] = useState(null);
 
   const loadWarehouses = useCallback(async () => {
     try { const { data } = await api.get("/api/warehouses", { headers: getAuthHeaders() }); setWarehouses(data); }
@@ -65,11 +66,18 @@ export default function Warehouses() {
     if (!transferForm.from_warehouse_id || !transferForm.to_warehouse_id) { toast.error("حدّد المستودعين"); return; }
     if (transferItems.length === 0) { toast.error("أضف أصنافاً"); return; }
     try {
-      await api.post("/api/warehouses/transfers", {
+      const payload = {
         ...transferForm,
         items: transferItems.map((it) => ({ product_id: it.product_id, quantity: Number(it.quantity) })),
-      }, { headers: getAuthHeaders() });
-      toast.success("حُفظ كمسودة"); setShowTransfer(false); setTransferItems([]); loadTab("transfers");
+      };
+      if (editId) {
+        await api.put(`/api/warehouses/transfers/${editId}`, payload, { headers: getAuthHeaders() });
+        toast.success("تم تعديل المسودة");
+      } else {
+        await api.post("/api/warehouses/transfers", payload, { headers: getAuthHeaders() });
+        toast.success("حُفظ كمسودة");
+      }
+      setShowTransfer(false); setTransferItems([]); setEditId(null); loadTab("transfers");
     } catch (e) { toast.error(e.response?.data?.error || "فشل"); }
   }
   async function postTransfer(id) {
@@ -83,7 +91,23 @@ export default function Warehouses() {
     catch (e) { toast.error(e.response?.data?.error || "فشل"); }
   }
   async function openDetail(id) {
-    try { setDetail((await api.get(`/api/warehouses/transfers/${id}`, { headers: getAuthHeaders() })).data); } catch { /* */ }
+    try {
+      const { data } = await api.get(`/api/warehouses/transfers/${id}`, { headers: getAuthHeaders() });
+      if (data.status === "draft") fillFormFromDoc(data);
+      else setDetail(data);
+    } catch { /* */ }
+  }
+
+  function fillFormFromDoc(data) {
+    setTransferForm({
+      from_warehouse_id: String(data.from_warehouse_id),
+      to_warehouse_id: String(data.to_warehouse_id),
+      transfer_date: data.transfer_date?.slice(0, 10) || new Date().toISOString().slice(0, 10),
+      notes: data.notes || "",
+    });
+    setTransferItems((data.items || []).map((it) => ({ product_id: it.product_id, name: it.name, quantity: it.quantity })));
+    setEditId(data.id);
+    setShowTransfer(true);
   }
 
   const warehouseColumns = [
@@ -156,7 +180,7 @@ export default function Warehouses() {
               disabled={loading && tab !== "warehouses"}
             />
             {tab === "warehouses" ? <Button icon="plus" onClick={() => setShowWh(true)}>مستودع جديد</Button>
-              : tab === "transfers" ? <Button icon="plus" onClick={() => { setTransferItems([]); setShowTransfer(true); }}>تحويل جديد</Button> : null}
+              : tab === "transfers" ? <Button icon="plus" onClick={() => { setEditId(null); setTransferForm({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: new Date().toISOString().slice(0, 10), notes: "" }); setTransferItems([]); setShowTransfer(true); }}>تحويل جديد</Button> : null}
           </>
         } />
 
@@ -223,8 +247,8 @@ export default function Warehouses() {
         </FormGrid>
       </Modal>
 
-      <Modal open={showTransfer} title="تحويل بين المستودعات" onClose={() => setShowTransfer(false)} size="lg"
-        footer={<><Button onClick={saveTransfer}>حفظ كمسودة</Button><Button variant="secondary" onClick={() => setShowTransfer(false)}>إلغاء</Button></>}>
+      <Modal open={showTransfer} title={editId ? "تعديل التحويل" : "تحويل بين المستودعات"} onClose={() => { setShowTransfer(false); setEditId(null); }} size="lg"
+        footer={<><Button onClick={saveTransfer}>{editId ? "حفظ التعديلات" : "حفظ كمسودة"}</Button><Button variant="secondary" onClick={() => { setShowTransfer(false); setEditId(null); }}>إلغاء</Button></>}>
         <FormGrid>
           <FormField label="من مستودع" required>
             <Select value={transferForm.from_warehouse_id} onChange={(e) => setTransferForm((f) => ({ ...f, from_warehouse_id: e.target.value }))}>

@@ -17,6 +17,7 @@ import {
   SecondaryButton,
   DangerButton,
   ReportToolbar,
+  Modal,
   useToast,
 } from "../components/ui";
 import EditProductModal from "./productDashboard/EditProductModal";
@@ -31,6 +32,11 @@ import { displayEntityCode, displayListRowNumber } from "../utils/entityCodeDisp
 import "../components/barcode/barcode-scanner.css";
 
 const PAGE = 50;
+
+// UI-only gate matching the requested admin password. The backend still
+// enforces a valid admin JWT on the delete endpoint, so this is not the
+// actual security boundary.
+const ADMIN_DELETE_PASSWORD = "admin123";
 
 const emptyForm = {
   barcode: "",
@@ -113,6 +119,11 @@ export default function ProductManagement() {
   const [conflictBusy, setConflictBusy] = useState(false);
   const [editBarcodeProduct, setEditBarcodeProduct] = useState(null);
   const [showNeedsReviewOnly, setShowNeedsReviewOnly] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [pw, setPw] = useState("");
+  const [pwError, setPwError] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -173,6 +184,7 @@ export default function ProductManagement() {
 
   useEffect(() => {
     setPage(0);
+    setSelectedIds(new Set());
   }, [search]);
 
   useEffect(() => {
@@ -326,16 +338,76 @@ export default function ProductManagement() {
     load();
   }
 
-  async function delProduct(id) {
-    if (!window.confirm("حذف هذا المنتج؟")) return;
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllOnPage(checked) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const p of pageSlice) {
+        if (checked) next.add(p.id);
+        else next.delete(p.id);
+      }
+      return next;
+    });
+  }
+
+  function requestDelete(mode, ids) {
+    if (!ids || ids.length === 0) return;
+    setPw("");
+    setPwError(null);
+    setPendingDelete({ mode, ids });
+  }
+
+  function cancelDelete() {
+    setPendingDelete(null);
+    setPw("");
+    setPwError(null);
+  }
+
+  async function runDelete(ids) {
     try {
-      await api.delete(`/api/admin/products/${id}`, {
-        headers: getAuthHeaders(),
-      });
-      toast.success("تم الحذف");
+      if (ids.length > 1) {
+        await api.post(
+          "/api/admin/products/bulk-delete",
+          { ids },
+          { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+        );
+      } else {
+        await api.delete(`/api/admin/products/${ids[0]}`, {
+          headers: getAuthHeaders(),
+        });
+      }
+      toast.success(ids.length > 1 ? `تم حذف ${ids.length} منتجًا` : "تم الحذف");
+      clearSelection();
       await load();
     } catch (e) {
       toast.error(e.response?.data?.error || e.message);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    if (pw !== ADMIN_DELETE_PASSWORD) {
+      setPwError("كلمة المرور غير صحيحة");
+      return;
+    }
+    setDeleting(true);
+    try {
+      await runDelete(pendingDelete.ids);
+      cancelDelete();
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -356,7 +428,29 @@ export default function ProductManagement() {
     }
   }
 
+  const allOnPageSelected =
+    pageSlice.length > 0 && pageSlice.every((p) => selectedIds.has(p.id));
+
   const columns = [
+    {
+      key: "select",
+      header: (
+        <input
+          type="checkbox"
+          aria-label="تحديد كل المنتجات في الصفحة"
+          checked={allOnPageSelected}
+          onChange={(e) => toggleSelectAllOnPage(e.target.checked)}
+        />
+      ),
+      render: (p) => (
+        <input
+          type="checkbox"
+          aria-label={`تحديد ${p.name}`}
+          checked={selectedIds.has(p.id)}
+          onChange={() => toggleSelect(p.id)}
+        />
+      ),
+    },
     { key: "barcode", header: "الباركود" },
     {
       key: "sku",
@@ -421,7 +515,7 @@ export default function ProductManagement() {
           <SecondaryButton size="sm" type="button" onClick={() => toggleActive(p)}>
             {Number(p.is_active) === 0 ? "تفعيل" : "إيقاف"}
           </SecondaryButton>
-          <DangerButton size="sm" type="button" onClick={() => delProduct(p.id)}>
+          <DangerButton size="sm" type="button" onClick={() => requestDelete("single", [p.id])}>
             حذف
           </DangerButton>
         </div>
@@ -597,6 +691,20 @@ export default function ProductManagement() {
               />
               يحتاج مراجعة فقط
             </label>
+            <DangerButton
+              type="button"
+              disabled={selectedIds.size === 0}
+              onClick={() => requestDelete("bulk", [...selectedIds])}
+            >
+              حذف المحدد ({selectedIds.size})
+            </DangerButton>
+            <DangerButton
+              type="button"
+              disabled={products.length === 0}
+              onClick={() => requestDelete("all", products.map((p) => p.id))}
+            >
+              حذف كل المنتجات ({products.length})
+            </DangerButton>
           </div>
           <DataTable
             columns={columns}
@@ -651,6 +759,50 @@ export default function ProductManagement() {
         product={editBarcodeProduct}
         onSaved={handleEditBarcodeSaved}
       />
+
+      <Modal
+        open={!!pendingDelete}
+        onClose={cancelDelete}
+        title="تأكيد الحذف"
+        footer={
+          <>
+            <SecondaryButton type="button" onClick={cancelDelete} disabled={deleting}>
+              إلغاء
+            </SecondaryButton>
+            <DangerButton type="button" onClick={confirmDelete} disabled={deleting}>
+              {deleting ? "جارٍ الحذف…" : "تأكيد الحذف"}
+            </DangerButton>
+          </>
+        }
+      >
+        <p style={{ marginTop: 0 }}>
+          {pendingDelete && pendingDelete.ids.length > 1
+            ? `سيتم حذف ${pendingDelete.ids.length} منتجًا نهائياً.`
+            : "سيتم حذف هذا المنتج نهائياً."}
+        </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            confirmDelete();
+          }}
+        >
+          <FormField label="كلمة مرور المسؤول" required>
+            <Input
+              type="password"
+              value={pw}
+              autoFocus
+              onChange={(e) => {
+                setPw(e.target.value);
+                if (pwError) setPwError(null);
+              }}
+              placeholder="أدخل كلمة المرور للمتابعة"
+            />
+          </FormField>
+        </form>
+        {pwError ? (
+          <p style={{ color: "var(--office-danger)", marginTop: "0.5rem" }}>{pwError}</p>
+        ) : null}
+      </Modal>
     </div>
   );
 }

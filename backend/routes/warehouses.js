@@ -202,6 +202,44 @@ export function createWarehousesRouter(db) {
     }
   });
 
+  router.put("/transfers/:id", requireAuth, requireAdmin, async (req, res) => {
+    const t = await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [req.params.id]);
+    if (!t) return res.status(404).json({ error: "التحويل غير موجود", code: "NOT_FOUND" });
+    if (t.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل تحويل مرحّل", code: "ALREADY_POSTED" });
+    const { from_warehouse_id, to_warehouse_id, transfer_date, notes, items } = req.body || {};
+    const from = Number(from_warehouse_id);
+    const to = Number(to_warehouse_id);
+    if (!from || !to) return res.status(400).json({ error: "حدّد المستودعين", code: "VALIDATION_ERROR" });
+    if (from === to) return res.status(400).json({ error: "المستودعان متطابقان", code: "VALIDATION_ERROR" });
+    if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: "أصناف مطلوبة", code: "VALIDATION_ERROR" });
+    const norm = [];
+    for (const it of items) {
+      const pid = Number(it.product_id);
+      const q = Number(it.quantity);
+      if (!pid || !Number.isFinite(q) || q <= 0) return res.status(400).json({ error: "كمية غير صالحة", code: "VALIDATION_ERROR" });
+      norm.push({ product_id: pid, quantity: q });
+    }
+    await db.run("BEGIN IMMEDIATE");
+    try {
+      await db.run(
+        `UPDATE warehouse_transfers SET from_warehouse_id = ?, to_warehouse_id = ?, transfer_date = ?, notes = ? WHERE id = ?`,
+        [from, to, transfer_date || t.transfer_date, notes || null, t.id]
+      );
+      await db.run("DELETE FROM warehouse_transfer_items WHERE transfer_id = ?", [t.id]);
+      for (const it of norm) {
+        await db.run(
+          "INSERT INTO warehouse_transfer_items (transfer_id, product_id, quantity) VALUES (?, ?, ?)",
+          [t.id, it.product_id, it.quantity]
+        );
+      }
+      await db.run("COMMIT");
+      res.json(await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [t.id]));
+    } catch (e) {
+      try { await db.run("ROLLBACK"); } catch (_) {}
+      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+    }
+  });
+
   router.delete("/transfers/:id", requireAuth, requireAdmin, async (req, res) => {
     const t = await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [req.params.id]);
     if (!t) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });

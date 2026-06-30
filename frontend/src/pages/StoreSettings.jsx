@@ -8,6 +8,7 @@ import {
   CardBody,
   PrimaryButton,
   SearchInput,
+  Select,
   useToast,
 } from "../components/ui";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
@@ -434,7 +435,7 @@ export default function StoreSettings() {
                       catButtons.map((b) => (
                         <span key={b.product_id} className="favorite-chip">
                           {favoriteLabels[b.product_id] || `#${b.product_id}`}
-                          <select
+                          <Select
                             className="favorite-chip-category"
                             value={b.category}
                             onChange={(e) => changeButtonCategory(b.product_id, e.target.value)}
@@ -445,7 +446,7 @@ export default function StoreSettings() {
                                 {c}
                               </option>
                             ))}
-                          </select>
+                          </Select>
                           <button
                             type="button"
                             className="favorite-chip-remove"
@@ -508,7 +509,7 @@ export default function StoreSettings() {
             <p className="quick-add-product-name">{pendingProduct.name}</p>
             <label className="quick-add-label">
               القسم
-              <select
+              <Select
                 value={pendingCategory}
                 onChange={(e) => setPendingCategory(e.target.value)}
               >
@@ -517,7 +518,7 @@ export default function StoreSettings() {
                     {c}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <div className="quick-add-actions">
               <PrimaryButton type="button" onClick={confirmAddFavorite}>

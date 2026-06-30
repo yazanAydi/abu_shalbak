@@ -683,3 +683,17 @@
 }
 .voucher-detail { margin-top: 0.5rem; }
 
+/* Supplier statement / ledger page */
+.statement-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2rem;
+  font-size: 0.95rem;
+}
+.statement-info .negative { color: var(--office-danger, #c53030); font-weight: 600; }
+.ui-table td.statement-credit { color: #1f7a4d; }
+.ui-table td.statement-debit { color: #b54708; }
+.ui-table .negative { color: var(--office-danger, #c53030); font-weight: 600; }
+.ui-table tr.row-clickable { cursor: pointer; }
+.ui-table tr.row-clickable:hover td { background: var(--office-row-hover, #f1f5f9); }
+

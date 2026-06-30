@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly } from "../utils/format";
@@ -12,6 +12,7 @@ import { displayEntityCode, displayListRowNumber } from "../utils/entityCodeDisp
 import { supplierBalanceView, SUPPLIER_BALANCE_SUMMARY_LABELS } from "../utils/supplierBalanceDisplay";
 import HesabatiStatementModal from "../components/HesabatiStatementModal";
 import StatementHistoryImportModal from "../components/StatementHistoryImportModal";
+import SupplierPurchaseItemsView from "../components/SupplierPurchaseItemsView";
 
 function renderSupplierBalance(systemBalance) {
   const { displayAmount, className } = supplierBalanceView(systemBalance);
@@ -29,6 +30,7 @@ const emptyForm = {
 
 export default function SupplierManagement() {
   const toast = useToast();
+  const navigate = useNavigate();
   const [tab, setTab] = useState("list");
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +42,7 @@ export default function SupplierManagement() {
   const [ledger, setLedger] = useState(null);
   const [ledgerSupplier, setLedgerSupplier] = useState(null);
   const [statementSupplier, setStatementSupplier] = useState(null);
+  const [purchasesSupplier, setPurchasesSupplier] = useState(null);
   const [historyImportSupplier, setHistoryImportSupplier] = useState(null);
   const [balances, setBalances] = useState(null);
 
@@ -127,7 +130,9 @@ export default function SupplierManagement() {
       key: "actions", header: "إجراءات",
       render: (s) => (
         <div className="ui-table__actions">
+          <Button variant="ghost" size="sm" icon="finance" onClick={() => navigate(`/suppliers/${s.id}/statement`)}>كشف الحساب</Button>
           <Button variant="ghost" size="sm" icon="finance" onClick={() => openStatementReport(s)}>عرض التقرير</Button>
+          <Button variant="ghost" size="sm" icon="products" onClick={() => setPurchasesSupplier(s)}>المنتجات المشتراة</Button>
           <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportSupplier(s)}>استيراد كشف قديم</Button>
           <Button variant="ghost" size="sm" icon="vouchers" onClick={() => openLedger(s)}>حركات النظام</Button>
           <Button variant="ghost" size="sm" icon="edit" onClick={() => startEdit(s)}>تعديل</Button>
@@ -299,6 +304,16 @@ export default function SupplierManagement() {
         party={statementSupplier}
         onClose={() => setStatementSupplier(null)}
       />
+
+      <Modal
+        open={!!purchasesSupplier}
+        title={purchasesSupplier ? `المنتجات المشتراة: ${purchasesSupplier.name}` : ""}
+        onClose={() => setPurchasesSupplier(null)}
+        size="lg"
+        footer={<Button onClick={() => setPurchasesSupplier(null)}>إغلاق</Button>}
+      >
+        {purchasesSupplier && <SupplierPurchaseItemsView supplierId={purchasesSupplier.id} />}
+      </Modal>
 
       <StatementHistoryImportModal
         open={!!historyImportSupplier}

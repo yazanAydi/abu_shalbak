@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import { Select } from "./ui";
 import "./RefundPanel.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -150,7 +151,7 @@ export default function RefundPanel({ shiftReady = true, onRefundSuccess }) {
           </table>
           <label className="rf-lb">
             طريقة رد المبلغ للزبون
-            <select
+            <Select
               className="rf-input"
               value={pm}
               onChange={(e) => setPm(e.target.value)}
@@ -158,7 +159,7 @@ export default function RefundPanel({ shiftReady = true, onRefundSuccess }) {
             >
               <option value="cash">نقد</option>
               <option value="visa">بطاقة</option>
-            </select>
+            </Select>
           </label>
           <label className="rf-lb">
             سبب (اختياري)
