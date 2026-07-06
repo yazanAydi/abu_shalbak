@@ -6,7 +6,9 @@ import {
   refundedQtyByProduct,
   applyApprovedRefundEffects,
   createRefundRequest,
+  resolveRefundTargetShift,
 } from "../services/refundRequestService.js";
+import { buildSaleSummary } from "../utils/saleSummary.js";
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -64,8 +66,97 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+function parseSearchDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return null;
+  return value.trim();
+}
+
 export function createRefundsRouter(db) {
   const router = Router();
+
+  router.get("/search", requireAuth, requirePosOrReports, async (req, res) => {
+    const dateFrom = parseSearchDate(req.query.date_from);
+    const dateTo = parseSearchDate(req.query.date_to);
+    const minAmount =
+      req.query.min_amount != null && String(req.query.min_amount).trim() !== ""
+        ? Number(req.query.min_amount)
+        : null;
+    const maxAmount =
+      req.query.max_amount != null && String(req.query.max_amount).trim() !== ""
+        ? Number(req.query.max_amount)
+        : null;
+    const paymentMethod =
+      typeof req.query.payment_method === "string" &&
+      ["cash", "visa"].includes(req.query.payment_method.trim())
+        ? req.query.payment_method.trim()
+        : null;
+    const productRaw =
+      typeof req.query.product === "string" && req.query.product.trim()
+        ? req.query.product.trim()
+        : typeof req.query.barcode === "string" && req.query.barcode.trim()
+          ? req.query.barcode.trim()
+          : null;
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+
+    const hasFilter =
+      dateFrom ||
+      dateTo ||
+      (minAmount != null && !Number.isNaN(minAmount)) ||
+      (maxAmount != null && !Number.isNaN(maxAmount)) ||
+      paymentMethod ||
+      productRaw;
+    if (!hasFilter) {
+      return res.status(400).json({ error: "أدخل على الأقل فلتراً واحداً للبحث" });
+    }
+
+    let sql = `SELECT DISTINCT t.id, t.receipt_number, t.total, t.payment_method, t.created_at, t.items_json
+      FROM transactions t
+      WHERE COALESCE(t.status, 'completed') = 'completed'`;
+    const params = [];
+
+    if (dateFrom) {
+      sql += " AND date(t.created_at) >= ?";
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      sql += " AND date(t.created_at) <= ?";
+      params.push(dateTo);
+    }
+    if (minAmount != null && !Number.isNaN(minAmount)) {
+      sql += " AND t.total >= ?";
+      params.push(minAmount);
+    }
+    if (maxAmount != null && !Number.isNaN(maxAmount)) {
+      sql += " AND t.total <= ?";
+      params.push(maxAmount);
+    }
+    if (paymentMethod) {
+      sql += " AND t.payment_method = ?";
+      params.push(paymentMethod);
+    }
+    if (productRaw) {
+      const like = `%${productRaw.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+      sql += ` AND (
+        EXISTS (
+          SELECT 1 FROM transaction_items ti
+          WHERE ti.transaction_id = t.id
+            AND (ti.name LIKE ? ESCAPE '\\' OR ti.barcode = ? OR CAST(ti.product_id AS TEXT) = ?)
+        )
+        OR t.items_json LIKE ?
+      )`;
+      params.push(like, productRaw, productRaw, like);
+    }
+
+    sql += " ORDER BY t.created_at DESC, t.id DESC LIMIT ?";
+    params.push(limit);
+
+    const rows = await db.all(sql, params);
+    const sales = [];
+    for (const tx of rows) {
+      sales.push(await buildSaleSummary(db, tx));
+    }
+    res.json({ sales });
+  });
 
   router.get("/lookup/:transactionId", requireAuth, requirePosOrReports, async (req, res) => {
     const tid = Number(req.params.transactionId);
@@ -206,6 +297,13 @@ export function createRefundsRouter(db) {
         }
         const now = new Date().toISOString();
         if (status === "approved") {
+          const targetShiftId = await resolveRefundTargetShift(db, {
+            cashierId: refund.cashier_id,
+            paymentMethod: refund.payment_method,
+            fallbackShiftId: refund.shift_id,
+          });
+          await db.run("UPDATE refunds SET shift_id = ? WHERE id = ?", [targetShiftId, id]);
+          refund.shift_id = targetShiftId;
           await applyApprovedRefundEffects(db, refund);
           await db.run(
             `UPDATE refunds SET status = 'approved', approved_at = ?, approved_by_id = ?, review_notes = COALESCE(?, review_notes),
@@ -396,6 +494,13 @@ export function createRefundsRouter(db) {
       }
       const now = new Date().toISOString();
       if (status === "approved") {
+        const targetShiftId = await resolveRefundTargetShift(db, {
+          cashierId: refund.cashier_id,
+          paymentMethod: refund.payment_method,
+          fallbackShiftId: refund.shift_id,
+        });
+        await db.run("UPDATE refunds SET shift_id = ? WHERE id = ?", [targetShiftId, id]);
+        refund.shift_id = targetShiftId;
         await applyApprovedRefundEffects(db, refund);
         await db.run(
           `UPDATE refunds SET status = 'approved', approved_at = ?, approved_by_id = ?,
@@ -420,7 +525,11 @@ export function createRefundsRouter(db) {
         await db.run("ROLLBACK");
       } catch (_) {}
       console.error(e);
-      res.status(500).json({ error: e.message || "فشل التحديث" });
+      const statusCode = e.status || 500;
+      res.status(statusCode).json({
+        error: e.message || "فشل التحديث",
+        code: e.code || undefined,
+      });
     }
   });
 

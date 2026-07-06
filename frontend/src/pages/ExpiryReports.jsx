@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import api from "../apiClient";
-import { PageHeader, ReportToolbar } from "../components/ui";
+import {
+  PageHeader,
+  ReportToolbar,
+  Tabs,
+  FilterBar,
+  DataTable,
+  Button,
+  FormField,
+  Input,
+  useToast,
+} from "../components/ui";
 
 const EXPIRY_COLUMNS = [
   { key: "name", header: "المنتج" },
@@ -28,6 +38,7 @@ const LOW_STOCK_COLUMNS = [
 const LOW_STOCK_THRESHOLD = 5;
 
 export default function ExpiryReports() {
+  const toast = useToast();
   const [searchParams] = useSearchParams();
   const [rows, setRows] = useState([]);
   const [lowStock, setLowStock] = useState([]);
@@ -37,7 +48,6 @@ export default function ExpiryReports() {
   const [tab, setTab] = useState(() =>
     searchParams.get("tab") === "lowstock" ? "lowstock" : "expiry"
   );
-  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (searchParams.get("tab") === "lowstock") setTab("lowstock");
@@ -47,29 +57,27 @@ export default function ExpiryReports() {
 
   const loadExpiry = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const { data } = await api.get(`/api/inventory/expiry?days=${days}`);
       setRows(data);
     } catch {
-      setError("تعذّر تحميل تقرير الصلاحية");
+      toast.error("تعذّر تحميل تقرير الصلاحية");
     } finally {
       setLoading(false);
     }
-  }, [days]);
+  }, [days, toast]);
 
   const loadLowStock = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const { data } = await api.get(`/api/inventory/low-stock?threshold=${threshold}`);
       setLowStock(data);
     } catch {
-      setError("تعذّر تحميل تقرير المخزون المنخفض");
+      toast.error("تعذّر تحميل تقرير المخزون المنخفض");
     } finally {
       setLoading(false);
     }
-  }, [threshold]);
+  }, [threshold, toast]);
 
   useEffect(() => {
     if (tab === "expiry") loadExpiry();
@@ -95,6 +103,42 @@ export default function ExpiryReports() {
     };
   }, [tab, days, threshold, rows, lowStock]);
 
+  const expiryColumns = useMemo(
+    () => [
+      { key: "name", header: "المنتج" },
+      { key: "barcode", header: "الباركود" },
+      { key: "unit", header: "الوحدة", render: (r) => r.unit || "—" },
+      { key: "stock", header: "الكمية", className: "num" },
+      { key: "expiry_date", header: "تاريخ الصلاحية" },
+      {
+        key: "days_until_expiry",
+        header: "الأيام المتبقية",
+        render: (r) =>
+          r.days_until_expiry < 0 ? `منتهي (${r.days_until_expiry})` : r.days_until_expiry,
+      },
+    ],
+    []
+  );
+
+  const lowStockColumns = useMemo(
+    () => [
+      { key: "name", header: "المنتج" },
+      { key: "barcode", header: "الباركود" },
+      { key: "category", header: "الفئة", render: (r) => r.category || "—" },
+      { key: "unit", header: "الوحدة", render: (r) => r.unit || "—" },
+      { key: "stock", header: "الكمية", className: "num" },
+    ],
+    []
+  );
+
+  const tabs = useMemo(
+    () => [
+      { id: "expiry", label: "تقرير الصلاحية" },
+      { id: "lowstock", label: "المخزون المنخفض" },
+    ],
+    []
+  );
+
   return (
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
@@ -113,83 +157,69 @@ export default function ExpiryReports() {
         }
       />
 
-      {error && <div className="error-banner">{error}</div>}
-
-      <div className="tab-bar">
-        <button className={tab === "expiry" ? "tab active" : "tab"} onClick={() => setTab("expiry")}>
-          تقرير الصلاحية
-        </button>
-        <button className={tab === "lowstock" ? "tab active" : "tab"} onClick={() => setTab("lowstock")}>
-          المخزون المنخفض
-        </button>
-      </div>
+      <Tabs tabs={tabs} active={tab} onChange={setTab} />
 
       {tab === "expiry" && (
-        <div>
-          <div className="filter-row">
-            <label>الأيام القادمة:
-              <input type="number" min="1" max="365" value={days}
-                onChange={(e) => setDays(Number(e.target.value))} />
-            </label>
-            <button className="btn-primary" onClick={loadExpiry} disabled={loading}>بحث</button>
-          </div>
-          {loading ? <p>جاري التحميل…</p> : rows.length === 0 ? (
-            <p className="empty-msg">لا توجد منتجات منتهية أو قاربت على الانتهاء في هذه الفترة</p>
-          ) : (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>المنتج</th><th>الباركود</th><th>الوحدة</th>
-                  <th>الكمية</th><th>تاريخ الصلاحية</th><th>الأيام المتبقية</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className={r.days_until_expiry < 0 ? "expired" : r.days_until_expiry <= 7 ? "expiring-soon" : ""}>
-                    <td>{r.name}</td>
-                    <td>{r.barcode}</td>
-                    <td>{r.unit || "—"}</td>
-                    <td>{r.stock}</td>
-                    <td>{r.expiry_date}</td>
-                    <td>{r.days_until_expiry < 0 ? `منتهي (${r.days_until_expiry})` : r.days_until_expiry}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <>
+          <FilterBar
+            actions={
+              <Button onClick={loadExpiry} disabled={loading}>
+                بحث
+              </Button>
+            }
+          >
+            <FormField label="الأيام القادمة">
+              <Input
+                type="number"
+                min="1"
+                max="365"
+                value={days}
+                onChange={(e) => setDays(Number(e.target.value))}
+              />
+            </FormField>
+          </FilterBar>
+
+          <DataTable
+            columns={expiryColumns}
+            rows={rows}
+            loading={loading}
+            empty="لا توجد منتجات منتهية أو قاربت على الانتهاء في هذه الفترة"
+            emptyIcon="expiry"
+            rowClassName={(r) =>
+              r.days_until_expiry < 0 ? "expired" : r.days_until_expiry <= 7 ? "expiring-soon" : ""
+            }
+          />
+        </>
       )}
 
       {tab === "lowstock" && (
-        <div>
-          <div className="filter-row">
-            <label>حد المخزون المنخفض:
-              <input type="number" min="0" value={threshold}
-                onChange={(e) => setThreshold(Number(e.target.value))} />
-            </label>
-            <button className="btn-primary" onClick={loadLowStock} disabled={loading}>بحث</button>
-          </div>
-          {loading ? <p>جاري التحميل…</p> : lowStock.length === 0 ? (
-            <p className="empty-msg">لا توجد منتجات بمخزون منخفض</p>
-          ) : (
-            <table className="data-table">
-              <thead>
-                <tr><th>المنتج</th><th>الباركود</th><th>الفئة</th><th>الوحدة</th><th>الكمية</th></tr>
-              </thead>
-              <tbody>
-                {lowStock.map((r) => (
-                  <tr key={r.id} className={r.stock === 0 ? "out-of-stock" : ""}>
-                    <td>{r.name}</td>
-                    <td>{r.barcode}</td>
-                    <td>{r.category || "—"}</td>
-                    <td>{r.unit || "—"}</td>
-                    <td>{r.stock}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <>
+          <FilterBar
+            actions={
+              <Button onClick={loadLowStock} disabled={loading}>
+                بحث
+              </Button>
+            }
+          >
+            <FormField label="حد المخزون المنخفض">
+              <Input
+                type="number"
+                min="0"
+                value={threshold}
+                onChange={(e) => setThreshold(Number(e.target.value))}
+              />
+            </FormField>
+          </FilterBar>
+
+          <DataTable
+            columns={lowStockColumns}
+            rows={lowStock}
+            loading={loading}
+            empty="لا توجد منتجات بمخزون منخفض"
+            emptyIcon="inventory"
+            rowClassName={(r) => (r.stock === 0 ? "out-of-stock" : "")}
+          />
+        </>
       )}
     </div>
   );

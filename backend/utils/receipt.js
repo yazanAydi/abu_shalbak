@@ -14,11 +14,37 @@ function ils(n) {
   return `\u20AA${Number(n).toFixed(2)}`;
 }
 
+function formatReceiptQty(L) {
+  if (L.weighed) return Number(L.quantity).toFixed(3);
+  return String(L.quantity);
+}
+
+function formatReceiptPrice(L) {
+  if (L.weighed) return `${L.price.toFixed(2)}/kg`;
+  return L.price.toFixed(2);
+}
+
+function round2Money(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
 function methodLabel(method) {
   if (method === "cash") return "نقدي";
   if (method === "visa") return "فيزا";
   if (method === "on_account") return "ذمة";
   return String(method || "");
+}
+
+function isBaseCurrencyLine(p) {
+  const code = p.currency_code ? String(p.currency_code).toUpperCase() : null;
+  const rate = Number(p.exchange_rate_used ?? 1);
+  return (!code || code === "NIS") && Math.abs(rate - 1) < 1e-9;
+}
+
+function foreignAmount(p) {
+  const sym = p.symbol || "";
+  const original = Number(p.original_amount ?? p.amount) || 0;
+  return `${sym}${original.toFixed(2)}`;
 }
 
 function buildPaymentSection(opts) {
@@ -27,27 +53,36 @@ function buildPaymentSection(opts) {
 
   if (payments && payments.length > 0) {
     const lines = ["طريقة الدفع:"];
-    const visa = payments.filter((p) => p.method === "visa");
-    const cash = payments.filter((p) => p.method === "cash");
-    const onAccount = payments.filter((p) => p.method === "on_account");
 
-    for (const p of visa) {
-      lines.push(`فيزا: ${ils(p.amount)}`);
-    }
-    for (const p of cash) {
-      lines.push(`نقدي: ${ils(p.amount)}`);
-    }
-    for (const p of onAccount) {
-      lines.push(`ذمة: ${ils(p.amount)}`);
+    for (const p of payments) {
+      const label = methodLabel(p.method);
+      const nis = Number(p.nis_equivalent ?? p.amount) || 0;
+      if (isBaseCurrencyLine(p)) {
+        lines.push(`${label}: ${ils(nis)}`);
+      } else {
+        const code = String(p.currency_code || "").toUpperCase();
+        const rate = Number(p.exchange_rate_used ?? 1);
+        lines.push(`${label} (${code}): ${foreignAmount(p)}`);
+        lines.push(`  سعر الصرف: 1 ${code} = ${ils(rate)}`);
+        lines.push(`  المعادل: ${ils(nis)}`);
+      }
     }
 
-    const paidSum = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+    const paidSum = payments.reduce((s, p) => s + (Number(p.nis_equivalent ?? p.amount) || 0), 0);
     lines.push(`المجموع المدفوع: ${ils(paidSum)}`);
 
-    const cashApplied = cash.reduce((s, p) => s + Number(p.amount || 0), 0);
     let change = 0;
-    if (opts.cashTendered != null && Number.isFinite(Number(opts.cashTendered))) {
-      change = Math.max(0, Math.round((Number(opts.cashTendered) - cashApplied) * 100) / 100);
+    const changeFromNis =
+      opts.changeNis != null && Number.isFinite(Number(opts.changeNis))
+        ? round2Money(Number(opts.changeNis))
+        : 0;
+    if (changeFromNis > 0.005) {
+      change = changeFromNis;
+    } else if (opts.cashTendered != null && Number.isFinite(Number(opts.cashTendered))) {
+      const cashApplied = payments
+        .filter((p) => p.method === "cash")
+        .reduce((s, p) => s + (Number(p.nis_equivalent ?? p.amount) || 0), 0);
+      change = Math.max(0, round2Money(Number(opts.cashTendered) - cashApplied));
     }
     lines.push(`الباقي: ${ils(change)}`);
     return lines;
@@ -123,7 +158,7 @@ export function buildReceiptText(opts) {
   for (const L of opts.lines) {
     const name = L.name.length > 20 ? L.name.slice(0, 17) + "..." : L.name;
     lines.push(
-      `${padRight(name, 22)}${padLeft(L.quantity, 5)} ${padLeft(L.price.toFixed(2), 8)} ${padLeft(L.lineTotal.toFixed(2), 10)}`
+      `${padRight(name, 22)}${padLeft(formatReceiptQty(L), 5)} ${padLeft(formatReceiptPrice(L), 8)} ${padLeft(L.lineTotal.toFixed(2), 10)}`
     );
   }
 

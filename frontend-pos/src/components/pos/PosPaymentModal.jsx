@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "../../apiClient";
 import { POS_SHORTCUTS } from "../../config/posShortcuts";
 import { matchesShortcut } from "../../utils/posKeyboard";
+import QtyStepper from "../QtyStepper";
 import "../ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -11,26 +12,47 @@ function round2(n) {
   return Math.round(Number(n) * 100) / 100;
 }
 
-function getMixedErrorMessage(cashInput, visaInput, mixedPaid, total) {
-  if (cashInput == null || visaInput == null) {
-    return "أدخل مبالغ النقد والفيزا";
-  }
-  if (visaInput > total + TOLERANCE) {
-    return "مبلغ الفيزا أكبر من إجمالي الفاتورة";
-  }
-  if (mixedPaid < total - TOLERANCE) {
-    return "المبلغ المدفوع أقل من إجمالي الفاتورة";
-  }
-  if (visaInput > TOLERANCE && Math.abs(mixedPaid - total) > TOLERANCE) {
-    return "مجموع النقد والفيزا يجب أن يساوي إجمالي الفاتورة";
-  }
-  return "تحقق من مبالغ النقد والفيزا — يجب أن يغطي المجموع الفاتورة";
-}
-
 function parseAmount(raw) {
   if (raw === "" || raw == null) return null;
   const n = Number(String(raw).replace(",", "."));
   return Number.isFinite(n) ? round2(n) : null;
+}
+
+function fmtCurrency(symbol, amount) {
+  return `${symbol || "\u20AA"}${Number(amount || 0).toFixed(2)}`;
+}
+
+function computeMixedPaidNis(lines, getCurrency, excludeLast = false) {
+  const end = excludeLast && lines.length > 1 ? lines.length - 1 : lines.length;
+  let paidNis = 0;
+  for (let i = 0; i < end; i++) {
+    const line = lines[i];
+    const amt = parseAmount(line.amount);
+    if (amt == null || amt <= 0) continue;
+    const cur = getCurrency(line.currencyId);
+    const rate = cur ? Number(cur.exchange_rate_to_nis) : 1;
+    paidNis = round2(paidNis + round2(amt * rate));
+  }
+  return paidNis;
+}
+
+function remainderAmountForLine(remainingNis, currencyId, getCurrency) {
+  const cur = getCurrency(currencyId);
+  const rate = cur ? Number(cur.exchange_rate_to_nis) : 1;
+  if (rate <= 0) return "";
+  const amount = round2(Math.max(0, remainingNis) / rate);
+  return remainingNis > TOLERANCE ? String(amount) : "";
+}
+
+function withSyncedMixedRemainder(lines, total, getCurrency) {
+  if (lines.length <= 1) return lines;
+  const paidExceptLast = computeMixedPaidNis(lines, getCurrency, true);
+  const remainingNis = Math.max(0, round2(total - paidExceptLast));
+  const lastIdx = lines.length - 1;
+  const last = lines[lastIdx];
+  const amountStr = remainderAmountForLine(remainingNis, last.currencyId, getCurrency);
+  if (last.amount === amountStr) return lines;
+  return lines.map((l, i) => (i === lastIdx ? { ...l, amount: amountStr } : l));
 }
 
 export default function PosPaymentModal({
@@ -45,14 +67,48 @@ export default function PosPaymentModal({
   onTarhil,
   onClose,
 }) {
+  const [currencies, setCurrencies] = useState([]);
+  const [cashCurrencyId, setCashCurrencyId] = useState(null);
   const [amountTendered, setAmountTendered] = useState("");
-  const [cashAmount, setCashAmount] = useState("");
-  const [visaAmount, setVisaAmount] = useState("");
+  const [mixedLines, setMixedLines] = useState([]);
   const [cashErr, setCashErr] = useState("");
   const [mixedErr, setMixedErr] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
   const [customerResults, setCustomerResults] = useState([]);
   const [selectedCustomerName, setSelectedCustomerName] = useState("");
+
+  const baseCurrency = useMemo(
+    () => currencies.find((c) => c.is_base) || currencies[0] || null,
+    [currencies]
+  );
+
+  const getCurrency = useCallback(
+    (id) => currencies.find((c) => Number(c.id) === Number(id)) || baseCurrency,
+    [currencies, baseCurrency]
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    api
+      .get("/api/currencies")
+      .then(({ data }) => {
+        if (cancelled) return;
+        const list = Array.isArray(data?.currencies) ? data.currencies : [];
+        setCurrencies(list);
+        const base = list.find((c) => c.is_base) || list[0] || null;
+        setCashCurrencyId(base ? base.id : null);
+        setMixedLines([
+          { method: "cash", currencyId: base ? base.id : null, amount: "" },
+        ]);
+      })
+      .catch(() => {
+        if (!cancelled) setCurrencies([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const searchCustomers = useCallback(async (q) => {
     if (!q || q.length < 2) {
@@ -70,8 +126,6 @@ export default function PosPaymentModal({
   useEffect(() => {
     if (!open) return;
     setAmountTendered("");
-    setCashAmount("");
-    setVisaAmount("");
     setCashErr("");
     setMixedErr("");
     setCustomerQuery("");
@@ -94,69 +148,73 @@ export default function PosPaymentModal({
     return () => clearTimeout(t);
   }, [customerQuery, selectedPayment, searchCustomers]);
 
-  const tenderedNum = parseAmount(amountTendered);
-  const cashInput = parseAmount(cashAmount);
-  const visaInput = parseAmount(visaAmount);
-
-  const changeDue =
-    selectedPayment === "cash" && tenderedNum != null
-      ? Math.max(0, round2(tenderedNum - total))
-      : null;
-
-  const mixedPaid =
-    cashInput != null || visaInput != null
-      ? round2((cashInput ?? 0) + (visaInput ?? 0))
-      : null;
-  const mixedRemaining =
-    mixedPaid != null ? Math.max(0, round2(total - mixedPaid)) : null;
-  const mixedCashApplied =
-    cashInput != null && visaInput != null
-      ? round2(Math.min(cashInput, Math.max(0, total - visaInput)))
-      : null;
-  const mixedChange =
-    mixedCashApplied != null && cashInput != null
-      ? Math.max(0, round2(cashInput - mixedCashApplied))
-      : null;
-  const mixedMatched =
-    mixedPaid != null &&
-    visaInput != null &&
-    visaInput > TOLERANCE &&
-    Math.abs(mixedPaid - total) <= TOLERANCE;
-
+  // ----- Cash (single, currency-aware) -----
+  const cashCurrency = getCurrency(cashCurrencyId);
+  const cashRate = cashCurrency ? Number(cashCurrency.exchange_rate_to_nis) : 1;
+  const receivedNum = parseAmount(amountTendered);
+  const cashEquivalentNis = receivedNum != null ? round2(receivedNum * cashRate) : null;
+  const cashChangeDue =
+    cashEquivalentNis != null ? Math.max(0, round2(cashEquivalentNis - total)) : null;
   const cashValid =
     selectedPayment !== "cash" ||
-    (tenderedNum != null && tenderedNum >= total);
+    (cashEquivalentNis != null && cashEquivalentNis >= total - TOLERANCE);
 
-  const mixedValid =
-    selectedPayment !== "mixed" ||
-    (cashInput != null &&
-      visaInput != null &&
-      cashInput >= 0 &&
-      visaInput >= 0 &&
-      visaInput <= total + TOLERANCE &&
-      mixedPaid >= total - TOLERANCE &&
-      (visaInput <= TOLERANCE || Math.abs(mixedPaid - total) <= TOLERANCE));
-
-  function handleCashAmountChange(raw) {
-    setCashAmount(raw);
-    setMixedErr("");
-    const cash = parseAmount(raw);
-    if (cash == null) {
-      setVisaAmount("");
-      return;
+  // ----- Mixed (fully flexible multi-line) -----
+  const mixedComputed = useMemo(() => {
+    let paidNis = 0;
+    let cashNis = 0;
+    let nonCashNis = 0;
+    for (const line of mixedLines) {
+      const amt = parseAmount(line.amount);
+      if (amt == null || amt <= 0) continue;
+      const cur = getCurrency(line.currencyId);
+      const rate = cur ? Number(cur.exchange_rate_to_nis) : 1;
+      const nis = round2(amt * rate);
+      paidNis = round2(paidNis + nis);
+      if (line.method === "cash") cashNis = round2(cashNis + nis);
+      else nonCashNis = round2(nonCashNis + nis);
     }
-    setVisaAmount(String(round2(Math.max(0, total - cash))));
+    const remaining = Math.max(0, round2(total - paidNis));
+    const excess = round2(paidNis - total);
+    const change = excess > TOLERANCE ? excess : 0;
+    const changeValid = change <= cashNis + TOLERANCE;
+    const valid =
+      paidNis >= total - TOLERANCE && changeValid && nonCashNis <= total + TOLERANCE;
+    return { paidNis, cashNis, nonCashNis, remaining, change, valid };
+  }, [mixedLines, getCurrency, total]);
+
+  const mixedValid = selectedPayment !== "mixed" || mixedComputed.valid;
+
+  function updateMixedLine(idx, key, value) {
+    setMixedErr("");
+    setMixedLines((prev) => {
+      const next = prev.map((l, i) => (i === idx ? { ...l, [key]: value } : l));
+      const isLast = idx === prev.length - 1;
+      const shouldSync = prev.length > 1 && (!isLast || key === "currencyId");
+      return shouldSync ? withSyncedMixedRemainder(next, total, getCurrency) : next;
+    });
   }
 
-  function handleVisaAmountChange(raw) {
-    setVisaAmount(raw);
-    setMixedErr("");
-    const visa = parseAmount(raw);
-    if (visa == null) {
-      setCashAmount("");
-      return;
-    }
-    setCashAmount(String(round2(Math.max(0, total - visa))));
+  function addMixedLine() {
+    setMixedLines((prev) => {
+      const next = [
+        ...prev,
+        {
+          method: "cash",
+          currencyId: baseCurrency ? baseCurrency.id : null,
+          amount: "",
+        },
+      ];
+      return withSyncedMixedRemainder(next, total, getCurrency);
+    });
+  }
+
+  function removeMixedLine(idx) {
+    setMixedLines((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter((_, i) => i !== idx);
+      return withSyncedMixedRemainder(next, total, getCurrency);
+    });
   }
 
   const canTarhil =
@@ -176,10 +234,10 @@ export default function PosPaymentModal({
   const handleTarhil = useCallback(() => {
     if (!canTarhil) {
       if (selectedPayment === "cash" && !cashValid) {
-        setCashErr("المبلغ المستلم يجب أن يكون أكبر من أو يساوي الإجمالي");
+        setCashErr("المبلغ المستلم (بالمعادل بالشيكل) يجب أن يغطي الإجمالي");
       }
       if (selectedPayment === "mixed" && !mixedValid) {
-        setMixedErr(getMixedErrorMessage(cashInput, visaInput, mixedPaid, total));
+        setMixedErr("تحقق من المبالغ — يجب أن يغطي المجموع الفاتورة والفائض من النقد فقط");
       }
       return;
     }
@@ -187,38 +245,38 @@ export default function PosPaymentModal({
     setMixedErr("");
 
     if (selectedPayment === "mixed") {
-      const cashApplied = round2(Math.max(0, total - visaInput));
-      onTarhil({
-        payments: [
-          { method: "cash", amount: cashApplied },
-          { method: "visa", amount: visaInput },
-        ],
-        payment_method: "mixed",
-        cash_tendered: cashInput,
-      });
+      const payments = mixedLines
+        .map((l) => ({
+          method: l.method,
+          currency_id: l.currencyId,
+          original_amount: parseAmount(l.amount),
+        }))
+        .filter((p) => p.original_amount != null && p.original_amount > 0);
+      onTarhil({ payments, payment_method: "mixed" });
       return;
     }
 
     if (selectedPayment === "cash") {
       onTarhil({
+        payments: [
+          { method: "cash", currency_id: cashCurrencyId, original_amount: receivedNum },
+        ],
         payment_method: "cash",
-        cash_tendered: tenderedNum,
       });
       return;
     }
 
+    // visa / on_account settle exactly in the base (accounting) currency.
     onTarhil({ payment_method: selectedPayment });
   }, [
     canTarhil,
-    cashInput,
+    cashCurrencyId,
     cashValid,
-    mixedPaid,
+    mixedLines,
     mixedValid,
     onTarhil,
+    receivedNum,
     selectedPayment,
-    tenderedNum,
-    total,
-    visaInput,
   ]);
 
   const handleTarhilRef = useRef(handleTarhil);
@@ -239,18 +297,29 @@ export default function PosPaymentModal({
 
   if (!open) return null;
 
+  const currencyOptions = currencies.map((c) => (
+    <option key={c.id} value={c.id}>
+      {c.symbol} {c.code}
+    </option>
+  ));
+
   return (
     <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
       <div className="shift-modal-backdrop" onClick={onClose} aria-hidden />
       <div className="shift-modal-panel pos-payment-modal">
-        <h2 className="shift-modal-title">إتمام البيع</h2>
-        <p className="shift-modal-meta">الإجمالي: {ils(total)}</p>
+        <div className="pos-payment-modal-head">
+          <h2 className="shift-modal-title">إتمام البيع</h2>
+          <div className="pos-payment-modal-total">
+            <span className="pos-payment-modal-total-label">الإجمالي</span>
+            <span className="pos-payment-modal-total-amount">{ils(total)}</span>
+          </div>
+        </div>
 
         <div className="pos-pay-methods pos-payment-modal-methods">
           {[
             ["cash", "نقدي"],
             ["visa", "فيزا"],
-            ["mixed", "مختلط / دفع متعدد"],
+            ["mixed", "مختلط"],
             ["on_account", "ذمة"],
           ].map(([key, label]) => (
             <button
@@ -269,11 +338,22 @@ export default function PosPaymentModal({
         {selectedPayment === "cash" ? (
           <div className="pos-cash-extra">
             <label>
-              المستلم
-              <input
-                type="number"
-                min="0"
-                step="0.01"
+              العملة
+              <select
+                value={cashCurrencyId ?? ""}
+                onChange={(e) => {
+                  setCashCurrencyId(Number(e.target.value));
+                  setCashErr("");
+                }}
+              >
+                {currencyOptions}
+              </select>
+            </label>
+            <label>
+              المستلم ({cashCurrency?.code || ""})
+              <QtyStepper
+                min={0}
+                precision={2}
                 value={amountTendered}
                 onChange={(e) => {
                   setAmountTendered(e.target.value);
@@ -283,15 +363,20 @@ export default function PosPaymentModal({
                 autoFocus
               />
             </label>
-            <label>
-              الباقي
-              <input
-                type="text"
-                readOnly
-                tabIndex={-1}
-                value={changeDue != null ? ils(changeDue) : "—"}
-              />
-            </label>
+            <div className="pos-cash-breakdown">
+              <span>
+                المستلم:{" "}
+                {receivedNum != null ? fmtCurrency(cashCurrency?.symbol, receivedNum) : "—"}
+              </span>
+              {cashCurrency && !cashCurrency.is_base ? (
+                <span>
+                  المعادل: {cashEquivalentNis != null ? ils(cashEquivalentNis) : "—"}
+                  {"  "}(1 {cashCurrency.code} = {ils(cashRate)})
+                </span>
+              ) : null}
+              <span>الفاتورة: {ils(total)}</span>
+              <span>الباقي: {cashChangeDue != null ? ils(cashChangeDue) : "—"}</span>
+            </div>
           </div>
         ) : null}
 
@@ -300,38 +385,69 @@ export default function PosPaymentModal({
             <div className="pos-mixed-summary">
               <span>الإجمالي: {ils(total)}</span>
             </div>
-            <label>
-              نقدي
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={cashAmount}
-                onChange={(e) => handleCashAmountChange(e.target.value)}
-                placeholder="0.00"
-                autoFocus
-              />
-            </label>
-            <label>
-              فيزا
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={visaAmount}
-                onChange={(e) => handleVisaAmountChange(e.target.value)}
-                placeholder="0.00"
-              />
-            </label>
+            {mixedLines.map((line, idx) => {
+              const cur = getCurrency(line.currencyId);
+              const amt = parseAmount(line.amount);
+              const nis =
+                amt != null && cur ? round2(amt * Number(cur.exchange_rate_to_nis)) : null;
+              const isAutoRemainder =
+                mixedLines.length > 1 && idx === mixedLines.length - 1;
+              return (
+                <div className="pos-mixed-line" key={idx}>
+                  <select
+                    value={line.method}
+                    onChange={(e) => updateMixedLine(idx, "method", e.target.value)}
+                  >
+                    <option value="cash">نقدي</option>
+                    <option value="visa">فيزا</option>
+                  </select>
+                  <select
+                    value={line.currencyId ?? ""}
+                    onChange={(e) =>
+                      updateMixedLine(idx, "currencyId", Number(e.target.value))
+                    }
+                  >
+                    {currencyOptions}
+                  </select>
+                  <QtyStepper
+                    min={0}
+                    precision={2}
+                    value={line.amount}
+                    onChange={(e) => updateMixedLine(idx, "amount", e.target.value)}
+                    placeholder="0.00"
+                    readOnly={isAutoRemainder}
+                    title={isAutoRemainder ? "يُحسب تلقائياً من المتبقي" : undefined}
+                    className={isAutoRemainder ? "pos-mixed-line-amount--auto" : undefined}
+                  />
+                  <span className="pos-mixed-line-nis">
+                    {nis != null && cur && !cur.is_base ? ils(nis) : ""}
+                  </span>
+                  <button
+                    type="button"
+                    className="pos-mixed-line-remove"
+                    onClick={() => removeMixedLine(idx)}
+                    disabled={mixedLines.length <= 1}
+                    aria-label="حذف"
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+            <button type="button" className="pos-mixed-add" onClick={addMixedLine}>
+              + إضافة طريقة دفع
+            </button>
             <div
               className={
-                mixedMatched ? "pos-mixed-totals pos-mixed-totals--matched" : "pos-mixed-totals"
+                mixedComputed.valid
+                  ? "pos-mixed-totals pos-mixed-totals--matched"
+                  : "pos-mixed-totals"
               }
             >
-              <span>المدفوع: {mixedPaid != null ? ils(mixedPaid) : "—"}</span>
-              <span>المتبقي: {mixedRemaining != null ? ils(mixedRemaining) : "—"}</span>
-              {mixedChange != null && mixedChange > 0 ? (
-                <span>الباقي (نقد): {ils(mixedChange)}</span>
+              <span>المدفوع: {ils(mixedComputed.paidNis)}</span>
+              <span>المتبقي: {ils(mixedComputed.remaining)}</span>
+              {mixedComputed.change > 0 ? (
+                <span>الباقي: {ils(mixedComputed.change)}</span>
               ) : null}
             </div>
           </div>

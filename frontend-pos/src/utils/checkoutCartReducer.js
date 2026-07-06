@@ -23,6 +23,31 @@ export function checkoutReducer(state, action) {
       const mapped = mapLookupToCartProduct(action.product);
       const price = Number(mapped.price);
       const prev = state.cartItems;
+
+      if (mapped.weighed) {
+        const quantity = Number(mapped.quantity ?? mapped.weight);
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          return { ...state, error: "وزن غير صالح من الباركود" };
+        }
+        const scanEntry = createScanHistoryEntry(mapped.cartKey, 0, true);
+        return {
+          ...state,
+          cartItems: [
+            ...prev,
+            {
+              ...mapped,
+              quantity,
+              subtotal: quantity * price,
+            },
+          ],
+          scanHistory: pushScanHistory(state.scanHistory, scanEntry),
+          lastScannedCartKey: mapped.cartKey,
+          error: null,
+          blockedScan: null,
+          receiptData: null,
+        };
+      }
+
       const idx = prev.findIndex((x) => cartKeyFor(x) === mapped.cartKey);
 
       if (idx >= 0) {

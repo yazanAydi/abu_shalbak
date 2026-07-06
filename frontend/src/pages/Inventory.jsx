@@ -9,6 +9,7 @@ import {
   FormField, FormGrid, Input, Select, Textarea, Icon, ReportToolbar, useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import QtyStepper from "../components/QtyStepper";
 
 const ADJ_LABELS = { in: "إدخال مخزون", out: "إخراج مخزون", damage: "تالف", consumption: "استهلاك", correction: "تصحيح" };
 const MOVE_LABELS = {
@@ -147,7 +148,7 @@ function Adjustments() {
               {items.map((it, i) => (
                 <tr key={it.product_id}>
                   <td>{it.name}</td>
-                  <td><input className="ui-input" style={{ width: 100 }} type="number" step="0.001" value={it.quantity} onChange={(e) => upd(i, "quantity", e.target.value)} /></td>
+                  <td><QtyStepper className="ui-input" style={{ width: 140 }} min={0} value={it.quantity} onChange={(e) => upd(i, "quantity", e.target.value)} /></td>
                   <td><input className="ui-input" style={{ width: 100 }} type="number" step="0.01" value={it.unit_cost} onChange={(e) => upd(i, "unit_cost", e.target.value)} /></td>
                   <td><Button variant="ghost" size="sm" icon="trash" onClick={() => setItems((p) => p.filter((_, idx) => idx !== i))} /></td>
                 </tr>
@@ -353,7 +354,7 @@ function Batches() {
         <FormGrid>
           <FormField label="رقم الدفعة"><Input value={form.batch_no} onChange={(e) => setForm((f) => ({ ...f, batch_no: e.target.value }))} /></FormField>
           <FormField label="تاريخ الصلاحية"><Input type="date" value={form.expiry_date} onChange={(e) => setForm((f) => ({ ...f, expiry_date: e.target.value }))} /></FormField>
-          <FormField label="الكمية"><Input type="number" step="0.001" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} /></FormField>
+          <FormField label="الكمية"><QtyStepper min={0} value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} /></FormField>
           <FormField label="الكلفة"><Input type="number" step="0.01" value={form.cost} onChange={(e) => setForm((f) => ({ ...f, cost: e.target.value }))} /></FormField>
         </FormGrid>
       </Modal>

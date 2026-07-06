@@ -95,6 +95,7 @@ export function createCheckoutRouter(db) {
       quantity: t.quantity,
       price: t.unit_price,
       lineTotal: t.line_gross,
+      weighed: t.unit_name === "كغم",
     }));
     const receipt_text = buildReceiptText({
       transactionId: txId,
@@ -107,6 +108,7 @@ export function createCheckoutRouter(db) {
       total: row.total,
       paymentMethod: row.payment_method,
       payments,
+      changeNis: row.change_amount,
       settings,
     });
     return {
@@ -166,12 +168,26 @@ export function createCheckoutRouter(db) {
     const normalized = [];
     for (const line of items) {
       const productId = Number(line.product_id);
-      const qty = Math.max(1, Number(line.quantity) || 1);
+      const rawQty = Number(line.quantity);
       const price = Number(line.price);
 
       const p = await db.get("SELECT * FROM products WHERE id = ?", [productId]);
       if (!p) {
         return res.status(404).json({ error: `المنتج غير موجود: ${productId}`, code: "NOT_FOUND" });
+      }
+      const isWeighed = Number(p.is_weighed) === 1;
+      let qty;
+      if (isWeighed) {
+        if (!Number.isFinite(rawQty) || rawQty <= 0) {
+          return res.status(400).json({
+            error: "كمية الوزن غير صالحة",
+            code: "INVALID_WEIGHT_QTY",
+            product_id: productId,
+          });
+        }
+        qty = rawQty;
+      } else {
+        qty = Math.max(1, rawQty || 1);
       }
       if (Number(p.is_active) === 0) {
         return res.status(409).json({
@@ -309,6 +325,7 @@ export function createCheckoutRouter(db) {
         price: effectivePrice,
         cost: round2(Number(unit.cost) || Number(p.cost) || 0),
         taxRate: lineTaxRate,
+        is_weighed: isWeighed,
       });
     }
 
@@ -345,12 +362,12 @@ export function createCheckoutRouter(db) {
     }
     const total = round2(grossTotal - discount);
 
-    const paymentResolved = resolveCheckoutPayments(req.body, total);
+    const paymentResolved = await resolveCheckoutPayments(db, req.body, total);
     if (paymentResolved.error) {
       return res.status(400).json({ error: paymentResolved.error, code: "PAYMENT_ERROR" });
     }
 
-    const { lines: paymentLines, summaryMethod, cashTendered, onAccountTotal, cashTotal } =
+    const { lines: paymentLines, summaryMethod, cashTendered, onAccountTotal, cashTotal, changeNis } =
       paymentResolved;
 
     if (onAccountTotal > 0 && !custId) {
@@ -406,8 +423,8 @@ export function createCheckoutRouter(db) {
         const receiptNumber = await nextReceiptNumber(db, 1);
 
         const ins = await db.run(
-          `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, payment_method, shift_id, customer_id, receipt_number, status, store_id, idempotency_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?)`,
+          `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id, idempotency_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?)`,
           [
             req.user.id,
             JSON.stringify(itemsForJson),
@@ -415,6 +432,7 @@ export function createCheckoutRouter(db) {
             tax,
             total,
             discount,
+            round2(changeNis || 0),
             summaryMethod,
             shift.id,
             custId,
@@ -459,11 +477,12 @@ export function createCheckoutRouter(db) {
 
         await insertSalePayments(db, transactionId, paymentLines);
 
-        if (cashTotal > 0) {
+        const netCashNis = round2((cashTotal || 0) - (changeNis || 0));
+        if (netCashNis > 0) {
           await db.run(
             `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description, transaction_id)
              VALUES (?, 'payment', ?, ?, ?)`,
-            [shift.id, cashTotal, `بيع نقدي #${transactionId}`, transactionId]
+            [shift.id, netCashNis, `بيع نقدي #${transactionId}`, transactionId]
           );
         }
 
@@ -505,6 +524,7 @@ export function createCheckoutRouter(db) {
         quantity: L.quantity,
         price: L.price,
         lineTotal: detailed[i].lineGross,
+        weighed: L.is_weighed,
       }));
       const receipt_text = buildReceiptText({
         transactionId,
@@ -518,6 +538,7 @@ export function createCheckoutRouter(db) {
         paymentMethod: summaryMethod,
         payments: paymentLines,
         cashTendered,
+        changeNis,
         settings,
       });
 

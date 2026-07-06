@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { Select } from "./ui";
+import QtyStepper from "./QtyStepper";
 import "./RefundPanel.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -130,9 +131,8 @@ export default function RefundPanel({ shiftReady = true, onRefundSuccess }) {
                   <td>{L.name}</td>
                   <td>{L.quantity_returnable}</td>
                   <td>
-                    <input
-                      type="number"
-                      min="0"
+                    <QtyStepper
+                      min={0}
                       max={L.quantity_returnable}
                       className="rf-input sm"
                       value={qtyByPid[L.product_id] ?? 0}

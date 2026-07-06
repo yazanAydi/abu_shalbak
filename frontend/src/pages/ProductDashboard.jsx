@@ -9,6 +9,8 @@ import {
   SecondaryButton,
   Icon,
   SkeletonRows,
+  Card,
+  CardBody,
 } from "../components/ui";
 import { ils, num } from "../utils/format";
 import ChangePriceModal from "./productDashboard/ChangePriceModal";
@@ -140,10 +142,14 @@ export default function ProductDashboard() {
   if (error && !dash) {
     return (
       <div className="office-page" dir="rtl" lang="ar">
-        <div className="pd-error-banner">{error}</div>
-        <SecondaryButton type="button" onClick={() => navigate("/manage-products")}>
-          العودة إلى المنتجات
-        </SecondaryButton>
+        <Card>
+          <CardBody>
+            <p className="ui-text-danger">{error}</p>
+            <SecondaryButton type="button" onClick={() => navigate("/manage-products")}>
+              العودة إلى المنتجات
+            </SecondaryButton>
+          </CardBody>
+        </Card>
       </div>
     );
   }

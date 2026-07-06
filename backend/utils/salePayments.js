@@ -1,34 +1,88 @@
 import { round2 } from "./tax.js";
+import { listCurrencies, getBaseCurrency, round2Rate } from "./currencies.js";
+import { TX_BUSINESS_DAY_JOIN, txBusinessDayEquals } from "./businessDay.js";
 
 const ALLOWED = ["cash", "visa", "on_account"];
 const TOLERANCE = 0.005;
 
 /**
- * Resolve and validate checkout payment lines against server-computed total.
- * @returns {{ lines?: Array<{method:string, amount:number}>, summaryMethod?: string, cashTendered?: number|null, onAccountTotal?: number, cashTotal?: number, error?: string }}
+ * Resolve and validate multi-currency checkout payment lines against the
+ * server-computed NIS total. The exchange rate is always read from the DB
+ * (never trusted from the client) and snapshotted onto each stored line.
+ *
+ * Every returned line carries:
+ *   { method, currency_id, currency_code, symbol, original_amount,
+ *     exchange_rate_used, nis_equivalent }
+ *
+ * @param {object} db wrapped sqlite db
+ * @param {object} body checkout request body
+ * @param {number} computedTotal invoice total in NIS
+ * @returns {Promise<{ lines?, summaryMethod?, cashTendered?, onAccountTotal?, cashTotal?, changeNis?, error? }>}
  */
-export function resolveCheckoutPayments(body, computedTotal) {
+export async function resolveCheckoutPayments(db, body, computedTotal) {
   const total = round2(computedTotal);
   const cashTendered =
     body.cash_tendered != null && body.cash_tendered !== ""
       ? round2(Number(body.cash_tendered))
       : null;
 
+  const currencies = await listCurrencies(db, { enabledOnly: false });
+  const byId = new Map(currencies.map((c) => [c.id, c]));
+  const byCode = new Map(currencies.map((c) => [String(c.code).toUpperCase(), c]));
+  const base = (await getBaseCurrency(db)) || currencies.find((c) => c.is_base) || null;
+
+  function resolveCurrency(spec) {
+    if (spec.currency_id != null) {
+      return byId.get(Number(spec.currency_id)) || null;
+    }
+    if (spec.currency_code != null) {
+      return byCode.get(String(spec.currency_code).toUpperCase()) || null;
+    }
+    return base;
+  }
+
+  function buildLine(spec, fallbackAmount) {
+    const method = spec.method;
+    if (!ALLOWED.includes(method)) {
+      return { error: `طريقة دفع غير مدعومة: ${method}` };
+    }
+    const cur = resolveCurrency(spec);
+    if (!cur) {
+      return { error: "العملة غير موجودة" };
+    }
+    if (!cur.enabled) {
+      return { error: `العملة ${cur.code} غير مفعّلة` };
+    }
+    const rawOriginal =
+      spec.original_amount != null && spec.original_amount !== ""
+        ? Number(spec.original_amount)
+        : Number(fallbackAmount);
+    const originalAmount = round2(rawOriginal);
+    if (!Number.isFinite(originalAmount) || originalAmount < 0) {
+      return { error: "مبلغ الدفع غير صالح" };
+    }
+    const rate = round2Rate(cur.exchange_rate_to_nis);
+    const nisEquivalent = round2(originalAmount * rate);
+    return {
+      line: {
+        method,
+        currency_id: cur.id,
+        currency_code: cur.code,
+        symbol: cur.symbol,
+        original_amount: originalAmount,
+        exchange_rate_used: rate,
+        nis_equivalent: nisEquivalent,
+      },
+    };
+  }
+
   let lines = [];
 
   if (Array.isArray(body.payments) && body.payments.length > 0) {
     for (const p of body.payments) {
-      const method = p.method;
-      const amount = round2(Number(p.amount));
-      if (!ALLOWED.includes(method)) {
-        return { error: `طريقة دفع غير مدعومة: ${method}` };
-      }
-      if (!Number.isFinite(amount) || amount < 0) {
-        return { error: "مبلغ الدفع غير صالح" };
-      }
-      if (amount > 0) {
-        lines.push({ method, amount });
-      }
+      const built = buildLine(p, p.amount);
+      if (built.error) return { error: built.error };
+      if (built.line.original_amount > 0) lines.push(built.line);
     }
     if (lines.length === 0) {
       return { error: "يجب إدخال مبلغ دفع واحد على الأقل" };
@@ -38,118 +92,110 @@ export function resolveCheckoutPayments(body, computedTotal) {
     if (method === "mixed") {
       return { error: "يجب إرسال تفاصيل الدفع المتعدد" };
     }
-    if (!ALLOWED.includes(method)) {
-      return { error: `طريقة الدفع يجب أن تكون: ${ALLOWED.join(" أو ")}` };
-    }
-    lines = [{ method, amount: total }];
+    // Single-method path defaults to the base currency at the exact total,
+    // unless an explicit currency/original amount is provided.
+    const built = buildLine(
+      {
+        method,
+        currency_id: body.currency_id,
+        currency_code: body.currency_code,
+        original_amount: body.original_amount,
+      },
+      total
+    );
+    if (built.error) return { error: built.error };
+    lines = [built.line];
   } else {
     return { error: "طريقة الدفع مطلوبة" };
   }
 
-  const paidSum = round2(lines.reduce((s, l) => s + l.amount, 0));
-  if (paidSum + TOLERANCE < total) {
+  const paidNisSum = round2(lines.reduce((s, l) => s + l.nis_equivalent, 0));
+  if (paidNisSum + TOLERANCE < total) {
     return { error: "المبلغ المدفوع أقل من إجمالي الفاتورة" };
   }
 
-  const cashTotal = round2(
-    lines.filter((l) => l.method === "cash").reduce((s, l) => s + l.amount, 0)
+  const cashNis = round2(
+    lines.filter((l) => l.method === "cash").reduce((s, l) => s + l.nis_equivalent, 0)
   );
-  const visaTotal = round2(
-    lines.filter((l) => l.method === "visa").reduce((s, l) => s + l.amount, 0)
+  const nonCashNis = round2(
+    lines.filter((l) => l.method !== "cash").reduce((s, l) => s + l.nis_equivalent, 0)
   );
 
-  const isSplitPayment = lines.length > 1 || (lines.length === 1 && Array.isArray(body.payments) && body.payments.length > 1);
-  if (isSplitPayment && Math.abs(paidSum - total) > TOLERANCE) {
-    return { error: "مجموع الدفعات لا يطابق إجمالي الفاتورة" };
+  // Only cash can produce change; non-cash methods may never exceed the total.
+  if (nonCashNis > total + TOLERANCE) {
+    return { error: "المبلغ المدفوع بغير النقد أكبر من إجمالي الفاتورة" };
   }
 
-  if (visaTotal > round2(total) + TOLERANCE) {
-    return { error: "مبلغ الفيزا أكبر من إجمالي الفاتورة" };
-  }
-
-  if (
-    cashTotal > 0 &&
-    visaTotal > 0 &&
-    visaTotal > round2(total - cashTotal) + TOLERANCE
-  ) {
-    return { error: "مبلغ الفيزا أكبر من المطلوب" };
-  }
-
-  let normalized = [...lines];
-  if (!isSplitPayment && paidSum > total + TOLERANCE) {
-    const excess = round2(paidSum - total);
-    const cashOnlyExcess = cashTotal;
-    if (excess > cashOnlyExcess + TOLERANCE) {
+  const excess = round2(paidNisSum - total);
+  let changeNis = 0;
+  if (excess > TOLERANCE) {
+    if (excess > cashNis + TOLERANCE) {
       return { error: "لا يمكن قبول زيادة في الدفع إلا من النقد" };
     }
-    const cashIdx = normalized.findIndex((l) => l.method === "cash");
-    if (cashIdx < 0) {
-      return { error: "لا يمكن قبول زيادة في الدفع إلا من النقد" };
-    }
-    const newCash = round2(normalized[cashIdx].amount - excess);
-    if (newCash < 0) {
-      return { error: "مبلغ الدفع غير صالح" };
-    }
-    if (newCash === 0) {
-      normalized = normalized.filter((_, i) => i !== cashIdx);
-    } else {
-      normalized[cashIdx] = { ...normalized[cashIdx], amount: newCash };
-    }
-  }
-
-  const normCash = round2(
-    normalized.filter((l) => l.method === "cash").reduce((s, l) => s + l.amount, 0)
-  );
-  const normVisa = round2(
-    normalized.filter((l) => l.method === "visa").reduce((s, l) => s + l.amount, 0)
-  );
-  if (normVisa > round2(total - normCash) + TOLERANCE) {
-    return { error: "مبلغ الفيزا أكبر من المطلوب" };
+    changeNis = excess;
   }
 
   const onAccountTotal = round2(
-    normalized.filter((l) => l.method === "on_account").reduce((s, l) => s + l.amount, 0)
+    lines.filter((l) => l.method === "on_account").reduce((s, l) => s + l.nis_equivalent, 0)
   );
 
-  const methods = new Set(normalized.map((l) => l.method));
-  const summaryMethod =
-    normalized.length > 1 || methods.size > 1 ? "mixed" : normalized[0].method;
-
-  const storedSum = round2(normalized.reduce((s, l) => s + l.amount, 0));
-  if (Math.abs(storedSum - total) > TOLERANCE) {
-    return { error: "مجموع الدفعات لا يطابق إجمالي الفاتورة" };
-  }
+  const methods = new Set(lines.map((l) => l.method));
+  const summaryMethod = lines.length > 1 || methods.size > 1 ? "mixed" : lines[0].method;
 
   return {
-    lines: normalized,
+    lines,
     summaryMethod,
     cashTendered,
-    onAccountTotal: round2(
-      normalized.filter((l) => l.method === "on_account").reduce((s, l) => s + l.amount, 0)
-    ),
-    cashTotal: round2(
-      normalized.filter((l) => l.method === "cash").reduce((s, l) => s + l.amount, 0)
-    ),
+    onAccountTotal,
+    cashTotal: cashNis,
+    changeNis,
   };
 }
 
 export async function loadSalePayments(db, transactionId) {
   const rows = await db.all(
-    `SELECT payment_method AS method, amount FROM sale_payments
-     WHERE transaction_id = ? ORDER BY id`,
+    `SELECT sp.payment_method AS method,
+            sp.amount,
+            sp.currency_id,
+            sp.original_amount,
+            sp.exchange_rate_used,
+            sp.nis_equivalent,
+            c.code AS currency_code,
+            c.symbol AS symbol
+     FROM sale_payments sp
+     LEFT JOIN currencies c ON c.id = sp.currency_id
+     WHERE sp.transaction_id = ? ORDER BY sp.id`,
     [transactionId]
   );
-  return rows.map((r) => ({
-    method: r.method,
-    amount: round2(Number(r.amount) || 0),
-  }));
+  return rows.map((r) => {
+    const nis = round2(Number(r.nis_equivalent ?? r.amount) || 0);
+    return {
+      method: r.method,
+      amount: nis,
+      currency_id: r.currency_id ?? null,
+      currency_code: r.currency_code ?? null,
+      symbol: r.symbol ?? null,
+      original_amount: round2(Number(r.original_amount ?? r.amount) || 0),
+      exchange_rate_used: Number(r.exchange_rate_used ?? 1) || 1,
+      nis_equivalent: nis,
+    };
+  });
 }
 
 export async function insertSalePayments(db, transactionId, lines) {
   for (const line of lines) {
+    const nis = round2(
+      Number(line.nis_equivalent != null ? line.nis_equivalent : line.amount) || 0
+    );
+    const original = round2(
+      Number(line.original_amount != null ? line.original_amount : line.amount) || 0
+    );
+    const rate = Number(line.exchange_rate_used != null ? line.exchange_rate_used : 1) || 1;
     await db.run(
-      `INSERT INTO sale_payments (transaction_id, payment_method, amount) VALUES (?, ?, ?)`,
-      [transactionId, line.method, line.amount]
+      `INSERT INTO sale_payments
+         (transaction_id, payment_method, amount, currency_id, original_amount, exchange_rate_used, nis_equivalent)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [transactionId, line.method, nis, line.currency_id ?? null, original, rate, nis]
     );
   }
 }
@@ -181,10 +227,14 @@ export async function sumShiftCardPayments(db, shiftId) {
 /** Aggregate payment lines for transactions on a given date. */
 export async function aggregatePaymentLinesForDate(db, dateStr) {
   const rows = await db.all(
-    `SELECT sp.payment_method, sp.amount, sp.transaction_id, t.payment_method AS tx_method
+    `SELECT sp.payment_method, sp.amount, sp.transaction_id, t.payment_method AS tx_method,
+            sp.currency_id, sp.original_amount, sp.nis_equivalent,
+            c.code AS currency_code, c.symbol AS currency_symbol, c.name AS currency_name
      FROM sale_payments sp
      INNER JOIN transactions t ON t.id = sp.transaction_id
-     WHERE date(t.created_at) = ?`,
+     ${TX_BUSINESS_DAY_JOIN}
+     LEFT JOIN currencies c ON c.id = sp.currency_id
+     WHERE ${txBusinessDayEquals("?")}`,
     [dateStr]
   );
 
@@ -192,12 +242,28 @@ export async function aggregatePaymentLinesForDate(db, dateStr) {
   let card_total = 0;
   let on_account_total = 0;
   const txMethods = new Map();
+  const currencyMap = new Map();
 
   for (const r of rows) {
     const amt = round2(Number(r.amount) || 0);
     if (r.payment_method === "cash") cash_total = round2(cash_total + amt);
     else if (r.payment_method === "on_account") on_account_total = round2(on_account_total + amt);
     else card_total = round2(card_total + amt);
+
+    const code = r.currency_code || "NIS";
+    const entry =
+      currencyMap.get(code) ||
+      {
+        currency_id: r.currency_id ?? null,
+        code,
+        name: r.currency_name || code,
+        symbol: r.currency_symbol || "\u20AA",
+        original_total: 0,
+        nis_total: 0,
+      };
+    entry.original_total = round2(entry.original_total + (Number(r.original_amount ?? r.amount) || 0));
+    entry.nis_total = round2(entry.nis_total + (Number(r.nis_equivalent ?? r.amount) || 0));
+    currencyMap.set(code, entry);
 
     const prev = txMethods.get(r.transaction_id) || new Set();
     prev.add(r.payment_method);
@@ -219,6 +285,15 @@ export async function aggregatePaymentLinesForDate(db, dateStr) {
     if (methods.has("on_account")) on_account_transactions++;
   }
 
+  const collections_by_currency = Array.from(currencyMap.values()).sort((a, b) => {
+    if (a.code === "NIS") return -1;
+    if (b.code === "NIS") return 1;
+    return String(a.code).localeCompare(String(b.code));
+  });
+  const collections_grand_total_nis = round2(
+    collections_by_currency.reduce((s, c) => s + c.nis_total, 0)
+  );
+
   return {
     cash_total: round2(cash_total),
     card_total: round2(card_total),
@@ -227,5 +302,7 @@ export async function aggregatePaymentLinesForDate(db, dateStr) {
     cash_transactions,
     card_transactions,
     on_account_transactions,
+    collections_by_currency,
+    collections_grand_total_nis,
   };
 }

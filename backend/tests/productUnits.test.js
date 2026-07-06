@@ -293,6 +293,256 @@ describe("product units import", () => {
   });
 });
 
+describe("units catalog", () => {
+  let ctx;
+  let adminToken;
+  let cashierToken;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+    const adminLogin = await login(ctx.app, "testadmin", "adminpass123");
+    adminToken = adminLogin.body.token;
+    const cashierLogin = await login(ctx.app, "testcashier", "cashpass123", "pos");
+    cashierToken = cashierLogin.body.token;
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  test("GET /api/products/units/catalog returns products with packaging units", async () => {
+    const ins = await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, stock) VALUES (?, ?, ?, ?, ?)`,
+      ["8100000001", "كولا كتالوج", 2, 1, 50]
+    );
+    const productId = ins.lastID;
+    await upsertProductUnit(ctx.db, productId, {
+      unit_name: "علبة",
+      barcode: "8100000001",
+      price: 2,
+      cost: 1,
+      conversion_to_base: 1,
+      is_default: true,
+    });
+    await upsertProductUnit(ctx.db, productId, {
+      unit_name: "صندوق",
+      barcode: "8100000002",
+      price: 20,
+      cost: 10,
+      conversion_to_base: 10,
+      purchase_enabled: true,
+    });
+
+    const res = await request(ctx.app)
+      .get("/api/products/units/catalog")
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.rows)).toBe(true);
+    const row = res.body.rows.find((r) => r.product_id === productId);
+    expect(row).toBeTruthy();
+    expect(row.product_name).toBe("كولا كتالوج");
+    expect(row.unit_count).toBe(2);
+    expect(row.units.some((u) => u.unit_name === "صندوق" && u.conversion_to_base === 10)).toBe(true);
+  });
+
+  test("GET /api/products/units/catalog excludes single base-only unit", async () => {
+    const ins = await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, stock) VALUES (?, ?, ?, ?, ?)`,
+      ["8200000001", "منتج حبة فقط", 1, 1, 10]
+    );
+    const productId = ins.lastID;
+    await upsertProductUnit(ctx.db, productId, {
+      unit_name: "حبة",
+      barcode: "8200000001",
+      price: 1,
+      cost: 1,
+      conversion_to_base: 1,
+      is_default: true,
+    });
+
+    const res = await request(ctx.app)
+      .get("/api/products/units/catalog")
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.rows.some((r) => r.product_id === productId)).toBe(false);
+  });
+
+  test("GET /api/products/units/catalog supports search", async () => {
+    const res = await request(ctx.app)
+      .get("/api/products/units/catalog")
+      .query({ search: "كولا كتالوج" })
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.rows.some((r) => r.product_name === "كولا كتالوج")).toBe(true);
+  });
+
+  test("GET /api/products/units/catalog is admin-only", async () => {
+    const res = await request(ctx.app)
+      .get("/api/products/units/catalog")
+      .set(authHeader(cashierToken));
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("barcode check", () => {
+  let ctx;
+  let adminToken;
+  let productId;
+  let boxUnitId;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+    const adminLogin = await login(ctx.app, "testadmin", "adminpass123");
+    adminToken = adminLogin.body.token;
+
+    const ins = await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, stock) VALUES (?, ?, ?, ?, ?)`,
+      ["8300000001", "لمبة نواسة", 20, 10, 5]
+    );
+    productId = ins.lastID;
+    await upsertProductUnit(ctx.db, productId, {
+      unit_name: "صندوق",
+      barcode: "7290102585410",
+      price: 20,
+      cost: 10,
+      conversion_to_base: 1,
+      is_default: true,
+    });
+    const boxUnit = await ctx.db.get(
+      "SELECT id FROM product_units WHERE product_id = ? AND barcode = ?",
+      [productId, "7290102585410"]
+    );
+    boxUnitId = boxUnit.id;
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  test("returns free for unused barcode", async () => {
+    const res = await request(ctx.app)
+      .get("/api/products/barcode-check")
+      .query({ barcode: "999988887777", product_id: productId })
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("free");
+  });
+
+  test("returns self when barcode used by another unit on same product", async () => {
+    const res = await request(ctx.app)
+      .get("/api/products/barcode-check")
+      .query({ barcode: "7290102585410", product_id: productId })
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("self");
+    expect(res.body.unit_name).toBe("صندوق");
+  });
+
+  test("returns free when editing same unit with its barcode", async () => {
+    const res = await request(ctx.app)
+      .get("/api/products/barcode-check")
+      .query({ barcode: "7290102585410", product_id: productId, unit_id: boxUnitId })
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("free");
+  });
+
+  test("returns conflict when barcode belongs to another product unit", async () => {
+    const other = await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, stock) VALUES (?, ?, ?, ?, ?)`,
+      ["8400000001", "منتج آخر", 5, 2, 1]
+    );
+    await upsertProductUnit(ctx.db, other.lastID, {
+      unit_name: "حبة",
+      barcode: "8400000002",
+      price: 5,
+      cost: 2,
+      conversion_to_base: 1,
+      is_default: true,
+    });
+
+    const res = await request(ctx.app)
+      .get("/api/products/barcode-check")
+      .query({ barcode: "8400000002", product_id: productId })
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("conflict");
+    expect(res.body.product_name).toBe("منتج آخر");
+  });
+
+  test("returns conflict via product_barcodes on another product", async () => {
+    const other = await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, stock) VALUES (?, ?, ?, ?, ?)`,
+      ["8500000001", "منتج باركود ثانوي", 3, 1, 1]
+    );
+    await ctx.db.run(
+      "INSERT INTO product_barcodes (product_id, barcode, label, is_primary) VALUES (?, ?, ?, ?)",
+      [other.lastID, "8500000099", "أساسي", 1]
+    );
+
+    const res = await request(ctx.app)
+      .get("/api/products/barcode-check")
+      .query({ barcode: "8500000099", product_id: productId })
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("conflict");
+  });
+
+  test("returns invalid for short barcode", async () => {
+    const res = await request(ctx.app)
+      .get("/api/products/barcode-check")
+      .query({ barcode: "123", product_id: productId })
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("invalid");
+  });
+});
+
+describe("sale_enabled POS lookup", () => {
+  let ctx;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  test("scanning supplier-only unit barcode falls back to default sale unit", async () => {
+    const ins = await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, stock) VALUES (?, ?, ?, ?, ?)`,
+      ["8600000001", "منتج وحدات مختلطة", 2, 1, 20]
+    );
+    const productId = ins.lastID;
+    await upsertProductUnit(ctx.db, productId, {
+      unit_name: "حبة",
+      barcode: "8600000001",
+      price: 2,
+      cost: 1,
+      conversion_to_base: 1,
+      is_default: true,
+      sale_enabled: true,
+    });
+    await upsertProductUnit(ctx.db, productId, {
+      unit_name: "صندوق",
+      barcode: "8600000002",
+      price: 20,
+      cost: 10,
+      conversion_to_base: 12,
+      purchase_enabled: true,
+      sale_enabled: false,
+    });
+
+    const lookup = await buildBarcodeLookupResponse(ctx.db, "8600000002");
+    expect(lookup).toBeTruthy();
+    expect(lookup.selectedUnit.unit_name).toBe("حبة");
+    expect(lookup.unit_name).toBe("حبة");
+    expect(lookup.availableUnits.some((u) => u.unit_name === "صندوق")).toBe(false);
+    expect(lookup.availableUnits.some((u) => u.unit_name === "حبة")).toBe(true);
+  });
+});
+
 describe("product unit price repair", () => {
   let ctx;
 

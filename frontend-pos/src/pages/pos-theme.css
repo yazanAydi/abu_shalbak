@@ -1,23 +1,25 @@
-/* POS full-screen theme — أبو شلبك (light mode) */
+/* POS full-screen theme — aligned with office design tokens */
+@import "../styles/office-theme.css";
+
 :root {
-  --pos-bg: #f4f6f9;
-  --pos-surface: #ffffff;
-  --pos-surface-2: #f1f5f9;
-  --pos-border: #e2e8f0;
-  --pos-border-strong: #cbd5e1;
-  --pos-text: #1e293b;
-  --pos-text-muted: #64748b;
-  --pos-text-dim: #94a3b8;
-  --pos-accent: #14b8a6;
-  --pos-accent-strong: #0f766e;
-  --pos-accent-rgb: 15, 118, 110;
+  --pos-bg: var(--office-bg, #f8fafc);
+  --pos-surface: var(--office-panel, #ffffff);
+  --pos-surface-2: var(--office-panel-elevated, #f1f5f9);
+  --pos-border: var(--office-panel-border, #e2e8f0);
+  --pos-border-strong: var(--slate-300, #cbd5e1);
+  --pos-text: var(--office-text, #1e293b);
+  --pos-text-muted: var(--office-text-muted, #64748b);
+  --pos-text-dim: var(--slate-400, #94a3b8);
+  --pos-accent: var(--office-accent, #0f766e);
+  --pos-accent-strong: var(--office-accent-hover, #115e59);
+  --pos-accent-rgb: var(--office-accent-rgb, 15, 118, 110);
   --pos-accent-deep: #0d9488;
-  --pos-success: #16a34a;
-  --pos-danger: #dc2626;
-  --pos-warn: #d97706;
-  --pos-radius: 10px;
-  --pos-radius-sm: 8px;
-  --pos-font: "Cairo", "Tajawal", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+  --pos-success: var(--office-success, #16a34a);
+  --pos-danger: var(--office-danger, #dc2626);
+  --pos-warn: var(--office-warn, #d97706);
+  --pos-radius: var(--office-radius-sm, 10px);
+  --pos-radius-sm: var(--office-radius-xs, 8px);
+  --pos-font: var(--office-font);
 }
 
 .pos-screen {
@@ -635,6 +637,92 @@
   border-color: var(--pos-accent);
 }
 
+.pos-cash-extra select {
+  min-height: 48px;
+  padding: 0 0.55rem;
+  border: 1px solid var(--pos-border-strong);
+  border-radius: var(--pos-radius-sm);
+  background: var(--pos-bg);
+  color: inherit;
+  font-size: 1.05rem;
+  font-family: inherit;
+}
+
+.pos-cash-breakdown {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.6rem;
+  margin-top: 0.35rem;
+  background: var(--pos-surface-2);
+  border-radius: var(--pos-radius-sm);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-mixed-line {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.2fr auto auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.pos-mixed-line select,
+.pos-mixed-line input {
+  min-height: 44px;
+  padding: 0 0.5rem;
+  border: 1px solid var(--pos-border-strong);
+  border-radius: var(--pos-radius-sm);
+  background: var(--pos-bg);
+  color: inherit;
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+.pos-mixed-line-amount--auto {
+  background: var(--pos-surface-2);
+  color: var(--pos-text-muted);
+  cursor: default;
+}
+
+.pos-mixed-line-nis {
+  font-size: 0.85rem;
+  color: var(--pos-text-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
+  text-align: center;
+}
+
+.pos-mixed-line-remove {
+  min-height: 44px;
+  min-width: 40px;
+  border: 1px solid var(--pos-border-strong);
+  border-radius: var(--pos-radius-sm);
+  background: var(--pos-surface-2);
+  color: inherit;
+  font-size: 1.3rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.pos-mixed-line-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pos-mixed-add {
+  align-self: flex-start;
+  padding: 0.4rem 0.8rem;
+  border: 1px dashed var(--pos-border-strong);
+  border-radius: var(--pos-radius-sm);
+  background: transparent;
+  color: var(--pos-accent-strong, inherit);
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .pos-customer-pick {
   display: flex;
   flex-direction: column;
@@ -733,8 +821,58 @@
   width: min(480px, 100%);
 }
 
+.pos-payment-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.pos-payment-modal-head .shift-modal-title {
+  margin: 0;
+}
+
+.pos-payment-modal-total {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+}
+
+.pos-payment-modal-total-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--pos-text-muted);
+}
+
+.pos-payment-modal-total-amount {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--pos-success);
+  font-variant-numeric: tabular-nums;
+}
+
 .pos-payment-modal-methods {
+  grid-template-columns: repeat(2, 1fr);
   margin: 0.75rem 0;
+}
+
+.pos-payment-modal-methods .pos-pay-method {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 64px;
+  padding: 0.5rem;
+  font-size: 1rem;
+  line-height: 1.3;
+}
+
+.pos-payment-modal .shift-modal-actions {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--pos-border);
 }
 
 .pos-payment-modal-tarhil {

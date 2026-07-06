@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import ProductPicker from "../components/ProductPicker";
+import QtyStepper from "../components/QtyStepper";
 import { ReportToolbar } from "../components/ui";
 
 const SESSION_COLUMNS = [
@@ -154,9 +155,8 @@ export default function InventoryCount({ embedded = false }) {
                 <div className="count-product-row">
                   <span>{selectedProduct.name}</span>
                   <span>رصيد النظام: {selectedProduct.stock}</span>
-                  <input
-                    type="number"
-                    min="0"
+                  <QtyStepper
+                    min={0}
                     placeholder="الكمية المعدودة"
                     value={countedQty}
                     onChange={(e) => setCountedQty(e.target.value)}

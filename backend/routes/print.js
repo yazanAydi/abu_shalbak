@@ -49,6 +49,7 @@ export function createPrintRouter(db) {
       total: Number(tx.total),
       paymentMethod: tx.payment_method,
       payments,
+      changeNis: tx.change_amount,
       settings,
     });
 

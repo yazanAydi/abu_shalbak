@@ -1,5 +1,5 @@
 import { parseItemsJson } from "../utils/cogs.js";
-import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
+import { requireOpenShiftForCashier, getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { computeSaleTotals } from "../utils/tax.js";
 import { recordMovement } from "../utils/inventory.js";
@@ -210,6 +210,24 @@ export async function getTelegramManagerUser(db) {
     if (user) return user;
   }
   return db.get("SELECT id, username, role FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1");
+}
+
+/**
+ * Resolve which shift should receive refund cash / reporting attribution at approval time.
+ * Cash refunds require an open shift for the requesting cashier.
+ */
+export async function resolveRefundTargetShift(db, { cashierId, paymentMethod, fallbackShiftId }) {
+  const openShift = await getOpenShiftForCashier(db, cashierId);
+  if (paymentMethod === "cash") {
+    if (!openShift) {
+      const err = new Error("لا يمكن صرف الاسترجاع النقدي: لا توجد وردية مفتوحة للكاشير");
+      err.status = 400;
+      err.code = "NO_OPEN_SHIFT_FOR_REFUND";
+      throw err;
+    }
+    return openShift.id;
+  }
+  return openShift?.id ?? fallbackShiftId ?? null;
 }
 
 export async function createRefundRequest(db, params) {
@@ -433,6 +451,12 @@ export async function approveRefundRequest(
       throw err;
     }
 
+    const targetShiftId = await resolveRefundTargetShift(db, {
+      cashierId: request.cashier_id,
+      paymentMethod: request.payment_method,
+      fallbackShiftId: request.shift_id,
+    });
+
     const now = new Date().toISOString();
     const ins = await db.run(
       `INSERT INTO refunds (
@@ -448,7 +472,7 @@ export async function approveRefundRequest(
         request.payment_method,
         request.reason,
         request.cashier_id,
-        request.shift_id,
+        targetShiftId,
         now,
         managerUser.id,
         reviewNotes ?? request.review_notes,

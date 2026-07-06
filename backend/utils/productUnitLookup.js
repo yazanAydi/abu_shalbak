@@ -1,4 +1,4 @@
-import { barcodeLookupKeys, digitsOnly, normalizeBarcodeInput } from "./barcode.js";
+import { barcodeLookupKeys, digitsOnly, normalizeBarcodeInput, parseWeightBarcode } from "./barcode.js";
 import { formatProductUnit, loadUnitsForProduct } from "./productUnits.js";
 
 /**
@@ -75,15 +75,41 @@ export async function findProductUnitByBarcode(db, rawCode) {
  * @param {unknown} rawCode
  */
 export async function buildBarcodeLookupResponse(db, rawCode) {
-  const found = await findProductUnitByBarcode(db, rawCode);
+  const scannedBarcode = normalizeBarcodeInput(rawCode);
+  let found = await findProductUnitByBarcode(db, rawCode);
+
+  /** @type {{ productCode: string, weightKg: number } | null} */
+  let weightInfo = null;
+  if (!found) {
+    const parsed = parseWeightBarcode(scannedBarcode);
+    if (parsed) {
+      found = await findProductUnitByBarcode(db, parsed.productCode);
+      if (found && Number(found.product.is_weighed) === 1) {
+        weightInfo = { productCode: parsed.productCode, weightKg: parsed.weightKg };
+      } else {
+        found = null;
+      }
+    }
+  }
+
   if (!found) return null;
 
-  const { product, selectedUnit, availableUnits, scannedBarcode, matchedBarcode } = found;
+  const { product, selectedUnit, availableUnits, matchedBarcode } = found;
   if (Number(product.is_active) === 0) {
     return { inactive: true, product };
   }
 
-  return {
+  const saleUnits = availableUnits.filter((u) => u.sale_enabled !== false);
+  const posUnits = saleUnits.length ? saleUnits : availableUnits;
+  let effectiveUnit = selectedUnit;
+  if (selectedUnit.sale_enabled === false) {
+    effectiveUnit =
+      posUnits.find((u) => u.is_default) ||
+      posUnits[0] ||
+      selectedUnit;
+  }
+
+  const baseResponse = {
     product: {
       id: product.id,
       name: product.name,
@@ -94,22 +120,34 @@ export async function buildBarcodeLookupResponse(db, rawCode) {
       barcode: product.barcode,
       cost: product.cost,
       needs_review: Number(product.needs_review) === 1,
+      is_weighed: Number(product.is_weighed) === 1,
     },
-    selectedUnit,
-    availableUnits,
+    selectedUnit: effectiveUnit,
+    availableUnits: posUnits,
     scanned_barcode: scannedBarcode,
     matched_barcode: matchedBarcode,
-    product_unit_id: selectedUnit.id,
-    product_barcode_id: selectedUnit.id,
+    product_unit_id: effectiveUnit.id,
+    product_barcode_id: effectiveUnit.id,
     // Legacy flat fields for existing clients
     id: product.id,
-    barcode: selectedUnit.barcode,
+    barcode: effectiveUnit.barcode,
     name: product.name,
-    price: selectedUnit.price,
+    price: effectiveUnit.price,
     stock: product.stock,
     tax_rate: product.tax_rate ?? null,
-    unit_id: selectedUnit.id,
-    unit_name: selectedUnit.unit_name,
-    conversion_to_base: selectedUnit.conversion_to_base,
+    unit_id: effectiveUnit.id,
+    unit_name: effectiveUnit.unit_name,
+    conversion_to_base: effectiveUnit.conversion_to_base,
   };
+
+  if (weightInfo) {
+    return {
+      ...baseResponse,
+      weighed: true,
+      weight: weightInfo.weightKg,
+      quantity: weightInfo.weightKg,
+    };
+  }
+
+  return baseResponse;
 }

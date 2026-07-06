@@ -3,6 +3,7 @@ import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { recordMovement } from "../utils/inventory.js";
 import { getAppSettings } from "../utils/settings.js";
+import { getDefaultUnit } from "../utils/productUnits.js";
 
 const requireReports = requireRoles("admin", "accountant");
 
@@ -27,17 +28,79 @@ async function nextNo(db, table, col) {
   return (Number(row?.mx) || 0) + 1;
 }
 
-function normalizeItems(items) {
+// Resolve the purchase unit for a line: explicit unit_id if valid, else the
+// product's default unit. Returns { id, unit_name, conversion } or a conversion
+// of 1 fallback (legacy clients that send no unit behave as base units).
+async function resolvePurchaseUnit(db, productId, unitId) {
+  if (unitId) {
+    const unit = await db.get(
+      "SELECT id, unit_name, conversion_to_base FROM product_units WHERE id = ? AND product_id = ?",
+      [unitId, productId]
+    );
+    if (unit) {
+      return {
+        id: unit.id,
+        unit_name: unit.unit_name,
+        conversion: Math.max(0.0001, Number(unit.conversion_to_base) || 1),
+      };
+    }
+  }
+  // No explicit unit: prefer the configured purchase-default unit, then fall
+  // back to the product's general default unit.
+  const purchaseDefault = await db.get(
+    "SELECT id, unit_name, conversion_to_base FROM product_units WHERE product_id = ? AND is_default_purchase = 1 LIMIT 1",
+    [productId]
+  );
+  if (purchaseDefault) {
+    return {
+      id: purchaseDefault.id,
+      unit_name: purchaseDefault.unit_name,
+      conversion: Math.max(0.0001, Number(purchaseDefault.conversion_to_base) || 1),
+    };
+  }
+  const def = await getDefaultUnit(db, productId);
+  if (def) {
+    return {
+      id: def.id,
+      unit_name: def.unit_name,
+      conversion: Math.max(0.0001, Number(def.conversion_to_base) || 1),
+    };
+  }
+  return { id: null, unit_name: null, conversion: 1 };
+}
+
+async function normalizeItems(db, items) {
   if (!Array.isArray(items) || items.length === 0) return null;
   const out = [];
   for (const it of items) {
     const pid = Number(it.product_id);
     const qty = Number(it.quantity);
     // total_cost is the supplier cost for the whole line quantity (not per unit).
-    const totalCost = round2(Number(it.total_cost) || 0);
+    // Accept unit_cost (per entered unit) as a fallback for clients that send it.
+    const hasTotal = it.total_cost != null && it.total_cost !== "";
+    const totalCost = hasTotal
+      ? round2(Number(it.total_cost) || 0)
+      : round2((Number(it.unit_cost) || 0) * (Number(qty) || 0));
     if (!pid || !Number.isFinite(qty) || qty <= 0) return null;
+    const rawUnitId = it.unit_id != null ? Number(it.unit_id) : it.product_unit_id != null ? Number(it.product_unit_id) : null;
+    const unit = await resolvePurchaseUnit(db, pid, rawUnitId);
+    const baseQuantity = round6(qty * unit.conversion);
+    // unit_cost = cost per entered unit (display); base_unit_cost = cost per base
+    // unit (used for weighted-average cost + inventory ledger at posting).
     const unitCost = round6(totalCost / qty);
-    out.push({ product_id: pid, quantity: qty, total_cost: totalCost, unit_cost: unitCost, vat_rate: Number(it.vat_rate) });
+    const baseUnitCost = baseQuantity > 0 ? round6(totalCost / baseQuantity) : 0;
+    out.push({
+      product_id: pid,
+      quantity: qty,
+      total_cost: totalCost,
+      unit_cost: unitCost,
+      base_unit_cost: baseUnitCost,
+      product_unit_id: unit.id,
+      unit_name: unit.unit_name,
+      conversion_used: unit.conversion,
+      base_quantity: baseQuantity,
+      vat_rate: Number(it.vat_rate),
+    });
   }
   return out;
 }
@@ -75,7 +138,7 @@ export function createPurchasesRouter(db) {
     const { supplier_id, order_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = normalizeItems(items);
+    const norm = await normalizeItems(db, items);
     if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
     const total = round2(norm.reduce((s, i) => s + i.total_cost, 0));
     await db.run("BEGIN IMMEDIATE");
@@ -88,9 +151,10 @@ export function createPurchasesRouter(db) {
       );
       for (const i of norm) {
         await db.run(
-          `INSERT INTO purchase_order_items (order_id, product_id, quantity, total_cost, unit_cost, line_total)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost]
+          `INSERT INTO purchase_order_items
+             (order_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity]
         );
       }
       await db.run("COMMIT");
@@ -109,7 +173,7 @@ export function createPurchasesRouter(db) {
     const { supplier_id, order_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = normalizeItems(items);
+    const norm = await normalizeItems(db, items);
     if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
     const total = round2(norm.reduce((s, i) => s + i.total_cost, 0));
     await db.run("BEGIN IMMEDIATE");
@@ -121,9 +185,10 @@ export function createPurchasesRouter(db) {
       await db.run("DELETE FROM purchase_order_items WHERE order_id = ?", [order.id]);
       for (const i of norm) {
         await db.run(
-          `INSERT INTO purchase_order_items (order_id, product_id, quantity, total_cost, unit_cost, line_total)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [order.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost]
+          `INSERT INTO purchase_order_items
+             (order_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [order.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity]
         );
       }
       await db.run("COMMIT");
@@ -189,7 +254,7 @@ export function createPurchasesRouter(db) {
     const { supplier_id, order_id, ref_text, invoice_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = normalizeItems(items);
+    const norm = await normalizeItems(db, items);
     if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
     const { subtotal, vat, total, lines } = await computeInvoiceTotals(db, norm);
     await db.run("BEGIN IMMEDIATE");
@@ -205,9 +270,9 @@ export function createPurchasesRouter(db) {
       for (const i of lines) {
         await db.run(
           `INSERT INTO purchase_invoice_items
-             (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total]
+             (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity]
         );
       }
       await db.run("COMMIT");
@@ -226,7 +291,7 @@ export function createPurchasesRouter(db) {
     const { supplier_id, ref_text, invoice_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = normalizeItems(items);
+    const norm = await normalizeItems(db, items);
     if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
     const { subtotal, vat, total, lines } = await computeInvoiceTotals(db, norm);
     await db.run("BEGIN IMMEDIATE");
@@ -241,9 +306,9 @@ export function createPurchasesRouter(db) {
       for (const i of lines) {
         await db.run(
           `INSERT INTO purchase_invoice_items
-             (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [inv.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total]
+             (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [inv.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity]
         );
       }
       await db.run("COMMIT");
@@ -268,18 +333,20 @@ export function createPurchasesRouter(db) {
         if (!product) continue;
         const oldStock = Number(product.stock) || 0;
         const oldCost = Number(product.cost) || 0;
-        const addQty = Number(it.quantity) || 0;
+        // Stock moves in base units; weighted-average cost is per base unit.
+        const addQty = it.base_quantity != null ? Number(it.base_quantity) : Number(it.quantity) || 0;
+        const baseUnitCost = addQty > 0 ? round6(Number(it.total_cost) / addQty) : Number(it.unit_cost) || 0;
         const newStock = oldStock + addQty;
         // weighted-average cost
         const newCost = newStock > 0
-          ? round2((oldStock * oldCost + addQty * Number(it.unit_cost)) / newStock)
-          : round2(Number(it.unit_cost));
+          ? round2((oldStock * oldCost + addQty * baseUnitCost) / newStock)
+          : round2(baseUnitCost);
         await db.run("UPDATE products SET cost = ? WHERE id = ?", [newCost, it.product_id]);
         await recordMovement(db, {
           productId: it.product_id,
           movementType: "purchase",
           quantity: addQty,
-          unitCost: it.unit_cost,
+          unitCost: baseUnitCost,
           refType: "purchase_invoice",
           refId: inv.id,
           notes: `فاتورة شراء #${inv.invoice_no ?? inv.id}`,
@@ -349,7 +416,7 @@ export function createPurchasesRouter(db) {
     const { supplier_id, invoice_id, return_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = normalizeItems(items);
+    const norm = await normalizeItems(db, items);
     if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
     const total = round2(norm.reduce((s, i) => s + i.total_cost, 0));
     await db.run("BEGIN IMMEDIATE");
@@ -362,9 +429,10 @@ export function createPurchasesRouter(db) {
       );
       for (const i of norm) {
         await db.run(
-          `INSERT INTO purchase_return_items (return_id, product_id, quantity, total_cost, unit_cost, line_total)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost]
+          `INSERT INTO purchase_return_items
+             (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity]
         );
       }
       await db.run("COMMIT");
@@ -382,7 +450,7 @@ export function createPurchasesRouter(db) {
     const { supplier_id, return_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = normalizeItems(items);
+    const norm = await normalizeItems(db, items);
     if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
     const total = round2(norm.reduce((s, i) => s + i.total_cost, 0));
     await db.run("BEGIN IMMEDIATE");
@@ -396,9 +464,10 @@ export function createPurchasesRouter(db) {
       await db.run("DELETE FROM purchase_return_items WHERE return_id = ?", [ret.id]);
       for (const i of norm) {
         await db.run(
-          `INSERT INTO purchase_return_items (return_id, product_id, quantity, total_cost, unit_cost, line_total)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [ret.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost]
+          `INSERT INTO purchase_return_items
+             (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [ret.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.total_cost, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity]
         );
       }
       await db.run("COMMIT");
@@ -419,11 +488,13 @@ export function createPurchasesRouter(db) {
     await db.run("BEGIN IMMEDIATE");
     try {
       for (const it of items) {
+        const baseQty = it.base_quantity != null ? Number(it.base_quantity) : Number(it.quantity) || 0;
+        const baseUnitCost = baseQty > 0 ? round6(Number(it.total_cost) / baseQty) : Number(it.unit_cost) || 0;
         await recordMovement(db, {
           productId: it.product_id,
           movementType: "purchase_return",
-          quantity: -Number(it.quantity),
-          unitCost: it.unit_cost,
+          quantity: -baseQty,
+          unitCost: baseUnitCost,
           refType: "purchase_return",
           refId: ret.id,
           notes: `مرتجع شراء #${ret.return_no ?? ret.id}`,

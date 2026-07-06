@@ -67,7 +67,9 @@ export function printPurchaseDoc(doc, which, store = {}) {
         <td class="num">${i + 1}</td>
         <td>${escapeHtml(it.name || "")}</td>
         <td>${escapeHtml(it.barcode || "—")}</td>
+        <td>${escapeHtml(it.unit_name || "—")}</td>
         <td class="num">${qty(it.quantity)}</td>
+        <td class="num">${qty(it.base_quantity != null ? it.base_quantity : it.quantity)}</td>
         <td class="num">${money(it.total_cost)}</td>
         <td class="num">${money(it.unit_cost)}</td>
         <td class="num">${money(it.line_total)}</td>
@@ -126,10 +128,10 @@ export function printPurchaseDoc(doc, which, store = {}) {
   <table>
     <thead>
       <tr>
-        <th class="num">#</th><th>الصنف</th><th>الباركود</th><th class="num">الكمية</th><th class="num">إجمالي الكلفة</th><th class="num">كلفة الوحدة</th><th class="num">الإجمالي</th>
+        <th class="num">#</th><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th class="num">الكمية</th><th class="num">بالحبة</th><th class="num">إجمالي الكلفة</th><th class="num">كلفة الوحدة</th><th class="num">الإجمالي</th>
       </tr>
     </thead>
-    <tbody>${bodyRows || `<tr><td colspan="7" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
+    <tbody>${bodyRows || `<tr><td colspan="9" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
   <table class="totals">${totalsRows}</table>
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}

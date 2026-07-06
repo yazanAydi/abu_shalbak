@@ -8,11 +8,10 @@ import {
 import { withTransaction } from "../utils/dbTx.js";
 
 /**
- * Stage 1 — concurrency-safe stock with negative stock ALLOWED.
- * Selling below zero is a valid business action; the only requirement is
- * that concurrent stock updates never overwrite each other.
+ * Stage 1 — concurrency-safe stock with clamp-at-zero.
+ * Overselling is allowed (sale completes) but stock never drops below zero.
  */
-describe("Concurrent sales with negative stock allowed (Scenario F)", () => {
+describe("Concurrent sales with stock clamped at zero (Scenario F)", () => {
   let ctx;
   let cashierToken;
 
@@ -40,7 +39,7 @@ describe("Concurrent sales with negative stock allowed (Scenario F)", () => {
       });
   }
 
-  test("two simultaneous sales from stock 1 both succeed, final stock is -1, no lost update", async () => {
+  test("two simultaneous sales from stock 1 both succeed, final stock is 0, no lost update", async () => {
     await ctx.db.run("UPDATE products SET stock = 1 WHERE id = ?", [ctx.productId]);
 
     const [a, b] = await Promise.all([sell(1), sell(1)]);
@@ -49,31 +48,46 @@ describe("Concurrent sales with negative stock allowed (Scenario F)", () => {
     expect(b.status).toBe(201);
 
     const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
-    expect(product.stock).toBe(-1);
+    expect(product.stock).toBe(0);
 
     const ledger = await ctx.db.all(
       "SELECT * FROM inventory_ledger WHERE product_id = ? AND movement_type = 'sale' AND reference_id IN (?, ?)",
       [ctx.productId, a.body.data.transaction_id, b.body.data.transaction_id]
     );
     expect(ledger.length).toBe(2);
-    // Each movement reduced stock by exactly 1; before/after are internally consistent.
+    const deltas = ledger.map((r) => r.quantity_delta).sort((x, y) => y - x);
+    expect(deltas).toEqual([0, -1]);
     for (const row of ledger) {
-      expect(row.quantity_delta).toBe(-1);
-      expect(row.qty_after).toBe(row.qty_before - 1);
+      expect(row.qty_after).toBe(Math.max(0, row.qty_before + row.quantity_delta));
     }
-    // The two movements form a continuous chain (no overwrite): one's after == other's before.
-    const befores = ledger.map((r) => r.qty_before).sort((x, y) => y - x);
-    expect(befores).toEqual([1, 0]);
   });
 
-  test("selling more than available succeeds and yields mathematically correct negative stock", async () => {
+  test("selling more than available succeeds and clamps stock at zero", async () => {
     await ctx.db.run("UPDATE products SET stock = 1 WHERE id = ?", [ctx.productId]);
 
     const res = await sell(5);
     expect(res.status).toBe(201);
 
     const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
-    expect(product.stock).toBe(-4);
+    expect(product.stock).toBe(0);
+
+    const ledger = await ctx.db.get(
+      "SELECT * FROM inventory_ledger WHERE product_id = ? AND movement_type = 'sale' AND reference_id = ?",
+      [ctx.productId, res.body.data.transaction_id]
+    );
+    expect(ledger.quantity_delta).toBe(-1);
+    expect(ledger.qty_before).toBe(1);
+    expect(ledger.qty_after).toBe(0);
+  });
+
+  test("selling from zero stock succeeds and keeps stock at zero", async () => {
+    await ctx.db.run("UPDATE products SET stock = 0 WHERE id = ?", [ctx.productId]);
+
+    const res = await sell(1);
+    expect(res.status).toBe(201);
+
+    const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
+    expect(product.stock).toBe(0);
   });
 
   test("each sale creates its own inventory ledger record", async () => {

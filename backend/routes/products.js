@@ -13,10 +13,18 @@ import {
   syncProductsPrimaryBarcode,
 } from "../utils/productBarcodes.js";
 import { buildBarcodeLookupResponse } from "../utils/productUnitLookup.js";
+
+function clampProductStock(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
 import {
   deleteProductUnit,
   formatProductUnit,
   getDefaultUnit,
+  checkUnitBarcodeAvailability,
+  loadUnitsCatalog,
   loadUnitsForProduct,
   syncProductFromDefaultUnit,
   upsertProductUnit,
@@ -55,10 +63,10 @@ function marginPct(price, cost) {
 }
 
 const PRODUCT_LIST_SELECT = `id, barcode, name, name_en, price, cost, stock, category, tax_rate, unit, expiry_date, min_price, max_price, sku,
-              COALESCE(is_active, 1) AS is_active, COALESCE(needs_review, 0) AS needs_review`;
+              COALESCE(is_active, 1) AS is_active, COALESCE(needs_review, 0) AS needs_review, COALESCE(is_weighed, 0) AS is_weighed`;
 
 const PRODUCT_LIST_SELECT_P = `p.id, p.barcode, p.name, p.name_en, p.price, p.cost, p.stock, p.category, p.tax_rate, p.unit, p.expiry_date, p.min_price, p.max_price, p.sku,
-              COALESCE(p.is_active, 1) AS is_active, COALESCE(p.needs_review, 0) AS needs_review`;
+              COALESCE(p.is_active, 1) AS is_active, COALESCE(p.needs_review, 0) AS needs_review, COALESCE(p.is_weighed, 0) AS is_weighed`;
 
 export async function searchProducts(db, rawQuery) {
   const normalized = normalizeBarcodeInput(String(rawQuery ?? "").trim());
@@ -171,6 +179,28 @@ export function createProductsRouter(db) {
     return res.json(payload);
   });
 
+  router.get("/units/catalog", requireAuth, requireAdmin, async (req, res) => {
+    const { limit, offset } = parsePagination(req.query, 100, 500);
+    const search = String(req.query.search ?? req.query.q ?? "").trim();
+    const payload = await loadUnitsCatalog(db, { search, limit, offset });
+    res.json(payload);
+  });
+
+  router.get("/barcode-check", requireAuth, requireAdmin, async (req, res) => {
+    const productId = parsePositiveInt(req.query.product_id ?? req.query.productId);
+    if (!productId) {
+      return res.status(400).json({ error: "معرّف المنتج مطلوب", code: "VALIDATION_ERROR" });
+    }
+    const barcode = String(req.query.barcode ?? "").trim();
+    const unitId = parsePositiveInt(req.query.unit_id ?? req.query.unitId);
+    const result = await checkUnitBarcodeAvailability(db, {
+      barcode,
+      productId,
+      excludeUnitId: unitId,
+    });
+    res.json(result);
+  });
+
   router.get("/:barcode", requireAuth, async (req, res) => {
     const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
     const payload = await buildBarcodeLookupResponse(db, barcode);
@@ -213,6 +243,7 @@ export function createProductsRouter(db) {
 
   router.post("/", requireAuth, requireAdmin, async (req, res) => {
     const { barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url } = req.body || {};
+    const isWeighed = req.body?.is_weighed === 1 || req.body?.is_weighed === true ? 1 : 0;
     if (!barcode || !name || price === undefined || stock === undefined) {
       return res.status(400).json({ error: "الباركود والاسم والسعر والمخزون مطلوبة" });
     }
@@ -235,9 +266,10 @@ export function createProductsRouter(db) {
     }
     try {
       const skuCode = await ensureEntityCode(db, "product", sku);
+      const unitName = isWeighed ? "كغم" : unit ? String(unit).trim() : null;
       const info = await db.run(
-        `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, is_weighed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           String(barcode).trim(),
           String(name).trim(),
@@ -245,19 +277,20 @@ export function createProductsRouter(db) {
           Number(price),
           c,
           category != null ? String(category) : null,
-          Number(stock),
+          clampProductStock(stock),
           taxR,
-          unit ? String(unit).trim() : null,
+          unitName,
           expiry_date ? String(expiry_date).trim() : null,
           min_price != null && min_price !== "" ? Number(min_price) : null,
           max_price != null && max_price !== "" ? Number(max_price) : null,
           skuCode,
           image_url ? String(image_url).trim() : null,
+          isWeighed,
         ]
       );
       await ensureProductBarcodeOnCreate(db, info.lastID, barcode);
       await upsertProductUnit(db, info.lastID, {
-        unit_name: unit || "حبة",
+        unit_name: unitName || "حبة",
         barcode,
         price: Number(price),
         cost: c,
@@ -312,7 +345,7 @@ export function createProductsRouter(db) {
       }
     }
     const price = b.price !== undefined ? Number(b.price) : existing.price;
-    const stock = b.stock !== undefined ? Number(b.stock) : existing.stock;
+    const stock = b.stock !== undefined ? clampProductStock(b.stock) : clampProductStock(existing.stock);
     const name = b.name !== undefined ? String(b.name).trim() : existing.name;
     const name_en = b.name_en !== undefined ? (b.name_en ? String(b.name_en).trim() : null) : existing.name_en;
     const category = b.category !== undefined ? (b.category || null) : existing.category;
@@ -327,14 +360,21 @@ export function createProductsRouter(db) {
     const max_price = b.max_price !== undefined ? (b.max_price != null && b.max_price !== "" ? Number(b.max_price) : null) : existing.max_price;
     const sku = b.sku !== undefined ? (b.sku ? String(b.sku).trim() : null) : existing.sku;
     const image_url = b.image_url !== undefined ? (b.image_url ? String(b.image_url).trim() : null) : existing.image_url;
+    const isWeighed =
+      b.is_weighed !== undefined
+        ? b.is_weighed === 1 || b.is_weighed === true
+          ? 1
+          : 0
+        : Number(existing.is_weighed) || 0;
+    const unitForWeighed = isWeighed ? "كغم" : unit;
     const priceChanged = round2(existing.price) !== round2(price);
     const costChanged = round2(existing.cost) !== round2(cost);
     try {
       await db.run(
         `UPDATE products SET barcode = ?, price = ?, stock = ?, name = ?, name_en = ?, category = ?, unit = ?,
-            expiry_date = ?, cost = ?, tax_rate = ?, min_price = ?, max_price = ?, sku = ?, image_url = ?
+            expiry_date = ?, cost = ?, tax_rate = ?, min_price = ?, max_price = ?, sku = ?, image_url = ?, is_weighed = ?
          WHERE id = ?`,
-        [barcode, price, stock, name, name_en, category, unit, expiry_date, cost, tax_rate, min_price, max_price, sku, image_url, id]
+        [barcode, price, stock, name, name_en, category, unitForWeighed, expiry_date, cost, tax_rate, min_price, max_price, sku, image_url, isWeighed, id]
       );
     } catch (e) {
       if (e && e.code === "SQLITE_CONSTRAINT") {
@@ -420,6 +460,9 @@ export function createProductsRouter(db) {
         cost: b.cost ?? product.cost,
         conversion_to_base: b.conversion_to_base ?? 1,
         is_default: b.is_default === true,
+        purchase_enabled: b.purchase_enabled,
+        is_default_purchase: b.is_default_purchase,
+        sale_enabled: b.sale_enabled,
         alias_barcodes: b.alias_barcodes,
       });
       res.status(201).json(formatProductUnit(row));
@@ -448,6 +491,9 @@ export function createProductsRouter(db) {
         cost: b.cost ?? existing.cost,
         conversion_to_base: b.conversion_to_base ?? existing.conversion_to_base,
         is_default: b.is_default === true || Number(existing.is_default) === 1,
+        purchase_enabled: b.purchase_enabled,
+        is_default_purchase: b.is_default_purchase,
+        sale_enabled: b.sale_enabled,
       });
       if (b.is_default === true) {
         await db.run("UPDATE product_units SET is_default = 0 WHERE product_id = ? AND id != ?", [

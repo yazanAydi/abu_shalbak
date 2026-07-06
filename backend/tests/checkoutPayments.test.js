@@ -189,8 +189,8 @@ describe("Checkout payments", () => {
     expect(payments[0].amount).toBe(cashApplied);
   });
 
-  test("rejects card overpayment", async () => {
-    await saleTotal(10);
+  test("rejects card overpayment beyond invoice total", async () => {
+    const total = await saleTotal(10);
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
@@ -199,23 +199,46 @@ describe("Checkout payments", () => {
         payment_method: "mixed",
         payments: [
           { method: "cash", amount: 40 },
-          { method: "visa", amount: 70 },
+          { method: "visa", amount: total + 30 },
         ],
       });
 
     expect(res.status).toBe(400);
   });
 
-  test("resolveCheckoutPayments rejects visa overpay on exact total", () => {
-    const r = resolveCheckoutPayments(
+  test("resolveCheckoutPayments rejects visa overpay beyond invoice total", async () => {
+    const r = await resolveCheckoutPayments(
+      ctx.db,
       {
         payments: [
           { method: "cash", amount: 40 },
-          { method: "visa", amount: 61 },
+          { method: "visa", amount: 105 },
         ],
       },
       100
     );
     expect(r.error).toBeTruthy();
+  });
+
+  test("resolveCheckoutPayments snapshots the exchange rate on foreign cash", async () => {
+    const usd = await ctx.db.get("SELECT * FROM currencies WHERE code = 'USD'");
+    const r = await resolveCheckoutPayments(
+      ctx.db,
+      {
+        payments: [{ method: "cash", currency_id: usd.id, original_amount: 50 }],
+      },
+      100
+    );
+    expect(r.error).toBeUndefined();
+    expect(r.lines).toHaveLength(1);
+    expect(r.lines[0].exchange_rate_used).toBe(usd.exchange_rate_to_nis);
+    expect(r.lines[0].nis_equivalent).toBe(
+      Math.round(50 * usd.exchange_rate_to_nis * 100) / 100
+    );
+    // 50 USD * 3.72 = 186 NIS, invoice 100 -> change 86 NIS from cash.
+    expect(r.changeNis).toBeCloseTo(
+      Math.round((50 * usd.exchange_rate_to_nis - 100) * 100) / 100,
+      2
+    );
   });
 });

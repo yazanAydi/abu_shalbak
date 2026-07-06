@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import QtyStepper from "../QtyStepper";
 import "../ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -52,16 +53,14 @@ export default function PosCashChangeModal({ open, total, isLoading, onClose, on
         <p className="shift-modal-meta">الإجمالي: {ils(total)}</p>
         <label className="shift-modal-label">
           المستلم
-          <input
+          <QtyStepper
             className="shift-modal-input"
-            type="number"
-            min="0"
-            step="0.01"
+            min={0}
+            precision={2}
             value={amountTendered}
             onChange={(e) => setAmountTendered(e.target.value)}
             placeholder="0.00"
             autoFocus
-            required
           />
         </label>
         <label className="shift-modal-label">

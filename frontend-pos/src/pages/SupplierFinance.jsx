@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import api from "../apiClient";
-import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
+import { getAuthHeaders, getUser } from "../utils/auth";
 import { isAdminRole } from "../utils/roles";
-import "./SupplierFinance.css";
+import { PageHeader, ReportToolbar, Select } from "../components/ui";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -33,7 +33,6 @@ function todayYmd() {
 }
 
 export default function SupplierFinance() {
-  const navigate = useNavigate();
   const u = getUser();
   const [err, setErr] = useState("");
   const [from, setFrom] = useState(firstOfMonth);
@@ -372,24 +371,6 @@ export default function SupplierFinance() {
     }
   }
 
-  async function downloadExport() {
-    try {
-      const res = await api.get("/api/finance/export.csv", {
-        params: { from, to },
-        headers: getAuthHeaders(),
-        responseType: "blob",
-      });
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: "text/csv;charset=utf-8" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `finance-${from}-${to}.csv`;
-      a.click();
-      window.URL.revokeObjectURL(url);
-    } catch (e) {
-      setErr(e.message || "فشل التصدير");
-    }
-  }
-
   const payMethodAr = useMemo(
     () =>
       PAYMENT_METHODS.reduce((a, o) => {
@@ -399,34 +380,44 @@ export default function SupplierFinance() {
     []
   );
 
+  const paymentColumns = [
+    { key: "paid_on", header: "التاريخ" },
+    { key: "supplier_name", header: "المورد" },
+    { key: "amount", header: "المبلغ", value: (p) => ils(p.amount) },
+    { key: "payment_method", header: "الطريقة", value: (p) => payMethodAr[p.payment_method] || p.payment_method },
+    { key: "reference_note", header: "مرجع", value: (p) => p.reference_note || "—" },
+    { key: "recorded_by_username", header: "سجّلها", value: (p) => p.recorded_by_username || "—" },
+  ];
+
+  const overviewSummary = useMemo(() => {
+    if (!overview) return undefined;
+    return [
+      { label: "مبيعات كاشير (إجمالي)", value: ils(overview.pos_sales_total) },
+      { label: "استرجاعات", value: `−${ils(overview.refunds_total || 0)}` },
+      { label: "صافي مبيعات", value: ils(overview.net_pos_sales) },
+      { label: "ربح إجمالي تقديري", value: ils(overview.estimated_gross_profit || 0) },
+      { label: "مصاريف تشغيل", value: ils(overview.operating_expenses_total || 0) },
+      { label: "دفعات موردين", value: ils(overview.supplier_payments_total) },
+    ];
+  }, [overview]);
+
   return (
-    <div className="sf-page" dir="rtl" lang="ar">
-      <header className="sf-top">
-        <div className="sf-nav">
-          {isAdminRole(u?.role) ? (
-            <>
-              <Link to="/checkout" className="sf-link">
-                الكاشير
-              </Link>
-              <Link to="/reports" className="sf-link">
-                تقرير المبيعات
-              </Link>
-              <Link to="/manage-products" className="sf-link">
-                المنتجات
-              </Link>
-              <Link to="/manage-users" className="sf-link">
-                الحسابات
-              </Link>
-            </>
-          ) : (
-            <Link to="/reports" className="sf-link">
-              تقرير المبيعات
-            </Link>
-          )}
-        </div>
-        <h1 className="sf-title">المراقبة المالية</h1>
-        <p className="sf-sub">مبيعات، استرجاعات، تكاليف تقديرية، مصاريف، كاش، ذمم موردين — للمدير والمحاسب</p>
-      </header>
+    <div className="office-page sf-page" dir="rtl" lang="ar">
+      <PageHeader
+        title="المراقبة المالية"
+        subtitle="مبيعات، استرجاعات، تكاليف تقديرية، مصاريف، كاش، ذمم موردين — للمدير والمحاسب"
+        icon="finance"
+        actions={
+          <ReportToolbar
+            title="المراقبة المالية — دفعات الموردين"
+            subtitle={`${from} إلى ${to}`}
+            columns={paymentColumns}
+            rows={payments}
+            filename="supplier-payments"
+            summary={overviewSummary}
+          />
+        }
+      />
 
       {err ? <div className="sf-err">{err}</div> : null}
 
@@ -462,9 +453,6 @@ export default function SupplierFinance() {
             }}
           >
             تحديث
-          </button>
-          <button type="button" className="sf-btn ghost" onClick={downloadExport}>
-            تصدير ملف (CSV)
           </button>
         </div>
         {overview ? (
@@ -516,7 +504,7 @@ export default function SupplierFinance() {
       <section className="sf-card">
         <h2 className="sf-h2">مصاريف التشغيل (إيجار، رواتب، …)</h2>
         <div className="sf-pay-form">
-          <select
+          <Select
             className="sf-input"
             value={opexForm.category}
             onChange={(e) => setOpexForm((f) => ({ ...f, category: e.target.value }))}
@@ -526,7 +514,7 @@ export default function SupplierFinance() {
                 {v}
               </option>
             ))}
-          </select>
+          </Select>
           <input
             className="sf-input"
             type="number"
@@ -540,7 +528,7 @@ export default function SupplierFinance() {
             value={opexForm.paid_on}
             onChange={(e) => setOpexForm((f) => ({ ...f, paid_on: e.target.value }))}
           />
-          <select
+          <Select
             className="sf-input"
             value={opexForm.payment_method}
             onChange={(e) => setOpexForm((f) => ({ ...f, payment_method: e.target.value }))}
@@ -550,7 +538,7 @@ export default function SupplierFinance() {
                 {m.ar}
               </option>
             ))}
-          </select>
+          </Select>
           <button type="button" className="sf-btn" onClick={addOpex}>
             إضافة
           </button>
@@ -641,7 +629,7 @@ export default function SupplierFinance() {
       <section className="sf-card">
         <h2 className="sf-h2">فواتير موردين (ذمم / مستحقات)</h2>
         <div className="sf-form-grid">
-          <select
+          <Select
             className="sf-input"
             value={invForm.supplier_id}
             onChange={(e) => setInvForm((f) => ({ ...f, supplier_id: e.target.value }))}
@@ -652,7 +640,7 @@ export default function SupplierFinance() {
                 {s.name}
               </option>
             ))}
-          </select>
+          </Select>
           <input
             className="sf-input"
             placeholder="مرجع فاتورة"
@@ -897,7 +885,7 @@ export default function SupplierFinance() {
         <div className="sf-pay-form">
           <label>
             مورد
-            <select
+            <Select
               className="sf-input"
               value={payForm.supplier_id}
               onChange={(e) => setPayForm((f) => ({ ...f, supplier_id: e.target.value }))}
@@ -908,7 +896,7 @@ export default function SupplierFinance() {
                   {s.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label>
             المبلغ
@@ -932,7 +920,7 @@ export default function SupplierFinance() {
           </label>
           <label>
             طريقة الدفع
-            <select
+            <Select
               className="sf-input"
               value={payForm.payment_method}
               onChange={(e) => setPayForm((f) => ({ ...f, payment_method: e.target.value }))}
@@ -942,11 +930,11 @@ export default function SupplierFinance() {
                   {m.ar}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className="sf-note-field">
             فاتورة مورد (اختياري — يحدّث المدفوع)
-            <select
+            <Select
               className="sf-input"
               value={payForm.invoice_id}
               onChange={(e) => setPayForm((f) => ({ ...f, invoice_id: e.target.value }))}
@@ -963,7 +951,7 @@ export default function SupplierFinance() {
                     #{i.id} {i.ref_text || ""} (متبقي {ils(i.amount_total - i.amount_paid)})
                   </option>
                 ))}
-            </select>
+            </Select>
           </label>
           <label className="sf-note-field">
             مرجع / ملاحظة
@@ -1026,20 +1014,6 @@ export default function SupplierFinance() {
         </div>
       </section>
 
-      <p className="sf-footer">
-        <button
-          type="button"
-          className="sf-link-bare"
-          onClick={() => {
-            removeToken();
-            navigate("/login", { replace: true });
-          }}
-        >
-          خروج
-        </button>
-        {" — "}
-        {u?.username} ({u?.role})
-      </p>
     </div>
   );
 }

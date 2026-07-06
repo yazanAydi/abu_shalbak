@@ -1,17 +1,40 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { searchProductsApi } from "../utils/productSearch";
+import ProductPicker from "../components/ProductPicker";
+import QtyStepper from "../components/QtyStepper";
+import { ReportToolbar } from "../components/ui";
 
-export default function InventoryCount() {
+const SESSION_COLUMNS = [
+  { key: "id", header: "رقم" },
+  {
+    key: "status",
+    header: "الحالة",
+    value: (s) => (s.status === "open" ? "مفتوح" : s.status === "posted" ? "مرحّل" : "ملغي"),
+  },
+  { key: "created_at", header: "أُنشئ في", value: (s) => s.created_at?.slice(0, 16) || "—" },
+  { key: "created_by_name", header: "بواسطة", value: (s) => s.created_by_name || "—" },
+];
+
+const LINE_COLUMNS = [
+  { key: "name", header: "المنتج" },
+  { key: "barcode", header: "الباركود" },
+  { key: "system_qty", header: "رصيد النظام" },
+  { key: "counted_qty", header: "المعدود" },
+  {
+    key: "variance",
+    header: "الفرق",
+    value: (L) => `${L.variance > 0 ? "+" : ""}${L.variance}`,
+  },
+];
+
+const ils = (n) => `₪${Number(n ?? 0).toFixed(2)}`;
+
+export default function InventoryCount({ embedded = false }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeSession, setActiveSession] = useState(null);
-  const [search, setSearch] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
-  const [searchLoading, setSearchLoading] = useState(false);
   const [countedQty, setCountedQty] = useState("");
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -29,29 +52,6 @@ export default function InventoryCount() {
   }, []);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
-
-  useEffect(() => {
-    const q = search.trim();
-    if (q.length < 2) {
-      setSearchResults([]);
-      setSearchLoading(false);
-      return undefined;
-    }
-
-    setSearchLoading(true);
-    const timer = window.setTimeout(async () => {
-      try {
-        const rows = await searchProductsApi(q, { limit: 15 });
-        setSearchResults(rows);
-      } catch {
-        setSearchResults([]);
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 300);
-
-    return () => window.clearTimeout(timer);
-  }, [search]);
 
   async function loadSession(id) {
     const { data } = await api.get(`/api/inventory/counts/${id}`, { headers: getAuthHeaders() });
@@ -82,8 +82,6 @@ export default function InventoryCount() {
       await loadSession(session.id);
       setSelectedProduct(null);
       setCountedQty("");
-      setSearch("");
-      setSearchResults([]);
       setMsg("تم حفظ الكمية");
     } catch (e) {
       setError(e.response?.data?.error || "فشل الحفظ");
@@ -107,16 +105,25 @@ export default function InventoryCount() {
     }
   }
 
-  return (
-    <div className="page-container" dir="rtl" lang="ar">
-      <div className="page-header">
-        <h1>الجرد والمخزون</h1>
-        <div className="header-actions">
-          <Link to="/expiry" className="nav-pill">تقرير الصلاحية</Link>
-          <Link to="/checkout" className="nav-pill">← الكاشير</Link>
-        </div>
-      </div>
+  const reportConfig = useMemo(() => {
+    if (activeSession) {
+      return {
+        title: `جلسة جرد #${activeSession.id}`,
+        columns: LINE_COLUMNS,
+        rows: activeSession.lines || [],
+        filename: `inventory-count-${activeSession.id}`,
+      };
+    }
+    return {
+      title: "جلسات الجرد",
+      columns: SESSION_COLUMNS,
+      rows: sessions,
+      filename: "inventory-count-sessions",
+    };
+  }, [activeSession, sessions]);
 
+  const content = (
+    <>
       {error && <div className="error-banner" onClick={() => setError(null)}>{error} ✕</div>}
       {msg && <div className="success-banner" onClick={() => setMsg(null)}>{msg} ✕</div>}
 
@@ -124,7 +131,13 @@ export default function InventoryCount() {
         <div className="inventory-session">
           <div className="session-header">
             <h2>جلسة جرد #{activeSession.id} — {activeSession.status === "open" ? "مفتوحة" : activeSession.status}</h2>
-            <div className="session-actions">
+            <div className="session-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <ReportToolbar
+                title={reportConfig.title}
+                columns={reportConfig.columns}
+                rows={reportConfig.rows}
+                filename={reportConfig.filename}
+              />
               {activeSession.status === "open" && (
                 <button className="btn-danger" onClick={() => postSession(activeSession)} disabled={saving}>
                   ترحيل الجرد
@@ -137,31 +150,13 @@ export default function InventoryCount() {
           {activeSession.status === "open" && (
             <div className="count-input-area">
               <h3>إضافة صنف</h3>
-              <input
-                type="text"
-                placeholder="ابحث عن منتج بالاسم أو الباركود…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              {searchLoading && search.trim().length >= 2 && (
-                <p className="empty-msg" style={{ marginTop: 8 }}>جاري البحث…</p>
-              )}
-              {!searchLoading && searchResults.length > 0 && (
-                <ul className="search-dropdown">
-                  {searchResults.map((p) => (
-                    <li key={p.id} onClick={() => { setSelectedProduct(p); setSearchResults([]); setSearch(p.name); }}>
-                      {p.name} — {p.matched_barcode || p.barcode} (نظام: {p.stock})
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <ProductPicker onPick={setSelectedProduct} />
               {selectedProduct && (
                 <div className="count-product-row">
                   <span>{selectedProduct.name}</span>
                   <span>رصيد النظام: {selectedProduct.stock}</span>
-                  <input
-                    type="number"
-                    min="0"
+                  <QtyStepper
+                    min={0}
                     placeholder="الكمية المعدودة"
                     value={countedQty}
                     onChange={(e) => setCountedQty(e.target.value)}
@@ -206,7 +201,14 @@ export default function InventoryCount() {
         </div>
       ) : (
         <div className="sessions-list">
-          <div className="list-actions">
+          <div className="list-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <ReportToolbar
+              title={reportConfig.title}
+              columns={reportConfig.columns}
+              rows={reportConfig.rows}
+              filename={reportConfig.filename}
+              disabled={loading}
+            />
             <button className="btn-primary" onClick={openNew}>+ فتح جلسة جرد جديدة</button>
           </div>
           {loading ? (
@@ -237,6 +239,16 @@ export default function InventoryCount() {
           )}
         </div>
       )}
+    </>
+  );
+
+  if (embedded) return content;
+  return (
+    <div className="office-page page-container" dir="rtl" lang="ar">
+      <div className="page-header">
+        <h1>الجرد والمخزون</h1>
+      </div>
+      {content}
     </div>
   );
 }

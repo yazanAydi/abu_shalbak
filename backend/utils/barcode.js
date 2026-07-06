@@ -239,6 +239,28 @@ export function extractBarcodesFromText(text) {
   return [...byCode.entries()].map(([barcode, label]) => ({ barcode, label }));
 }
 
+/** EAN-13 prefix for scale-printed weight-embedded barcodes (prefix + 5-digit item + 5-digit grams + check). */
+export const WEIGHT_BARCODE_PREFIX = "21";
+
+/**
+ * Parse a scale weight-embedded EAN-13 barcode.
+ * Example: 2100003015504 → productCode 2100003, weightKg 1.550
+ * @param {unknown} rawCode
+ * @returns {{ productCode: string, weightKg: number, weightGrams: number } | null}
+ */
+export function parseWeightBarcode(rawCode) {
+  const code = digitsOnly(normalizeBarcodeInput(rawCode));
+  if (code.length !== 13) return null;
+  if (!code.startsWith(WEIGHT_BARCODE_PREFIX)) return null;
+
+  const productCode = code.slice(0, 7);
+  const weightGrams = Number(code.slice(7, 12));
+  if (!Number.isFinite(weightGrams) || weightGrams <= 0) return null;
+
+  const weightKg = weightGrams / 1000;
+  return { productCode, weightGrams, weightKg };
+}
+
 export function barcodeLookupKeys(key) {
   const out = [];
   const seen = new Set();

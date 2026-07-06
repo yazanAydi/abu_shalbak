@@ -7,8 +7,15 @@ import {
   Card,
   CardBody,
   PrimaryButton,
+  SecondaryButton,
   SearchInput,
   Select,
+  Modal,
+  SectionTitle,
+  FormGrid,
+  FormField,
+  Input,
+  SkeletonRows,
   useToast,
 } from "../components/ui";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
@@ -84,7 +91,7 @@ export default function StoreSettings() {
         }
         setFavoriteLabels(labels);
       })
-      .catch(() => setError("تعذّر تحميل الإعدادات"));
+      .catch(() => toast.error("تعذّر تحميل الإعدادات"));
   }, []);
 
   const favoriteIds = useMemo(() => quickButtons.map((b) => b.product_id), [quickButtons]);
@@ -229,19 +236,18 @@ export default function StoreSettings() {
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader title="إعدادات المتجر" subtitle="الضريبة، الإيصال، وأزرار نقطة البيع السريعة" icon="settings" />
 
-      {error && <div className="error-banner">{error}</div>}
-      {msg && <div className="success-banner">{msg}</div>}
-
       {!settings ? (
-        <p>جاري التحميل…</p>
+        <div className="ui-page-loading">
+          <SkeletonRows rows={8} cols={2} />
+        </div>
       ) : (
         <Card>
         <CardBody>
-        <form className="settings-form" onSubmit={save}>
-          <div className="settings-grid">
-            <div className="settings-row">
-              <label>{LABELS.default_tax_rate}</label>
-              <input
+        <form onSubmit={save}>
+          <SectionTitle>الضريبة والإيصال</SectionTitle>
+          <FormGrid>
+            <FormField label={LABELS.default_tax_rate} hint="مثال: 0.16 = 16%">
+              <Input
                 type="number"
                 min="0"
                 max="1"
@@ -249,22 +255,19 @@ export default function StoreSettings() {
                 value={form.default_tax_rate}
                 onChange={(e) => onChange("default_tax_rate", e.target.value)}
               />
-              <small>مثال: 0.16 = 16%</small>
-            </div>
-
-            <div className="settings-row">
-              <label>{LABELS.tax_inclusive}</label>
-              <input
+            </FormField>
+            <FormField label={LABELS.tax_inclusive} hint="عند التفعيل، سعر الرف يشمل الضريبة">
+              <Input
                 type="checkbox"
                 checked={!!form.tax_inclusive}
                 onChange={(e) => onChange("tax_inclusive", e.target.checked)}
               />
-              <small>عند التفعيل، سعر الرف يشمل الضريبة (إعداد حسابة الافتراضي)</small>
-            </div>
-
-            <div className="settings-row">
-              <label>{LABELS.business_day_cutoff_hour}</label>
-              <input
+            </FormField>
+            <FormField
+              label={LABELS.business_day_cutoff_hour}
+              hint="0 = منتصف الليل. اضبط 3 لتقارير المتاجر التي تعمل حتى الفجر"
+            >
+              <Input
                 type="number"
                 min="0"
                 max="23"
@@ -272,93 +275,81 @@ export default function StoreSettings() {
                 value={form.business_day_cutoff_hour}
                 onChange={(e) => onChange("business_day_cutoff_hour", e.target.value)}
               />
-              <small>0 = منتصف الليل. اضبط 3 لتقارير المتاجر التي تعمل حتى الفجر</small>
-            </div>
-
-            <div className="settings-row">
-              <label>{LABELS.receipt_show_tax}</label>
-              <input
+            </FormField>
+            <FormField label={LABELS.receipt_show_tax}>
+              <Input
                 type="checkbox"
                 checked={!!form.receipt_show_tax}
                 onChange={(e) => onChange("receipt_show_tax", e.target.checked)}
               />
-            </div>
-
-            <div className="settings-row">
-              <label>{LABELS.receipt_show_cashier}</label>
-              <input
+            </FormField>
+            <FormField label={LABELS.receipt_show_cashier}>
+              <Input
                 type="checkbox"
                 checked={!!form.receipt_show_cashier}
                 onChange={(e) => onChange("receipt_show_cashier", e.target.checked)}
               />
-            </div>
-
-            <div className="settings-row">
-              <label>{LABELS.receipt_logo_url}</label>
-              <input
+            </FormField>
+            <FormField label={LABELS.receipt_logo_url}>
+              <Input
                 type="text"
                 value={form.receipt_logo_url}
                 onChange={(e) => onChange("receipt_logo_url", e.target.value)}
                 placeholder="https://..."
               />
-            </div>
-          </div>
+            </FormField>
+          </FormGrid>
 
-          <section className="settings-favorites">
-            <h2>الورديات والكاشير</h2>
-            <div className="settings-grid">
-              <div className="settings-row">
-                <label>{LABELS.default_opening_cash}</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.default_opening_cash}
-                  onChange={(e) => onChange("default_opening_cash", e.target.value)}
-                />
-                <small>يُستخدم تلقائياً عند بدء وردية الكاشير</small>
-              </div>
-              <div className="settings-row">
-                <label>{LABELS.shift_variance_threshold}</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.shift_variance_threshold}
-                  onChange={(e) => onChange("shift_variance_threshold", e.target.value)}
-                />
-                <small>إذا تجاوز الفارق هذا الحد عند عد النقد، تُطلب موافقة المدير</small>
-              </div>
-              <div className="settings-row">
-                <label>{LABELS.expiry_alert_days}</label>
-                <input
-                  type="number"
-                  min="1"
-                  max="365"
-                  step="1"
-                  value={form.expiry_alert_days}
-                  onChange={(e) => onChange("expiry_alert_days", e.target.value)}
-                />
-                <small>
-                  يُرسل ملخص يومي عبر تيليجرام للأصناف والدفعات التي تنتهي خلال هذه المدة
-                </small>
-                <PrimaryButton
-                  type="button"
-                  disabled={sendingExpiryAlert}
-                  onClick={sendExpiryAlertNow}
-                  style={{ marginTop: "0.5rem" }}
-                >
-                  {sendingExpiryAlert ? "جاري الإرسال…" : "إرسال تنبيه الصلاحية الآن"}
-                </PrimaryButton>
-              </div>
-            </div>
-          </section>
+          <SectionTitle>الورديات والكاشير</SectionTitle>
+          <FormGrid>
+            <FormField label={LABELS.default_opening_cash} hint="يُستخدم تلقائياً عند بدء وردية الكاشير">
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.default_opening_cash}
+                onChange={(e) => onChange("default_opening_cash", e.target.value)}
+              />
+            </FormField>
+            <FormField
+              label={LABELS.shift_variance_threshold}
+              hint="إذا تجاوز الفارق هذا الحد عند عد النقد، تُطلب موافقة المدير"
+            >
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.shift_variance_threshold}
+                onChange={(e) => onChange("shift_variance_threshold", e.target.value)}
+              />
+            </FormField>
+            <FormField
+              label={LABELS.expiry_alert_days}
+              hint="يُرسل ملخص يومي عبر تيليجرام للأصناف والدفعات التي تنتهي خلال هذه المدة"
+            >
+              <Input
+                type="number"
+                min="1"
+                max="365"
+                step="1"
+                value={form.expiry_alert_days}
+                onChange={(e) => onChange("expiry_alert_days", e.target.value)}
+              />
+              <PrimaryButton
+                type="button"
+                disabled={sendingExpiryAlert}
+                onClick={sendExpiryAlertNow}
+                className="ui-field__hint"
+              >
+                {sendingExpiryAlert ? "جاري الإرسال…" : "إرسال تنبيه الصلاحية الآن"}
+              </PrimaryButton>
+            </FormField>
+          </FormGrid>
 
-          <section className="settings-favorites">
-            <h2>أقسام الأزرار السريعة</h2>
-            <p className="settings-favorites-hint">
-              تظهر كشريط تنقل في نقطة البيع (معجنات / بيتزا / أخرى). لا يمكن حذف قسم «أخرى».
-            </p>
+          <SectionTitle>أقسام الأزرار السريعة</SectionTitle>
+          <p className="settings-favorites-hint">
+            تظهر كشريط تنقل في نقطة البيع (معجنات / بيتزا / أخرى). لا يمكن حذف قسم «أخرى».
+          </p>
             <div className="quick-category-list">
               {quickCategories.map((cat) => (
                 <div key={cat} className="quick-category-row">
@@ -376,7 +367,7 @@ export default function StoreSettings() {
               ))}
             </div>
             <div className="quick-category-add">
-              <input
+              <Input
                 type="text"
                 value={newCategoryName}
                 onChange={(e) => setNewCategoryName(e.target.value)}
@@ -392,34 +383,28 @@ export default function StoreSettings() {
                 إضافة قسم
               </PrimaryButton>
             </div>
-          </section>
 
-          <section className="settings-favorites">
-            <h2>اختصارات نقطة البيع</h2>
-            <div className="settings-grid">
-              <div className="settings-row">
-                <label>{LABELS.pos_shortcut_hold_cart}</label>
-                <input
-                  type="text"
-                  value={form.pos_shortcut_hold_cart}
-                  onChange={(e) => onChange("pos_shortcut_hold_cart", e.target.value)}
-                  placeholder="اتركه فارغاً لتعطيل الاختصار"
-                />
-              </div>
-              <div className="settings-row">
-                <label>{LABELS.pos_shortcut_suspended_carts}</label>
-                <input
-                  type="text"
-                  value={form.pos_shortcut_suspended_carts}
-                  onChange={(e) => onChange("pos_shortcut_suspended_carts", e.target.value)}
-                  placeholder="اتركه فارغاً لتعطيل الاختصار"
-                />
-              </div>
-            </div>
-          </section>
+          <SectionTitle>اختصارات نقطة البيع</SectionTitle>
+          <FormGrid>
+            <FormField label={LABELS.pos_shortcut_hold_cart}>
+              <Input
+                type="text"
+                value={form.pos_shortcut_hold_cart}
+                onChange={(e) => onChange("pos_shortcut_hold_cart", e.target.value)}
+                placeholder="اتركه فارغاً لتعطيل الاختصار"
+              />
+            </FormField>
+            <FormField label={LABELS.pos_shortcut_suspended_carts}>
+              <Input
+                type="text"
+                value={form.pos_shortcut_suspended_carts}
+                onChange={(e) => onChange("pos_shortcut_suspended_carts", e.target.value)}
+                placeholder="اتركه فارغاً لتعطيل الاختصار"
+              />
+            </FormField>
+          </FormGrid>
 
-          <section className="settings-favorites">
-            <h2>أزرار الكاشير السريعة</h2>
+          <SectionTitle>أزرار الكاشير السريعة</SectionTitle>
             <p className="settings-favorites-hint">
               اختر حتى {MAX_QUICK_BUTTONS} منتجاً موزّعة على الأقسام. عند الإضافة يُطلب اختيار القسم.
             </p>
@@ -487,9 +472,8 @@ export default function StoreSettings() {
                 </ul>
               )}
             </div>
-          </section>
 
-          <PrimaryButton type="submit" disabled={saving}>
+          <PrimaryButton type="submit" disabled={saving} className="ui-toolbar">
             {saving ? "جاري الحفظ…" : "حفظ الإعدادات"}
           </PrimaryButton>
         </form>
@@ -497,40 +481,36 @@ export default function StoreSettings() {
         </Card>
       )}
 
-      {pendingProduct && (
-        <div className="quick-add-modal-backdrop" onClick={() => setPendingProduct(null)}>
-          <div
-            className="quick-add-modal"
-            role="dialog"
-            aria-labelledby="quick-add-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 id="quick-add-title">اختر القسم</h3>
+      <Modal
+        open={!!pendingProduct}
+        onClose={() => setPendingProduct(null)}
+        title="اختر القسم"
+        footer={
+          <>
+            <PrimaryButton type="button" onClick={confirmAddFavorite}>
+              إضافة
+            </PrimaryButton>
+            <SecondaryButton type="button" onClick={() => setPendingProduct(null)}>
+              إلغاء
+            </SecondaryButton>
+          </>
+        }
+      >
+        {pendingProduct && (
+          <>
             <p className="quick-add-product-name">{pendingProduct.name}</p>
-            <label className="quick-add-label">
-              القسم
-              <Select
-                value={pendingCategory}
-                onChange={(e) => setPendingCategory(e.target.value)}
-              >
+            <FormField label="القسم">
+              <Select value={pendingCategory} onChange={(e) => setPendingCategory(e.target.value)}>
                 {quickCategories.map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>
                 ))}
               </Select>
-            </label>
-            <div className="quick-add-actions">
-              <PrimaryButton type="button" onClick={confirmAddFavorite}>
-                إضافة
-              </PrimaryButton>
-              <button type="button" className="btn-secondary" onClick={() => setPendingProduct(null)}>
-                إلغاء
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            </FormField>
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

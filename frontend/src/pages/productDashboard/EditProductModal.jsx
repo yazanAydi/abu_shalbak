@@ -21,6 +21,7 @@ const emptyForm = {
   tax_rate: "",
   unit: "",
   expiry_date: "",
+  is_weighed: false,
 };
 
 function productToForm(product) {
@@ -34,6 +35,7 @@ function productToForm(product) {
     tax_rate: product.tax_rate != null ? String(product.tax_rate) : "",
     unit: product.unit || "",
     expiry_date: product.expiry_date || "",
+    is_weighed: Number(product.is_weighed) === 1,
   };
 }
 
@@ -83,8 +85,9 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
         category: form.category.trim() || null,
         stock: Number(form.stock),
         tax_rate: form.tax_rate !== "" ? Number(form.tax_rate) : null,
-        unit: form.unit?.trim() || null,
+        unit: form.is_weighed ? "كغم" : form.unit?.trim() || null,
         expiry_date: form.expiry_date?.trim() || null,
+        is_weighed: form.is_weighed ? 1 : 0,
       });
       toast.success("تم حفظ التعديلات");
       onSaved?.(data);
@@ -124,7 +127,23 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
             autoFocus
           />
         </FormField>
-        <FormField label="سعر البيع" required>
+        <FormField label="يُباع بالوزن (ميزان)">
+          <label style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <input
+              type="checkbox"
+              checked={Boolean(form.is_weighed)}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  is_weighed: e.target.checked,
+                  unit: e.target.checked ? "كغم" : form.unit,
+                })
+              }
+            />
+            <span>منتج ميزان — السعر لكل كغم</span>
+          </label>
+        </FormField>
+        <FormField label={form.is_weighed ? "السعر لكل كغم" : "سعر البيع"} required>
           <Input
             type="number"
             step="0.01"

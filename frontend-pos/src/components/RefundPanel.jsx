@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import PosRefundWaitingModal from "./pos/PosRefundWaitingModal";
+import QtyStepper from "./QtyStepper";
 import "./RefundPanel.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -18,6 +19,48 @@ function saleLabel(sale) {
   return sale.receipt_number || `#${sale.transaction_id}`;
 }
 
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function SaleResultsList({ sales, loading, onSelect, loadingLookup }) {
+  if (loading) {
+    return <p className="rf-muted">جاري التحميل…</p>;
+  }
+  if (sales.length === 0) {
+    return <p className="rf-muted">لا توجد نتائج</p>;
+  }
+  return (
+    <ul className="rf-sale-list">
+      {sales.map((sale) => {
+        const disabled = !sale.returnable;
+        return (
+          <li key={sale.transaction_id}>
+            <button
+              type="button"
+              className={`rf-sale-row${disabled ? " rf-sale-row--disabled" : ""}`}
+              disabled={disabled || loadingLookup}
+              onClick={() => onSelect(sale.transaction_id)}
+            >
+              <div className="rf-sale-row-top">
+                <span className="rf-sale-receipt">{saleLabel(sale)}</span>
+                <span className="rf-sale-total">{ils(sale.total)}</span>
+              </div>
+              <div className="rf-sale-row-meta">
+                <span>{PM_AR[sale.payment_method] || sale.payment_method}</span>
+                {sale.item_count > 0 ? <span>{sale.item_count} صنف</span> : null}
+              </div>
+              {sale.items_preview ? <p className="rf-sale-preview">{sale.items_preview}</p> : null}
+              {disabled ? <span className="rf-sale-badge">مسترجع بالكامل</span> : null}
+              <span className="rf-sale-time">{formatSaleTime(sale.created_at)}</span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export default function RefundPanel({ shiftReady = true, shiftId = null, onRefundSuccess }) {
   const [view, setView] = useState("list");
   const [sales, setSales] = useState([]);
@@ -30,6 +73,13 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [waitingRequestId, setWaitingRequestId] = useState(null);
+  const [searchDateFrom, setSearchDateFrom] = useState(() => todayIsoDate());
+  const [searchDateTo, setSearchDateTo] = useState(() => todayIsoDate());
+  const [searchMinAmount, setSearchMinAmount] = useState("");
+  const [searchMaxAmount, setSearchMaxAmount] = useState("");
+  const [searchProduct, setSearchProduct] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
 
   const loadSales = useCallback(async () => {
     if (!shiftReady || !shiftId) {
@@ -148,6 +198,34 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
     setView("list");
   }
 
+  async function runPastSaleSearch(e) {
+    e?.preventDefault();
+    if (!shiftReady) {
+      setErr("افتح وردية أولاً");
+      return;
+    }
+    setErr("");
+    setSearchLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (searchDateFrom) params.set("date_from", searchDateFrom);
+      if (searchDateTo) params.set("date_to", searchDateTo);
+      if (String(searchMinAmount).trim() !== "") params.set("min_amount", String(searchMinAmount).trim());
+      if (String(searchMaxAmount).trim() !== "") params.set("max_amount", String(searchMaxAmount).trim());
+      if (String(searchProduct).trim() !== "") params.set("product", String(searchProduct).trim());
+      const { data } = await api.get(`/api/refunds/search?${params.toString()}`, {
+        headers: getAuthHeaders(),
+      });
+      const payload = data?.data ?? data;
+      setSearchResults(Array.isArray(payload?.sales) ? payload.sales : []);
+    } catch (err2) {
+      setSearchResults([]);
+      setErr(err2.response?.data?.error || err2.message || "فشل البحث");
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+
   return (
     <>
       <div className={`rf-panel ${!shiftReady ? "rf-panel--disabled" : ""}`} dir="rtl">
@@ -164,36 +242,24 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
             ) : sales.length === 0 ? (
               <p className="rf-muted">لا توجد مبيعات في هذه الوردية</p>
             ) : (
-              <ul className="rf-sale-list">
-                {sales.map((sale) => {
-                  const disabled = !sale.returnable;
-                  return (
-                    <li key={sale.transaction_id}>
-                      <button
-                        type="button"
-                        className={`rf-sale-row${disabled ? " rf-sale-row--disabled" : ""}`}
-                        disabled={disabled || loading}
-                        onClick={() => loadLookup(sale.transaction_id)}
-                      >
-                        <div className="rf-sale-row-top">
-                          <span className="rf-sale-receipt">{saleLabel(sale)}</span>
-                          <span className="rf-sale-total">{ils(sale.total)}</span>
-                        </div>
-                        <div className="rf-sale-row-meta">
-                          <span>{PM_AR[sale.payment_method] || sale.payment_method}</span>
-                          {sale.item_count > 0 ? <span>{sale.item_count} صنف</span> : null}
-                        </div>
-                        {sale.items_preview ? (
-                          <p className="rf-sale-preview">{sale.items_preview}</p>
-                        ) : null}
-                        {disabled ? <span className="rf-sale-badge">مسترجع بالكامل</span> : null}
-                        <span className="rf-sale-time">{formatSaleTime(sale.created_at)}</span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <SaleResultsList
+                sales={sales}
+                loading={salesLoading}
+                onSelect={loadLookup}
+                loadingLookup={loading}
+              />
             )}
+            <button
+              type="button"
+              className="rf-manual-link"
+              onClick={() => {
+                setView("search");
+                setErr("");
+                setSearchResults([]);
+              }}
+            >
+              بحث في مبيعات سابقة
+            </button>
             <button
               type="button"
               className="rf-manual-link"
@@ -203,6 +269,76 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
               }}
             >
               بحث برقم الفاتورة
+            </button>
+          </>
+        ) : view === "search" ? (
+          <>
+            <h3 className="rf-title">بحث في مبيعات سابقة</h3>
+            <form className="rf-search-form" onSubmit={runPastSaleSearch}>
+              <div className="rf-row">
+                <label>
+                  من تاريخ
+                  <input
+                    className="rf-input"
+                    type="date"
+                    value={searchDateFrom}
+                    onChange={(e) => setSearchDateFrom(e.target.value)}
+                  />
+                </label>
+                <label>
+                  إلى تاريخ
+                  <input
+                    className="rf-input"
+                    type="date"
+                    value={searchDateTo}
+                    onChange={(e) => setSearchDateTo(e.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="rf-row">
+                <label>
+                  الحد الأدنى للمبلغ
+                  <input
+                    className="rf-input"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={searchMinAmount}
+                    onChange={(e) => setSearchMinAmount(e.target.value)}
+                  />
+                </label>
+                <label>
+                  الحد الأقصى للمبلغ
+                  <input
+                    className="rf-input"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={searchMaxAmount}
+                    onChange={(e) => setSearchMaxAmount(e.target.value)}
+                  />
+                </label>
+              </div>
+              <label className="rf-reason">
+                اسم الصنف أو الباركود
+                <input
+                  value={searchProduct}
+                  onChange={(e) => setSearchProduct(e.target.value)}
+                  placeholder="مثال: حليب أو 729000..."
+                />
+              </label>
+              <button type="submit" className="rf-btn rf-btn--primary" disabled={searchLoading}>
+                {searchLoading ? "جاري البحث…" : "بحث"}
+              </button>
+            </form>
+            <SaleResultsList
+              sales={searchResults}
+              loading={searchLoading}
+              onSelect={loadLookup}
+              loadingLookup={loading}
+            />
+            <button type="button" className="rf-back-btn" onClick={backToList}>
+              رجوع إلى قائمة الوردية
             </button>
           </>
         ) : view === "manual" ? (
@@ -228,6 +364,17 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
             </div>
             <button type="button" className="rf-back-btn" onClick={backToList}>
               رجوع إلى قائمة الوردية
+            </button>
+            <button
+              type="button"
+              className="rf-manual-link"
+              onClick={() => {
+                setView("search");
+                setErr("");
+                setSearchResults([]);
+              }}
+            >
+              بحث في مبيعات سابقة
             </button>
           </>
         ) : (
@@ -260,9 +407,8 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                       <td>{L.quantity_already_refunded}</td>
                       <td>{L.quantity_returnable}</td>
                       <td>
-                        <input
-                          type="number"
-                          min="0"
+                        <QtyStepper
+                          min={0}
                           max={L.quantity_returnable}
                           value={qtyByPid[L.product_id] ?? 0}
                           onChange={(e) =>

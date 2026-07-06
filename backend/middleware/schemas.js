@@ -16,10 +16,17 @@ export const checkoutItemSchema = z.object({
   product_unit_id: z.coerce.number().int().positive().optional().nullable(),
 });
 
-export const checkoutPaymentLineSchema = z.object({
-  method: z.enum(["cash", "visa", "on_account"]),
-  amount: z.coerce.number().nonnegative(),
-});
+export const checkoutPaymentLineSchema = z
+  .object({
+    method: z.enum(["cash", "visa", "on_account"]),
+    amount: z.coerce.number().nonnegative().optional(),
+    original_amount: z.coerce.number().nonnegative().optional(),
+    currency_id: z.coerce.number().int().positive().optional().nullable(),
+    currency_code: z.string().trim().min(1).max(10).optional().nullable(),
+  })
+  .refine((d) => d.amount != null || d.original_amount != null, {
+    message: "amount أو original_amount مطلوب",
+  });
 
 export const checkoutSchema = z
   .object({
@@ -28,6 +35,9 @@ export const checkoutSchema = z
     payments: z.array(checkoutPaymentLineSchema).min(1).optional(),
     customer_id: z.number().int().positive().optional().nullable(),
     cash_tendered: z.coerce.number().nonnegative().optional().nullable(),
+    currency_id: z.coerce.number().int().positive().optional().nullable(),
+    currency_code: z.string().trim().min(1).max(10).optional().nullable(),
+    original_amount: z.coerce.number().nonnegative().optional().nullable(),
     idempotency_key: z.string().trim().min(8).max(100).optional().nullable(),
     suspended_sale_id: z.coerce.number().int().positive().optional().nullable(),
   })

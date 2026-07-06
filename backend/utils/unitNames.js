@@ -8,6 +8,7 @@ export const CANONICAL_UNIT_NAMES = [
   "كرتونة",
   "كيس",
   "بكيت",
+  "كغم",
 ];
 
 /** @type {Map<string, string>} */

@@ -40,6 +40,13 @@ export const OFFICE_NAV = [
     visible: (role) => isAdminRole(role),
   },
   {
+    path: "/units",
+    label: "الوحدات",
+    icon: "products",
+    section: "catalog",
+    visible: (role) => isAdminRole(role),
+  },
+  {
     path: "/inventory",
     label: "جرد المخزون",
     icon: "inventory",
@@ -158,6 +165,13 @@ export const OFFICE_NAV = [
     section: "admin",
     visible: (role) => isAdminRole(role),
   },
+  {
+    path: "/settings/currency",
+    label: "العملات",
+    icon: "settings",
+    section: "admin",
+    visible: (role) => isAdminRole(role),
+  },
 ];
 
 export const NAV_SECTION_LABELS = {
@@ -177,12 +191,14 @@ export const ROUTE_TITLES = {
   "/refunds": "الاسترجاعات",
   "/refund-approvals": "موافقات الاسترجاع",
   "/settings": "إعدادات المتجر",
+  "/settings/currency": "إعدادات العملات",
   "/inventory": "جرد المخزون",
   "/expiry": "تقارير الصلاحية",
   "/sales-by-price": "المبيعات حسب سعر البيع",
   "/customers": "إدارة العملاء",
   "/suppliers": "إدارة الموردين",
   "/purchases": "المشتريات",
+  "/units": "الوحدات",
   "/expenses": "المصروفات",
   "/banks": "البنوك والشيكات",
   "/vouchers": "السندات",

@@ -101,18 +101,21 @@ export default function OfficeSideRail() {
         ) : (
           <>
             <ul className="office-side-rail-stock-list">
-              {lowStock.map((p) => (
+              {lowStock.map((p) => {
+                const displayStock = Math.max(0, Number(p.stock) || 0);
+                return (
                 <li key={p.id} title={p.name}>
                   <span className="office-side-rail-stock-name">{p.name}</span>
                   <span
                     className={`office-side-rail-stock-qty${
-                      Number(p.stock) <= 0 ? " office-side-rail-stock-qty--zero" : ""
+                      displayStock <= 0 ? " office-side-rail-stock-qty--zero" : ""
                     }`}
                   >
-                    {p.stock}
+                    {displayStock}
                   </span>
                 </li>
-              ))}
+                );
+              })}
             </ul>
             {displayTotal > lowStock.length ? (
               <p className="office-side-rail-more">

@@ -1,4 +1,10 @@
 import { parseItemsJson } from "./cogs.js";
+import {
+  TX_BUSINESS_DAY_JOIN,
+  TX_BUSINESS_DAY_EXPR,
+  REFUND_BUSINESS_DAY_JOIN,
+  REFUND_BUSINESS_DAY_EXPR,
+} from "./businessDay.js";
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -15,11 +21,11 @@ export async function aggregateSalesByPrice(db, productId, filters = {}) {
   let where = "ti.product_id = ? AND t.status = 'completed'";
 
   if (dateFrom) {
-    where += " AND date(t.created_at) >= ?";
+    where += ` AND ${TX_BUSINESS_DAY_EXPR} >= ?`;
     params.push(dateFrom);
   }
   if (dateTo) {
-    where += " AND date(t.created_at) <= ?";
+    where += ` AND ${TX_BUSINESS_DAY_EXPR} <= ?`;
     params.push(dateTo);
   }
   if (cashierId) {
@@ -44,6 +50,7 @@ export async function aggregateSalesByPrice(db, productId, filters = {}) {
        MAX(t.created_at) AS last_sale_date
      FROM transaction_items ti
      JOIN transactions t ON t.id = ti.transaction_id
+     ${TX_BUSINESS_DAY_JOIN}
      WHERE ${where}
      GROUP BY ti.unit_price
      ORDER BY ti.unit_price ASC`,
@@ -65,15 +72,15 @@ export async function aggregateRefundsByPrice(db, productId, filters = {}) {
      )`;
 
   if (dateFrom) {
-    where += " AND date(t.created_at) >= ?";
+    where += ` AND ${REFUND_BUSINESS_DAY_EXPR} >= ?`;
     params.push(dateFrom);
   }
   if (dateTo) {
-    where += " AND date(t.created_at) <= ?";
+    where += ` AND ${REFUND_BUSINESS_DAY_EXPR} <= ?`;
     params.push(dateTo);
   }
   if (cashierId) {
-    where += " AND t.cashier_id = ?";
+    where += " AND r.cashier_id = ?";
     params.push(cashierId);
   }
   if (storeId) {
@@ -85,6 +92,7 @@ export async function aggregateRefundsByPrice(db, productId, filters = {}) {
     `SELECT r.items_json, r.original_transaction_id
      FROM refunds r
      JOIN transactions t ON t.id = r.original_transaction_id
+     ${REFUND_BUSINESS_DAY_JOIN}
      WHERE ${where}`,
     params
   );

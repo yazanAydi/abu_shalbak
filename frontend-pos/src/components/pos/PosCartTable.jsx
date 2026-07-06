@@ -3,6 +3,16 @@ import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
+function formatQty(it) {
+  if (it.weighed) return `${Number(it.quantity).toFixed(3)} كغم`;
+  return it.quantity;
+}
+
+function formatUnitPrice(it) {
+  if (it.weighed) return `${ils(it.price)}/كغم`;
+  return ils(it.price);
+}
+
 function preventButtonFocus(e) {
   e.preventDefault();
 }
@@ -109,35 +119,39 @@ function CartTableBody({
                     )}
                   </td>
                   <td className="pos-col-qty">
-                    <div className="pos-qty-controls">
-                      <button
-                        type="button"
-                        className="pos-qty-btn"
-                        onMouseDown={preventButtonFocus}
-                        onClick={() => {
-                          onQuantityChange(key, Math.max(1, it.quantity - 1));
-                          focusBarcodeInput();
-                        }}
-                        aria-label="نقص"
-                      >
-                        −
-                      </button>
-                      <span className="pos-qty-val">{it.quantity}</span>
-                      <button
-                        type="button"
-                        className="pos-qty-btn"
-                        onMouseDown={preventButtonFocus}
-                        onClick={() => {
-                          onQuantityChange(key, it.quantity + 1);
-                          focusBarcodeInput();
-                        }}
-                        aria-label="زيادة"
-                      >
-                        +
-                      </button>
-                    </div>
+                    {it.weighed ? (
+                      <span className="pos-qty-val pos-qty-val--weight">{formatQty(it)}</span>
+                    ) : (
+                      <div className="pos-qty-controls">
+                        <button
+                          type="button"
+                          className="pos-qty-btn"
+                          onMouseDown={preventButtonFocus}
+                          onClick={() => {
+                            onQuantityChange(key, Math.max(1, it.quantity - 1));
+                            focusBarcodeInput();
+                          }}
+                          aria-label="نقص"
+                        >
+                          −
+                        </button>
+                        <span className="pos-qty-val">{it.quantity}</span>
+                        <button
+                          type="button"
+                          className="pos-qty-btn"
+                          onMouseDown={preventButtonFocus}
+                          onClick={() => {
+                            onQuantityChange(key, it.quantity + 1);
+                            focusBarcodeInput();
+                          }}
+                          aria-label="زيادة"
+                        >
+                          +
+                        </button>
+                      </div>
+                    )}
                   </td>
-                  <td className="pos-col-money">{ils(it.price)}</td>
+                  <td className="pos-col-money">{formatUnitPrice(it)}</td>
                   <td className="pos-col-money">{ils(it.subtotal)}</td>
                   <td className="pos-col-actions">
                     <button

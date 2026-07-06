@@ -79,6 +79,7 @@ export default function PartyPicker({
     <div className="party-picker" ref={ref}>
       <div style={{ position: "relative" }}>
         <input
+          className="ui-input"
           value={q}
           placeholder={placeholder}
           onChange={(e) => {
@@ -86,7 +87,6 @@ export default function PartyPicker({
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
-          style={{ width: "100%", padding: "0.4rem 0.6rem", border: "1px solid #cbd5e0", borderRadius: 5 }}
         />
         {open && q.trim() && loading && (
           <p className="search-dropdown-hint" style={{ margin: "0.35rem 0", fontSize: "0.85rem" }}>
@@ -121,7 +121,7 @@ export default function PartyPicker({
                 <span className="party-badge">{p.badge}</span>
                 <strong>{p.name}</strong>
                 {p.code ? (
-                  <span style={{ color: "#718096", marginInlineStart: 8 }}>
+                  <span style={{ color: "var(--office-panel-muted, #718096)", marginInlineStart: 8 }}>
                     {p.code}
                   </span>
                 ) : null}

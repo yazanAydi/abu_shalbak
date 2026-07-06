@@ -4,8 +4,9 @@ import { isAdmin, canViewReports } from "../utils/roles.js";
 import { getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
-import { refundedQtyByProduct } from "../services/refundRequestService.js";
-import { sumShiftCashPayments, sumShiftCardPayments } from "../utils/salePayments.js";
+import { buildSaleSummary } from "../utils/saleSummary.js";
+import { sumShiftCashPayments, sumShiftCardPayments, loadSalePayments } from "../utils/salePayments.js";
+import { buildReceiptText } from "../utils/receipt.js";
 import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
 
 function round2(n) {
@@ -50,62 +51,6 @@ function canViewShiftDetail(user, shift) {
   if (!user || !shift) return false;
   if (canViewReports(user.role)) return true;
   return Number(shift.cashier_id) === Number(user.id);
-}
-
-function parseTransactionItems(itemsJson) {
-  try {
-    const arr = JSON.parse(itemsJson);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-function buildItemsPreview(items, maxItems = 3) {
-  const parts = [];
-  for (const it of items.slice(0, maxItems)) {
-    const name = String(it.name || "").trim() || "صنف";
-    const qty = Number(it.quantity) || 0;
-    parts.push(qty > 1 ? `${name} ×${qty}` : name);
-  }
-  if (items.length > maxItems) parts.push("…");
-  return parts.join("، ");
-}
-
-async function buildSaleSummary(db, tx) {
-  const items = parseTransactionItems(tx.items_json);
-  const item_count = items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
-  const items_preview = buildItemsPreview(items);
-  const already = await refundedQtyByProduct(db, tx.id);
-
-  let fully_refunded = items.length > 0;
-  for (const it of items) {
-    const pid = Number(it.product_id);
-    const uid = Number(it.unit_id ?? it.product_unit_id ?? 0);
-    const sold = Number(it.quantity) || 0;
-    const ref =
-      already.get(`${pid}:${uid}`) ??
-      already.get(`${pid}:0`) ??
-      already.get(pid) ??
-      0;
-    if (Math.max(0, sold - ref) > 0) {
-      fully_refunded = false;
-      break;
-    }
-  }
-  if (items.length === 0) fully_refunded = false;
-
-  return {
-    transaction_id: tx.id,
-    receipt_number: tx.receipt_number || null,
-    created_at: tx.created_at,
-    total: round2(Number(tx.total)),
-    payment_method: tx.payment_method,
-    item_count,
-    items_preview,
-    fully_refunded,
-    returnable: !fully_refunded,
-  };
 }
 
 async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_notes) {
@@ -557,6 +502,60 @@ export function createShiftsRouter(db) {
     }
   });
 
+  router.get(
+    "/transactions/:transactionId/receipt",
+    requireAuth,
+    requireRoles("admin", "accountant"),
+    async (req, res) => {
+      const tid = Number(req.params.transactionId);
+      if (!tid) {
+        return res.status(400).json({ error: "رقم العملية غير صالح" });
+      }
+      const tx = await db.get("SELECT * FROM transactions WHERE id = ?", [tid]);
+      if (!tx) {
+        return res.status(404).json({ error: "العملية غير موجودة" });
+      }
+
+      let items;
+      try {
+        items = JSON.parse(tx.items_json);
+      } catch {
+        return res.status(500).json({ error: "بيانات العملية غير صالحة" });
+      }
+
+      const cashier = await db.get("SELECT username FROM users WHERE id = ?", [tx.cashier_id]);
+      const payments = await loadSalePayments(db, tid);
+      const settings = await getAppSettings(db);
+
+      const lines = (Array.isArray(items) ? items : []).map((it) => ({
+        name: it.name || `صنف ${it.product_id}`,
+        quantity: Number(it.quantity) || 0,
+        price: Number(it.price) || 0,
+        lineTotal: (Number(it.quantity) || 0) * (Number(it.price) || 0),
+      }));
+
+      const receipt_text = buildReceiptText({
+        transactionId: tid,
+        timestamp: tx.created_at,
+        cashierName: cashier?.username || "",
+        lines,
+        subtotal: Number(tx.subtotal),
+        tax: Number(tx.tax),
+        total: Number(tx.total),
+        paymentMethod: tx.payment_method,
+        payments,
+        changeNis: tx.change_amount,
+        settings,
+      });
+
+      res.json({
+        success: true,
+        receipt_text,
+        transaction_id: tid,
+      });
+    }
+  );
+
   router.get("/:shiftId", requireAuth, async (req, res) => {
     const shiftId = Number(req.params.shiftId);
     if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
@@ -570,7 +569,7 @@ export function createShiftsRouter(db) {
     }
 
     const transactions = await db.all(
-      `SELECT id, cashier_id, items_json, subtotal, tax, total, payment_method, created_at, shift_id
+      `SELECT id, cashier_id, items_json, subtotal, tax, total, payment_method, receipt_number, created_at, shift_id
        FROM transactions WHERE shift_id = ? ORDER BY created_at ASC, id ASC`,
       [shiftId]
     );

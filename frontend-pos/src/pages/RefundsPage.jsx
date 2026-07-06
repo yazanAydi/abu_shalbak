@@ -1,28 +1,43 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import api from "../apiClient";
-import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
-import { isAdminRole, canViewReports } from "../utils/roles";
-
-const CASHIER_NAME_DEBOUNCE_MS = 300;
+import { getAuthHeaders, getUser } from "../utils/auth";
+import { isAdminRole } from "../utils/roles";
 import RefundMetrics from "../components/RefundMetrics";
 import RefundFilters from "../components/RefundFilters";
 import RefundTable from "../components/RefundTable";
 import RefundDetailsModal from "../components/RefundDetailsModal";
-import { downloadCsv, refundsToCsv } from "../utils/refundHelpers";
+import { formatRefundReason, statusLabelAr, ils as refundIls } from "../utils/refundHelpers";
+import { PageHeader, ReportToolbar } from "../components/ui";
 import "../components/RefundsManagement.css";
 
-function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
-}
+const CASHIER_NAME_DEBOUNCE_MS = 300;
+
+const REFUND_COLUMNS = [
+  { key: "id", header: "#" },
+  { key: "original_transaction_id", header: "الفاتورة الأصلية", value: (r) => `#${r.original_transaction_id}` },
+  { key: "cashier_username", header: "الكاشير", value: (r) => r.cashier_username || "—" },
+  { key: "reason", header: "السبب", value: (r) => formatRefundReason(r.reason) },
+  { key: "total", header: "المبلغ", value: (r) => refundIls(r.total) },
+  { key: "status", header: "الحالة", value: (r) => statusLabelAr(r).text },
+  {
+    key: "payment_method",
+    header: "طريقة الرد",
+    value: (r) => (r.payment_method === "cash" ? "نقد" : "بطاقة"),
+  },
+  { key: "created_at", header: "التاريخ", value: (r) => (r.created_at || "").replace("T", " ").slice(0, 16) },
+];
 
 function firstOfMonth() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
+function todayYmd() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export default function RefundsPage() {
-  const navigate = useNavigate();
   const u = getUser();
   const [summary, setSummary] = useState(null);
   const [rows, setRows] = useState([]);
@@ -44,11 +59,6 @@ export default function RefundsPage() {
   const [selected, setSelected] = useState(() => new Set());
   const [modalId, setModalId] = useState(null);
   const [bulkNote, setBulkNote] = useState("");
-
-  function logout() {
-    removeToken();
-    navigate("/login", { replace: true });
-  }
 
   const fetchList = useCallback(async () => {
     setErr("");
@@ -181,41 +191,30 @@ export default function RefundsPage() {
     }
   }
 
-  function exportCsv() {
-    const name = `refunds_${appliedFilters.dateFrom || "all"}_${appliedFilters.dateTo || "all"}.csv`;
-    downloadCsv(name, refundsToCsv(rows));
-  }
-
   return (
-    <div className="report-page rf-page" dir="rtl" lang="ar">
-      <div className="report-top-nav">
-        <Link to="/reports" className="report-nav-link">
-          لوحة التحكم
-        </Link>
-        <Link to="/finance" className="report-nav-link">
-          المالية
-        </Link>
-        {canViewReports(u?.role) ? (
-          <Link to="/shift-audit" className="report-nav-link">
-            تدقيق الورديات
-          </Link>
-        ) : null}
-        {isAdminRole(u?.role) ? (
-          <>
-            <Link to="/checkout" className="report-nav-link">
-              الكاشير
-            </Link>
-            <Link to="/manage-products" className="report-nav-link">
-              المنتجات
-            </Link>
-          </>
-        ) : null}
-        <button type="button" className="report-nav-link" onClick={logout}>
-          خروج
-        </button>
-      </div>
+    <div className="office-page report-page rf-page" dir="rtl" lang="ar">
+      <PageHeader
+        title="إدارة الاسترجاعات"
+        subtitle="مراجعة وتصدير الاسترجاعات"
+        icon="refunds"
+        actions={
+          <ReportToolbar
+            title="إدارة الاسترجاعات"
+            subtitle={`${appliedFilters.dateFrom || "—"} إلى ${appliedFilters.dateTo || "—"}`}
+            columns={REFUND_COLUMNS}
+            rows={rows}
+            filename="refunds"
+            disabled={loading}
+          />
+        }
+      />
 
-      <h1 className="rf-page-title">إدارة الاسترجاعات</h1>
+      {summary?.pending?.count > 0 ? (
+        <p className="rf-muted" style={{ marginBottom: "1rem" }}>
+          ⚠️ {summary.pending.count} طلب/طلبات بانتظار الموافقة —{" "}
+          <Link to="/refund-approvals">افتح موافقات الاسترجاع</Link>
+        </p>
+      ) : null}
 
       {err ? <div className="report-err">{err}</div> : null}
 
@@ -229,9 +228,6 @@ export default function RefundsPage() {
       />
 
       <div className="rf-page-actions">
-        <button type="button" className="rf-fbtn rf-fbtn--primary" onClick={exportCsv}>
-          📥 تصدير CSV
-        </button>
         {selectedPending.length > 0 ? (
           <>
             <input

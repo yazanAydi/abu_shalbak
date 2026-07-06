@@ -75,6 +75,7 @@ async function migrateProductsExtendedColumns(db) {
     // Product deactivation: inactive products are hidden from POS and rejected
     // at checkout, but never hard-deleted (history/reports stay intact).
     ["is_active", "INTEGER NOT NULL DEFAULT 1"],
+    ["is_weighed", "INTEGER NOT NULL DEFAULT 0"],
   ];
   for (const [col, type] of cols) {
     if (!(await tableHasColumn(db, "products", col))) {
@@ -683,6 +684,53 @@ async function migratePurchasesTables(db) {
   }
 }
 
+/**
+ * Multi-unit purchasing: snapshot the chosen unit + conversion on each purchase
+ * line so historical documents stay accurate even if the unit's conversion is
+ * edited later. `quantity` remains the quantity entered in the chosen unit;
+ * `base_quantity` is the derived amount applied to stock (quantity x conversion).
+ */
+async function migratePurchaseItemsProductUnit(db) {
+  const cols = [
+    ["product_unit_id", "INTEGER REFERENCES product_units(id)"],
+    ["unit_name", "TEXT"],
+    ["conversion_used", "REAL NOT NULL DEFAULT 1"],
+    ["base_quantity", "REAL"],
+  ];
+  for (const t of ["purchase_order_items", "purchase_invoice_items", "purchase_return_items"]) {
+    for (const [col, type] of cols) {
+      if (!(await tableHasColumn(db, t, col))) {
+        await db.run(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
+      }
+    }
+    // Legacy rows were entered directly in base units (conversion 1).
+    await db.run(
+      `UPDATE ${t} SET conversion_used = 1, base_quantity = quantity WHERE base_quantity IS NULL`
+    );
+  }
+
+  if (!(await tableHasColumn(db, "product_units", "purchase_enabled"))) {
+    await db.run(
+      `ALTER TABLE product_units ADD COLUMN purchase_enabled INTEGER NOT NULL DEFAULT 1`
+    );
+  }
+
+  // Default unit for PURCHASING, kept separate from is_default (which drives
+  // syncProductFromDefaultUnit and would overwrite the product's main
+  // barcode/price if a pack unit were marked default).
+  if (!(await tableHasColumn(db, "product_units", "is_default_purchase"))) {
+    await db.run(
+      `ALTER TABLE product_units ADD COLUMN is_default_purchase INTEGER NOT NULL DEFAULT 0`
+    );
+  }
+
+  if (!(await tableHasColumn(db, "product_units", "sale_enabled"))) {
+    await db.run(
+      `ALTER TABLE product_units ADD COLUMN sale_enabled INTEGER NOT NULL DEFAULT 1`
+    );
+  }
+}
+
 async function migrateStockAdjustmentsTables(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS stock_adjustments (
@@ -1071,6 +1119,11 @@ async function migrateInventoryLedgerTable(db) {
     CREATE INDEX IF NOT EXISTS idx_inv_ledger_ref ON inventory_ledger(reference_type, reference_id);
     CREATE INDEX IF NOT EXISTS idx_inv_ledger_created ON inventory_ledger(created_at);
   `);
+}
+
+/** Clamp legacy negative stock to zero (overselling no longer persists below 0). */
+async function migrateClampNegativeStock(db) {
+  await db.run("UPDATE products SET stock = 0 WHERE COALESCE(stock, 0) < 0");
 }
 
 async function migrateEntityCodeSequencesTable(db) {
@@ -1602,6 +1655,7 @@ export async function initDatabase(dbPath) {
   await migrateAuditLogsTable(db);
   await migrateProductPriceHistoryTable(db);
   await migrateInventoryLedgerTable(db);
+  await migrateClampNegativeStock(db);
   await migrateReceiptSequencesTable(db);
   await migrateEntityCodeSequencesTable(db);
   await migrateShiftReconciliationExtended(db);
@@ -1616,6 +1670,7 @@ export async function initDatabase(dbPath) {
   await migrateProductUnitsTable(db);
   await migrateProductsUnitColumns(db);
   await migrateProductUnitPricingRepair(db);
+  await migratePurchaseItemsProductUnit(db);
   await migrateTransactionItemsScannedBarcode(db);
   await migrateTransactionItemsProductUnit(db);
   await migrateAccountStatementIndexes(db);
@@ -1623,6 +1678,8 @@ export async function initDatabase(dbPath) {
   await migrateAccountStatementEntries(db);
   await migrateSupplierAdjustmentsTable(db);
   await migrateTransactionsPaymentMethodExpanded(db);
+  await migrateCurrenciesTable(db);
+  await migrateTransactionsChangeAmount(db);
   await migrateSalePaymentsTable(db);
   await migrateSuspendedSalesTables(db);
 
@@ -1644,7 +1701,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.06-suspended-sales";
+const SCHEMA_VERSION = "2026.07-multi-currency";
 
 async function migrateTransactionsPaymentMethodExpanded(db) {
   const txChk = await db.get(`SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'`);
@@ -1685,6 +1742,41 @@ async function migrateTransactionsPaymentMethodExpanded(db) {
   `);
 }
 
+async function migrateCurrenciesTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS currencies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      exchange_rate_to_nis REAL NOT NULL DEFAULT 1 CHECK (exchange_rate_to_nis > 0),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      is_base INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_currencies_code ON currencies(code);
+  `);
+
+  const seed = [
+    { code: "NIS", name: "شيكل", symbol: "\u20AA", rate: 1, base: 1 },
+    { code: "USD", name: "دولار أمريكي", symbol: "$", rate: 3.72, base: 0 },
+    { code: "JOD", name: "دينار أردني", symbol: "JD", rate: 5.25, base: 0 },
+  ];
+  for (const c of seed) {
+    await db.run(
+      `INSERT OR IGNORE INTO currencies (code, name, symbol, exchange_rate_to_nis, enabled, is_base)
+       VALUES (?, ?, ?, ?, 1, ?)`,
+      [c.code, c.name, c.symbol, c.rate, c.base]
+    );
+  }
+}
+
+async function migrateTransactionsChangeAmount(db) {
+  if (!(await tableHasColumn(db, "transactions", "change_amount"))) {
+    await db.exec(`ALTER TABLE transactions ADD COLUMN change_amount REAL NOT NULL DEFAULT 0`);
+  }
+}
+
 async function migrateSalePaymentsTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS sale_payments (
@@ -1698,6 +1790,23 @@ async function migrateSalePaymentsTable(db) {
     CREATE INDEX IF NOT EXISTS idx_sale_payments_method ON sale_payments(payment_method);
   `);
 
+  const baseCur = await db.get("SELECT id FROM currencies WHERE is_base = 1 LIMIT 1");
+  const baseCurId = baseCur?.id || null;
+
+  if (!(await tableHasColumn(db, "sale_payments", "currency_id"))) {
+    await db.exec(`ALTER TABLE sale_payments ADD COLUMN currency_id INTEGER REFERENCES currencies(id)`);
+  }
+  if (!(await tableHasColumn(db, "sale_payments", "original_amount"))) {
+    await db.exec(`ALTER TABLE sale_payments ADD COLUMN original_amount REAL`);
+  }
+  if (!(await tableHasColumn(db, "sale_payments", "exchange_rate_used"))) {
+    await db.exec(`ALTER TABLE sale_payments ADD COLUMN exchange_rate_used REAL NOT NULL DEFAULT 1`);
+  }
+  if (!(await tableHasColumn(db, "sale_payments", "nis_equivalent"))) {
+    await db.exec(`ALTER TABLE sale_payments ADD COLUMN nis_equivalent REAL`);
+  }
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_sale_payments_currency ON sale_payments(currency_id)`);
+
   const txs = await db.all("SELECT id, payment_method, total FROM transactions");
   for (const tx of txs) {
     const existing = await db.get(
@@ -1707,17 +1816,31 @@ async function migrateSalePaymentsTable(db) {
     if (existing) continue;
     const allowed = ["cash", "visa", "on_account"];
     const pm = allowed.includes(tx.payment_method) ? tx.payment_method : "cash";
+    const amt = Number(tx.total) || 0;
     await db.run(
-      "INSERT INTO sale_payments (transaction_id, payment_method, amount) VALUES (?, ?, ?)",
-      [tx.id, pm, Number(tx.total) || 0]
+      `INSERT INTO sale_payments
+         (transaction_id, payment_method, amount, currency_id, original_amount, exchange_rate_used, nis_equivalent)
+       VALUES (?, ?, ?, ?, ?, 1, ?)`,
+      [tx.id, pm, amt, baseCurId, amt, amt]
     );
   }
+
+  await db.run(
+    `UPDATE sale_payments
+       SET currency_id = ?,
+           original_amount = amount,
+           nis_equivalent = amount
+     WHERE currency_id IS NULL`,
+    [baseCurId]
+  );
 }
 
 async function migrateAccountStatementIndexes(db) {
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id);
     CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at);
+    CREATE INDEX IF NOT EXISTS idx_transactions_shift_id ON transactions(shift_id);
+    CREATE INDEX IF NOT EXISTS idx_refunds_shift_id ON refunds(shift_id);
     CREATE INDEX IF NOT EXISTS idx_refunds_customer_created ON refunds(customer_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_pinv_supplier_date ON purchase_invoices(supplier_id, invoice_date);
     CREATE INDEX IF NOT EXISTS idx_vlines_supplier ON voucher_lines(supplier_id);

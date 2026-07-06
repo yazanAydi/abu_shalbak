@@ -21,6 +21,7 @@ import {
   useToast,
 } from "../components/ui";
 import EditProductModal from "./productDashboard/EditProductModal";
+import ProductUnitsModal from "./productDashboard/ProductUnitsModal";
 import DuplicateBarcodeConflict from "./productDashboard/DuplicateBarcodeConflict";
 import EditBarcodeModal from "./productDashboard/EditBarcodeModal";
 import ImportSummaryModal from "./productDashboard/ImportSummaryModal";
@@ -52,6 +53,7 @@ const emptyForm = {
   expiry_date: "",
   min_price: "",
   max_price: "",
+  is_weighed: false,
 };
 
 
@@ -80,10 +82,11 @@ function formToPayload(form) {
     category: form.category.trim() || null,
     stock: Number(form.stock),
     tax_rate: form.tax_rate !== "" ? Number(form.tax_rate) : null,
-    unit: form.unit?.trim() || null,
+    unit: form.is_weighed ? "كغم" : form.unit?.trim() || null,
     expiry_date: form.expiry_date?.trim() || null,
     min_price: form.min_price !== "" ? Number(form.min_price) : null,
     max_price: form.max_price !== "" ? Number(form.max_price) : null,
+    is_weighed: form.is_weighed ? 1 : 0,
   };
 }
 
@@ -115,6 +118,7 @@ export default function ProductManagement() {
   const [form, setForm] = useState(emptyForm);
   const [formErr, setFormErr] = useState(null);
   const [editProduct, setEditProduct] = useState(null);
+  const [unitsProduct, setUnitsProduct] = useState(null);
   const [conflictProduct, setConflictProduct] = useState(null);
   const [conflictBusy, setConflictBusy] = useState(false);
   const [editBarcodeProduct, setEditBarcodeProduct] = useState(null);
@@ -262,7 +266,7 @@ export default function ProductManagement() {
     }
 
     try {
-      await api.post(
+      const { data: created } = await api.post(
         "/api/products",
         formToPayload(form),
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
@@ -271,6 +275,7 @@ export default function ProductManagement() {
       setConflictProduct(null);
       toast.success("تمت إضافة المنتج");
       await load();
+      if (created?.id) setUnitsProduct(created);
     } catch (e) {
       if (e.response?.status === 409) {
         const existing = await lookupProductByBarcodeApi(form.barcode);
@@ -597,7 +602,23 @@ export default function ProductManagement() {
                   required
                 />
               </FormField>
-              <FormField label="سعر البيع" required>
+              <FormField label="يُباع بالوزن (ميزان)">
+                <label className="ui-checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(form.is_weighed)}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        is_weighed: e.target.checked,
+                        unit: e.target.checked ? "كغم" : form.unit,
+                      })
+                    }
+                  />
+                  <span>منتج ميزان — أدخل رمز الميزان (مثل 2100003) والسعر لكل كغم</span>
+                </label>
+              </FormField>
+              <FormField label={form.is_weighed ? "السعر لكل كغم" : "سعر البيع"} required>
                 <Input
                   type="number"
                   step="0.01"
@@ -662,7 +683,7 @@ export default function ProductManagement() {
             {formErr ? (
               <p style={{ color: "var(--office-danger)", marginTop: "0.5rem" }}>{formErr}</p>
             ) : null}
-            <PrimaryButton type="submit" style={{ marginTop: "1rem" }}>
+            <PrimaryButton type="submit" className="ui-mt-md">
               إضافة المنتج
             </PrimaryButton>
           </form>
@@ -673,7 +694,7 @@ export default function ProductManagement() {
         <CardBody>
           <h2 className="dashboard-section-title">المنتجات</h2>
           <div className="ui-toolbar">
-            <div className="barcode-input-row" style={{ flex: 1, maxWidth: "28rem" }}>
+            <div className="barcode-input-row ui-flex-1-max">
               <SearchInput
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -683,7 +704,7 @@ export default function ProductManagement() {
                 onScan={(code) => setSearch(normalizeBarcode(code))}
               />
             </div>
-            <label style={{ display: "flex", alignItems: "center", gap: "0.35rem", whiteSpace: "nowrap" }}>
+            <label className="ui-checkbox-label">
               <input
                 type="checkbox"
                 checked={showNeedsReviewOnly}
@@ -751,6 +772,13 @@ export default function ProductManagement() {
           setEditProduct(null);
           load();
         }}
+      />
+
+      <ProductUnitsModal
+        open={!!unitsProduct}
+        product={unitsProduct}
+        onClose={() => setUnitsProduct(null)}
+        onChanged={load}
       />
 
       <EditBarcodeModal

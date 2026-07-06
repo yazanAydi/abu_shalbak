@@ -3,6 +3,7 @@ import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
 import ProductPicker from "../components/ProductPicker";
+import QtyStepper from "../components/QtyStepper";
 import {
   PageHeader, Button, DataTable, Modal, Tabs, StatusPill,
   FormField, FormGrid, Input, Select, Textarea, Icon, ReportToolbar, useToast,
@@ -274,7 +275,7 @@ export default function Warehouses() {
               {transferItems.map((it, i) => (
                 <tr key={it.product_id}>
                   <td>{it.name}</td>
-                  <td><input className="ui-input" style={{ width: 100 }} type="number" step="0.001" value={it.quantity} onChange={(e) => setTransferItems((prev) => prev.map((x, idx) => idx === i ? { ...x, quantity: e.target.value } : x))} /></td>
+                  <td><QtyStepper className="ui-input" style={{ width: 140 }} min={0} value={it.quantity} onChange={(e) => setTransferItems((prev) => prev.map((x, idx) => idx === i ? { ...x, quantity: e.target.value } : x))} /></td>
                   <td><Button variant="ghost" size="sm" icon="trash" onClick={() => setTransferItems((p) => p.filter((_, idx) => idx !== i))} /></td>
                 </tr>
               ))}

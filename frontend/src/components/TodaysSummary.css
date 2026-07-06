@@ -2,6 +2,55 @@
   margin-bottom: 0;
 }
 
+.today-collections {
+  margin-top: 1rem;
+  padding: 1rem 1.15rem;
+  border-radius: var(--office-radius);
+  background: var(--office-panel);
+  border: 1px solid var(--office-panel-border);
+  box-shadow: var(--office-shadow);
+}
+
+.today-collections-title {
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  color: var(--office-panel-text);
+}
+
+.today-collections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+}
+
+.today-collection-card {
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--office-radius);
+  border: 1px solid var(--office-panel-border);
+  background: var(--office-bg, transparent);
+}
+
+.today-collection-card--total {
+  border-inline-start: 3px solid var(--office-success);
+}
+
+.today-collection-code {
+  font-size: 0.85rem;
+  opacity: 0.75;
+  margin-bottom: 0.25rem;
+}
+
+.today-collection-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.today-collection-sub {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  margin-top: 0.2rem;
+}
+
 .today-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -50,8 +99,15 @@
 }
 
 .today-card-icon {
-  font-size: 1.35rem;
-  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.today-card-icon svg {
+  width: 22px;
+  height: 22px;
 }
 
 .today-card-body {

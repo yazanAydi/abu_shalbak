@@ -21,6 +21,12 @@ import {
 } from "../utils/accountStatementService.js";
 import XLSX from "xlsx";
 import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
+import {
+  TX_BUSINESS_DAY_JOIN,
+  txBusinessDayEquals,
+  REFUND_BUSINESS_DAY_JOIN,
+  refundBusinessDayEquals,
+} from "../utils/businessDay.js";
 
 function parseDateParam(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return null;
@@ -43,9 +49,10 @@ function parsePositiveInt(value) {
 
 async function aggregateDay(db, dateStr) {
   const rows = await db.all(
-    `SELECT id, items_json, subtotal, tax, total, payment_method, created_at
-     FROM transactions
-     WHERE date(created_at) = ?`,
+    `SELECT t.id, t.items_json, t.subtotal, t.tax, t.total, t.change_amount, t.payment_method, t.created_at
+     FROM transactions t
+     ${TX_BUSINESS_DAY_JOIN}
+     WHERE ${txBusinessDayEquals("?")}`,
     [dateStr]
   );
 
@@ -54,11 +61,13 @@ async function aggregateDay(db, dateStr) {
   let total_sales = 0;
   let total_tax = 0;
   let total_net = 0;
+  let change_total = 0;
   let total_transactions = rows.length;
   const productMap = new Map();
 
   for (const r of rows) {
     total_sales = round2(total_sales + Number(r.total));
+    change_total = round2(change_total + Number(r.change_amount || 0));
     total_tax = round2(total_tax + Number(r.tax || 0));
     total_net = round2(total_net + Number(r.subtotal || r.total));
 
@@ -103,7 +112,9 @@ async function aggregateDay(db, dateStr) {
     }));
 
   const refundRows = await db.all(
-    `SELECT total, payment_method FROM refunds WHERE date(created_at) = ?`,
+    `SELECT r.total, r.payment_method FROM refunds r
+     ${REFUND_BUSINESS_DAY_JOIN}
+     WHERE ${refundBusinessDayEquals("?")}`,
     [dateStr]
   );
   let refunds_total = 0;
@@ -119,7 +130,8 @@ async function aggregateDay(db, dateStr) {
   const cash_total = paymentAgg.cash_total;
   const card_total = paymentAgg.card_total;
   const on_account_total = paymentAgg.on_account_total;
-  const net_cash_total = round2(cash_total - refund_cash);
+  // Change is handed back from the cash drawer, so it reduces net cash on hand.
+  const net_cash_total = round2(cash_total - refund_cash - change_total);
   const net_card_total = round2(card_total - refund_card);
 
   return {
@@ -136,6 +148,9 @@ async function aggregateDay(db, dateStr) {
     cash_total: round2(cash_total),
     card_total: round2(card_total),
     on_account_total: round2(on_account_total),
+    change_total: round2(change_total),
+    collections_by_currency: paymentAgg.collections_by_currency,
+    collections_grand_total_nis: paymentAgg.collections_grand_total_nis,
     items_sold,
     top_products,
     refunds_total,
@@ -187,6 +202,12 @@ export function createReportsRouter(db) {
       net_sales: r.net_sales,
       net_cash_total: r.net_cash_total,
       net_card_total: r.net_card_total,
+      cash_total: r.cash_total,
+      card_total: r.card_total,
+      on_account_total: r.on_account_total,
+      change_total: r.change_total,
+      collections_by_currency: r.collections_by_currency,
+      collections_grand_total_nis: r.collections_grand_total_nis,
     });
   });
 

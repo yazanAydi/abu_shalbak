@@ -10,6 +10,7 @@ import {
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import { printPurchaseDoc } from "../utils/purchaseDocPrint";
+import QtyStepper from "../components/QtyStepper";
 
 const STATUS_TONE = { draft: "neutral", posted: "green", confirmed: "blue", received: "green", cancelled: "red" };
 const STATUS_LABEL = { draft: "مسودة", posted: "مرحّلة", confirmed: "مؤكد", received: "مستلم", cancelled: "ملغي" };
@@ -18,15 +19,57 @@ function selectInputOnFocus(e) {
   e.target.select();
 }
 
+// Fetch a product's configured units and pick a sensible purchase default.
+export async function fetchProductUnits(productId) {
+  try {
+    const { data } = await api.get(`/api/products/${productId}/units`, { headers: getAuthHeaders() });
+    return Array.isArray(data.units) ? data.units : [];
+  } catch {
+    return [];
+  }
+}
+
+function pickDefaultPurchaseUnit(units) {
+  const purchasable = units.filter((u) => u.purchase_enabled !== false);
+  const pool = purchasable.length ? purchasable : units;
+  const def =
+    pool.find((u) => u.is_default_purchase) ||
+    pool.find((u) => u.is_default) ||
+    pool[0];
+  return def ? def.id : null;
+}
+
 function ItemEditor({ items, setItems, withVat }) {
-  function addProduct(p) {
+  async function addProduct(p) {
+    let exists = false;
+    setItems((prev) => {
+      exists = prev.some((x) => x.product_id === p.id);
+      return prev;
+    });
+    if (exists) return;
+    const units = await fetchProductUnits(p.id);
     setItems((prev) => {
       if (prev.some((x) => x.product_id === p.id)) return prev;
-      return [...prev, { product_id: p.id, name: p.name, barcode: p.barcode, quantity: 1, total_cost: "", vat_rate: "" }];
+      return [
+        ...prev,
+        {
+          product_id: p.id,
+          name: p.name,
+          barcode: p.barcode,
+          quantity: 1,
+          unit_id: pickDefaultPurchaseUnit(units),
+          units,
+          total_cost: "",
+          vat_rate: "",
+        },
+      ];
     });
   }
   function update(i, key, val) {
     setItems((prev) => prev.map((x, idx) => (idx === i ? { ...x, [key]: val } : x)));
+  }
+  function applyUnitSuggestion(i, unitId, quantity) {
+    setItems((prev) => prev.map((x, idx) => (idx === i ? { ...x, unit_id: unitId, quantity } : x)));
   }
   function remove(i) { setItems((prev) => prev.filter((_, idx) => idx !== i)); }
 
@@ -41,19 +84,57 @@ function ItemEditor({ items, setItems, withVat }) {
         <table className="ui-table">
           <thead>
             <tr>
-              <th>الصنف</th><th>الكمية</th><th>إجمالي الكلفة</th><th>كلفة الوحدة</th>{withVat && <th>ض.ق.م %</th>}<th>الإجمالي</th><th></th>
+              <th>الصنف</th><th>الوحدة</th><th>الكمية</th><th>إجمالي الكلفة</th><th>كلفة الوحدة</th>{withVat && <th>ض.ق.م %</th>}<th>الإجمالي</th><th></th>
             </tr>
           </thead>
           <tbody>
-            {items.length === 0 && <tr><td colSpan={withVat ? 7 : 6} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً</td></tr>}
+            {items.length === 0 && <tr><td colSpan={withVat ? 8 : 7} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً</td></tr>}
             {items.map((it, i) => {
               const qtyNum = Number(it.quantity) || 0;
               const totalNum = Number(it.total_cost) || 0;
               const unitCost = qtyNum > 0 ? totalNum / qtyNum : 0;
+              const units = Array.isArray(it.units) ? it.units : [];
+              const purchasable = units.filter((u) => u.purchase_enabled !== false);
+              const selectable = purchasable.length ? purchasable : units;
+              const selectedUnit = units.find((u) => u.id === Number(it.unit_id));
+              const conv = selectedUnit ? Number(selectedUnit.conversion_to_base) || 1 : 1;
+              const baseQty = qtyNum * conv;
+              // Smart suggest: entering pieces (conv 1) that divide evenly into a
+              // larger purchasable unit -> offer a one-click switch (never auto).
+              let suggestion = null;
+              if (conv === 1 && qtyNum > 1) {
+                const larger = selectable
+                  .filter((u) => (Number(u.conversion_to_base) || 1) > 1 && qtyNum % (Number(u.conversion_to_base) || 1) === 0)
+                  .sort((a, b) => (Number(b.conversion_to_base) || 1) - (Number(a.conversion_to_base) || 1))[0];
+                if (larger) {
+                  const packConv = Number(larger.conversion_to_base) || 1;
+                  suggestion = { unit: larger, count: qtyNum / packConv };
+                }
+              }
               return (
               <tr key={it.product_id}>
                 <td>{it.name}</td>
-                <td><input className="ui-input" style={{ width: 90 }} type="number" min="0" step="1" value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => update(i, "quantity", e.target.value)} /></td>
+                <td>
+                  {selectable.length > 0 ? (
+                    <select className="ui-input" style={{ width: 110 }} value={it.unit_id ?? ""} onChange={(e) => update(i, "unit_id", e.target.value ? Number(e.target.value) : null)}>
+                      {selectable.map((u) => <option key={u.id} value={u.id}>{u.unit_name}</option>)}
+                    </select>
+                  ) : <span style={{ color: "var(--office-panel-muted)" }}>—</span>}
+                </td>
+                <td>
+                  <QtyStepper className="ui-input" style={{ width: 130 }} min={0} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => update(i, "quantity", e.target.value)} />
+                  {conv > 1 && qtyNum > 0 ? <div style={{ fontSize: "0.72rem", color: "var(--office-panel-muted)" }}>= {fmtQty(baseQty)} حبة</div> : null}
+                  {suggestion ? (
+                    <button
+                      type="button"
+                      className="ui-link-button"
+                      style={{ fontSize: "0.72rem", color: "var(--office-accent, #2563eb)", background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "underline" }}
+                      onClick={() => applyUnitSuggestion(i, suggestion.unit.id, suggestion.count)}
+                    >
+                      هل تقصد {fmtQty(suggestion.count)} {suggestion.unit.unit_name}؟
+                    </button>
+                  ) : null}
+                </td>
                 <td><input className="ui-input" style={{ width: 100 }} type="number" min="0" step="0.01" placeholder="0" value={it.total_cost} onFocus={selectInputOnFocus} onChange={(e) => update(i, "total_cost", e.target.value)} /></td>
                 <td className="num">{qtyNum > 0 ? ils(unitCost) : "—"}</td>
                 {withVat && <td><input className="ui-input" style={{ width: 80 }} type="number" min="0" max="100" step="1" placeholder="افتراضي" value={it.vat_rate} onFocus={selectInputOnFocus} onChange={(e) => update(i, "vat_rate", e.target.value)} /></td>}
@@ -144,20 +225,29 @@ export default function Purchases() {
     setRefText(""); setNotes(""); setItems([]); setShowForm(true);
   }
 
-  function fillFormFromDoc(which, data, id) {
+  async function fillFormFromDoc(which, data, id) {
     setSupplierId(String(data.supplier_id));
     const docDateValue = which === "returns" ? data.return_date : which === "orders" ? data.order_date : data.invoice_date;
     setDocDate(docDateValue?.slice(0, 10) || new Date().toISOString().slice(0, 10));
     setRefText(data.ref_text || "");
     setNotes(data.notes || "");
-    setItems((data.items || []).map((it) => ({
-      product_id: it.product_id,
-      name: it.name,
-      barcode: it.barcode,
-      quantity: it.quantity,
-      total_cost: it.total_cost,
-      vat_rate: which === "invoices" && it.vat_rate != null ? Math.round(it.vat_rate * 100) : "",
-    })));
+    const docItems = data.items || [];
+    const mapped = await Promise.all(
+      docItems.map(async (it) => {
+        const units = await fetchProductUnits(it.product_id);
+        return {
+          product_id: it.product_id,
+          name: it.name,
+          barcode: it.barcode,
+          quantity: it.quantity,
+          unit_id: it.product_unit_id ?? pickDefaultPurchaseUnit(units),
+          units,
+          total_cost: it.total_cost,
+          vat_rate: which === "invoices" && it.vat_rate != null ? Math.round(it.vat_rate * 100) : "",
+        };
+      })
+    );
+    setItems(mapped);
     setEditId(id);
     setShowForm(true);
   }
@@ -172,6 +262,7 @@ export default function Purchases() {
       items: items.map((it) => ({
         product_id: it.product_id,
         quantity: Number(it.quantity),
+        unit_id: it.unit_id != null ? Number(it.unit_id) : undefined,
         total_cost: Number(it.total_cost),
         vat_rate: it.vat_rate === "" ? undefined : Number(it.vat_rate) / 100,
       })),
@@ -380,7 +471,9 @@ export default function Purchases() {
             <DataTable
               columns={[
                 { key: "name", header: "الصنف" },
+                { key: "unit_name", header: "الوحدة", render: (it) => it.unit_name || "—" },
                 { key: "quantity", header: "الكمية", align: "left", render: (it) => fmtQty(it.quantity) },
+                { key: "base_quantity", header: "بالحبة", align: "left", render: (it) => fmtQty(it.base_quantity ?? it.quantity) },
                 { key: "total_cost", header: "إجمالي الكلفة", align: "left", className: "num", render: (it) => ils(it.total_cost) },
                 { key: "unit_cost", header: "كلفة الوحدة", align: "left", className: "num", render: (it) => ils(it.unit_cost) },
                 { key: "line_total", header: "الإجمالي", align: "left", className: "num", render: (it) => ils(it.line_total) },

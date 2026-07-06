@@ -1,14 +1,23 @@
+@import "./styles/office-theme.css";
+
 .app-root {
   min-height: 100vh;
 }
 
 /* ── Shared page layout ── */
-.page-container {
-  max-width: 1200px;
+.page-container,
+.office-page {
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 1.5rem;
-  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  padding: 1.25rem 1.5rem 2rem;
+  font-family: var(--office-font);
   direction: rtl;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.page-container.office-page {
+  padding: 1.25rem 1.5rem 2rem;
 }
 
 .page-header {

@@ -1,4 +1,12 @@
 import { round2 } from "./money.js";
+import {
+  TX_BUSINESS_DAY_JOIN,
+  TX_BUSINESS_DAY_EXPR,
+  REFUND_BUSINESS_DAY_JOIN,
+  REFUND_BUSINESS_DAY_EXPR,
+  txBusinessDayBetween,
+  refundBusinessDayBetween,
+} from "./businessDay.js";
 
 /**
  * Live (current-cost) COGS. ONLY valid for future estimates / unsold-inventory
@@ -55,15 +63,17 @@ export async function snapshotSalesCogsForRange(db, from, to) {
     `SELECT COALESCE(SUM(ti.unit_cost_at_sale * ti.quantity), 0) AS cogs
      FROM transaction_items ti
      JOIN transactions t ON t.id = ti.transaction_id
-     WHERE date(t.created_at) >= ? AND date(t.created_at) <= ?
+     ${TX_BUSINESS_DAY_JOIN}
+     WHERE ${txBusinessDayBetween("?", "?")}
        AND COALESCE(t.status, 'completed') = 'completed'`,
     [from, to]
   );
   let cogs = Number(snap?.cogs) || 0;
 
   const legacy = await db.all(
-    `SELECT items_json FROM transactions t
-     WHERE date(t.created_at) >= ? AND date(t.created_at) <= ?
+    `SELECT t.items_json FROM transactions t
+     ${TX_BUSINESS_DAY_JOIN}
+     WHERE ${txBusinessDayBetween("?", "?")}
        AND COALESCE(t.status, 'completed') = 'completed'
        AND NOT EXISTS (SELECT 1 FROM transaction_items ti WHERE ti.transaction_id = t.id)`,
     [from, to]
@@ -86,8 +96,9 @@ export async function snapshotSalesCogsForRange(db, from, to) {
  */
 export async function snapshotRefundCogsForRange(db, from, to) {
   const refunds = await db.all(
-    `SELECT items_json, original_transaction_id FROM refunds
-     WHERE date(created_at) >= ? AND date(created_at) <= ?`,
+    `SELECT r.items_json, r.original_transaction_id FROM refunds r
+     ${REFUND_BUSINESS_DAY_JOIN}
+     WHERE ${refundBusinessDayBetween("?", "?")}`,
     [from, to]
   );
   let total = 0;

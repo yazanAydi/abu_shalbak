@@ -18,6 +18,7 @@ const ShiftAudit = lazy(() => import("./pages/ShiftAudit"));
 const RefundsPage = lazy(() => import("./pages/RefundsPage"));
 const RefundApprovals = lazy(() => import("./pages/RefundApprovals"));
 const StoreSettings = lazy(() => import("./pages/StoreSettings"));
+const CurrencySettings = lazy(() => import("./pages/CurrencySettings"));
 const Inventory = lazy(() => import("./pages/Inventory"));
 const ExpiryReports = lazy(() => import("./pages/ExpiryReports"));
 const SalesByPrice = lazy(() => import("./pages/SalesByPrice"));
@@ -25,6 +26,7 @@ const CustomerManagement = lazy(() => import("./pages/CustomerManagement"));
 const SupplierManagement = lazy(() => import("./pages/SupplierManagement"));
 const SupplierStatement = lazy(() => import("./pages/SupplierStatement"));
 const Purchases = lazy(() => import("./pages/Purchases"));
+const UnitsManagement = lazy(() => import("./pages/UnitsManagement"));
 const Expenses = lazy(() => import("./pages/Expenses"));
 const Deliveries = lazy(() => import("./pages/Deliveries"));
 const Marketing = lazy(() => import("./pages/Marketing"));
@@ -145,6 +147,22 @@ function App() {
             element={
               <OfficeRoute adminOnly>
                 <StoreSettings />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/settings/currency"
+            element={
+              <OfficeRoute adminOnly>
+                <CurrencySettings />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/units"
+            element={
+              <OfficeRoute adminOnly>
+                <UnitsManagement />
               </OfficeRoute>
             }
           />

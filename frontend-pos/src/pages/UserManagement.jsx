@@ -1,15 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
 import { ROLE_LABELS_AR, USER_ROLES } from "../utils/roles";
-import "./UserManagement.css";
+import {
+  PageHeader,
+  Card,
+  CardBody,
+  DataTable,
+  FormField,
+  FormGrid,
+  Input,
+  Select,
+  PrimaryButton,
+  SecondaryButton,
+  DangerButton,
+  StatusBadge,
+  ReportToolbar,
+  useToast,
+} from "../components/ui";
+import { pickExportColumns } from "../utils/reportExport";
 
 export default function UserManagement() {
+  const toast = useToast();
   const me = getUser();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
   const [form, setForm] = useState({ username: "", password: "", role: "cashier" });
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -17,17 +32,16 @@ export default function UserManagement() {
   const [editPassword, setEditPassword] = useState("");
 
   const load = useCallback(async () => {
-    setErr("");
     setLoading(true);
     try {
       const { data } = await api.get("/api/admin/users", { headers: getAuthHeaders() });
       setUsers(data);
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل التحميل");
+      toast.error(e.response?.data?.error || e.message || "فشل التحميل");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     load();
@@ -35,10 +49,9 @@ export default function UserManagement() {
 
   async function addUser() {
     if (!form.username.trim() || !form.password) {
-      setErr("اسم المستخدم وكلمة المرور مطلوبان");
+      toast.error("اسم المستخدم وكلمة المرور مطلوبان");
       return;
     }
-    setErr("");
     setSaving(true);
     try {
       await api.post(
@@ -51,9 +64,10 @@ export default function UserManagement() {
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       setForm({ username: "", password: "", role: "cashier" });
+      toast.success("تم إنشاء المستخدم");
       load();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل الإنشاء");
+      toast.error(e.response?.data?.error || e.message || "فشل الإنشاء");
     } finally {
       setSaving(false);
     }
@@ -63,7 +77,6 @@ export default function UserManagement() {
     setEditing(u.id);
     setEditRole(u.role);
     setEditPassword("");
-    setErr("");
   }
 
   function cancelEdit() {
@@ -72,7 +85,6 @@ export default function UserManagement() {
   }
 
   async function saveEdit(id) {
-    setErr("");
     setSaving(true);
     try {
       const body = { role: editRole };
@@ -81,9 +93,10 @@ export default function UserManagement() {
         headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       });
       cancelEdit();
+      toast.success("تم الحفظ");
       load();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل الحفظ");
+      toast.error(e.response?.data?.error || e.message || "فشل الحفظ");
     } finally {
       setSaving(false);
     }
@@ -91,182 +104,172 @@ export default function UserManagement() {
 
   async function removeUser(id) {
     if (!window.confirm("حذف هذا الحساب؟")) return;
-    setErr("");
     try {
       await api.delete(`/api/admin/users/${id}`, { headers: getAuthHeaders() });
+      toast.success("تم الحذف");
       load();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل الحذف");
+      toast.error(e.response?.data?.error || e.message || "فشل الحذف");
     }
   }
 
-  return (
-    <div className="um-page" dir="rtl" lang="ar">
-      <header className="um-top">
-        <div className="um-nav-row">
-          <Link to="/checkout" className="um-back">
-            ← العودة للكاشير
-          </Link>
-          <Link to="/reports" className="um-back">
-            تقرير يومي
-          </Link>
-          <Link to="/finance" className="um-back">
-            المالية
-          </Link>
-        </div>
-        <h1 className="um-title">إدارة الحسابات</h1>
-        <p className="um-sub">
-          أنشئ حسابات بصلاحية: {" "}
-          {USER_ROLES.map((r) => (
-            <span key={r} className="um-role-pill" title={r}>
-              {ROLE_LABELS_AR[r] || r}
+  const columns = [
+    {
+      key: "username",
+      header: "المستخدم",
+      value: (u) => u.username,
+      render: (u) => (
+        <>
+          {u.username}
+          {u.id === me?.id ? (
+            <span style={{ color: "var(--office-text-muted)", marginInlineStart: 6 }}>
+              (أنت)
             </span>
-          ))}
-        </p>
-      </header>
-
-      {err ? <div className="um-err">{err}</div> : null}
-
-      <section className="um-card">
-        <h2 className="um-h2">مستخدم جديد</h2>
-        <div className="um-form-row">
-          <label>
-            اسم المستخدم
-            <input
-              className="um-input"
-              value={form.username}
-              onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
-              autoComplete="off"
-            />
-          </label>
-          <label>
-            كلمة المرور
-            <input
+          ) : null}
+        </>
+      ),
+    },
+    {
+      key: "role",
+      header: "الدور",
+      value: (u) => ROLE_LABELS_AR[u.role] || u.role,
+      render: (u) =>
+        editing === u.id ? (
+          <Select
+            className="ui-input"
+            value={editRole}
+            onChange={(e) => setEditRole(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {USER_ROLES.map((r) => (
+              <option key={r} value={r}>
+                {ROLE_LABELS_AR[r] || r}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <StatusBadge tone="blue">{ROLE_LABELS_AR[u.role] || u.role}</StatusBadge>
+        ),
+    },
+    {
+      key: "actions",
+      header: "إجراءات",
+      render: (u) =>
+        editing === u.id ? (
+          <div className="ui-table__actions" onClick={(e) => e.stopPropagation()}>
+            <Input
               type="password"
-              className="um-input"
-              value={form.password}
-              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-              autoComplete="new-password"
+              placeholder="كلمة مرور جديدة (اختياري)"
+              value={editPassword}
+              onChange={(e) => setEditPassword(e.target.value)}
+              style={{ maxWidth: 200 }}
             />
-          </label>
-          <label>
-            الدور
-            <select
-              className="um-input"
-              value={form.role}
-              onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+            <PrimaryButton size="sm" type="button" onClick={() => saveEdit(u.id)} disabled={saving}>
+              حفظ
+            </PrimaryButton>
+            <SecondaryButton size="sm" type="button" onClick={cancelEdit}>
+              إلغاء
+            </SecondaryButton>
+          </div>
+        ) : (
+          <div className="ui-table__actions">
+            <SecondaryButton size="sm" type="button" onClick={() => startEdit(u)}>
+              تعديل
+            </SecondaryButton>
+            <DangerButton
+              size="sm"
+              type="button"
+              onClick={() => removeUser(u.id)}
+              disabled={u.id === me?.id}
             >
-              {USER_ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {ROLE_LABELS_AR[r] || r}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
+              حذف
+            </DangerButton>
+          </div>
+        ),
+    },
+  ];
+
+  return (
+    <div className="office-page" dir="rtl" lang="ar">
+      <PageHeader
+        title="إدارة الحسابات"
+        subtitle={
+          <>
+            أنشئ حسابات بصلاحية:{" "}
+            {USER_ROLES.map((r) => (
+              <StatusBadge key={r} tone="neutral" noDot>
+                {ROLE_LABELS_AR[r] || r}
+              </StatusBadge>
+            ))}
+          </>
+        }
+        icon="users"
+        actions={
+          <ReportToolbar
+            title="إدارة الحسابات"
+            columns={pickExportColumns(columns)}
+            rows={users}
+            filename="users"
+            disabled={loading}
+          />
+        }
+      />
+
+      <Card>
+        <CardBody>
+          <h2 className="dashboard-section-title">مستخدم جديد</h2>
+          <FormGrid>
+            <FormField label="اسم المستخدم">
+              <Input
+                value={form.username}
+                onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
+                autoComplete="off"
+              />
+            </FormField>
+            <FormField label="كلمة المرور">
+              <Input
+                type="password"
+                value={form.password}
+                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                autoComplete="new-password"
+              />
+            </FormField>
+            <FormField label="الدور">
+              <Select
+                value={form.role}
+                onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+              >
+                {USER_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {ROLE_LABELS_AR[r] || r}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+          </FormGrid>
+          <PrimaryButton
             type="button"
-            className="um-btn"
             onClick={addUser}
             disabled={saving}
+            style={{ marginTop: "1rem" }}
           >
             {saving ? "…" : "إضافة"}
-          </button>
-        </div>
-      </section>
+          </PrimaryButton>
+        </CardBody>
+      </Card>
 
-      <section className="um-card">
-        <h2 className="um-h2">المستخدمون</h2>
-        {loading ? <p>جاري التحميل…</p> : null}
-        {!loading && users.length === 0 ? <p>لا يوجد مستخدمون</p> : null}
-        <div className="um-table-wrap">
-          <table className="um-table">
-            <thead>
-              <tr>
-                <th>المستخدم</th>
-                <th>الدور</th>
-                <th>إجراءات</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <tr key={u.id}>
-                  <td>
-                    {u.username}
-                    {u.id === me?.id ? (
-                      <span className="um-you">(أنت)</span>
-                    ) : null}
-                  </td>
-                  <td>
-                    {editing === u.id ? (
-                      <select
-                        className="um-input um-input-sm"
-                        value={editRole}
-                        onChange={(e) => setEditRole(e.target.value)}
-                      >
-                        {USER_ROLES.map((r) => (
-                          <option key={r} value={r}>
-                            {ROLE_LABELS_AR[r] || r}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span className="um-role-disp">
-                        {ROLE_LABELS_AR[u.role] || u.role}
-                      </span>
-                    )}
-                  </td>
-                  <td className="um-actions">
-                    {editing === u.id ? (
-                      <>
-                        <input
-                          type="password"
-                          className="um-input um-input-sm"
-                          placeholder="كلمة مرور جديدة (اختياري)"
-                          value={editPassword}
-                          onChange={(e) => setEditPassword(e.target.value)}
-                        />
-                        <button
-                          type="button"
-                          className="um-btn"
-                          onClick={() => saveEdit(u.id)}
-                          disabled={saving}
-                        >
-                          حفظ
-                        </button>
-                        <button
-                          type="button"
-                          className="um-btn secondary"
-                          onClick={cancelEdit}
-                        >
-                          إلغاء
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          className="um-btn light"
-                          onClick={() => startEdit(u)}
-                        >
-                          تعديل
-                        </button>
-                        <button
-                          type="button"
-                          className="um-btn danger"
-                          onClick={() => removeUser(u.id)}
-                          disabled={u.id === me?.id}
-                        >
-                          حذف
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <Card>
+        <CardBody>
+          <h2 className="dashboard-section-title">المستخدمون</h2>
+          <DataTable
+            columns={columns}
+            rows={users}
+            loading={loading}
+            empty="لا يوجد مستخدمون"
+            emptyIcon="users"
+          />
+        </CardBody>
+      </Card>
     </div>
   );
 }

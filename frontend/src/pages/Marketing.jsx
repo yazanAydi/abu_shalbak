@@ -216,10 +216,10 @@ export default function Marketing() {
           </FormField>
         </FormGrid>
 
-        <div style={{ margin: "1rem 0 0.5rem", fontWeight: 700 }}>النطاق (منتج محدد أو فئة)</div>
-        <div style={{ marginBottom: "0.5rem" }}>
+        <div className="ui-text-muted ui-mt-sm">النطاق (منتج محدد أو فئة)</div>
+        <div className="ui-toolbar--compact">
           <ProductPicker onPick={(p) => setPromoForm((f) => ({ ...f, product_id: p.id, product_name: p.name, category: "" }))} />
-          {promoForm.product_name && <p className="ui-field__hint" style={{ marginTop: 4 }}>المنتج: <strong>{promoForm.product_name}</strong> <Button variant="ghost" size="sm" onClick={() => setPromoForm((f) => ({ ...f, product_id: null, product_name: "" }))}>إزالة</Button></p>}
+          {promoForm.product_name && <p className="ui-field__hint ui-mt-sm">المنتج: <strong>{promoForm.product_name}</strong> <Button variant="ghost" size="sm" onClick={() => setPromoForm((f) => ({ ...f, product_id: null, product_name: "" }))}>إزالة</Button></p>}
         </div>
         <FormField label="أو فئة المنتجات"><Input value={promoForm.category} disabled={!!promoForm.product_id} onChange={(e) => setPromoForm((f) => ({ ...f, category: e.target.value }))} /></FormField>
 
