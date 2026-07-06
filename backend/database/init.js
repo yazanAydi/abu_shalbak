@@ -150,6 +150,23 @@ async function migrateProductBarcodesTable(db) {
   `);
 }
 
+async function migrateOrphanProductBarcodes(db) {
+  await db.run(
+    `DELETE FROM product_unit_barcodes
+     WHERE product_unit_id IN (
+       SELECT pu.id FROM product_units pu
+       LEFT JOIN products p ON p.id = pu.product_id
+       WHERE p.id IS NULL
+     )`
+  );
+  await db.run(
+    "DELETE FROM product_units WHERE product_id NOT IN (SELECT id FROM products)"
+  );
+  await db.run(
+    "DELETE FROM product_barcodes WHERE product_id NOT IN (SELECT id FROM products)"
+  );
+}
+
 async function migrateProductUnitsTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS product_units (
@@ -1688,6 +1705,7 @@ export async function initDatabase(dbPath) {
   await migrateProductBarcodesDigitsOnly(db);
   await migrateProductBarcodesFromProducts(db);
   await migrateProductBarcodesToUnits(db);
+  await migrateOrphanProductBarcodes(db);
   await seedDefaultSettings(db);
   await backfillMissingEntityCodes(db);
 

@@ -26,6 +26,7 @@ import { persistProductImportRows } from "../utils/productUnitsImport.js";
 import { repairProductUnitPrices } from "../utils/productUnits.js";
 import { looksLikePackOnlyProduct } from "../utils/unitNames.js";
 import { digitsOnly, normalizeBarcodeInput } from "../utils/barcode.js";
+import { purgeProductBarcodeRows } from "../utils/productDelete.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -315,6 +316,7 @@ export function createAdminRouter(db, dbPath) {
       let info;
       await db.exec("PRAGMA foreign_keys = OFF;");
       try {
+        await purgeProductBarcodeRows(db, req.params.id);
         info = await db.run("DELETE FROM products WHERE id = ?", [req.params.id]);
       } finally {
         await db.exec("PRAGMA foreign_keys = ON;");
@@ -347,6 +349,7 @@ export function createAdminRouter(db, dbPath) {
       try {
         await db.exec("BEGIN");
         for (const id of ids) {
+          await purgeProductBarcodeRows(db, id);
           const info = await db.run("DELETE FROM products WHERE id = ?", [id]);
           deleted += info.changes;
         }
