@@ -1,3 +1,5 @@
+import { homePathForPermissions } from "./accountantPermissions";
+
 export const USER_ROLES = [
   "admin",
   "accountant",
@@ -49,7 +51,9 @@ export function canViewReports(role) {
 }
 
 /** Default path after login in the admin (office) app */
-export function homePathForRole(role) {
-  if (role === "admin" || role === "accountant") return "/reports";
+export function homePathForRole(role, permissions) {
+  if (role === "admin" || role === "accountant") {
+    return homePathForPermissions(role, permissions);
+  }
   return "/reports";
 }

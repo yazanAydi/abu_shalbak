@@ -91,10 +91,11 @@ export default function SearchableSelect({
 
   function onKeyDown(e) {
     if (disabled) return;
-    if (!open && (e.key === "ArrowDown" || e.key === "Enter")) {
+    if (!open && e.key === "ArrowDown") {
       openList();
       return;
     }
+    if (!open) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlight((h) => Math.min((h < 0 ? -1 : h) + 1, filtered.length - 1));
@@ -141,7 +142,11 @@ export default function SearchableSelect({
       />
       {name ? <input type="hidden" name={name} value={value ?? ""} /> : null}
       {open && (
-        <ul className="ui-combobox__list" ref={listRef}>
+        <ul
+          className="ui-combobox__list"
+          ref={listRef}
+          onWheel={(e) => e.stopPropagation()}
+        >
           {filtered.length === 0 ? (
             <li className="ui-combobox__empty">لا توجد نتائج</li>
           ) : (

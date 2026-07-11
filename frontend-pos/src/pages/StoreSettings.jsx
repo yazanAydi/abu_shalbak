@@ -20,6 +20,7 @@ import {
 } from "../components/ui";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import "../components/barcode/barcode-scanner.css";
+import { STORE_LOGO_PATH, resolveStoreLogoUrl } from "../utils/storeBranding";
 
 const LABELS = {
   default_tax_rate: "نسبة الضريبة الافتراضية (0–1)",
@@ -290,12 +291,26 @@ export default function StoreSettings() {
                 onChange={(e) => onChange("receipt_show_cashier", e.target.checked)}
               />
             </FormField>
-            <FormField label={LABELS.receipt_logo_url}>
+            <FormField
+              label={LABELS.receipt_logo_url}
+              hint={`اتركه فارغاً لاستخدام الشعار الافتراضي (${STORE_LOGO_PATH || "/store-logo.png"})`}
+            >
               <Input
                 type="text"
                 value={form.receipt_logo_url}
                 onChange={(e) => onChange("receipt_logo_url", e.target.value)}
-                placeholder="https://..."
+                placeholder="اتركه فارغاً للشعار الافتراضي"
+              />
+              <img
+                src={resolveStoreLogoUrl(form.receipt_logo_url)}
+                alt=""
+                style={{
+                  display: "block",
+                  marginTop: "0.5rem",
+                  maxWidth: "140px",
+                  maxHeight: "90px",
+                  objectFit: "contain",
+                }}
               />
             </FormField>
           </FormGrid>

@@ -1,10 +1,8 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission, requireRoles } from "../middleware/auth.js";
 import { recordMovement, applyStockDelta } from "../utils/inventory.js";
 import { round2 } from "../utils/tax.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
-const requireReports = requireRoles("admin", "accountant");
-
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
 // Maps adjustment type -> ledger movement_type and sign of stock change.
 const ADJ_MOVEMENT = {
@@ -17,6 +15,8 @@ const ADJ_MOVEMENT = {
 
 export function createInventoryRouter(db) {
   const router = Router();
+  const requireReports = requireRoles("admin", "accountant");
+  const requireExpiry = requireReportsPermission(db, "expiry");
 
   // ───── Stock Count Sessions ─────
 
@@ -157,7 +157,7 @@ export function createInventoryRouter(db) {
 
   // ───── Expiry Reports ─────
 
-  router.get("/expiry", requireAuth, requireReports, async (req, res) => {
+  router.get("/expiry", requireAuth, requireExpiry, async (req, res) => {
     const { days = 30 } = req.query;
     const d = Math.max(1, Math.min(365, Number(days) || 30));
     const rows = await db.all(
@@ -335,7 +335,7 @@ export function createInventoryRouter(db) {
   // ───── Movement ledger ─────
 
   router.get("/movements", requireAuth, requireReports, async (req, res) => {
-    const { product_id, type, from, to } = req.query;
+    const { product_id, type, from, to, scope } = req.query;
     let sql = `SELECT m.*, p.name AS product_name, p.barcode, u.username AS created_by_name
                FROM inventory_movements m
                JOIN products p ON p.id = m.product_id
@@ -345,6 +345,10 @@ export function createInventoryRouter(db) {
     if (type) { sql += " AND m.movement_type = ?"; params.push(type); }
     if (from) { sql += " AND date(m.created_at) >= ?"; params.push(from); }
     if (to) { sql += " AND date(m.created_at) <= ?"; params.push(to); }
+    if (scope === "bakery" || scope === "retail") {
+      sql += " AND COALESCE(p.inventory_scope, 'retail') = ?";
+      params.push(scope);
+    }
     sql += " ORDER BY m.created_at DESC, m.id DESC LIMIT 500";
     res.json(await db.all(sql, params));
   });
@@ -390,14 +394,22 @@ export function createInventoryRouter(db) {
 
   // ───── Low Stock ─────
 
-  router.get("/low-stock", requireAuth, requireReports, async (req, res) => {
-    const { threshold = 10 } = req.query;
+  router.get("/low-stock", requireAuth, requireExpiry, async (req, res) => {
+    const { threshold = 10, scope } = req.query;
     const t = Math.max(0, Number(threshold) || 10);
-    const rows = await db.all(
-      `SELECT id, barcode, name, unit, stock, category
-       FROM products WHERE stock <= ? ORDER BY stock ASC, name`,
-      [t]
-    );
+    let sql = `SELECT id, barcode, name, unit, stock, category, min_stock,
+                      COALESCE(inventory_scope, 'retail') AS inventory_scope
+               FROM products WHERE (
+                 (min_stock IS NOT NULL AND stock <= min_stock)
+                 OR (min_stock IS NULL AND stock <= ?)
+               )`;
+    const params = [t];
+    if (scope === "bakery" || scope === "retail") {
+      sql += " AND COALESCE(inventory_scope, 'retail') = ?";
+      params.push(scope);
+    }
+    sql += " ORDER BY stock ASC, name";
+    const rows = await db.all(sql, params);
     res.json(rows);
   });
 

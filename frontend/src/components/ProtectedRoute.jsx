@@ -8,6 +8,7 @@ import {
   homePathForRole,
   isAdminRole,
 } from "../utils/roles";
+import { hasAccountantPermission, homePathForPermissions } from "../utils/accountantPermissions";
 import "./ProtectedRoute.css";
 
 /**
@@ -17,6 +18,7 @@ export default function ProtectedRoute({
   children,
   adminOnly = false,
   requireReports = false,
+  requirePermission = null,
   requireOffice = false,
 }) {
   const [ready, setReady] = useState(false);
@@ -81,13 +83,18 @@ export default function ProtectedRoute({
   }
 
   const role = user?.role ?? getUser()?.role;
+  const permissions = user?.permissions ?? getUser()?.permissions;
 
   if (adminOnly && !isAdminRole(role)) {
-    return <Navigate to={homePathForRole(role)} replace />;
+    return <Navigate to={homePathForRole(role, permissions)} replace />;
   }
 
-  if (requireReports && !canViewReports(role)) {
-    return <Navigate to={homePathForRole(role)} replace />;
+  if (requirePermission) {
+    if (!hasAccountantPermission(role, permissions, requirePermission)) {
+      return <Navigate to={homePathForPermissions(role, permissions)} replace />;
+    }
+  } else if (requireReports && !canViewReports(role)) {
+    return <Navigate to={homePathForRole(role, permissions)} replace />;
   }
 
   return children;

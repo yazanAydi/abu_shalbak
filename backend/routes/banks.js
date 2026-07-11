@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
-const requireReports = requireRoles("admin", "accountant");
 
 export function createBanksRouter(db) {
   const router = Router();
+  const requireBanks = requireReportsPermission(db, "banks");
 
   // ───── Bank Accounts ─────
 
@@ -42,7 +42,7 @@ export function createBanksRouter(db) {
 
   // ───── Checks ─────
 
-  router.get("/checks", requireAuth, requireReports, async (req, res) => {
+  router.get("/checks", requireAuth, requireBanks, async (req, res) => {
     const { status, type, from, to } = req.query;
     let sql = `SELECT c.*, cu.name as customer_name, su.name as supplier_name
                FROM bank_checks c
@@ -64,7 +64,7 @@ export function createBanksRouter(db) {
     res.json(row);
   });
 
-  router.post("/checks", requireAuth, requireRoles("admin", "accountant"), async (req, res, next) => {
+  router.post("/checks", requireAuth, requireBanks, async (req, res, next) => {
     const {
       check_type, check_no, bank_name, branch, amount, currency, due_date,
       customer_id, supplier_id, bank_account_id, notes,
@@ -133,7 +133,7 @@ export function createBanksRouter(db) {
 
   // ───── Upcoming checks summary ─────
 
-  router.get("/checks-due", requireAuth, requireReports, async (req, res) => {
+  router.get("/checks-due", requireAuth, requireBanks, async (req, res) => {
     const { days = 7 } = req.query;
     const d = Math.max(1, Number(days) || 7);
     const rows = await db.all(

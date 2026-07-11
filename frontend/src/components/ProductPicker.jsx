@@ -7,16 +7,18 @@ import CameraBarcodeButton from "./barcode/CameraBarcodeButton";
 import { Icon } from "./ui";
 import "./barcode/barcode-scanner.css";
 
-let cache = null;
-let cacheTime = 0;
+const cacheByScope = new Map();
 
-async function loadProducts() {
+async function loadProducts(scope = "retail") {
+  const cacheKey = scope || "all";
   const now = Date.now();
-  if (cache && now - cacheTime < 60000) return cache;
-  const { data } = await api.get("/api/products", { headers: getAuthHeaders() });
-  cache = data;
-  cacheTime = now;
-  return data;
+  const cached = cacheByScope.get(cacheKey);
+  if (cached && now - cached.time < 60000) return cached.data;
+  const params = scope ? { scope } : {};
+  const { data } = await api.get("/api/products", { params, headers: getAuthHeaders() });
+  const rows = Array.isArray(data?.data ?? data) ? (data?.data ?? data) : [];
+  cacheByScope.set(cacheKey, { data: rows, time: now });
+  return rows;
 }
 
 /** Autocomplete product picker. onPick(product) called on selection. */
@@ -24,6 +26,7 @@ export default function ProductPicker({
   onPick,
   placeholder = "ابحث عن منتج بالاسم أو الباركود…",
   enableCamera = true,
+  scope = "retail",
 }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
@@ -51,7 +54,7 @@ export default function ProductPicker({
     setLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchProductsApi(term, { limit: 20 });
+        const rows = await searchProductsApi(term, { limit: 20, scope });
         setResults(rows);
       } catch {
         setResults([]);
@@ -61,18 +64,36 @@ export default function ProductPicker({
     }, 300);
 
     return () => window.clearTimeout(timer);
-  }, [q]);
+  }, [q, scope]);
 
   async function handleCameraScan(code) {
     setScanErr("");
     try {
       const product = await lookupProductByBarcode(code);
+      if (scope && String(product.inventory_scope || "retail") !== scope) {
+        throw new Error(scope === "bakery" ? "هذا الصنف ليس من مواد المخبز" : "هذا الصنف ليس من منتجات المتجر");
+      }
       onPick(product);
       setQ("");
       setOpen(false);
       setResults([]);
     } catch (e) {
       setScanErr(e.message || "تعذّر البحث");
+    }
+  }
+
+  function pickProduct(product) {
+    onPick(product);
+    setQ("");
+    setOpen(false);
+    setResults([]);
+  }
+
+  function onSearchKeyDown(e) {
+    if (e.key !== "Enter" || e.defaultPrevented) return;
+    if (open && q.trim() && !loading && results.length > 0) {
+      e.preventDefault();
+      pickProduct(results[0]);
     }
   }
 
@@ -91,6 +112,7 @@ export default function ProductPicker({
               setScanErr("");
             }}
             onFocus={() => setOpen(true)}
+            onKeyDown={onSearchKeyDown}
           />
           {open && q.trim() && !loading && results.length > 0 && (
             <ul
@@ -105,12 +127,7 @@ export default function ProductPicker({
               {results.map((p) => (
                 <li
                   key={p.id}
-                  onClick={() => {
-                    onPick(p);
-                    setQ("");
-                    setOpen(false);
-                    setResults([]);
-                  }}
+                  onClick={() => pickProduct(p)}
                 >
                   <strong>{p.name}</strong>
                   <span
@@ -139,8 +156,12 @@ export default function ProductPicker({
   );
 }
 
-export function invalidateProductCache() {
-  cache = null;
+export function invalidateProductCache(scope) {
+  if (scope) {
+    cacheByScope.delete(scope);
+    return;
+  }
+  cacheByScope.clear();
 }
 
 export { loadProducts };

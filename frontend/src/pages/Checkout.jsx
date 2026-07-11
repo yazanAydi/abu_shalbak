@@ -259,7 +259,7 @@ export default function Checkout() {
   }
 
   function doPrintLocal() {
-    if (receiptData?.receipt_text) printReceipt(receiptData.receipt_text);
+    if (receiptData?.receipt_html || receiptData?.receipt_text) printReceipt(receiptData);
   }
 
   function logout() {

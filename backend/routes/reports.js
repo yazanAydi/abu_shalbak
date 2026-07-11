@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import {
   snapshotSalesCogsForRange,
   snapshotRefundCogsForRange,
@@ -185,10 +185,16 @@ async function aggregateDayProfit(db, dateStr) {
 
 export function createReportsRouter(db) {
   const router = Router();
+  const dashboard = requireReportsPermission(db, "dashboard");
+  const salesReports = requireReportsPermission(db, "sales_reports");
+  const expiry = requireReportsPermission(db, "expiry");
+  const salesByPrice = requireReportsPermission(db, "sales_by_price");
+  const accountStatement = requireReportsPermission(db, "account_statement");
+  const dashboardOrSales = requireAnyReportsPermission(db, "dashboard", "sales_reports");
 
-  router.use(requireAuth, requireRoles("admin", "accountant"));
+  router.use(requireAuth);
 
-  router.get("/today", async (_req, res) => {
+  router.get("/today", dashboard, async (_req, res) => {
     const dateStr = new Date().toISOString().slice(0, 10);
     const r = await aggregateDay(db, dateStr);
     res.json({
@@ -211,7 +217,7 @@ export function createReportsRouter(db) {
     });
   });
 
-  router.get("/top-products", async (req, res) => {
+  router.get("/top-products", dashboard, async (req, res) => {
     const date =
       typeof req.query.date === "string" && req.query.date.trim()
         ? req.query.date.trim()
@@ -227,7 +233,7 @@ export function createReportsRouter(db) {
     });
   });
 
-  router.get("/near-expiry", async (req, res) => {
+  router.get("/near-expiry", dashboard, async (req, res) => {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
     const days = await resolveExpiryAlertDays(db);
     const { products, batches } = await fetchNearExpiryItems(db, days);
@@ -271,19 +277,22 @@ export function createReportsRouter(db) {
     });
   });
 
-  router.get("/low-stock", async (req, res) => {
+  router.get("/low-stock", dashboard, async (req, res) => {
     const threshold = Math.max(0, Number(req.query.threshold) || 5);
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 15));
+    const scopeFilter = ` AND COALESCE(inventory_scope, 'retail') = 'retail'`;
     const countRow = await db.get(
-      `SELECT COUNT(*) AS total FROM products WHERE COALESCE(stock, 0) <= ?`,
+      `SELECT COUNT(*) AS total FROM products
+       WHERE COALESCE(stock, 0) <= ?${scopeFilter}`,
       [threshold]
     );
     const outOfStockRow = await db.get(
-      `SELECT COUNT(*) AS total FROM products WHERE COALESCE(stock, 0) <= 0`
+      `SELECT COUNT(*) AS total FROM products
+       WHERE COALESCE(stock, 0) <= 0${scopeFilter}`
     );
     const rows = await db.all(
       `SELECT id, name, barcode, stock FROM products
-       WHERE COALESCE(stock, 0) <= ?
+       WHERE COALESCE(stock, 0) <= ?${scopeFilter}
        ORDER BY COALESCE(stock, 0) ASC, name ASC
        LIMIT ?`,
       [threshold, limit]
@@ -297,7 +306,7 @@ export function createReportsRouter(db) {
     });
   });
 
-  router.get("/last-7-days", async (_req, res) => {
+  router.get("/last-7-days", dashboard, async (_req, res) => {
     const out = [];
     for (let i = 6; i >= 0; i--) {
       const dt = new Date();
@@ -309,7 +318,7 @@ export function createReportsRouter(db) {
     res.json({ success: true, days: out });
   });
 
-  router.get("/last-30-days", async (_req, res) => {
+  router.get("/last-30-days", dashboard, async (_req, res) => {
     const out = [];
     for (let i = 29; i >= 0; i--) {
       const dt = new Date();
@@ -321,7 +330,7 @@ export function createReportsRouter(db) {
     res.json({ success: true, days: out });
   });
 
-  router.get("/daily", async (req, res) => {
+  router.get("/daily", dashboardOrSales, async (req, res) => {
     const date =
       typeof req.query.date === "string" && req.query.date.trim()
         ? req.query.date.trim()
@@ -330,11 +339,14 @@ export function createReportsRouter(db) {
     res.json(report);
   });
 
-  router.get("/range", async (req, res) => {
-    const from = req.query.from;
-    const to = req.query.to;
-    if (!from || !to || typeof from !== "string" || typeof to !== "string") {
+  router.get("/range", salesReports, async (req, res) => {
+    const from = parseDateParam(req.query.from);
+    const to = parseDateParam(req.query.to);
+    if (!from || !to) {
       return res.status(400).json({ error: "مطلوب معلما from و to بصيغة YYYY-MM-DD" });
+    }
+    if (from > to) {
+      return res.status(400).json({ error: "from يجب أن يسبق to أو يساويه" });
     }
     const dates = [];
     const start = new Date(`${from}T00:00:00Z`);
@@ -342,19 +354,38 @@ export function createReportsRouter(db) {
     for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
       dates.push(d.toISOString().slice(0, 10));
     }
+    if (dates.length > 366) {
+      return res.status(400).json({ error: "الفترة تتجاوز 366 يوماً" });
+    }
     let total_sales = 0;
     let total_transactions = 0;
     let items_sold = 0;
+    let net_sales = 0;
+    let refunds_total = 0;
+    let refund_count = 0;
+    let cash_total = 0;
+    let card_total = 0;
     const byDay = [];
     for (const dateStr of dates) {
       const r = await aggregateDay(db, dateStr);
       total_sales = round2(total_sales + r.total_sales);
       total_transactions += r.total_transactions;
       items_sold += r.items_sold;
+      net_sales = round2(net_sales + r.net_sales);
+      refunds_total = round2(refunds_total + r.refunds_total);
+      refund_count += r.refund_count;
+      cash_total = round2(cash_total + r.cash_total);
+      card_total = round2(card_total + r.card_total);
       byDay.push({
         date: dateStr,
         total_sales: r.total_sales,
         transactions: r.total_transactions,
+        net_sales: r.net_sales,
+        refunds_total: r.refunds_total,
+        refund_count: r.refund_count,
+        items_sold: r.items_sold,
+        cash_total: r.cash_total,
+        card_total: r.card_total,
       });
     }
     res.json({
@@ -364,11 +395,41 @@ export function createReportsRouter(db) {
       total_sales,
       total_transactions,
       items_sold,
+      net_sales,
+      refunds_total,
+      refund_count,
+      cash_total,
+      card_total,
       by_day: byDay,
     });
   });
 
-  router.get("/last7days", async (_req, res) => {
+  router.get("/daily-series", dashboard, async (req, res) => {
+    const from = parseDateParam(req.query.from);
+    const to = parseDateParam(req.query.to);
+    if (!from || !to) {
+      return res.status(400).json({ error: "مطلوب معلما from و to بصيغة YYYY-MM-DD" });
+    }
+    if (from > to) {
+      return res.status(400).json({ error: "from يجب أن يسبق to أو يساويه" });
+    }
+    const dates = [];
+    const start = new Date(`${from}T00:00:00Z`);
+    const end = new Date(`${to}T00:00:00Z`);
+    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      dates.push(d.toISOString().slice(0, 10));
+    }
+    if (dates.length > 366) {
+      return res.status(400).json({ error: "الفترة تتجاوز 366 يوماً" });
+    }
+    const out = [];
+    for (const dateStr of dates) {
+      out.push(await aggregateDayProfit(db, dateStr));
+    }
+    res.json({ success: true, from, to, days: out });
+  });
+
+  router.get("/last7days", dashboard, async (_req, res) => {
     const out = [];
     for (let i = 6; i >= 0; i--) {
       const dt = new Date();
@@ -387,7 +448,7 @@ export function createReportsRouter(db) {
     res.json({ success: true, days: out });
   });
 
-  router.get("/products/:productId/sales-by-price", async (req, res) => {
+  router.get("/products/:productId/sales-by-price", salesByPrice, async (req, res) => {
     const productId = parsePositiveInt(req.params.productId);
     if (!productId) {
       return res.status(400).json({ error: "معرف المنتج غير صالح", code: "VALIDATION_ERROR" });
@@ -453,7 +514,7 @@ export function createReportsRouter(db) {
     });
   });
 
-  router.get("/account-statement", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.get("/account-statement", accountStatement, async (req, res) => {
     const partyType = String(req.query.partyType || req.query.party_type || "").toLowerCase();
     const partyId = Number(req.query.partyId || req.query.party_id);
     const from = parseStatementDate(req.query.from);
@@ -492,7 +553,7 @@ export function createReportsRouter(db) {
     }
   });
 
-  router.get("/account-statement/excel", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.get("/account-statement/excel", accountStatement, async (req, res) => {
     const partyType = String(req.query.partyType || req.query.party_type || "").toLowerCase();
     const partyId = Number(req.query.partyId || req.query.party_id);
     const from = parseStatementDate(req.query.from);

@@ -174,6 +174,21 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
     const wrongReport = wrongDayRes.body.data ?? wrongDayRes.body;
     expect(wrongReport.total_transactions).toBe(0);
     expect(wrongReport.total_sales).toBe(0);
+
+    const financeRes = await request(ctx.app)
+      .get(`/api/v1/finance/overview?from=${businessDay}&to=${businessDay}`)
+      .set(authHeader(adminToken));
+    expect(financeRes.status).toBe(200);
+    const overview = financeRes.body.data ?? financeRes.body;
+    expect(overview.pos_transaction_count).toBe(1);
+    expect(overview.pos_sales_total).toBe(10);
+
+    const wrongFinanceRes = await request(ctx.app)
+      .get("/api/v1/finance/overview?from=2020-06-16&to=2020-06-16")
+      .set(authHeader(adminToken));
+    const wrongOverview = wrongFinanceRes.body.data ?? wrongFinanceRes.body;
+    expect(wrongOverview.pos_transaction_count).toBe(0);
+    expect(wrongOverview.pos_sales_total).toBe(0);
   });
 
   test("GET /refunds/search finds past sales by product name with returnable flag", async () => {

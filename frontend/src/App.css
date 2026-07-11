@@ -577,11 +577,24 @@
 
 /* ── Customer statement ── */
 .statement-view { margin-top: 0.5rem; }
+.hesabati-statement__logo {
+  display: block;
+  margin: 0 auto 0.5rem;
+  max-width: 140px;
+  max-height: 90px;
+  object-fit: contain;
+}
 .hesabati-statement__store {
   text-align: center;
   font-weight: 700;
-  font-size: 1rem;
+  font-size: 1.1rem;
   margin-bottom: 0.25rem;
+}
+.hesabati-statement__store-sub {
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--office-panel-muted, #555);
+  margin-bottom: 0.15rem;
 }
 .hesabati-balance--neg,
 .hesabati-statement-table td.hesabati-balance--neg {

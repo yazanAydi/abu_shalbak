@@ -574,6 +574,24 @@
   border-top: 1px solid var(--pos-border);
 }
 
+.pos-total-row--discount {
+  color: var(--pos-success);
+  font-weight: 600;
+}
+
+.pos-cart-table tr.pos-line--deal td.pos-col-money:last-of-type {
+  color: var(--pos-success);
+  font-weight: 700;
+}
+
+.pos-line-deal-hint {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--pos-success);
+  margin-top: 0.15rem;
+}
+
 .pos-pay-actions {
   display: flex;
   flex-direction: column;

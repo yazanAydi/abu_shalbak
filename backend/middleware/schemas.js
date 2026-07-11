@@ -74,6 +74,15 @@ export const refundRequestReviewSchema = z.object({
   review_notes: z.string().max(500).optional().nullable(),
 });
 
+export const advanceRequestCreateSchema = z.object({
+  employee_name: z.string().trim().min(1).max(100),
+  amount: z.coerce.number().positive(),
+  notes: z.string().max(500).optional().nullable(),
+});
+
+export const advanceRequestReviewSchema = refundRequestReviewSchema;
+export const onAccountRequestReviewSchema = refundRequestReviewSchema;
+
 export const createUserSchema = z.object({
   username: z.string().trim().min(1).max(50),
   password: z.string().min(6).max(100),

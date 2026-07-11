@@ -10,6 +10,8 @@ import {
   canLoginPos,
   wrongPortalLoginMessage,
 } from "../utils/roles.js";
+import { getAppSettings } from "../utils/settings.js";
+import { getEffectivePermissions } from "../utils/accountantPermissions.js";
 
 function clientIp(req) {
   const fwd = req.headers["x-forwarded-for"];
@@ -56,6 +58,10 @@ export function createAuthRouter(db) {
           username: row.username,
           role: row.role,
           must_change_password: !!row.must_change_password,
+          permissions: await (async () => {
+            const settings = await getAppSettings(db);
+            return getEffectivePermissions(row.role, settings.accountant_permissions);
+          })(),
         },
       });
     } catch (err) {
@@ -107,6 +113,10 @@ export function createAuthRouter(db) {
           username: row.username,
           role: row.role,
           must_change_password: !!row.must_change_password,
+          permissions: await (async () => {
+            const settings = await getAppSettings(db);
+            return getEffectivePermissions(row.role, settings.accountant_permissions);
+          })(),
         },
       });
     } catch (err) {

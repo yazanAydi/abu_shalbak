@@ -1,12 +1,13 @@
 import { Router } from "express";
-import { requireAuth, requirePosAccess, requireRoles } from "../middleware/auth.js";
-import { isAdmin, canViewReports } from "../utils/roles.js";
+import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
+import { isAdmin } from "../utils/roles.js";
+import { hasAccountantPermission } from "../utils/accountantPermissions.js";
 import { getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { buildSaleSummary } from "../utils/saleSummary.js";
 import { sumShiftCashPayments, sumShiftCardPayments, loadSalePayments } from "../utils/salePayments.js";
-import { buildReceiptText } from "../utils/receipt.js";
+import { buildReceiptPayload } from "../utils/receipt.js";
 import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
 
 function round2(n) {
@@ -30,9 +31,14 @@ async function computeExpectedCash(db, shiftId, openingCash) {
     `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'adjustment'`,
     [sid]
   );
+  const advanceRow = await db.get(
+    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'advance'`,
+    [sid]
+  );
   const cashRefunds = round2(Number(cashRefundsRow?.s) || 0);
   const adjustments = round2(Number(adjRow?.s) || 0);
-  return round2(open + cashSales - cashRefunds + adjustments);
+  const advances = round2(Number(advanceRow?.s) || 0);
+  return round2(open + cashSales - cashRefunds + adjustments + advances);
 }
 
 async function computeShiftTotals(db, shiftId) {
@@ -47,9 +53,13 @@ async function computeShiftTotals(db, shiftId) {
   };
 }
 
-function canViewShiftDetail(user, shift) {
+async function canViewShiftDetail(db, user, shift) {
   if (!user || !shift) return false;
-  if (canViewReports(user.role)) return true;
+  if (isAdmin(user.role)) return true;
+  if (user.role === "accountant") {
+    const settings = await getAppSettings(db);
+    return hasAccountantPermission(user.role, settings.accountant_permissions, "shift_audit");
+  }
   return Number(shift.cashier_id) === Number(user.id);
 }
 
@@ -120,6 +130,7 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
 
 export function createShiftsRouter(db) {
   const router = Router();
+  const requireShiftAudit = requireReportsPermission(db, "shift_audit");
 
   router.post("/start", requireAuth, requirePosAccess, async (req, res, next) => {
     const settings = await getAppSettings(db);
@@ -200,7 +211,7 @@ export function createShiftsRouter(db) {
     res.json({ shift_id: shift.id, sales });
   });
 
-  router.get("/pending", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.get("/pending", requireAuth, requireShiftAudit, async (req, res) => {
     const rows = await db.all(
       `SELECT s.id, s.cashier_id, u.username AS cashier_name, s.start_time, s.end_time,
               s.opening_cash, s.expected_cash, s.status
@@ -212,7 +223,7 @@ export function createShiftsRouter(db) {
     res.json(rows);
   });
 
-  router.get("/", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.get("/", requireAuth, requireShiftAudit, async (req, res) => {
     const status =
       typeof req.query.status === "string" &&
       ["open", "pending_count", "closed"].includes(req.query.status)
@@ -258,7 +269,7 @@ export function createShiftsRouter(db) {
     if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
     const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
     if (!shift) return res.status(404).json({ error: "الوردية غير موجودة" });
-    if (!canViewShiftDetail(req.user, shift)) {
+    if (!(await canViewShiftDetail(db, req.user, shift))) {
       return res.status(403).json({ error: "ممنوع" });
     }
     const rows = await db.all(
@@ -277,7 +288,7 @@ export function createShiftsRouter(db) {
       [shiftId]
     );
     if (!shift) return res.status(404).json({ error: "الوردية غير موجودة" });
-    if (!canViewShiftDetail(req.user, shift)) {
+    if (!(await canViewShiftDetail(db, req.user, shift))) {
       return res.status(403).json({ error: "ممنوع" });
     }
     const movements = await db.all(
@@ -325,7 +336,7 @@ export function createShiftsRouter(db) {
     res.send(body);
   });
 
-  router.post("/:shiftId/adjust", requireAuth, requireRoles("admin", "accountant"), async (req, res, next) => {
+  router.post("/:shiftId/adjust", requireAuth, requireShiftAudit, async (req, res, next) => {
     const shiftId = Number(req.params.shiftId);
     if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
     const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
@@ -358,7 +369,7 @@ export function createShiftsRouter(db) {
     }
   });
 
-  router.post("/:shiftId/approve", requireAuth, requireRoles("admin", "accountant"), async (req, res, next) => {
+  router.post("/:shiftId/approve", requireAuth, requireShiftAudit, async (req, res, next) => {
     const shiftId = Number(req.params.shiftId);
     if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
     const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
@@ -379,7 +390,7 @@ export function createShiftsRouter(db) {
     }
   });
 
-  router.post("/:shiftId/reconcile", requireAuth, requireRoles("admin", "accountant"), async (req, res, next) => {
+  router.post("/:shiftId/reconcile", requireAuth, requireShiftAudit, async (req, res, next) => {
     const shiftId = Number(req.params.shiftId);
     if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
     const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
@@ -505,7 +516,7 @@ export function createShiftsRouter(db) {
   router.get(
     "/transactions/:transactionId/receipt",
     requireAuth,
-    requireRoles("admin", "accountant"),
+    requireShiftAudit,
     async (req, res) => {
       const tid = Number(req.params.transactionId);
       if (!tid) {
@@ -534,7 +545,7 @@ export function createShiftsRouter(db) {
         lineTotal: (Number(it.quantity) || 0) * (Number(it.price) || 0),
       }));
 
-      const receipt_text = buildReceiptText({
+      const { receipt_text, receipt_html } = buildReceiptPayload({
         transactionId: tid,
         timestamp: tx.created_at,
         cashierName: cashier?.username || "",
@@ -551,6 +562,7 @@ export function createShiftsRouter(db) {
       res.json({
         success: true,
         receipt_text,
+        receipt_html,
         transaction_id: tid,
       });
     }
@@ -564,7 +576,7 @@ export function createShiftsRouter(db) {
       [shiftId]
     );
     if (!shift) return res.status(404).json({ error: "الوردية غير موجودة" });
-    if (!canViewShiftDetail(req.user, shift)) {
+    if (!(await canViewShiftDetail(db, req.user, shift))) {
       return res.status(403).json({ error: "ممنوع" });
     }
 

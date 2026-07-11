@@ -1,26 +1,23 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess } from "../middleware/auth.js";
-import { buildReceiptText } from "../utils/receipt.js";
+import { buildReceiptPayload } from "../utils/receipt.js";
 import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { computeSaleTotals, productTaxRate, round2 } from "../utils/tax.js";
-import { recordMovement } from "../utils/inventory.js";
 import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js";
-import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
 import { checkoutSchema } from "../middleware/schemas.js";
-import { withTransaction } from "../utils/dbTx.js";
 import { getDefaultUnit, ensureDefaultProductUnit } from "../utils/productUnits.js";
 import {
   resolveCheckoutPayments,
   loadSalePayments,
-  insertSalePayments,
 } from "../utils/salePayments.js";
 import {
   loadSuspendedSaleItemMap,
-  markSuspendedSaleCompleted,
 } from "../services/suspendedSaleService.js";
+import { createOnAccountRequest } from "../services/onAccountRequestService.js";
+import { executeCheckoutSale } from "../services/checkoutSaleService.js";
 
 const SUSPENDED_QTY_TOLERANCE = 0.0001;
 
@@ -97,7 +94,7 @@ export function createCheckoutRouter(db) {
       lineTotal: t.line_gross,
       weighed: t.unit_name === "كغم",
     }));
-    const receipt_text = buildReceiptText({
+    const receiptOpts = {
       transactionId: txId,
       receiptNumber: row.receipt_number,
       timestamp: row.created_at,
@@ -110,7 +107,8 @@ export function createCheckoutRouter(db) {
       payments,
       changeNis: row.change_amount,
       settings,
-    });
+    };
+    const { receipt_text, receipt_html } = buildReceiptPayload(receiptOpts);
     return {
       success: true,
       transaction_id: txId,
@@ -125,6 +123,7 @@ export function createCheckoutRouter(db) {
       timestamp: row.created_at,
       cashier: cashier?.username || "",
       receipt_text,
+      receipt_html,
       idempotent_replay: true,
     };
   }
@@ -193,6 +192,14 @@ export function createCheckoutRouter(db) {
         return res.status(409).json({
           error: "المنتج غير نشط ولا يمكن بيعه",
           code: "PRODUCT_INACTIVE",
+          product_id: productId,
+          name: p.name,
+        });
+      }
+      if (String(p.inventory_scope || "retail") === "bakery") {
+        return res.status(409).json({
+          error: "مواد المخبز غير قابلة للبيع",
+          code: "BAKERY_SUPPLY_NOT_SELLABLE",
           product_id: productId,
           name: p.name,
         });
@@ -338,6 +345,7 @@ export function createCheckoutRouter(db) {
     const grossTotal = round2(subtotal + tax);
 
     let discount = 0;
+    let promoBreakdown = [];
     if (
       suspendedContext &&
       cartMatchesSuspendedExactly(suspendedContext.itemMap, normalized)
@@ -349,15 +357,19 @@ export function createCheckoutRouter(db) {
         if (activePromos.length > 0) {
           const promoLines = normalized.map((L) => ({
             product_id: L.product_id,
+            product_unit_id: L.product_unit_id,
             category: L.category,
             quantity: L.quantity,
             unitPrice: L.price,
           }));
-          discount = computeCartDiscount(activePromos, promoLines).discount;
+          const promoResult = computeCartDiscount(activePromos, promoLines);
+          discount = promoResult.discount;
+          promoBreakdown = promoResult.breakdown || [];
           discount = Math.min(discount, grossTotal);
         }
       } catch (_) {
         discount = 0;
+        promoBreakdown = [];
       }
     }
     const total = round2(grossTotal - discount);
@@ -410,107 +422,72 @@ export function createCheckoutRouter(db) {
 
     const detailed = computeSaleTotals(taxLines, settings).lines;
 
-    try {
-      const result = await withTransaction(db, async () => {
-        if (idempotencyKey) {
-          const dup = await db.get(
-            "SELECT id FROM transactions WHERE idempotency_key = ?",
-            [idempotencyKey]
-          );
-          if (dup) return { replayTxId: dup.id };
-        }
-
-        const receiptNumber = await nextReceiptNumber(db, 1);
-
-        const ins = await db.run(
-          `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id, idempotency_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?)`,
-          [
-            req.user.id,
-            JSON.stringify(itemsForJson),
+    if (onAccountTotal > 0) {
+      try {
+        const saleSnapshot = {
+          itemsForJson,
+          normalized,
+          detailed,
+          subtotal,
+          tax,
+          total,
+          discount,
+          paymentLines,
+          summaryMethod,
+          cashTendered,
+          onAccountTotal,
+          cashTotal,
+          changeNis,
+          idempotencyKey,
+          suspendedSaleId: suspendedSaleId || null,
+          promoBreakdown,
+        };
+        const result = await createOnAccountRequest(db, {
+          cashierId: req.user.id,
+          shiftId: shift.id,
+          custId,
+          saleSnapshot,
+          totals: {
             subtotal,
             tax,
             total,
-            discount,
-            round2(changeNis || 0),
-            summaryMethod,
-            shift.id,
-            custId,
-            receiptNumber,
-            idempotencyKey,
-          ]
-        );
-        const transactionId = ins.lastID;
-
-        for (let i = 0; i < normalized.length; i++) {
-          const L = normalized[i];
-          const d = detailed[i];
-          const grossProfit = round2(d.lineNet - L.cost * L.quantity);
-          await db.run(
-            `INSERT INTO transaction_items
-               (transaction_id, product_id, barcode, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,
-                unit_cost_at_sale, gross_profit, discount_at_sale, scanned_barcode, product_barcode_id,
-                product_unit_id, unit_name, conversion_to_base)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              transactionId,
-              L.product_id,
-              L.barcode,
-              L.name,
-              L.quantity,
-              L.price,
-              d.lineNet,
-              d.lineTax,
-              d.lineGross,
-              L.taxRate,
-              L.cost,
-              grossProfit,
-              0,
-              L.scanned_barcode,
-              L.product_barcode_id,
-              L.product_unit_id,
-              L.unit_name,
-              L.conversion_to_base,
-            ]
-          );
-        }
-
-        await insertSalePayments(db, transactionId, paymentLines);
-
-        const netCashNis = round2((cashTotal || 0) - (changeNis || 0));
-        if (netCashNis > 0) {
-          await db.run(
-            `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description, transaction_id)
-             VALUES (?, 'payment', ?, ?, ?)`,
-            [shift.id, netCashNis, `بيع نقدي #${transactionId}`, transactionId]
-          );
-        }
-
-        for (const L of normalized) {
-          await recordMovement(db, {
-            productId: L.product_id,
-            movementType: "sale",
-            quantity: -L.stock_delta,
-            refType: "transaction",
-            refId: transactionId,
-            notes: `بيع ${receiptNumber} (${L.unit_name} x${L.quantity})`,
-            userId: req.user.id,
-            applyStock: true,
-          });
-        }
-
-        if (custId && onAccountTotal > 0) {
-          await db.run("UPDATE customers SET balance = balance + ? WHERE id = ?", [
             onAccountTotal,
-            custId,
-          ]);
-        }
+            summaryMethod,
+          },
+          req,
+        });
+        return res.status(202).json({
+          pending_approval: true,
+          request_id: result.request_id,
+          message: result.message,
+          telegram: result.telegram,
+        });
+      } catch (e) {
+        if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+        return next(e);
+      }
+    }
 
-        if (suspendedContext) {
-          await markSuspendedSaleCompleted(db, suspendedSaleId);
-        }
-
-        return { transactionId, receiptNumber };
+    try {
+      const result = await executeCheckoutSale(db, {
+        cashierId: req.user.id,
+        shiftId: shift.id,
+        custId,
+        itemsForJson,
+        normalized,
+        detailed,
+        subtotal,
+        tax,
+        total,
+        discount,
+        paymentLines,
+        summaryMethod,
+        onAccountTotal,
+        cashTotal,
+        changeNis,
+        idempotencyKey,
+        suspendedSaleId: suspendedSaleId || null,
+        promoBreakdown,
       });
 
       if (result.replayTxId) {
@@ -526,7 +503,7 @@ export function createCheckoutRouter(db) {
         lineTotal: detailed[i].lineGross,
         weighed: L.is_weighed,
       }));
-      const receipt_text = buildReceiptText({
+      const { receipt_text, receipt_html } = buildReceiptPayload({
         transactionId,
         receiptNumber,
         timestamp: row.created_at,
@@ -556,6 +533,7 @@ export function createCheckoutRouter(db) {
         timestamp: row.created_at,
         cashier: cashier?.username || "",
         receipt_text,
+        receipt_html,
       });
     } catch (e) {
       if (

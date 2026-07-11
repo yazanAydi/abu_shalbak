@@ -1,4 +1,6 @@
 import { cellValue } from "./reportExport";
+import { buildPrintBrandingHtml, PRINT_BRANDING_CSS } from "./printBranding";
+import { printDocumentWhenReady } from "./printDocument";
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -107,6 +109,7 @@ export function printReport({ title, subtitle, columns, rows, summary, meta }) {
       font-weight: 600;
     }
     tr:nth-child(even) td { background: #fafafa; }
+    ${PRINT_BRANDING_CSS}
     @media print {
       body { padding: 0; }
       thead { display: table-header-group; }
@@ -115,6 +118,7 @@ export function printReport({ title, subtitle, columns, rows, summary, meta }) {
   </style>
 </head>
 <body>
+  ${buildPrintBrandingHtml()}
   <h1>${escapeHtml(title)}</h1>
   ${subtitle ? `<p class="subtitle">${escapeHtml(subtitle)}</p>` : ""}
   ${metaLines}
@@ -126,9 +130,7 @@ export function printReport({ title, subtitle, columns, rows, summary, meta }) {
 
   w.document.write(html);
   w.document.close();
-  w.focus();
-  w.print();
-  w.close();
+  printDocumentWhenReady(w.document, { onAfterPrint: () => w.close() });
 }
 
 /**
@@ -176,9 +178,11 @@ export function printSummaryReport({ title, subtitle, sections, meta }) {
     .summary-item { border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; background: #fafafa; }
     .summary-label { display: block; color: #666; font-size: 11px; margin-bottom: 2px; }
     .summary-value { display: block; font-weight: 600; font-size: 14px; }
+    ${PRINT_BRANDING_CSS}
   </style>
 </head>
 <body>
+  ${buildPrintBrandingHtml()}
   <h1>${escapeHtml(title)}</h1>
   ${subtitle ? `<p class="subtitle">${escapeHtml(subtitle)}</p>` : ""}
   ${metaLines}
@@ -189,7 +193,5 @@ export function printSummaryReport({ title, subtitle, sections, meta }) {
 
   w.document.write(html);
   w.document.close();
-  w.focus();
-  w.print();
-  w.close();
+  printDocumentWhenReady(w.document, { onAfterPrint: () => w.close() });
 }

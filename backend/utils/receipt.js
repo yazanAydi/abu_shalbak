@@ -1,4 +1,21 @@
+import { getStoreLogoDataUri, STORE_NAME_AR, STORE_PHONE } from "./storeBranding.js";
+
 const LINE = 48;
+
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function padCenter(s, w) {
+  const str = String(s);
+  if (str.length >= w) return str.slice(0, w);
+  const left = Math.floor((w - str.length) / 2);
+  return " ".repeat(left) + str + " ".repeat(w - str.length - left);
+}
 
 function padRight(s, w) {
   const str = String(s);
@@ -116,19 +133,108 @@ function buildPaymentSection(opts) {
   return [`الدفع: ${payLabel}`];
 }
 
+const RECEIPT_HTML_CSS = `
+  body { margin: 0; padding: 12px; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; }
+  .receipt { max-width: 384px; margin: 0 auto; }
+  .logo-wrap { text-align: center; margin-bottom: 8px; }
+  .logo-wrap img { max-width: 180px; max-height: 100px; object-fit: contain; }
+  .center { text-align: center; }
+  .sep { border: none; border-top: 2px solid #000; margin: 8px 0; }
+  .sep-thin { border: none; border-top: 1px solid #000; margin: 6px 0; }
+  .meta { margin: 2px 0; }
+  table.items { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.items th, table.items td { padding: 4px 3px; vertical-align: top; }
+  table.items th { font-weight: 700; border-bottom: 1px solid #000; }
+  table.items .col-name { width: 46%; text-align: right; word-break: break-word; }
+  table.items .col-num { width: 18%; text-align: center; direction: ltr; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .totals { width: 100%; margin-top: 4px; }
+  .totals td { padding: 2px 0; }
+  .totals .label { text-align: right; }
+  .totals .amount { text-align: left; direction: ltr; font-variant-numeric: tabular-nums; white-space: nowrap; width: 5em; }
+  .payment { margin-top: 6px; }
+  .payment div { margin: 2px 0; }
+  .thanks { text-align: center; margin: 8px 0; font-weight: 600; }
+`;
+
+/**
+ * @param {object} opts same shape as buildReceiptText
+ */
+export function buildReceiptHtml(opts) {
+  const settings = opts.settings || {};
+  const showTax = settings.receipt_show_tax !== false;
+  const showCashier = settings.receipt_show_cashier !== false;
+  const paymentLines = buildPaymentSection(opts);
+
+  const logoSrc = getStoreLogoDataUri();
+  const logoHtml = logoSrc
+    ? `<div class="logo-wrap"><img src="${logoSrc}" alt="" /></div>`
+    : "";
+
+  const itemRows = (opts.lines || [])
+    .map((L) => {
+      const name = L.name.length > 40 ? `${L.name.slice(0, 37)}...` : L.name;
+      return `<tr>
+        <td class="col-name">${escapeHtml(name)}</td>
+        <td class="col-num">${escapeHtml(formatReceiptQty(L))}</td>
+        <td class="col-num">${escapeHtml(formatReceiptPrice(L))}</td>
+        <td class="col-num">${escapeHtml(Number(L.lineTotal).toFixed(2))}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const taxRow =
+    showTax && opts.tax > 0
+      ? `<tr><td class="label">ضريبة القيمة المضافة:</td><td class="amount">${escapeHtml(Number(opts.tax).toFixed(2))}</td></tr>`
+      : "";
+
+  const paymentHtml = paymentLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
+
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <title>إيصال</title>
+  <style>${RECEIPT_HTML_CSS}</style>
+</head>
+<body>
+  <div class="receipt">
+    ${logoHtml}
+    <div class="center"><strong>${escapeHtml(STORE_NAME_AR)}</strong></div>
+    <div class="center">${escapeHtml(STORE_PHONE)}</div>
+    <div class="center">إيصال بيع</div>
+    <hr class="sep" />
+    <div class="meta">التاريخ: ${escapeHtml(opts.timestamp)}</div>
+    ${showCashier && opts.cashierName ? `<div class="meta">الكاشير: ${escapeHtml(opts.cashierName)}</div>` : ""}
+    <div class="meta">رقم الإيصال: ${escapeHtml(opts.transactionId)}</div>
+    <table class="items">
+      <thead>
+        <tr>
+          <th class="col-name">الصنف</th>
+          <th class="col-num">الكمية</th>
+          <th class="col-num">السعر</th>
+          <th class="col-num">المجموع</th>
+        </tr>
+      </thead>
+      <tbody>${itemRows}</tbody>
+    </table>
+    <hr class="sep-thin" />
+    <table class="totals">
+      <tr><td class="label">المجموع الفرعي:</td><td class="amount">${escapeHtml(Number(opts.subtotal).toFixed(2))}</td></tr>
+      ${taxRow}
+      <tr><td class="label"><strong>الإجمالي:</strong></td><td class="amount"><strong>${escapeHtml(Number(opts.total).toFixed(2))}</strong></td></tr>
+    </table>
+    <hr class="sep" />
+    <div class="payment">${paymentHtml}</div>
+    <hr class="sep" />
+    <div class="thanks">شكراً لزيارتكم</div>
+    <hr class="sep" />
+  </div>
+</body>
+</html>`;
+}
+
 /**
  * @param {object} opts
- * @param {number}   opts.transactionId
- * @param {string}   opts.timestamp
- * @param {string}   opts.cashierName
- * @param {Array<{name:string, quantity:number, price:number, lineTotal:number}>} opts.lines
- * @param {number}   opts.subtotal
- * @param {number}   opts.tax
- * @param {number}   opts.total
- * @param {string}   opts.paymentMethod
- * @param {Array<{method:string, amount:number}>} [opts.payments]
- * @param {number}   [opts.cashTendered]
- * @param {object}   [opts.settings]
  */
 export function buildReceiptText(opts) {
   const settings = opts.settings || {};
@@ -141,7 +247,9 @@ export function buildReceiptText(opts) {
 
   const lines = [
     sep,
-    padRight("أبو شلبك — إيصال بيع", LINE),
+    padCenter(STORE_NAME_AR, LINE),
+    padCenter(STORE_PHONE, LINE),
+    padCenter("إيصال بيع", LINE),
     sep,
     `التاريخ: ${opts.timestamp}`,
   ];
@@ -180,6 +288,14 @@ export function buildReceiptText(opts) {
   );
 
   return lines.join("\n");
+}
+
+/** @param {object} opts */
+export function buildReceiptPayload(opts) {
+  return {
+    receipt_text: buildReceiptText(opts),
+    receipt_html: buildReceiptHtml(opts),
+  };
 }
 
 export { methodLabel, ils as receiptIls };

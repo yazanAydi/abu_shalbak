@@ -14,6 +14,8 @@ import { createAdminRouter } from "./routes/admin.js";
 import { createFinanceRouter } from "./routes/finance.js";
 import { createRefundsRouter } from "./routes/refunds.js";
 import { createRefundRequestsRouter } from "./routes/refundRequests.js";
+import { createAdvanceRequestsRouter } from "./routes/advanceRequests.js";
+import { createOnAccountRequestsRouter } from "./routes/onAccountRequests.js";
 import { createTelegramRouter } from "./routes/telegram.js";
 import { createShiftsRouter } from "./routes/shifts.js";
 import { createSettingsRouter } from "./routes/settings.js";
@@ -24,6 +26,7 @@ import { createVouchersRouter } from "./routes/vouchers.js";
 import { createPosRouter } from "./routes/pos.js";
 import { createSuppliersRouter } from "./routes/suppliers.js";
 import { createPurchasesRouter } from "./routes/purchases.js";
+import { createSalesRouter } from "./routes/sales.js";
 import { createExpensesRouter } from "./routes/expenses.js";
 import { createDeliveriesRouter } from "./routes/deliveries.js";
 import { createMarketingRouter } from "./routes/marketing.js";
@@ -31,6 +34,8 @@ import { createWarehousesRouter } from "./routes/warehouses.js";
 import { createSuspendedSalesRouter } from "./routes/suspendedSales.js";
 import { createCurrenciesRouter } from "./routes/currencies.js";
 import { createDebugRouter } from "./routes/debug.js";
+import { createOfficeRouter } from "./routes/office.js";
+import { createPayrollRouter } from "./routes/payroll.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { responseEnvelope } from "./middleware/responseEnvelope.js";
 import { apiLimiter } from "./middleware/rateLimit.js";
@@ -57,7 +62,13 @@ function parseAllowedOrigins() {
 
 function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   if (useEnvelope) router.use(responseEnvelope);
-  router.get("/health", (_req, res) => res.json({ ok: true }));
+  router.get("/health", (_req, res) => {
+    res.json({
+      ok: true,
+      serverTime: new Date().toISOString(),
+      timezone: process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
+  });
   router.use("/auth", createAuthRouter(db));
   router.use("/products", createProductsRouter(db));
   router.use("/checkout", createCheckoutRouter(db));
@@ -66,6 +77,8 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/finance", createFinanceRouter(db));
   router.use("/refunds", createRefundsRouter(db));
   router.use("/refund-requests", createRefundRequestsRouter(db));
+  router.use("/advance-requests", createAdvanceRequestsRouter(db));
+  router.use("/on-account-requests", createOnAccountRequestsRouter(db));
   router.use("/telegram", createTelegramRouter(db));
   router.use("/shifts", createShiftsRouter(db));
   router.use("/settings", createSettingsRouter(db));
@@ -76,12 +89,15 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/pos", createPosRouter(db));
   router.use("/suppliers", createSuppliersRouter(db));
   router.use("/purchases", createPurchasesRouter(db));
+  router.use("/sales", createSalesRouter(db));
   router.use("/expenses", createExpensesRouter(db));
   router.use("/deliveries", createDeliveriesRouter(db));
   router.use("/marketing", createMarketingRouter(db));
   router.use("/warehouses", createWarehousesRouter(db));
   router.use("/suspended-sales", createSuspendedSalesRouter(db));
   router.use("/currencies", createCurrenciesRouter(db));
+  router.use("/office", createOfficeRouter(db));
+  router.use("/payroll", createPayrollRouter(db));
   router.use("/debug", createDebugRouter(db));
   router.use("/", createPrintRouter(db));
 }

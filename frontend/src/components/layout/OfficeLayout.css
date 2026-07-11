@@ -77,6 +77,46 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
+.office-nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.35rem;
+  margin-inline-start: 0.15rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+  background: #e5e7eb;
+  color: #111827;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.office-nav-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.office-nav-icon-wrap .office-nav-badge {
+  position: absolute;
+  top: -5px;
+  inset-inline-end: -7px;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.3rem;
+  margin-inline-start: 0;
+  font-size: 0.65rem;
+  z-index: 1;
+}
+
+.office-nav-link.active .office-nav-badge {
+  background: #fff;
+  color: var(--office-sidebar-2, #0f172a);
+}
+
 .office-nav-link:hover {
   background: var(--office-sidebar-hover);
   color: var(--office-sidebar-text);
@@ -149,6 +189,7 @@
 }
 
 .office-nav-dropdown-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -171,6 +212,16 @@
   background: linear-gradient(90deg, rgba(var(--office-accent-rgb), 0.22) 0%, rgba(var(--office-accent-rgb), 0.08) 100%);
   color: #fff;
   font-weight: 700;
+}
+
+.office-nav-dropdown-item.active .office-nav-badge {
+  background: #fff;
+  color: var(--office-sidebar-2, #0f172a);
+}
+
+.office-navbar-toggle .office-nav-icon-wrap .office-nav-badge {
+  top: -4px;
+  inset-inline-end: -6px;
 }
 
 .office-navbar-user {
@@ -445,6 +496,7 @@
     padding: 0;
   }
   .office-navbar-mobile-link {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0.7rem;
@@ -463,6 +515,11 @@
     background: linear-gradient(90deg, rgba(var(--office-accent-rgb), 0.22) 0%, rgba(var(--office-accent-rgb), 0.08) 100%);
     color: #fff;
     font-weight: 700;
+  }
+
+  .office-navbar-mobile-link.active .office-nav-badge {
+    background: #fff;
+    color: var(--office-sidebar-2, #0f172a);
   }
   .office-navbar-mobile-logout {
     width: calc(100% - 1.7rem);

@@ -16,7 +16,7 @@ export default function PrintReceiptButton({ transactionId }) {
         { transaction_id: transactionId },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
-      if (data.receipt_text) printReceipt(data.receipt_text);
+      if (data.receipt_html || data.receipt_text) printReceipt(data);
     } catch (e) {
       window.alert(e.response?.data?.error || e.message || "فشلت الطباعة");
     } finally {

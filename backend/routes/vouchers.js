@@ -1,14 +1,14 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
-const requireReports = requireRoles("admin", "accountant");
 
 export function createVouchersRouter(db) {
   const router = Router();
+  const requireVouchers = requireReportsPermission(db, "vouchers");
 
   // ───── Voucher list ─────
 
-  router.get("/", requireAuth, requireReports, async (req, res) => {
+  router.get("/", requireAuth, requireVouchers, async (req, res) => {
     const { type, status, from, to } = req.query;
     let sql = `SELECT v.*, u.username as recorded_by_name
                FROM vouchers v LEFT JOIN users u ON v.recorded_by_id = u.id
@@ -43,7 +43,7 @@ export function createVouchersRouter(db) {
 
   // ───── Create draft voucher ─────
 
-  router.post("/", requireAuth, requireRoles("admin", "accountant"), async (req, res, next) => {
+  router.post("/", requireAuth, requireVouchers, async (req, res, next) => {
     const { voucher_type, voucher_date, notes, lines } = req.body || {};
     if (!["receipt", "payment"].includes(voucher_type)) {
       return res.status(400).json({
@@ -123,7 +123,7 @@ export function createVouchersRouter(db) {
 
   // ───── Update draft voucher ─────
 
-  router.put("/:id", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.put("/:id", requireAuth, requireVouchers, async (req, res) => {
     const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [req.params.id]);
     if (!voucher) return res.status(404).json({ error: "السند غير موجود", code: "NOT_FOUND" });
     if (voucher.status === "posted") {

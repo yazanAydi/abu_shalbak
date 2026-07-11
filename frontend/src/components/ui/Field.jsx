@@ -1,4 +1,9 @@
 import SearchableSelect from "./SearchableSelect";
+import {
+  focusNextField,
+  handleEnterNavKeyDown,
+  shouldHandleEnterOnField,
+} from "../../utils/focusNavigation";
 
 export function FormField({ label, required, hint, children, className = "" }) {
   return (
@@ -15,8 +20,19 @@ export function FormField({ label, required, hint, children, className = "" }) {
   );
 }
 
-export function Input({ className = "", ...rest }) {
-  return <input className={`ui-input ${className}`} {...rest} />;
+export function Input({ className = "", onKeyDown, ...rest }) {
+  function handleKeyDown(e) {
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
+    if (e.key === "Enter" && shouldHandleEnterOnField(e.target)) {
+      e.preventDefault();
+      focusNextField(e.target);
+    }
+  }
+
+  return (
+    <input className={`ui-input ${className}`} {...rest} onKeyDown={handleKeyDown} />
+  );
 }
 
 export function Select(props) {
@@ -28,5 +44,13 @@ export function Textarea({ className = "", ...rest }) {
 }
 
 export function FormGrid({ children, className = "" }) {
-  return <div className={`ui-form-grid ${className}`}>{children}</div>;
+  return (
+    <div
+      className={`ui-form-grid ${className}`}
+      data-enter-nav=""
+      onKeyDown={handleEnterNavKeyDown}
+    >
+      {children}
+    </div>
+  );
 }

@@ -1,5 +1,11 @@
+import {
+  defaultAccountantPermissions,
+  normalizeAccountantPermissions,
+} from "./accountantPermissions.js";
+
 export const OTHER_QUICK_CATEGORY = "أخرى";
 export const DEFAULT_QUICK_CATEGORIES = ["معجنات", "بيتزا", OTHER_QUICK_CATEGORY];
+export const DEFAULT_DAIRY_CATEGORIES = ["ألبان"];
 
 export const SETTING_KEYS = {
   default_tax_rate: "default_tax_rate",
@@ -15,12 +21,16 @@ export const SETTING_KEYS = {
   default_opening_cash: "default_opening_cash",
   refund_telegram_manager_user_id: "refund_telegram_manager_user_id",
   expiry_alert_days: "expiry_alert_days",
+  expiry_alert_days_dairy: "expiry_alert_days_dairy",
+  expiry_dairy_categories: "expiry_dairy_categories",
   pos_shortcut_hold_cart: "pos_shortcut_hold_cart",
   pos_shortcut_suspended_carts: "pos_shortcut_suspended_carts",
+  accountant_permissions: "accountant_permissions",
 };
 
 const MAX_POS_FAVORITES = 24;
 const MAX_QUICK_CATEGORIES = 20;
+const MAX_DAIRY_CATEGORIES = 20;
 const MAX_POS_QUICK_BUTTONS = 48;
 
 const DEFAULTS = {
@@ -37,8 +47,11 @@ const DEFAULTS = {
   [SETTING_KEYS.default_opening_cash]: 0,
   [SETTING_KEYS.refund_telegram_manager_user_id]: 0,
   [SETTING_KEYS.expiry_alert_days]: 7,
+  [SETTING_KEYS.expiry_alert_days_dairy]: 3,
+  [SETTING_KEYS.expiry_dairy_categories]: [...DEFAULT_DAIRY_CATEGORIES],
   [SETTING_KEYS.pos_shortcut_hold_cart]: "",
   [SETTING_KEYS.pos_shortcut_suspended_carts]: "",
+  [SETTING_KEYS.accountant_permissions]: defaultAccountantPermissions(),
 };
 
 function parseFavoriteIds(raw) {
@@ -91,6 +104,34 @@ function parseQuickCategories(raw) {
 
 function serializeQuickCategories(categories) {
   return JSON.stringify(normalizeQuickCategories(categories));
+}
+
+export function normalizeDairyCategories(raw) {
+  if (!Array.isArray(raw)) return [...DEFAULT_DAIRY_CATEGORIES];
+  const seen = new Set();
+  const clean = [];
+  for (const item of raw) {
+    const name = String(item ?? "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    clean.push(name);
+    if (clean.length >= MAX_DAIRY_CATEGORIES) break;
+  }
+  return clean;
+}
+
+function parseDairyCategories(raw) {
+  if (raw === undefined || raw === null || raw === "") return [...DEFAULT_DAIRY_CATEGORIES];
+  try {
+    const arr = JSON.parse(String(raw));
+    return normalizeDairyCategories(arr);
+  } catch {
+    return [...DEFAULT_DAIRY_CATEGORIES];
+  }
+}
+
+function serializeDairyCategories(categories) {
+  return JSON.stringify(normalizeDairyCategories(categories));
 }
 
 export function normalizeQuickButtons(raw, categories) {
@@ -168,9 +209,23 @@ function parseValue(key, raw, context = {}) {
     case SETTING_KEYS.shift_variance_threshold:
     case SETTING_KEYS.default_opening_cash:
     case SETTING_KEYS.refund_telegram_manager_user_id:
-    case SETTING_KEYS.expiry_alert_days: {
+    case SETTING_KEYS.expiry_alert_days:
+    case SETTING_KEYS.expiry_alert_days_dairy: {
       const n = Number(raw);
       return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULTS[key];
+    }
+    case SETTING_KEYS.expiry_dairy_categories:
+      return parseDairyCategories(raw);
+    case SETTING_KEYS.accountant_permissions: {
+      if (raw === undefined || raw === null || raw === "") {
+        return defaultAccountantPermissions();
+      }
+      try {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        return normalizeAccountantPermissions(parsed);
+      } catch {
+        return defaultAccountantPermissions();
+      }
     }
     default:
       if (key === SETTING_KEYS.pos_shortcut_hold_cart || key === SETTING_KEYS.pos_shortcut_suspended_carts) {
@@ -224,6 +279,17 @@ export async function getAppSettings(db) {
       const n = parseValue(SETTING_KEYS.expiry_alert_days, map[SETTING_KEYS.expiry_alert_days]);
       return n >= 1 && n <= 365 ? n : DEFAULTS[SETTING_KEYS.expiry_alert_days];
     })(),
+    expiry_alert_days_dairy: (() => {
+      const n = parseValue(
+        SETTING_KEYS.expiry_alert_days_dairy,
+        map[SETTING_KEYS.expiry_alert_days_dairy]
+      );
+      return n >= 1 && n <= 365 ? n : DEFAULTS[SETTING_KEYS.expiry_alert_days_dairy];
+    })(),
+    expiry_dairy_categories: parseValue(
+      SETTING_KEYS.expiry_dairy_categories,
+      map[SETTING_KEYS.expiry_dairy_categories]
+    ),
     pos_shortcut_hold_cart: parseValue(
       SETTING_KEYS.pos_shortcut_hold_cart,
       map[SETTING_KEYS.pos_shortcut_hold_cart]
@@ -231,6 +297,10 @@ export async function getAppSettings(db) {
     pos_shortcut_suspended_carts: parseValue(
       SETTING_KEYS.pos_shortcut_suspended_carts,
       map[SETTING_KEYS.pos_shortcut_suspended_carts]
+    ),
+    accountant_permissions: parseValue(
+      SETTING_KEYS.accountant_permissions,
+      map[SETTING_KEYS.accountant_permissions]
     ),
   };
 }
@@ -314,8 +384,22 @@ export async function updateAppSettings(db, patch) {
       }
       return String(n);
     },
+    [SETTING_KEYS.expiry_alert_days_dairy]: (v) => {
+      const n = Math.floor(Number(v));
+      if (!Number.isFinite(n) || n < 1 || n > 365) {
+        throw new Error("أيام تنبيه الألبان يجب أن تكون بين 1 و 365");
+      }
+      return String(n);
+    },
+    [SETTING_KEYS.expiry_dairy_categories]: (v) => serializeDairyCategories(v),
     [SETTING_KEYS.pos_shortcut_hold_cart]: (v) => String(v ?? "").trim().slice(0, 40),
     [SETTING_KEYS.pos_shortcut_suspended_carts]: (v) => String(v ?? "").trim().slice(0, 40),
+    [SETTING_KEYS.accountant_permissions]: (v) => {
+      if (v === undefined || v === null) {
+        return JSON.stringify(defaultAccountantPermissions());
+      }
+      return JSON.stringify(normalizeAccountantPermissions(v));
+    },
   };
 
   for (const [key, converter] of Object.entries(allowed)) {
@@ -348,8 +432,11 @@ export async function seedDefaultSettings(db) {
     [SETTING_KEYS.default_opening_cash, "0"],
     [SETTING_KEYS.refund_telegram_manager_user_id, "0"],
     [SETTING_KEYS.expiry_alert_days, "7"],
+    [SETTING_KEYS.expiry_alert_days_dairy, "3"],
+    [SETTING_KEYS.expiry_dairy_categories, JSON.stringify(DEFAULT_DAIRY_CATEGORIES)],
     [SETTING_KEYS.pos_shortcut_hold_cart, ""],
     [SETTING_KEYS.pos_shortcut_suspended_carts, ""],
+    [SETTING_KEYS.accountant_permissions, JSON.stringify(defaultAccountantPermissions())],
   ];
   for (const [key, value] of defaults) {
     const ex = await db.get("SELECT 1 AS x FROM app_settings WHERE key = ? LIMIT 1", [key]);

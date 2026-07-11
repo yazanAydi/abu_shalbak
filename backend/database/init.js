@@ -151,6 +151,7 @@ async function migrateProductBarcodesTable(db) {
 }
 
 async function migrateOrphanProductBarcodes(db) {
+  await migrateOrphanReferenceCleanup(db);
   await db.run(
     `DELETE FROM product_unit_barcodes
      WHERE product_unit_id IN (
@@ -221,6 +222,19 @@ async function migrateProductsUnitColumns(db) {
       await db.run(`ALTER TABLE products ADD COLUMN ${col} ${type}`);
     }
   }
+}
+
+async function migrateProductsInventoryScope(db) {
+  const cols = [
+    ["inventory_scope", "TEXT NOT NULL DEFAULT 'retail'"],
+    ["min_stock", "REAL"],
+  ];
+  for (const [col, type] of cols) {
+    if (!(await tableHasColumn(db, "products", col))) {
+      await db.run(`ALTER TABLE products ADD COLUMN ${col} ${type}`);
+    }
+  }
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_products_inventory_scope ON products(inventory_scope)`);
 }
 
 async function migrateTransactionItemsProductUnit(db) {
@@ -748,6 +762,18 @@ async function migratePurchaseItemsProductUnit(db) {
   }
 }
 
+/** Supplier discount % and free bonus units on purchase lines. */
+async function migratePurchaseItemsDiscountBonus(db) {
+  for (const t of ["purchase_order_items", "purchase_invoice_items", "purchase_return_items"]) {
+    if (!(await tableHasColumn(db, t, "discount_pct"))) {
+      await db.run(`ALTER TABLE ${t} ADD COLUMN discount_pct REAL NOT NULL DEFAULT 0`);
+    }
+    if (!(await tableHasColumn(db, t, "bonus_quantity"))) {
+      await db.run(`ALTER TABLE ${t} ADD COLUMN bonus_quantity REAL NOT NULL DEFAULT 0`);
+    }
+  }
+}
+
 async function migrateStockAdjustmentsTables(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS stock_adjustments (
@@ -870,13 +896,17 @@ async function migrateMarketingTables(db) {
       id             INTEGER PRIMARY KEY AUTOINCREMENT,
       campaign_id    INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
       name           TEXT NOT NULL,
-      offer_type     TEXT NOT NULL CHECK (offer_type IN ('percentage','fixed','bundle','buy_x_get_y')),
+      offer_type     TEXT NOT NULL CHECK (offer_type IN ('percentage','fixed','bundle','buy_x_get_y','multi_price')),
       product_id     INTEGER REFERENCES products(id),
       category       TEXT,
+      product_unit_id INTEGER REFERENCES product_units(id),
       discount_value REAL NOT NULL DEFAULT 0,
       buy_qty        REAL NOT NULL DEFAULT 0,
       get_qty        REAL NOT NULL DEFAULT 0,
       min_amount     REAL NOT NULL DEFAULT 0,
+      limit_qty      REAL NOT NULL DEFAULT 0,
+      used_qty       REAL NOT NULL DEFAULT 0,
+      stop_when_out_of_stock INTEGER NOT NULL DEFAULT 0,
       start_date     TEXT,
       end_date       TEXT,
       active         INTEGER NOT NULL DEFAULT 1,
@@ -884,6 +914,64 @@ async function migrateMarketingTables(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_promotions_active  ON promotions(active);
     CREATE INDEX IF NOT EXISTS idx_promotions_product ON promotions(product_id);
+  `);
+  await migratePromotionsExtended(db);
+}
+
+async function migratePromotionsExtended(db) {
+  const cols = [
+    ["product_unit_id", "INTEGER REFERENCES product_units(id)"],
+    ["limit_qty", "REAL NOT NULL DEFAULT 0"],
+    ["used_qty", "REAL NOT NULL DEFAULT 0"],
+    ["stop_when_out_of_stock", "INTEGER NOT NULL DEFAULT 0"],
+  ];
+  for (const [col, type] of cols) {
+    if (!(await tableHasColumn(db, "promotions", col))) {
+      await db.run(`ALTER TABLE promotions ADD COLUMN ${col} ${type}`);
+    }
+  }
+
+  const promoChk = await db.get(`SELECT sql FROM sqlite_master WHERE type='table' AND name='promotions'`);
+  if (!promoChk?.sql || promoChk.sql.includes("'multi_price'")) return;
+
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE promotions_new (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id    INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
+      name           TEXT NOT NULL,
+      offer_type     TEXT NOT NULL CHECK (offer_type IN ('percentage','fixed','bundle','buy_x_get_y','multi_price')),
+      product_id     INTEGER REFERENCES products(id),
+      category       TEXT,
+      product_unit_id INTEGER REFERENCES product_units(id),
+      discount_value REAL NOT NULL DEFAULT 0,
+      buy_qty        REAL NOT NULL DEFAULT 0,
+      get_qty        REAL NOT NULL DEFAULT 0,
+      min_amount     REAL NOT NULL DEFAULT 0,
+      limit_qty      REAL NOT NULL DEFAULT 0,
+      used_qty       REAL NOT NULL DEFAULT 0,
+      stop_when_out_of_stock INTEGER NOT NULL DEFAULT 0,
+      start_date     TEXT,
+      end_date       TEXT,
+      active         INTEGER NOT NULL DEFAULT 1,
+      created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO promotions_new (
+      id, campaign_id, name, offer_type, product_id, category, product_unit_id,
+      discount_value, buy_qty, get_qty, min_amount, limit_qty, used_qty, stop_when_out_of_stock,
+      start_date, end_date, active, created_at
+    )
+    SELECT
+      id, campaign_id, name, offer_type, product_id, category, product_unit_id,
+      discount_value, buy_qty, get_qty, min_amount,
+      COALESCE(limit_qty, 0), COALESCE(used_qty, 0), COALESCE(stop_when_out_of_stock, 0),
+      start_date, end_date, active, created_at
+    FROM promotions;
+    DROP TABLE promotions;
+    ALTER TABLE promotions_new RENAME TO promotions;
+    CREATE INDEX IF NOT EXISTS idx_promotions_active  ON promotions(active);
+    CREATE INDEX IF NOT EXISTS idx_promotions_product ON promotions(product_id);
+    PRAGMA foreign_keys = ON;
   `);
 }
 
@@ -1381,11 +1469,193 @@ async function migrateLegacyPendingRefundsToRequests(db) {
   await db.run("DELETE FROM refunds WHERE status = 'pending'");
 }
 
+async function migrateAdvanceRequestsTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS advance_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      manager_id INTEGER REFERENCES users(id),
+      shift_id INTEGER REFERENCES cashier_shifts(id),
+      employee_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+      telegram_message_id TEXT,
+      review_notes TEXT,
+      decision_source TEXT,
+      cashier_notified_at TEXT,
+      cashier_acknowledged_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      approved_at TEXT,
+      rejected_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_advance_requests_status_created ON advance_requests(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_advance_requests_cashier ON advance_requests(cashier_id);
+  `);
+}
+
+async function migrateOnAccountRequestsTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS on_account_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      manager_id INTEGER REFERENCES users(id),
+      shift_id INTEGER REFERENCES cashier_shifts(id),
+      customer_id INTEGER NOT NULL REFERENCES customers(id),
+      sale_snapshot_json TEXT NOT NULL,
+      subtotal REAL NOT NULL,
+      tax REAL NOT NULL,
+      total_amount REAL NOT NULL,
+      on_account_amount REAL NOT NULL,
+      payment_method TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+      telegram_message_id TEXT,
+      transaction_id INTEGER REFERENCES transactions(id),
+      review_notes TEXT,
+      decision_source TEXT,
+      cashier_notified_at TEXT,
+      cashier_acknowledged_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      approved_at TEXT,
+      rejected_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_on_account_requests_status_created ON on_account_requests(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_on_account_requests_cashier ON on_account_requests(cashier_id);
+    CREATE INDEX IF NOT EXISTS idx_on_account_requests_customer ON on_account_requests(customer_id);
+  `);
+}
+
+async function migrateRepairPartialMigrationTables(db) {
+  const partial = await db.all(
+    `SELECT name FROM sqlite_master
+     WHERE type = 'table' AND (name LIKE '%__mig' OR name LIKE '%_new')`
+  );
+  for (const { name } of partial) {
+    const base = name.replace(/(__mig|_new)$/, "");
+    const main = await db.get(
+      "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+      [base]
+    );
+    if (main) {
+      await db.run(`DROP TABLE IF EXISTS "${name}"`);
+    }
+  }
+}
+
+/** Remove child rows whose FK targets were deleted outside normal app flows. */
+async function migrateOrphanReferenceCleanup(db) {
+  const tables = await db.all(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+  );
+  const names = new Set(tables.map((t) => t.name));
+
+  if (names.has("shift_cash_movements") && names.has("cashier_shifts")) {
+    await db.run(
+      `DELETE FROM shift_cash_movements
+       WHERE shift_id NOT IN (SELECT id FROM cashier_shifts)
+          OR (transaction_id IS NOT NULL AND transaction_id NOT IN (SELECT id FROM transactions))
+          OR (refund_id IS NOT NULL AND refund_id NOT IN (SELECT id FROM refunds))`
+    );
+  }
+
+  if (names.has("suspended_sale_items")) {
+    if (names.has("products")) {
+      await db.run(
+        "DELETE FROM suspended_sale_items WHERE product_id NOT IN (SELECT id FROM products)"
+      );
+    }
+    if (names.has("product_units")) {
+      await db.run(
+        "DELETE FROM suspended_sale_items WHERE product_unit_id NOT IN (SELECT id FROM product_units)"
+      );
+    }
+    if (names.has("suspended_sales")) {
+      await db.run(
+        `DELETE FROM suspended_sales
+         WHERE id NOT IN (SELECT DISTINCT suspended_sale_id FROM suspended_sale_items)`
+      );
+    }
+  }
+
+  if (names.has("transaction_items")) {
+    if (names.has("products")) {
+      await db.run(
+        `DELETE FROM transaction_items
+         WHERE product_id IS NOT NULL AND product_id NOT IN (SELECT id FROM products)`
+      );
+    }
+    if (names.has("product_units")) {
+      await db.run(
+        `DELETE FROM transaction_items
+         WHERE product_unit_id IS NOT NULL
+           AND product_unit_id NOT IN (SELECT id FROM product_units)`
+      );
+    }
+  }
+
+  for (const table of ["inventory_ledger", "inventory_movements", "stock_count_lines", "warehouse_stock"]) {
+    if (names.has(table) && names.has("products")) {
+      await db.run(
+        `DELETE FROM ${table} WHERE product_id NOT IN (SELECT id FROM products)`
+      );
+    }
+  }
+
+  if (names.has("purchase_invoice_items") && names.has("products")) {
+    await db.run(
+      `DELETE FROM purchase_invoice_items WHERE product_id NOT IN (SELECT id FROM products)`
+    );
+  }
+}
+
+async function migrateShiftCashMovementsAdvanceType(db) {
+  await migrateRepairPartialMigrationTables(db);
+
+  const row = await db.get(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shift_cash_movements'`
+  );
+  if (!row?.sql || String(row.sql).includes("'advance'")) return;
+
+  await migrateOrphanReferenceCleanup(db);
+
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE shift_cash_movements_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      movement_type TEXT NOT NULL CHECK (movement_type IN ('opening', 'payment', 'refund', 'adjustment', 'closing', 'advance')),
+      amount REAL NOT NULL,
+      description TEXT,
+      transaction_id INTEGER REFERENCES transactions(id),
+      refund_id INTEGER REFERENCES refunds(id),
+      advance_request_id INTEGER REFERENCES advance_requests(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    INSERT INTO shift_cash_movements_new (id, shift_id, movement_type, amount, description, transaction_id, refund_id, created_at)
+    SELECT id, shift_id, movement_type, amount, description, transaction_id, refund_id, created_at
+    FROM shift_cash_movements;
+
+    DROP TABLE shift_cash_movements;
+    ALTER TABLE shift_cash_movements_new RENAME TO shift_cash_movements;
+    CREATE INDEX IF NOT EXISTS idx_shift_movements_shift_time ON shift_cash_movements(shift_id, created_at);
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 async function migrateMustChangePasswordColumn(db) {
   if (!(await tableHasColumn(db, "users", "must_change_password"))) {
     await db.run(
       "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
     );
+  }
+}
+
+async function migrateHourlyRateColumn(db) {
+  if (!(await tableHasColumn(db, "users", "hourly_rate"))) {
+    await db.run("ALTER TABLE users ADD COLUMN hourly_rate REAL");
   }
 }
 
@@ -1680,14 +1950,22 @@ export async function initDatabase(dbPath) {
   await migrateRefundRequestsTable(db);
   await migrateRefundRequestSyncColumns(db);
   await migrateLegacyPendingRefundsToRequests(db);
+  await migrateAdvanceRequestsTable(db);
+  await migrateOnAccountRequestsTable(db);
+  await migrateRepairPartialMigrationTables(db);
+  await migrateOrphanReferenceCleanup(db);
+  await migrateShiftCashMovementsAdvanceType(db);
   await migrateMustChangePasswordColumn(db);
+  await migrateHourlyRateColumn(db);
   await migrateStoresTable(db);
   await migrateStoreIdColumns(db);
   await migrateProductBarcodesTable(db);
   await migrateProductUnitsTable(db);
   await migrateProductsUnitColumns(db);
+  await migrateProductsInventoryScope(db);
   await migrateProductUnitPricingRepair(db);
   await migratePurchaseItemsProductUnit(db);
+  await migratePurchaseItemsDiscountBonus(db);
   await migrateTransactionItemsScannedBarcode(db);
   await migrateTransactionItemsProductUnit(db);
   await migrateAccountStatementIndexes(db);
@@ -1698,6 +1976,8 @@ export async function initDatabase(dbPath) {
   await migrateCurrenciesTable(db);
   await migrateTransactionsChangeAmount(db);
   await migrateSalePaymentsTable(db);
+  await migrateSalePaymentsCheckMethod(db);
+  await migrateSalesInvoicesTables(db);
   await migrateSuspendedSalesTables(db);
 
   await seedUsers(db);
@@ -1719,7 +1999,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.07-multi-currency";
+const SCHEMA_VERSION = "2026.07-sales-invoices";
 
 async function migrateTransactionsPaymentMethodExpanded(db) {
   const txChk = await db.get(`SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'`);
@@ -1851,6 +2131,147 @@ async function migrateSalePaymentsTable(db) {
      WHERE currency_id IS NULL`,
     [baseCurId]
   );
+}
+
+async function migrateSalesInvoicesTables(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS sales_invoices (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_no       INTEGER,
+      customer_id      INTEGER NOT NULL REFERENCES customers(id),
+      ref_text         TEXT,
+      invoice_date     TEXT NOT NULL DEFAULT (date('now')),
+      status           TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','posted')),
+      subtotal         REAL NOT NULL DEFAULT 0,
+      tax              REAL NOT NULL DEFAULT 0,
+      total            REAL NOT NULL DEFAULT 0,
+      on_account_amount REAL NOT NULL DEFAULT 0,
+      payment_method   TEXT,
+      notes            TEXT,
+      transaction_id   INTEGER REFERENCES transactions(id),
+      created_by       INTEGER REFERENCES users(id),
+      posted_at        TEXT,
+      created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS sales_invoice_items (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id      INTEGER NOT NULL REFERENCES sales_invoices(id) ON DELETE CASCADE,
+      product_id      INTEGER NOT NULL REFERENCES products(id),
+      quantity        REAL NOT NULL,
+      total_price     REAL NOT NULL DEFAULT 0,
+      unit_price      REAL NOT NULL DEFAULT 0,
+      vat_rate        REAL NOT NULL DEFAULT 0,
+      line_net        REAL NOT NULL DEFAULT 0,
+      line_tax        REAL NOT NULL DEFAULT 0,
+      line_total      REAL NOT NULL DEFAULT 0,
+      product_unit_id INTEGER REFERENCES product_units(id),
+      unit_name       TEXT,
+      conversion_used REAL NOT NULL DEFAULT 1,
+      base_quantity   REAL,
+      discount_pct    REAL NOT NULL DEFAULT 0,
+      bonus_quantity  REAL NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS sales_invoice_payments (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id       INTEGER NOT NULL REFERENCES sales_invoices(id) ON DELETE CASCADE,
+      payment_method   TEXT NOT NULL CHECK (payment_method IN ('cash','visa','on_account','check')),
+      amount           REAL NOT NULL DEFAULT 0,
+      currency_id      INTEGER REFERENCES currencies(id),
+      original_amount  REAL,
+      exchange_rate_used REAL NOT NULL DEFAULT 1,
+      nis_equivalent   REAL,
+      bank_name        TEXT,
+      check_no         TEXT,
+      created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_sinv_customer ON sales_invoices(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_sinvi_invoice ON sales_invoice_items(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_sinvp_invoice ON sales_invoice_payments(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_sinv_customer_date ON sales_invoices(customer_id, invoice_date);
+  `);
+}
+
+async function migrateSalePaymentsCheckMethod(db) {
+  const chk = await db.get(`SELECT sql FROM sqlite_master WHERE type='table' AND name='sale_payments'`);
+  if (!chk?.sql || chk.sql.includes("'check'")) {
+    if (!(await tableHasColumn(db, "sale_payments", "bank_name"))) {
+      await db.exec(`ALTER TABLE sale_payments ADD COLUMN bank_name TEXT`);
+    }
+    if (!(await tableHasColumn(db, "sale_payments", "check_no"))) {
+      await db.exec(`ALTER TABLE sale_payments ADD COLUMN check_no TEXT`);
+    }
+    return;
+  }
+
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE sale_payments_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash','visa','on_account','check')),
+      amount REAL NOT NULL CHECK (amount >= 0),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      currency_id INTEGER REFERENCES currencies(id),
+      original_amount REAL,
+      exchange_rate_used REAL NOT NULL DEFAULT 1,
+      nis_equivalent REAL,
+      bank_name TEXT,
+      check_no TEXT
+    );
+    INSERT INTO sale_payments_new (
+      id, transaction_id, payment_method, amount, created_at,
+      currency_id, original_amount, exchange_rate_used, nis_equivalent, bank_name, check_no
+    )
+    SELECT
+      id, transaction_id, payment_method, amount, created_at,
+      currency_id, original_amount, exchange_rate_used, nis_equivalent, NULL, NULL
+    FROM sale_payments;
+    DROP TABLE sale_payments;
+    ALTER TABLE sale_payments_new RENAME TO sale_payments;
+    CREATE INDEX IF NOT EXISTS idx_sale_payments_tx ON sale_payments(transaction_id);
+    CREATE INDEX IF NOT EXISTS idx_sale_payments_method ON sale_payments(payment_method);
+    CREATE INDEX IF NOT EXISTS idx_sale_payments_currency ON sale_payments(currency_id);
+    PRAGMA foreign_keys = ON;
+  `);
+
+  const txChk = await db.get(`SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'`);
+  if (txChk?.sql && !txChk.sql.includes("'check'")) {
+    await db.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE transactions_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cashier_id INTEGER NOT NULL REFERENCES users(id),
+        items_json TEXT NOT NULL,
+        subtotal REAL NOT NULL,
+        tax REAL NOT NULL,
+        total REAL NOT NULL,
+        payment_method TEXT NOT NULL CHECK (payment_method IN ('cash','visa','on_account','check','mixed')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        shift_id INTEGER REFERENCES cashier_shifts(id),
+        customer_id INTEGER REFERENCES customers(id),
+        discount REAL NOT NULL DEFAULT 0,
+        receipt_number TEXT,
+        status TEXT NOT NULL DEFAULT 'completed',
+        store_id INTEGER NOT NULL DEFAULT 1,
+        idempotency_key TEXT,
+        change_amount REAL NOT NULL DEFAULT 0
+      );
+      INSERT INTO transactions_new (
+        id, cashier_id, items_json, subtotal, tax, total, payment_method, created_at,
+        shift_id, customer_id, discount, receipt_number, status, store_id, idempotency_key, change_amount
+      )
+      SELECT
+        id, cashier_id, items_json, subtotal, tax, total, payment_method, created_at,
+        shift_id, customer_id, discount, receipt_number, status, store_id, idempotency_key,
+        COALESCE(change_amount, 0)
+      FROM transactions;
+      DROP TABLE transactions;
+      ALTER TABLE transactions_new RENAME TO transactions;
+      CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at);
+      PRAGMA foreign_keys = ON;
+    `);
+  }
 }
 
 async function migrateAccountStatementIndexes(db) {

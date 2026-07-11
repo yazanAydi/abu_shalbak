@@ -1,10 +1,16 @@
 import { Router } from "express";
-import { requireAuth, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import {
   snapshotSalesCogsForRange,
   snapshotRefundCogsForRange,
 } from "../utils/cogs.js";
 import { round2 } from "../utils/money.js";
+import {
+  TX_BUSINESS_DAY_JOIN,
+  REFUND_BUSINESS_DAY_JOIN,
+  txBusinessDayBetween,
+  refundBusinessDayBetween,
+} from "../utils/businessDay.js";
 
 function parseDateParam(s) {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return null;
@@ -14,7 +20,7 @@ function parseDateParam(s) {
 export function createFinanceRouter(db) {
   const router = Router();
 
-  router.use(requireAuth, requireRoles("admin", "accountant"));
+  router.use(requireAuth, requireReportsPermission(db, "finance"));
 
   /** Sales total + supplier payments in date range (financial overview) */
   router.get("/overview", async (req, res) => {
@@ -28,9 +34,10 @@ export function createFinanceRouter(db) {
     }
 
     const salesRow = await db.get(
-      `SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as n
-       FROM transactions
-       WHERE date(created_at) >= ? AND date(created_at) <= ?`,
+      `SELECT COALESCE(SUM(t.total), 0) as total, COUNT(*) as n
+       FROM transactions t
+       ${TX_BUSINESS_DAY_JOIN}
+       WHERE ${txBusinessDayBetween("?", "?")}`,
       [from, to]
     );
 
@@ -42,9 +49,10 @@ export function createFinanceRouter(db) {
     );
 
     const refRow = await db.get(
-      `SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as n
-       FROM refunds
-       WHERE date(created_at) >= ? AND date(created_at) <= ?`,
+      `SELECT COALESCE(SUM(r.total), 0) as total, COUNT(*) as n
+       FROM refunds r
+       ${REFUND_BUSINESS_DAY_JOIN}
+       WHERE ${refundBusinessDayBetween("?", "?")}`,
       [from, to]
     );
     const expRow = await db.get(

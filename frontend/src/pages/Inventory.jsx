@@ -10,6 +10,7 @@ import {
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import QtyStepper from "../components/QtyStepper";
+import { handleEnterNavKeyDown } from "../utils/focusNavigation";
 
 const ADJ_LABELS = { in: "إدخال مخزون", out: "إخراج مخزون", damage: "تالف", consumption: "استهلاك", correction: "تصحيح" };
 const MOVE_LABELS = {
@@ -139,7 +140,8 @@ function Adjustments() {
         <p className="ui-field__hint" style={{ margin: "0.5rem 0" }}>
           {type === "correction" ? "للتصحيح: أدخل كمية موجبة للزيادة أو سالبة للنقص." : "أدخل الكمية (موجبة) وسيُطبَّق اتجاهها تلقائياً حسب النوع."}
         </p>
-        <div style={{ marginBottom: "0.75rem" }}><ProductPicker onPick={addProduct} /></div>
+        <div data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
+        <div style={{ marginBottom: "0.75rem" }}><ProductPicker onPick={addProduct} scope="retail" /></div>
         <div className="ui-table-wrap" style={{ marginBottom: "0.75rem" }}>
           <table className="ui-table">
             <thead><tr><th>الصنف</th><th>الكمية</th><th>الكلفة</th><th></th></tr></thead>
@@ -155,6 +157,7 @@ function Adjustments() {
               ))}
             </tbody>
           </table>
+        </div>
         </div>
         <FormField label="ملاحظات"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></FormField>
       </Modal>

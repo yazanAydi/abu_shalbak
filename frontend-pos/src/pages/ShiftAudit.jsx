@@ -347,7 +347,7 @@ export default function ShiftAudit() {
         headers: getAuthHeaders(),
       });
       if (data?.receipt_text) {
-        printReceipt(data.receipt_text);
+        printReceipt(data);
       } else {
         toast.error("لم يُرجَع نص الإيصال");
       }

@@ -1,5 +1,5 @@
 import { round2, sumMoney } from "../utils/money.js";
-import { computeSaleTotals } from "../utils/tax.js";
+import { computeSaleTotals, computePurchaseInvoiceTotals, applyPurchaseDiscount } from "../utils/tax.js";
 
 /**
  * Stage 5 — money precision. Documents and locks in the rounding behavior the
@@ -53,5 +53,41 @@ describe("Money precision", () => {
       { tax_inclusive: false, default_tax_rate: 0 }
     );
     expect(r.subtotal).toBe(9.99);
+  });
+
+  test("purchase invoice supplier total 50 → net 42, VAT 8 at 16%", () => {
+    const r = computePurchaseInvoiceTotals([{ total_cost: 50, vat_rate: 0.16 }], 0.16);
+    expect(r.lines[0].line_total).toBe(50);
+    expect(r.lines[0].line_vat).toBe(8);
+    expect(r.lines[0].line_net).toBe(42);
+    expect(r.total).toBe(50);
+  });
+
+  test("purchase invoice 10% discount on 50 gross at 16% VAT", () => {
+    const r = computePurchaseInvoiceTotals([{ total_cost: 50, discount_pct: 10, vat_rate: 0.16 }], 0.16);
+    expect(r.lines[0].line_total).toBe(45);
+    expect(r.lines[0].line_vat).toBe(7.2);
+    expect(r.lines[0].line_net).toBe(37.8);
+    expect(r.total).toBe(45);
+  });
+
+  test("purchase invoice gross 116 at 16% → net 97.44, VAT 18.56", () => {
+    const r = computePurchaseInvoiceTotals([{ total_cost: 116, vat_rate: 0.16 }], 0.16);
+    expect(r.lines[0].line_vat).toBe(18.56);
+    expect(r.lines[0].line_net).toBe(97.44);
+    expect(r.lines[0].line_total).toBe(116);
+    expect(r.total).toBe(116);
+  });
+
+  test("applyPurchaseDiscount reduces gross by percentage", () => {
+    expect(applyPurchaseDiscount(50, 10)).toBe(45);
+    expect(applyPurchaseDiscount(100, 0)).toBe(100);
+  });
+
+  test("purchase invoice zero VAT rate keeps gross as total", () => {
+    const r = computePurchaseInvoiceTotals([{ total_cost: 50, vat_rate: 0 }], 0.17);
+    expect(r.lines[0].line_net).toBe(50);
+    expect(r.lines[0].line_vat).toBe(0);
+    expect(r.total).toBe(50);
   });
 });

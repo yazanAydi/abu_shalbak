@@ -1,3 +1,6 @@
+import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
+import { printDocumentWhenReady } from "./printDocument";
+import { formatDiscountPercent, formatTaxRatePercent } from "./purchaseTotals";
 const STATUS_LABEL = {
   draft: "مسودة",
   posted: "مرحّلة",
@@ -53,7 +56,16 @@ export function printPurchaseDoc(doc, which, store = {}) {
   const total = Number(doc[meta.totalKey]) || 0;
   const subtotal = doc.subtotal != null ? Number(doc.subtotal) : null;
   const vat = doc.vat != null ? Number(doc.vat) : null;
-  const storeName = store.store_name_ar || store.store_name || "أبو شلبك";
+  const vatPercent = formatTaxRatePercent(store.default_tax_rate);
+  const storeName = store.store_name_ar || store.store_name || STORE_NAME_AR;
+
+  const listGrossTotal = items.reduce((s, it) => s + (Number(it.total_cost) || 0), 0);
+  const afterDiscount = total;
+  const discountSaved = Math.round((listGrossTotal - afterDiscount) * 100) / 100;
+  const effectiveDiscountPct = listGrossTotal > 0
+    ? Math.round((discountSaved / listGrossTotal) * 10000) / 100
+    : 0;
+  const hasDiscount = discountSaved > 0.005;
 
   const w = window.open("", "_blank", "width=900,height=840");
   if (!w) {
@@ -69,8 +81,10 @@ export function printPurchaseDoc(doc, which, store = {}) {
         <td>${escapeHtml(it.barcode || "—")}</td>
         <td>${escapeHtml(it.unit_name || "—")}</td>
         <td class="num">${qty(it.quantity)}</td>
+        <td class="num">${qty(it.bonus_quantity || 0)}</td>
         <td class="num">${qty(it.base_quantity != null ? it.base_quantity : it.quantity)}</td>
         <td class="num">${money(it.total_cost)}</td>
+        <td class="num">${it.discount_pct ? `${it.discount_pct}%` : "—"}</td>
         <td class="num">${money(it.unit_cost)}</td>
         <td class="num">${money(it.line_total)}</td>
       </tr>`
@@ -78,12 +92,18 @@ export function printPurchaseDoc(doc, which, store = {}) {
     .join("");
 
   const totalsRows = [
-    subtotal != null ? `<tr><td>الإجمالي قبل الضريبة</td><td class="num">${money(subtotal)}</td></tr>` : "",
-    which === "invoices" && vat != null ? `<tr><td>ض.ق.م</td><td class="num">${money(vat)}</td></tr>` : "",
-    `<tr class="grand"><td>الإجمالي</td><td class="num">${money(total)}</td></tr>`,
-  ]
-    .filter(Boolean)
-    .join("");
+    `<tr><td>المجموع (يشمل ض.ق.م)</td><td class="num">${money(listGrossTotal)}</td></tr>`,
+    ...(hasDiscount
+      ? [
+          `<tr><td>الخصم ${formatDiscountPercent(effectiveDiscountPct)}%</td><td class="num">${money(discountSaved)}</td></tr>`,
+          `<tr><td>بعد الخصم</td><td class="num">${money(afterDiscount)}</td></tr>`,
+        ]
+      : []),
+    ...(which === "invoices" && vat != null
+      ? [`<tr><td>ضريبة ${vatPercent}%</td><td class="num">${money(vat)}</td></tr>`]
+      : []),
+    `<tr class="grand"><td>الصافي</td><td class="num">${money(afterDiscount)}</td></tr>`,
+  ].join("");
 
   const html = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -109,14 +129,12 @@ export function printPurchaseDoc(doc, which, store = {}) {
     .signatures { margin-top: 40px; display: flex; justify-content: space-between; }
     .signatures div { width: 30%; border-top: 1px solid #333; padding-top: 6px; text-align: center; font-size: 12px; }
     .footer { margin-top: 16px; font-size: 10px; color: #666; text-align: center; }
+    ${PRINT_BRANDING_CSS}
     @media print { thead { display: table-header-group; } tr { page-break-inside: avoid; } }
   </style>
 </head>
 <body>
-  <div class="store">${escapeHtml(storeName)}</div>
-  ${store.store_address || store.store_phone
-      ? `<div class="store-sub">${[store.store_address, store.store_phone].filter(Boolean).map(escapeHtml).join(" — ")}</div>`
-      : ""}
+  ${buildPrintBrandingHtml()}
   <h1>${escapeHtml(meta.title)} #${escapeHtml(docNo)}</h1>
   <div class="meta">
     <div><strong>المورد:</strong> ${escapeHtml(doc.supplier_name || "")}</div>
@@ -128,10 +146,10 @@ export function printPurchaseDoc(doc, which, store = {}) {
   <table>
     <thead>
       <tr>
-        <th class="num">#</th><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th class="num">الكمية</th><th class="num">بالحبة</th><th class="num">إجمالي الكلفة</th><th class="num">كلفة الوحدة</th><th class="num">الإجمالي</th>
+        <th class="num">#</th><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th class="num">الكمية</th><th class="num">بونص</th><th class="num">بالحبة</th><th class="num">إجمالي الكلفة</th><th class="num">خصم</th><th class="num">كلفة الوحدة</th><th class="num">الإجمالي</th>
       </tr>
     </thead>
-    <tbody>${bodyRows || `<tr><td colspan="9" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
+    <tbody>${bodyRows || `<tr><td colspan="11" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
   <table class="totals">${totalsRows}</table>
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}
@@ -146,6 +164,5 @@ export function printPurchaseDoc(doc, which, store = {}) {
 
   w.document.write(html);
   w.document.close();
-  w.focus();
-  w.print();
+  printDocumentWhenReady(w.document);
 }

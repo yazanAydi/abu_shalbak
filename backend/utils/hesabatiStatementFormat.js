@@ -10,6 +10,7 @@ const EV_LABELS = {
   customer: {
     opening: "الرصيد المدور",
     sale: "مبيعات فاتورة",
+    sale_invoice: "فتورة مبيعات",
     refund: "مرتجع",
     payment: "قبض سند",
   },

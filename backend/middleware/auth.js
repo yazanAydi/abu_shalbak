@@ -1,5 +1,7 @@
 import jwt from "jsonwebtoken";
 import { isAdmin, canRunCheckout } from "../utils/roles.js";
+import { getAppSettings } from "../utils/settings.js";
+import { hasAccountantPermission } from "../utils/accountantPermissions.js";
 
 const DEFAULT_SECRET = "change-me-in-production";
 const JWT_SECRET = process.env.JWT_SECRET || DEFAULT_SECRET;
@@ -93,6 +95,78 @@ export function requirePosAccess(req, res, next) {
     });
   }
   next();
+}
+
+const FORBIDDEN_PAYLOAD = {
+  success: false,
+  error: "صلاحيات غير كافية",
+  code: "FORBIDDEN",
+};
+
+function isOfficeRole(role) {
+  return role === "admin" || role === "accountant";
+}
+
+/**
+ * Admin always passes; accountant must have the given permission key.
+ * @param {object} db
+ * @param {string} permissionKey
+ */
+export function requireReportsPermission(db, permissionKey) {
+  return async (req, res, next) => {
+    const role = req.user?.role;
+    if (!role || !isOfficeRole(role)) {
+      return res.status(403).json(FORBIDDEN_PAYLOAD);
+    }
+    if (isAdmin(role)) return next();
+    try {
+      const settings = await getAppSettings(db);
+      if (hasAccountantPermission(role, settings.accountant_permissions, permissionKey)) {
+        return next();
+      }
+      return res.status(403).json(FORBIDDEN_PAYLOAD);
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+/**
+ * Admin always passes; accountant must have at least one of the permission keys.
+ * @param {object} db
+ * @param {...string} permissionKeys
+ */
+export function requireAnyReportsPermission(db, ...permissionKeys) {
+  return async (req, res, next) => {
+    const role = req.user?.role;
+    if (!role || !isOfficeRole(role)) {
+      return res.status(403).json(FORBIDDEN_PAYLOAD);
+    }
+    if (isAdmin(role)) return next();
+    try {
+      const settings = await getAppSettings(db);
+      const permissions = settings.accountant_permissions;
+      for (const key of permissionKeys) {
+        if (hasAccountantPermission(role, permissions, key)) {
+          return next();
+        }
+      }
+      return res.status(403).json(FORBIDDEN_PAYLOAD);
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+/** Require admin or accountant (any office reports role) without a specific permission. */
+export function requireOfficeRole() {
+  return (req, res, next) => {
+    const role = req.user?.role;
+    if (!role || !isOfficeRole(role)) {
+      return res.status(403).json(FORBIDDEN_PAYLOAD);
+    }
+    next();
+  };
 }
 
 export { JWT_SECRET };

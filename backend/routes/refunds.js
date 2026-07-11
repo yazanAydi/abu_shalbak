@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requirePosAccess, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { canViewReports } from "../utils/roles.js";
 import { parseItemsJson } from "../utils/cogs.js";
 import {
@@ -9,6 +9,12 @@ import {
   resolveRefundTargetShift,
 } from "../services/refundRequestService.js";
 import { buildSaleSummary } from "../utils/saleSummary.js";
+import {
+  getStoreLogoDataUri,
+  STORE_LICENSE_LINE,
+  STORE_NAME_AR,
+  STORE_PHONE,
+} from "../utils/storeBranding.js";
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -42,9 +48,19 @@ function buildReceiptHtml(refund, originalTx, cashierName, approverName) {
     )
     .join("");
   const pm = refund.payment_method === "cash" ? "نقد" : "بطاقة";
+  const logoSrc = getStoreLogoDataUri();
+  const logoHtml = logoSrc
+    ? `<img src="${logoSrc}" alt="" style="display:block;margin:0 auto 8px;max-width:180px;max-height:100px;object-fit:contain" />`
+    : "";
   return `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"/><title>إيصال استرجاع #${refund.id}</title>
-<style>body{font-family:system-ui,sans-serif;padding:1.2rem;max-width:480px;margin:auto} table{width:100%;border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px;text-align:right} .sig{margin-top:2rem;border-top:1px solid #333;padding-top:8px}</style></head><body>
-<h2>استرجاع #${refund.id}</h2>
+<style>body{font-family:system-ui,sans-serif;padding:1.2rem;max-width:480px;margin:auto} .brand{text-align:center;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #ccc} .brand .name{font-weight:700;font-size:1.1rem;margin:0 0 2px} .brand .sub{margin:0;font-size:0.85rem;color:#444} table{width:100%;border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px;text-align:right} .sig{margin-top:2rem;border-top:1px solid #333;padding-top:8px}</style></head><body>
+<div class="brand">
+${logoHtml}
+<p class="name">${escapeHtml(STORE_NAME_AR)}</p>
+<p class="sub">${escapeHtml(STORE_PHONE)}</p>
+<p class="sub">${escapeHtml(STORE_LICENSE_LINE)}</p>
+</div>
+<h2>إيصال استرجاع #${refund.id}</h2>
 <p>الفاتورة الأصلية: #${refund.original_transaction_id}<br/>
 الكاشير: ${escapeHtml(cashierName)}<br/>
 التاريخ: ${escapeHtml(refund.created_at || "")}<br/>
@@ -73,6 +89,7 @@ function parseSearchDate(value) {
 
 export function createRefundsRouter(db) {
   const router = Router();
+  const requireRefunds = requireReportsPermission(db, "refunds");
 
   router.get("/search", requireAuth, requirePosOrReports, async (req, res) => {
     const dateFrom = parseSearchDate(req.query.date_from);
@@ -239,7 +256,7 @@ export function createRefundsRouter(db) {
     }
   });
 
-  router.get("/summary", requireAuth, requireRoles("admin", "accountant"), async (_req, res) => {
+  router.get("/summary", requireAuth, requireRefunds, async (_req, res) => {
     const today = new Date().toISOString().slice(0, 10);
     const allRow = await db.get(
       `SELECT COUNT(*) AS count,
@@ -267,14 +284,14 @@ export function createRefundsRouter(db) {
     });
   });
 
-  router.get("/cashiers", requireAuth, requireRoles("admin", "accountant"), async (_req, res) => {
+  router.get("/cashiers", requireAuth, requireRefunds, async (_req, res) => {
     const rows = await db.all(
       `SELECT DISTINCT u.id, u.username FROM refunds r JOIN users u ON u.id = r.cashier_id ORDER BY u.username`
     );
     res.json(rows);
   });
 
-  router.post("/bulk", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.post("/bulk", requireAuth, requireRefunds, async (req, res) => {
     const { ids, status, review_notes } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: "مطلوب مصفوفة ids" });
@@ -329,7 +346,7 @@ export function createRefundsRouter(db) {
     res.json({ success: true, results });
   });
 
-  router.get("/", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.get("/", requireAuth, requireRefunds, async (req, res) => {
     const from =
       (typeof req.query.from === "string" && req.query.from.trim()) ||
       (typeof req.query.date_from === "string" && req.query.date_from.trim()) ||
@@ -410,7 +427,7 @@ export function createRefundsRouter(db) {
     res.json(rows);
   });
 
-  router.get("/:id/receipt", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.get("/:id/receipt", requireAuth, requireRefunds, async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     const refund = await db.get(
@@ -435,7 +452,7 @@ export function createRefundsRouter(db) {
     res.send(html);
   });
 
-  router.get("/:id", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.get("/:id", requireAuth, requireRefunds, async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     const refund = await db.get(
@@ -473,7 +490,7 @@ export function createRefundsRouter(db) {
     });
   });
 
-  router.put("/:id", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.put("/:id", requireAuth, requireRefunds, async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     const { status, review_notes } = req.body || {};
@@ -533,7 +550,7 @@ export function createRefundsRouter(db) {
     }
   });
 
-  router.delete("/:id", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.delete("/:id", requireAuth, requireRefunds, async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     const refund = await db.get("SELECT status FROM refunds WHERE id = ?", [id]);

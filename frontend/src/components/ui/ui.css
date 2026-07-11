@@ -367,6 +367,8 @@ a,
   z-index: 40;
   max-height: 240px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   background: var(--office-input-bg);
   border: 1px solid var(--office-input-border);
   border-radius: var(--office-radius-sm);
@@ -497,6 +499,7 @@ a,
   color: var(--office-panel-text);
 }
 .ui-modal--lg { max-width: 880px; }
+.ui-modal--xl { max-width: 1180px; }
 .ui-modal__header {
   display: flex;
   align-items: center;
@@ -830,7 +833,8 @@ a,
   }
 
   .ui-modal,
-  .ui-modal--lg {
+  .ui-modal--lg,
+  .ui-modal--xl {
     max-width: none;
     width: 100%;
     min-height: 100dvh;

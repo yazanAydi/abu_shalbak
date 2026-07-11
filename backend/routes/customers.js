@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 
 import { round2 } from "../utils/tax.js";
 
@@ -30,10 +30,6 @@ import {
   createStatementHistoryPreviewHandler,
   createStatementHistoryConfirmHandler,
 } from "./statementHistoryHandlers.js";
-
-
-
-const requireReports = requireRoles("admin", "accountant");
 
 
 
@@ -100,6 +96,8 @@ async function resolveBalanceGroupFilter(db, req) {
 
 
 export function createCustomersRouter(db) {
+  const requireFinance = requireReportsPermission(db, "finance");
+  const requireAccountStatement = requireReportsPermission(db, "account_statement");
 
   const router = Router();
 
@@ -305,7 +303,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.get("/balances", requireAuth, requireReports, async (req, res) => {
+  router.get("/balances", requireAuth, requireFinance, async (req, res) => {
 
     const onlyOpen = String(req.query.only_open || "") === "1";
 
@@ -613,7 +611,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.get("/:id/ledger", requireAuth, requireReports, async (req, res) => {
+  router.get("/:id/ledger", requireAuth, requireFinance, async (req, res) => {
 
     const { from, to } = req.query;
 
@@ -645,7 +643,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.get("/:id/statement", requireAuth, requireReports, async (req, res) => {
+  router.get("/:id/statement", requireAuth, requireAccountStatement, async (req, res) => {
 
     const { from, to, page, pageSize } = req.query;
 
@@ -672,7 +670,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.get("/:id/payments", requireAuth, requireReports, async (req, res) => {
+  router.get("/:id/payments", requireAuth, requireFinance, async (req, res) => {
 
     const customer = await db.get("SELECT * FROM customers WHERE id = ?", [req.params.id]);
 

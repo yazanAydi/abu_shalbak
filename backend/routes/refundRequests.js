@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requirePosAccess, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { canViewReports } from "../utils/roles.js";
 import { validate } from "../middleware/validate.js";
 import { refundRequestCreateSchema, refundRequestReviewSchema } from "../middleware/schemas.js";
@@ -23,6 +23,7 @@ function canViewRefundRequest(user, request) {
 
 export function createRefundRequestsRouter(db) {
   const router = Router();
+  const requireRefundApprovals = requireReportsPermission(db, "refund_approvals");
 
   router.post("/", requireAuth, requirePosAccess, validate(refundRequestCreateSchema), async (req, res, next) => {
     try {
@@ -42,12 +43,12 @@ export function createRefundRequestsRouter(db) {
     }
   });
 
-  router.get("/pending", requireAuth, requireRoles("admin", "accountant"), async (_req, res) => {
+  router.get("/pending", requireAuth, requireRefundApprovals, async (_req, res) => {
     const rows = await listPendingRefundRequests(db);
     res.json(rows);
   });
 
-  router.get("/history", requireAuth, requireRoles("admin", "accountant"), async (req, res) => {
+  router.get("/history", requireAuth, requireRefundApprovals, async (req, res) => {
     const status = String(req.query.status || "all").toLowerCase();
     const rows = await listRefundRequestHistory(db, status);
     res.json(rows);
@@ -101,7 +102,7 @@ export function createRefundRequestsRouter(db) {
     });
   });
 
-  router.put("/:id", requireAuth, requireRoles("admin", "accountant"), validate(refundRequestReviewSchema), async (req, res, next) => {
+  router.put("/:id", requireAuth, requireRefundApprovals, validate(refundRequestReviewSchema), async (req, res, next) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     const { status, review_notes: reviewNotes } = req.body;

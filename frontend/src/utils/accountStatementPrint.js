@@ -1,4 +1,6 @@
 import { getDisplayRows } from "../components/AccountStatementView";
+import { buildPrintBrandingHtml, PRINT_BRANDING_CSS } from "./printBranding";
+import { printDocumentWhenReady } from "./printDocument";
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -77,11 +79,12 @@ export function printAccountStatement(report, partyType) {
     .balance-neg { color: #c53030; font-weight: 600; }
     tfoot td { background: #f7fafc; font-weight: 600; }
     .footer { margin-top: 12px; font-size: 10px; color: #666; text-align: center; }
+    ${PRINT_BRANDING_CSS}
     @media print { thead { display: table-header-group; } tr { page-break-inside: avoid; } }
   </style>
 </head>
 <body>
-  <div class="store">${escapeHtml(report.store_name || "أبو شلبك")}</div>
+  ${buildPrintBrandingHtml()}
   <h1>${escapeHtml(report.report_title || "كشف حساب")}</h1>
   <p class="meta"><strong>${partyLabel}:</strong> ${escapeHtml(report.party?.name)}</p>
   <p class="meta"><strong>الفترة:</strong> ${escapeHtml(range)}</p>
@@ -109,8 +112,7 @@ export function printAccountStatement(report, partyType) {
 
   w.document.write(html);
   w.document.close();
-  w.focus();
-  w.print();
+  printDocumentWhenReady(w.document);
 }
 
 /**

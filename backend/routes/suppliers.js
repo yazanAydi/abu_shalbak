@@ -1,6 +1,6 @@
 import { Router } from "express";
 import XLSX from "xlsx";
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { getAccountStatement, parseStatementDate } from "../utils/accountStatementService.js";
 import { importUploadMiddleware } from "../utils/importUpload.js";
@@ -12,8 +12,11 @@ import {
   createStatementHistoryPreviewHandler,
   createStatementHistoryConfirmHandler,
 } from "./statementHistoryHandlers.js";
-
-const requireReports = requireRoles("admin", "accountant");
+import {
+  STORE_LICENSE_LINE,
+  STORE_NAME_AR,
+  STORE_PHONE,
+} from "../utils/storeBranding.js";
 
 const MOVEMENT_TYPE_AR = {
   opening_balance: "رصيد افتتاحي",
@@ -28,6 +31,8 @@ const MOVEMENT_TYPE_AR = {
  * supplier.balance is positive when WE OWE the supplier (a payable).
  */
 export function createSuppliersRouter(db) {
+  const requireFinance = requireReportsPermission(db, "finance");
+  const requireAccountStatement = requireReportsPermission(db, "account_statement");
   const router = Router();
 
   router.get("/", requireAuth, async (req, res) => {
@@ -45,7 +50,7 @@ export function createSuppliersRouter(db) {
     res.json(rows);
   });
 
-  router.get("/balances", requireAuth, requireReports, async (req, res) => {
+  router.get("/balances", requireAuth, requireFinance, async (req, res) => {
     const onlyOpen = String(req.query.only_open || "") === "1";
     const rows = await db.all(
       `SELECT id, supplier_code, name, contact_phone, balance
@@ -149,7 +154,7 @@ export function createSuppliersRouter(db) {
     res.json({ success: true });
   });
 
-  router.get("/:id/ledger", requireAuth, requireReports, async (req, res) => {
+  router.get("/:id/ledger", requireAuth, requireFinance, async (req, res) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const { from, to } = req.query;
@@ -157,7 +162,7 @@ export function createSuppliersRouter(db) {
     res.json({ supplier, ...led });
   });
 
-  router.get("/:id/statement", requireAuth, requireReports, async (req, res) => {
+  router.get("/:id/statement", requireAuth, requireAccountStatement, async (req, res) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const { from, to, page, pageSize } = req.query;
@@ -224,7 +229,9 @@ export function createSuppliersRouter(db) {
 
   function statementEnvelope(supplier, from, to, ledger, movements, pagination) {
     return {
-      store_name: "أبو شلبك",
+      store_name: STORE_NAME_AR,
+      store_phone: STORE_PHONE,
+      store_license: STORE_LICENSE_LINE,
       report_title: "كشف حساب المورد",
       generated_at: new Date().toISOString(),
       date_from: from,
@@ -249,7 +256,7 @@ export function createSuppliersRouter(db) {
     };
   }
 
-  router.get("/:id/statement-ledger", requireAuth, requireReports, async (req, res) => {
+  router.get("/:id/statement-ledger", requireAuth, requireAccountStatement, async (req, res) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     try {
@@ -274,7 +281,7 @@ export function createSuppliersRouter(db) {
     }
   });
 
-  router.get("/:id/statement-ledger/excel", requireAuth, requireReports, async (req, res) => {
+  router.get("/:id/statement-ledger/excel", requireAuth, requireAccountStatement, async (req, res) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     try {
@@ -323,7 +330,7 @@ export function createSuppliersRouter(db) {
   });
 
   // Products purchased from this supplier, grouped by each posted purchase invoice.
-  router.get("/:id/purchase-items", requireAuth, requireReports, async (req, res) => {
+  router.get("/:id/purchase-items", requireAuth, requireFinance, async (req, res) => {
     const supplier = await db.get("SELECT id, name FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const { from, to } = req.query;

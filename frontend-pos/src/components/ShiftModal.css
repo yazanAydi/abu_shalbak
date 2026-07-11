@@ -47,6 +47,24 @@
   color: var(--pos-text-muted, #64748b);
 }
 
+.shift-modal-label .shift-modal-input,
+.shift-modal-label .shift-modal-textarea {
+  width: 100%;
+}
+
+.shift-modal-panel--form {
+  display: flex;
+  flex-direction: column;
+}
+
+.shift-modal-panel--form .shift-modal-title {
+  margin-bottom: 0.35rem;
+}
+
+.shift-modal-panel--form .shift-modal-lead {
+  margin: 0 0 1rem;
+}
+
 .shift-modal-input,
 .shift-modal-textarea {
   padding: 0.6rem 0.75rem;

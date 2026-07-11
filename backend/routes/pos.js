@@ -13,7 +13,8 @@ async function loadQuickButtonProducts(db, settings) {
               pu.id AS unit_id, pu.unit_name, pu.price AS unit_price, pu.conversion_to_base
        FROM products p
        LEFT JOIN product_units pu ON pu.product_id = p.id AND pu.is_default = 1
-       WHERE p.id IN (${placeholders}) AND COALESCE(p.is_active, 1) = 1`,
+       WHERE p.id IN (${placeholders}) AND COALESCE(p.is_active, 1) = 1
+         AND COALESCE(p.inventory_scope, 'retail') = 'retail'`,
       ids
     );
     for (const r of rows) {
@@ -72,6 +73,7 @@ export function createPosRouter(db) {
        LEFT JOIN product_barcodes pb ON pb.product_id = p.id
        LEFT JOIN product_units pu2 ON pu2.product_id = p.id
        WHERE COALESCE(p.is_active, 1) = 1
+         AND COALESCE(p.inventory_scope, 'retail') = 'retail'
          AND (p.name LIKE ? OR p.barcode LIKE ? OR pb.barcode LIKE ? OR pu2.barcode LIKE ?)
        ORDER BY p.name
        LIMIT 20`,

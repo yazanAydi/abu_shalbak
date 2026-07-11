@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "../apiClient";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { getAuthHeaders } from "../utils/auth";
 import {
   buildDashboardAlerts,
   buildDemoChartSeries,
 } from "../utils/dashboardHelpers";
+import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
+import {
+  TOP_PRODUCT_COLUMNS,
+  buildDailySummaryItems,
+  buildCollectionSummaryItems,
+  getTopProductsFromDaily,
+} from "../utils/salesReportHelpers";
+import { printSalesDailyReport } from "../utils/salesReportPrint";
+import { exportToCsv } from "../utils/reportExport";
 import ShiftStatusCard, { ShiftStatusEmpty } from "../components/ShiftStatusCard";
 import TodaysSummary from "../components/TodaysSummary";
 import CashAlerts from "../components/CashAlerts";
@@ -18,21 +27,41 @@ import {
   CardBody,
   EmptyState,
   Skeleton,
-  ReportToolbar,
+  SecondaryButton,
 } from "../components/ui";
-import { qty } from "../utils/format";
-
-const TOP_PRODUCT_COLUMNS = [
-  { key: "product_name", header: "المنتج" },
-  { key: "quantity", header: "الكمية", value: (p) => qty(p.quantity) },
-  { key: "revenue", header: "الإيراد", value: (p) => ils(p.revenue) },
-];
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 const LOW_STOCK_THRESHOLD = 5;
 const LOW_STOCK_WIDGET_LIMIT = 12;
 const NEAR_EXPIRY_WIDGET_LIMIT = 12;
+const CHART_PERIOD_STORAGE_KEY = "dashboardChartPeriod";
+const VALID_CHART_PERIODS = ["week", "rolling30", "calendarMonth"];
+
+function readStoredChartPeriod() {
+  try {
+    const value = localStorage.getItem(CHART_PERIOD_STORAGE_KEY);
+    if (VALID_CHART_PERIODS.includes(value)) return value;
+  } catch {
+    /* ignore */
+  }
+  return "week";
+}
+
+function mapDailyToTodaySummary(daily) {
+  if (!daily) return null;
+  return {
+    transaction_count: daily.total_transactions,
+    revenue: daily.net_sales,
+    refund_count: daily.refund_count,
+    refund_amount: daily.refunds_total,
+    total_tax: daily.total_tax,
+    on_account_total: daily.on_account_total,
+    items_sold: daily.items_sold,
+    collections_by_currency: daily.collections_by_currency,
+    collections_grand_total_nis: daily.collections_grand_total_nis,
+  };
+}
 
 function formatDaysUntilExpiry(days) {
   const d = Number(days);
@@ -43,6 +72,7 @@ function formatDaysUntilExpiry(days) {
 }
 
 export default function DailyReport() {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [chartLoading, setChartLoading] = useState(false);
@@ -51,8 +81,9 @@ export default function DailyReport() {
   const [tick, setTick] = useState(0);
 
   const [today, setToday] = useState(null);
+  const [dailyDetail, setDailyDetail] = useState(null);
   const [topProducts, setTopProducts] = useState([]);
-  const [chartPeriod, setChartPeriod] = useState("week");
+  const [chartPeriod, setChartPeriod] = useState(readStoredChartPeriod);
   const chartPeriodRef = useRef(chartPeriod);
   chartPeriodRef.current = chartPeriod;
   const [chartSeries, setChartSeries] = useState([]);
@@ -68,11 +99,29 @@ export default function DailyReport() {
 
   const fetchChart = useCallback(async (period) => {
     const headers = getAuthHeaders();
-    const url =
-      period === "month" ? "/api/reports/last-30-days" : "/api/reports/last-7-days";
-    const pointCount = period === "month" ? 30 : 7;
-    const { data } = await api.get(url, { headers });
-    const { series, isDemo } = buildDemoChartSeries(data?.days || [], { pointCount });
+    let days = [];
+    let pointCount = 7;
+
+    if (period === "rolling30") {
+      const { data } = await api.get("/api/reports/last-30-days", { headers });
+      days = data?.days || [];
+      pointCount = 30;
+    } else if (period === "calendarMonth") {
+      const from = firstOfCurrentMonthYmd();
+      const to = todayYmd();
+      const { data } = await api.get("/api/reports/daily-series", {
+        headers,
+        params: { from, to },
+      });
+      days = data?.days || [];
+      pointCount = Math.max(days.length, 1);
+    } else {
+      const { data } = await api.get("/api/reports/last-7-days", { headers });
+      days = data?.days || [];
+      pointCount = 7;
+    }
+
+    const { series, isDemo } = buildDemoChartSeries(days, { pointCount });
     setChartSeries(series);
     setChartIsDemo(isDemo);
   }, []);
@@ -88,7 +137,7 @@ export default function DailyReport() {
       }
 
       const headers = getAuthHeaders();
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = todayYmd();
 
       try {
         const reconPromise = api
@@ -96,9 +145,9 @@ export default function DailyReport() {
           .then((r) => r.data)
           .catch(() => null);
 
-        const [todayRes, productsRes, openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData] =
+        const [dailyRes, productsRes, openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData] =
           await Promise.all([
-            api.get("/api/reports/today", { headers }),
+            api.get(`/api/reports/daily?date=${todayStr}`, { headers }),
             api.get(`/api/reports/top-products?date=${todayStr}`, { headers }),
             api.get("/api/shifts?status=open", { headers }),
             api.get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers }),
@@ -116,7 +165,9 @@ export default function DailyReport() {
 
         await fetchChart(chartPeriod);
 
-        setToday(todayRes.data);
+        const dailyPayload = dailyRes.data;
+        setDailyDetail(dailyPayload);
+        setToday(mapDailyToTodaySummary(dailyPayload));
         setTopProducts(productsRes.data?.products || []);
 
         const open = Array.isArray(openShiftsRes.data) ? openShiftsRes.data : [];
@@ -180,6 +231,11 @@ export default function DailyReport() {
   async function onChartPeriodChange(period) {
     if (period === chartPeriod) return;
     setChartPeriod(period);
+    try {
+      localStorage.setItem(CHART_PERIOD_STORAGE_KEY, period);
+    } catch {
+      /* ignore */
+    }
     setChartLoading(true);
     try {
       await fetchChart(period);
@@ -188,6 +244,33 @@ export default function DailyReport() {
     } finally {
       setChartLoading(false);
     }
+  }
+
+  function onChartDayClick(date) {
+    if (!date) return;
+    navigate(`/sales-reports?date=${date}`);
+  }
+
+  function onPrintDailyReport() {
+    if (!dailyDetail) return;
+    printSalesDailyReport({
+      title: "لوحة التحكم — ملخص اليوم",
+      date: todayYmd(),
+      summaryItems: buildDailySummaryItems(dailyDetail),
+      collectionItems: buildCollectionSummaryItems(dailyDetail),
+      productColumns: TOP_PRODUCT_COLUMNS,
+      products: getTopProductsFromDaily(dailyDetail),
+    });
+  }
+
+  function onExportTopProducts() {
+    const rows = topProducts.map((p) => ({
+      name: p.product_name,
+      quantity: p.quantity,
+      revenue: p.revenue,
+    }));
+    if (rows.length === 0) return;
+    exportToCsv(`dashboard-top-products-${todayYmd()}`, TOP_PRODUCT_COLUMNS, rows);
   }
 
   useEffect(() => {
@@ -221,18 +304,6 @@ export default function DailyReport() {
   });
 
   const topProductsPreview = topProducts.slice(0, 5);
-
-  const dashboardSummary = useMemo(() => {
-    if (!today) return [];
-    return [
-      { label: "عدد العمليات", value: String(today.transaction_count ?? 0) },
-      { label: "الإيراد", value: ils(today.revenue) },
-      { label: "الاسترجاعات", value: String(today.refund_count ?? 0) },
-      { label: "ورديات مفتوحة", value: String(openShifts.length) },
-      { label: "مخزون منخفض", value: String(lowStockDisplayTotal) },
-      { label: "صلاحية قريبة", value: String(nearExpiryTotal) },
-    ];
-  }, [today, openShifts.length, lowStockDisplayTotal, nearExpiryTotal]);
 
   if (loading && !today) {
     return (
@@ -273,15 +344,15 @@ export default function DailyReport() {
         icon="dashboard"
         actions={
           <>
-            <ReportToolbar
-              title="لوحة التحكم"
-              subtitle="ملخص اليوم"
-              columns={TOP_PRODUCT_COLUMNS}
-              rows={topProducts}
-              filename="dashboard"
-              summary={dashboardSummary}
-              disabled={!today}
-            />
+            <SecondaryButton type="button" onClick={onPrintDailyReport} disabled={!dailyDetail}>
+              طباعة
+            </SecondaryButton>
+            <SecondaryButton type="button" onClick={onExportTopProducts} disabled={topProducts.length === 0}>
+              تصدير CSV
+            </SecondaryButton>
+            <SecondaryButton type="button" onClick={() => navigate(`/sales-reports?date=${todayYmd()}`)}>
+              عرض تقرير اليوم
+            </SecondaryButton>
             <PrimaryButton
               onClick={() => loadDashboard({ initial: false })}
               disabled={refreshing}
@@ -386,6 +457,7 @@ export default function DailyReport() {
                 isDemo={chartIsDemo}
                 period={chartPeriod}
                 onPeriodChange={onChartPeriodChange}
+                onDayClick={onChartDayClick}
               />
             )}
           </CardBody>

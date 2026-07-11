@@ -3,10 +3,13 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { getUser, removeToken } from "../../utils/auth";
 import { ROLE_LABELS_AR } from "../../utils/roles";
 import { OFFICE_NAV, NAV_SECTION_LABELS } from "./officeNavConfig";
+import useOfficeNavBadges, { navItemBadgeCount, sumSectionBadgeCount } from "../../hooks/useOfficeNavBadges";
+import NavBadge from "./NavBadge";
+import NavIconWithBadge from "./NavIconWithBadge";
 import Icon from "../icons/Icon";
 import "./OfficeLayout.css";
 
-const SECTION_ORDER = ["overview", "catalog", "finance", "operations", "admin"];
+const SECTION_ORDER = ["overview", "catalog", "invoices", "finance", "operations", "admin"];
 
 function groupNavItems(items) {
   const groups = [];
@@ -40,8 +43,10 @@ export default function OfficeSidebar() {
   const location = useLocation();
   const user = getUser();
   const role = user?.role || "";
-  const items = OFFICE_NAV.filter((item) => item.visible(role));
+  const permissions = user?.permissions ?? null;
+  const items = OFFICE_NAV.filter((item) => item.visible(role, permissions));
   const groups = groupNavItems(items);
+  const { badgesByPath, total } = useOfficeNavBadges(Boolean(role));
   const initial = (user?.username || "?").charAt(0).toUpperCase();
 
   const [openSection, setOpenSection] = useState(null);
@@ -113,9 +118,10 @@ export default function OfficeSidebar() {
                 }
                 end={item.path === "/reports"}
               >
-                <span className="office-nav-icon" aria-hidden>
-                  <Icon name={item.icon} />
-                </span>
+                <NavIconWithBadge
+                  name={item.icon}
+                  count={navItemBadgeCount(item, badgesByPath)}
+                />
                 {item.label}
               </NavLink>
             );
@@ -123,6 +129,7 @@ export default function OfficeSidebar() {
 
           const isOpen = openSection === section;
           const isActive = sectionIsActive(groupItems);
+          const sectionBadge = sumSectionBadgeCount(groupItems, badgesByPath);
           return (
             <div key={section} className="office-nav-dropdown">
               <button
@@ -136,6 +143,7 @@ export default function OfficeSidebar() {
                 }
               >
                 {NAV_SECTION_LABELS[section] || section}
+                <NavBadge count={sectionBadge} />
                 <span className="office-nav-chevron" aria-hidden>
                   <Icon name="chevronDown" size={18} />
                 </span>
@@ -152,9 +160,10 @@ export default function OfficeSidebar() {
                             : "office-nav-dropdown-item"
                         }
                       >
-                        <span className="office-nav-icon" aria-hidden>
-                          <Icon name={item.icon} />
-                        </span>
+                        <NavIconWithBadge
+                          name={item.icon}
+                          count={navItemBadgeCount(item, badgesByPath)}
+                        />
                         {item.label}
                       </NavLink>
                     </li>
@@ -192,7 +201,12 @@ export default function OfficeSidebar() {
         aria-expanded={mobileOpen}
         onClick={() => setMobileOpen((prev) => !prev)}
       >
-        <Icon name={mobileOpen ? "close" : "menu"} size={22} />
+        <span className="office-nav-icon-wrap">
+          <span className="office-nav-icon" aria-hidden>
+            <Icon name={mobileOpen ? "close" : "menu"} size={22} />
+          </span>
+          {!mobileOpen ? <NavBadge count={total} /> : null}
+        </span>
       </button>
 
       {mobileOpen ? (
@@ -216,9 +230,10 @@ export default function OfficeSidebar() {
                       }
                       end={item.path === "/reports"}
                     >
-                      <span className="office-nav-icon" aria-hidden>
-                        <Icon name={item.icon} />
-                      </span>
+                      <NavIconWithBadge
+                        name={item.icon}
+                        count={navItemBadgeCount(item, badgesByPath)}
+                      />
                       {item.label}
                     </NavLink>
                   </li>

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import Icon from "../icons/Icon";
 
 const ToastContext = createContext(null);
@@ -22,12 +22,15 @@ export function ToastProvider({ children }) {
     [dismiss]
   );
 
-  const api = {
-    show: push,
-    success: (m, ttl) => push(m, "success", ttl),
-    error: (m, ttl) => push(m, "error", ttl),
-    info: (m, ttl) => push(m, "info", ttl),
-  };
+  const api = useMemo(
+    () => ({
+      show: push,
+      success: (m, ttl) => push(m, "success", ttl),
+      error: (m, ttl) => push(m, "error", ttl),
+      info: (m, ttl) => push(m, "info", ttl),
+    }),
+    [push]
+  );
 
   return (
     <ToastContext.Provider value={api}>

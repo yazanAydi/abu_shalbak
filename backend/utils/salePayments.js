@@ -3,23 +3,10 @@ import { listCurrencies, getBaseCurrency, round2Rate } from "./currencies.js";
 import { TX_BUSINESS_DAY_JOIN, txBusinessDayEquals } from "./businessDay.js";
 
 const ALLOWED = ["cash", "visa", "on_account"];
+const INVOICE_ALLOWED = ["cash", "visa", "on_account", "check"];
 const TOLERANCE = 0.005;
 
-/**
- * Resolve and validate multi-currency checkout payment lines against the
- * server-computed NIS total. The exchange rate is always read from the DB
- * (never trusted from the client) and snapshotted onto each stored line.
- *
- * Every returned line carries:
- *   { method, currency_id, currency_code, symbol, original_amount,
- *     exchange_rate_used, nis_equivalent }
- *
- * @param {object} db wrapped sqlite db
- * @param {object} body checkout request body
- * @param {number} computedTotal invoice total in NIS
- * @returns {Promise<{ lines?, summaryMethod?, cashTendered?, onAccountTotal?, cashTotal?, changeNis?, error? }>}
- */
-export async function resolveCheckoutPayments(db, body, computedTotal) {
+async function resolvePaymentLines(db, body, computedTotal, allowedMethods) {
   const total = round2(computedTotal);
   const cashTendered =
     body.cash_tendered != null && body.cash_tendered !== ""
@@ -42,9 +29,12 @@ export async function resolveCheckoutPayments(db, body, computedTotal) {
   }
 
   function buildLine(spec, fallbackAmount) {
-    const method = spec.method;
-    if (!ALLOWED.includes(method)) {
+    const method = spec.method || spec.payment_method;
+    if (!allowedMethods.includes(method)) {
       return { error: `طريقة دفع غير مدعومة: ${method}` };
+    }
+    if (method === "check" && !String(spec.bank_name || "").trim()) {
+      return { error: "اسم البنك مطلوب لدفع الشيك" };
     }
     const cur = resolveCurrency(spec);
     if (!cur) {
@@ -56,7 +46,9 @@ export async function resolveCheckoutPayments(db, body, computedTotal) {
     const rawOriginal =
       spec.original_amount != null && spec.original_amount !== ""
         ? Number(spec.original_amount)
-        : Number(fallbackAmount);
+        : spec.amount != null && spec.amount !== ""
+          ? Number(spec.amount)
+          : Number(fallbackAmount);
     const originalAmount = round2(rawOriginal);
     if (!Number.isFinite(originalAmount) || originalAmount < 0) {
       return { error: "مبلغ الدفع غير صالح" };
@@ -72,6 +64,8 @@ export async function resolveCheckoutPayments(db, body, computedTotal) {
         original_amount: originalAmount,
         exchange_rate_used: rate,
         nis_equivalent: nisEquivalent,
+        bank_name: method === "check" ? String(spec.bank_name || "").trim() : null,
+        check_no: method === "check" ? String(spec.check_no || "").trim() || null : null,
       },
     };
   }
@@ -92,14 +86,14 @@ export async function resolveCheckoutPayments(db, body, computedTotal) {
     if (method === "mixed") {
       return { error: "يجب إرسال تفاصيل الدفع المتعدد" };
     }
-    // Single-method path defaults to the base currency at the exact total,
-    // unless an explicit currency/original amount is provided.
     const built = buildLine(
       {
         method,
         currency_id: body.currency_id,
         currency_code: body.currency_code,
         original_amount: body.original_amount,
+        bank_name: body.bank_name,
+        check_no: body.check_no,
       },
       total
     );
@@ -121,7 +115,6 @@ export async function resolveCheckoutPayments(db, body, computedTotal) {
     lines.filter((l) => l.method !== "cash").reduce((s, l) => s + l.nis_equivalent, 0)
   );
 
-  // Only cash can produce change; non-cash methods may never exceed the total.
   if (nonCashNis > total + TOLERANCE) {
     return { error: "المبلغ المدفوع بغير النقد أكبر من إجمالي الفاتورة" };
   }
@@ -150,6 +143,29 @@ export async function resolveCheckoutPayments(db, body, computedTotal) {
     cashTotal: cashNis,
     changeNis,
   };
+}
+
+/**
+ * Resolve and validate multi-currency checkout payment lines against the
+ * server-computed NIS total. The exchange rate is always read from the DB
+ * (never trusted from the client) and snapshotted onto each stored line.
+ *
+ * Every returned line carries:
+ *   { method, currency_id, currency_code, symbol, original_amount,
+ *     exchange_rate_used, nis_equivalent }
+ *
+ * @param {object} db wrapped sqlite db
+ * @param {object} body checkout request body
+ * @param {number} computedTotal invoice total in NIS
+ * @returns {Promise<{ lines?, summaryMethod?, cashTendered?, onAccountTotal?, cashTotal?, changeNis?, error? }>}
+ */
+export async function resolveCheckoutPayments(db, body, computedTotal) {
+  return resolvePaymentLines(db, body, computedTotal, ALLOWED);
+}
+
+/** Office sales invoice payments — includes check and mixed. */
+export async function resolveInvoicePayments(db, body, computedTotal) {
+  return resolvePaymentLines(db, body, computedTotal, INVOICE_ALLOWED);
 }
 
 export async function loadSalePayments(db, transactionId) {
@@ -193,9 +209,19 @@ export async function insertSalePayments(db, transactionId, lines) {
     const rate = Number(line.exchange_rate_used != null ? line.exchange_rate_used : 1) || 1;
     await db.run(
       `INSERT INTO sale_payments
-         (transaction_id, payment_method, amount, currency_id, original_amount, exchange_rate_used, nis_equivalent)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [transactionId, line.method, nis, line.currency_id ?? null, original, rate, nis]
+         (transaction_id, payment_method, amount, currency_id, original_amount, exchange_rate_used, nis_equivalent, bank_name, check_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionId,
+        line.method,
+        nis,
+        line.currency_id ?? null,
+        original,
+        rate,
+        nis,
+        line.bank_name ?? null,
+        line.check_no ?? null,
+      ]
     );
   }
 }

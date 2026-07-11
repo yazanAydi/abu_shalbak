@@ -1,16 +1,16 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 
-const requireReports = requireRoles("admin", "accountant");
 const SALES_STATUS = ["pending", "out", "delivered", "cancelled"];
 const RECV_STATUS = ["pending", "received", "cancelled"];
 
 export function createDeliveriesRouter(db) {
   const router = Router();
+  const requireDeliveries = requireReportsPermission(db, "deliveries");
 
   // ════════════ Sales Deliveries ════════════
 
-  router.get("/sales", requireAuth, requireReports, async (req, res) => {
+  router.get("/sales", requireAuth, requireDeliveries, async (req, res) => {
     const { status } = req.query;
     let sql = `SELECT d.*, c.name AS customer_name, u.username AS created_by_name
                FROM sales_deliveries d
@@ -57,7 +57,7 @@ export function createDeliveriesRouter(db) {
 
   // ════════════ Purchase Receivings ════════════
 
-  router.get("/receivings", requireAuth, requireReports, async (req, res) => {
+  router.get("/receivings", requireAuth, requireDeliveries, async (req, res) => {
     const { status } = req.query;
     let sql = `SELECT r.*, s.name AS supplier_name, u.username AS created_by_name
                FROM purchase_receivings r

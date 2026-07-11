@@ -840,6 +840,19 @@
   margin-bottom: var(--space-4);
 }
 
+.sf-pay-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+  min-width: 120px;
+}
+
+.sf-note-field {
+  flex: 1 1 200px;
+  min-width: 180px;
+}
+
 .sf-table-wrap {
   overflow-x: auto;
   border: 1px solid var(--office-panel-border);
@@ -887,5 +900,44 @@
   .dashboard-trend-row {
     grid-template-columns: 1fr;
   }
+}
+
+.invoice-payment-panel__total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--office-panel-muted-bg, #eef2f7);
+  border-radius: 8px;
+  font-size: 1.05rem;
+}
+
+.invoice-payment-panel__lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.invoice-payment-panel__line {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.invoice-payment-panel__summary {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: #fff3cd;
+  color: #664d03;
+}
+
+.invoice-payment-panel__summary--ok {
+  background: #d1e7dd;
+  color: #0f5132;
 }
 

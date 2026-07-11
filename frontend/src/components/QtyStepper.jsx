@@ -2,6 +2,7 @@
  * Quantity input with custom +/- controls that step by whole numbers
  * while preserving any decimal part (e.g. 40.6 + 1 = 41.6).
  */
+import { focusNextField, shouldHandleEnterOnField } from "../utils/focusNavigation";
 function roundQty(n) {
   return Math.round(n * 1000) / 1000;
 }
@@ -50,6 +51,9 @@ export default function QtyStepper({
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       stepBy(-1);
+    } else if (e.key === "Enter" && !e.defaultPrevented && shouldHandleEnterOnField(e.target)) {
+      e.preventDefault();
+      focusNextField(e.target);
     }
   };
 

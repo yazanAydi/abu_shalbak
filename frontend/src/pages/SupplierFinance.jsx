@@ -296,6 +296,10 @@ export default function SupplierFinance() {
 
   async function addOpex() {
     if (!opexForm.amount) return;
+    if (opexForm.category === "other" && !opexForm.reference_note.trim()) {
+      setErr("أدخل وصف المصروف عند اختيار «أخرى»");
+      return;
+    }
     setErr("");
     try {
       await api.post(
@@ -303,6 +307,8 @@ export default function SupplierFinance() {
         {
           ...opexForm,
           amount: Number(opexForm.amount),
+          reference_note:
+            opexForm.category === "other" ? opexForm.reference_note.trim() : null,
         },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
@@ -507,7 +513,14 @@ export default function SupplierFinance() {
           <Select
             className="sf-input"
             value={opexForm.category}
-            onChange={(e) => setOpexForm((f) => ({ ...f, category: e.target.value }))}
+            onChange={(e) => {
+              const category = e.target.value;
+              setOpexForm((f) => ({
+                ...f,
+                category,
+                reference_note: category === "other" ? f.reference_note : "",
+              }));
+            }}
           >
             {Object.entries(OPEX_LABEL).map(([k, v]) => (
               <option key={k} value={k}>
@@ -515,6 +528,17 @@ export default function SupplierFinance() {
               </option>
             ))}
           </Select>
+          {opexForm.category === "other" ? (
+            <label className="sf-note-field">
+              وصف المصروف
+              <input
+                className="sf-input"
+                value={opexForm.reference_note}
+                onChange={(e) => setOpexForm((f) => ({ ...f, reference_note: e.target.value }))}
+                placeholder="اكتب وصف المصروف…"
+              />
+            </label>
+          ) : null}
           <input
             className="sf-input"
             type="number"
@@ -548,6 +572,7 @@ export default function SupplierFinance() {
             <thead>
               <tr>
                 <th>الفئة</th>
+                <th>ملاحظة</th>
                 <th>التاريخ</th>
                 <th>مبلغ</th>
                 <th />
@@ -556,7 +581,7 @@ export default function SupplierFinance() {
             <tbody>
               {opexList.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="sf-empty">
+                  <td colSpan={5} className="sf-empty">
                     لا سجلات
                   </td>
                 </tr>
@@ -564,6 +589,7 @@ export default function SupplierFinance() {
                 opexList.map((o) => (
                   <tr key={o.id}>
                     <td>{OPEX_LABEL[o.category] || o.category}</td>
+                    <td className="sf-notes">{o.reference_note || "—"}</td>
                     <td>{o.paid_on}</td>
                     <td>{ils(o.amount)}</td>
                     <td>

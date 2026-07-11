@@ -7,6 +7,7 @@ import {
   findProductByBarcode,
   normalizeBarcodeInput,
 } from "../utils/barcode.js";
+import { getNextSuggestedBarcode } from "../utils/suggestedBarcode.js";
 import {
   addProductBarcode,
   ensureProductBarcodeOnCreate,
@@ -63,19 +64,39 @@ function marginPct(price, cost) {
 }
 
 const PRODUCT_LIST_SELECT = `id, barcode, name, name_en, price, cost, stock, category, tax_rate, unit, expiry_date, min_price, max_price, sku,
-              COALESCE(is_active, 1) AS is_active, COALESCE(needs_review, 0) AS needs_review, COALESCE(is_weighed, 0) AS is_weighed`;
+              COALESCE(is_active, 1) AS is_active, COALESCE(needs_review, 0) AS needs_review, COALESCE(is_weighed, 0) AS is_weighed,
+              COALESCE(inventory_scope, 'retail') AS inventory_scope, min_stock`;
 
 const PRODUCT_LIST_SELECT_P = `p.id, p.barcode, p.name, p.name_en, p.price, p.cost, p.stock, p.category, p.tax_rate, p.unit, p.expiry_date, p.min_price, p.max_price, p.sku,
-              COALESCE(p.is_active, 1) AS is_active, COALESCE(p.needs_review, 0) AS needs_review, COALESCE(p.is_weighed, 0) AS is_weighed`;
+              COALESCE(p.is_active, 1) AS is_active, COALESCE(p.needs_review, 0) AS needs_review, COALESCE(p.is_weighed, 0) AS is_weighed,
+              COALESCE(p.inventory_scope, 'retail') AS inventory_scope, p.min_stock`;
 
-export async function searchProducts(db, rawQuery) {
+const VALID_INVENTORY_SCOPES = ["retail", "bakery"];
+
+function parseInventoryScope(value, fallback = "retail") {
+  const s = String(value ?? fallback).trim().toLowerCase();
+  return VALID_INVENTORY_SCOPES.includes(s) ? s : fallback;
+}
+
+function inventoryScopeClause(scope, alias) {
+  if (!scope) return { sql: "", params: [] };
+  const col = alias ? `${alias}.inventory_scope` : "inventory_scope";
+  return { sql: ` AND COALESCE(${col}, 'retail') = ?`, params: [scope] };
+}
+
+export async function searchProducts(db, rawQuery, options = {}) {
   const normalized = normalizeBarcodeInput(String(rawQuery ?? "").trim());
   if (!normalized) return null;
+
+  const scope = options.scope ? parseInventoryScope(options.scope) : null;
+  const { sql: scopeSql, params: scopeParams } = inventoryScopeClause(scope, "p");
+  const scopeSqlPlain = scope ? " AND COALESCE(inventory_scope, 'retail') = ?" : "";
+  const scopeParamsPlain = scope ? [scope] : [];
 
   const like = `%${normalized}%`;
   const likeLower = `%${normalized.toLowerCase()}%`;
 
-  console.info(`[products-search] q=${JSON.stringify(normalized)} joinsProductBarcodes=true`);
+  console.info(`[products-search] q=${JSON.stringify(normalized)} joinsProductBarcodes=true scope=${scope ?? "all"}`);
 
   /** @type {Map<number, object>} */
   const byId = new Map();
@@ -87,8 +108,8 @@ export async function searchProducts(db, rawQuery) {
               pu.id AS unit_id, pu.price AS unit_price, pu.conversion_to_base
        FROM product_units pu
        JOIN products p ON p.id = pu.product_id
-       WHERE pu.barcode = ?`,
-      [normalized]
+       WHERE pu.barcode = ?${scopeSql}`,
+      [normalized, ...scopeParams]
     );
     for (const row of fromUnits) {
       byId.set(row.id, { ...row, price: row.unit_price ?? row.price });
@@ -99,8 +120,8 @@ export async function searchProducts(db, rawQuery) {
               pb.barcode AS matched_barcode, pb.label AS matched_barcode_label
        FROM product_barcodes pb
        JOIN products p ON p.id = pb.product_id
-       WHERE pb.barcode = ?`,
-      [normalized]
+       WHERE pb.barcode = ?${scopeSql}`,
+      [normalized, ...scopeParams]
     );
     for (const row of fromPb) {
       byId.set(row.id, row);
@@ -111,8 +132,8 @@ export async function searchProducts(db, rawQuery) {
         `SELECT ${PRODUCT_LIST_SELECT},
                 CAST(barcode AS TEXT) AS matched_barcode, 'أساسي' AS matched_barcode_label
          FROM products
-         WHERE CAST(barcode AS TEXT) = ?`,
-        [normalized]
+         WHERE CAST(barcode AS TEXT) = ?${scopeSqlPlain}`,
+        [normalized, ...scopeParamsPlain]
       );
       for (const row of fromPrimary) {
         byId.set(row.id, row);
@@ -124,11 +145,11 @@ export async function searchProducts(db, rawQuery) {
     `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P}
      FROM products p
      LEFT JOIN product_barcodes pb ON pb.product_id = p.id
-     WHERE p.name LIKE ?
+     WHERE (p.name LIKE ?
         OR CAST(p.barcode AS TEXT) LIKE ?
-        OR pb.barcode LIKE ?
+        OR pb.barcode LIKE ?)${scopeSql}
      ORDER BY p.name ASC`,
-    [likeLower, like, like]
+    [likeLower, like, like, ...scopeParams]
   );
 
   for (const row of likeRows) {
@@ -150,9 +171,10 @@ export function createProductsRouter(db) {
   }
 
   router.get("/", requireAuth, async (req, res) => {
+    const scope = req.query.scope ? parseInventoryScope(req.query.scope) : null;
     const searchTerm = String(req.query.search ?? req.query.q ?? "").trim();
     if (searchTerm) {
-      const rows = await searchProducts(db, searchTerm);
+      const rows = await searchProducts(db, searchTerm, { scope: scope || undefined });
       return res.json(rows ?? []);
     }
 
@@ -160,9 +182,11 @@ export function createProductsRouter(db) {
       return res.status(403).json({ success: false, error: "للمسؤول فقط", code: "FORBIDDEN" });
     }
 
+    const { sql: scopeSql, params: scopeParams } = inventoryScopeClause(scope);
     const rows = await db.all(
       `SELECT ${PRODUCT_LIST_SELECT}
-       FROM products ORDER BY id ASC`
+       FROM products WHERE 1=1${scopeSql} ORDER BY id ASC`,
+      scopeParams
     );
     return res.json(rows);
   });
@@ -199,6 +223,16 @@ export function createProductsRouter(db) {
       excludeUnitId: unitId,
     });
     res.json(result);
+  });
+
+  router.get("/next-barcode", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const barcode = await getNextSuggestedBarcode(db);
+      return res.json({ barcode });
+    } catch (e) {
+      console.error("[products-next-barcode]", e);
+      return res.status(500).json({ error: "تعذّر توليد باركود مقترح" });
+    }
   });
 
   router.get("/:barcode", requireAuth, async (req, res) => {
@@ -242,15 +276,24 @@ export function createProductsRouter(db) {
   });
 
   router.post("/", requireAuth, requireAdmin, async (req, res) => {
-    const { barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url } = req.body || {};
+    const { barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, min_stock } = req.body || {};
+    const inventoryScope = parseInventoryScope(req.body?.inventory_scope, "retail");
+    const isBakery = inventoryScope === "bakery";
     const isWeighed = req.body?.is_weighed === 1 || req.body?.is_weighed === true ? 1 : 0;
-    if (!barcode || !name || price === undefined || stock === undefined) {
+    const resolvedBarcode = String(barcode ?? "").trim()
+      ? String(barcode).trim()
+      : await getNextSuggestedBarcode(db);
+    if (!resolvedBarcode || !name || stock === undefined) {
+      return res.status(400).json({ error: "الباركود والاسم والمخزون مطلوبة" });
+    }
+    if (!isBakery && price === undefined) {
       return res.status(400).json({ error: "الباركود والاسم والسعر والمخزون مطلوبة" });
     }
-    if (!Number.isFinite(Number(price)) || Number(price) < 0) {
+    const finalPrice = price !== undefined && price !== null && price !== "" ? Number(price) : 0;
+    if (!Number.isFinite(finalPrice) || finalPrice < 0) {
       return res.status(400).json({ error: "السعر غير صالح" });
     }
-    const bcNorm = digitsOnly(normalizeBarcodeInput(barcode));
+    const bcNorm = digitsOnly(normalizeBarcodeInput(resolvedBarcode));
     const unitDup = await db.get("SELECT product_id FROM product_units WHERE barcode = ?", [bcNorm]);
     if (unitDup) {
       return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
@@ -267,16 +310,25 @@ export function createProductsRouter(db) {
     try {
       const skuCode = await ensureEntityCode(db, "product", sku);
       const unitName = isWeighed ? "كغم" : unit ? String(unit).trim() : null;
+      const finalCategory = category != null && String(category).trim()
+        ? String(category).trim()
+        : isBakery
+          ? "مواد مخبز"
+          : null;
+      const minStockVal =
+        min_stock !== undefined && min_stock !== null && min_stock !== ""
+          ? Number(min_stock)
+          : null;
       const info = await db.run(
-        `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, is_weighed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, is_weighed, inventory_scope, min_stock)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          String(barcode).trim(),
+          String(resolvedBarcode).trim(),
           String(name).trim(),
           name_en ? String(name_en).trim() : null,
-          Number(price),
+          finalPrice,
           c,
-          category != null ? String(category) : null,
+          finalCategory,
           clampProductStock(stock),
           taxR,
           unitName,
@@ -286,16 +338,21 @@ export function createProductsRouter(db) {
           skuCode,
           image_url ? String(image_url).trim() : null,
           isWeighed,
+          inventoryScope,
+          Number.isFinite(minStockVal) ? minStockVal : null,
         ]
       );
-      await ensureProductBarcodeOnCreate(db, info.lastID, barcode);
+      await ensureProductBarcodeOnCreate(db, info.lastID, resolvedBarcode);
       await upsertProductUnit(db, info.lastID, {
         unit_name: unitName || "حبة",
-        barcode,
-        price: Number(price),
+        barcode: resolvedBarcode,
+        price: finalPrice,
         cost: c,
         conversion_to_base: 1,
         is_default: true,
+        sale_enabled: !isBakery,
+        purchase_enabled: true,
+        is_default_purchase: true,
       });
       const row = await db.get("SELECT * FROM products WHERE id = ?", [info.lastID]);
       await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_CREATE, "products", row.id, null, { name: row.name, price: row.price, stock: row.stock });
@@ -366,15 +423,22 @@ export function createProductsRouter(db) {
           ? 1
           : 0
         : Number(existing.is_weighed) || 0;
+    const inventoryScope =
+      b.inventory_scope !== undefined ? parseInventoryScope(b.inventory_scope, existing.inventory_scope || "retail") : existing.inventory_scope || "retail";
+    let minStock = existing.min_stock;
+    if (b.min_stock !== undefined) {
+      minStock = b.min_stock !== null && b.min_stock !== "" ? Number(b.min_stock) : null;
+    }
     const unitForWeighed = isWeighed ? "كغم" : unit;
     const priceChanged = round2(existing.price) !== round2(price);
     const costChanged = round2(existing.cost) !== round2(cost);
     try {
       await db.run(
         `UPDATE products SET barcode = ?, price = ?, stock = ?, name = ?, name_en = ?, category = ?, unit = ?,
-            expiry_date = ?, cost = ?, tax_rate = ?, min_price = ?, max_price = ?, sku = ?, image_url = ?, is_weighed = ?
+            expiry_date = ?, cost = ?, tax_rate = ?, min_price = ?, max_price = ?, sku = ?, image_url = ?, is_weighed = ?,
+            inventory_scope = ?, min_stock = ?
          WHERE id = ?`,
-        [barcode, price, stock, name, name_en, category, unitForWeighed, expiry_date, cost, tax_rate, min_price, max_price, sku, image_url, isWeighed, id]
+        [barcode, price, stock, name, name_en, category, unitForWeighed, expiry_date, cost, tax_rate, min_price, max_price, sku, image_url, isWeighed, inventoryScope, minStock, id]
       );
     } catch (e) {
       if (e && e.code === "SQLITE_CONSTRAINT") {

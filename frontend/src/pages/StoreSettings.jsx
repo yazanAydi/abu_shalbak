@@ -20,6 +20,9 @@ import {
 } from "../components/ui";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import "../components/barcode/barcode-scanner.css";
+import { STORE_LOGO_PATH, resolveStoreLogoUrl } from "../utils/storeBranding";
+import AccountantPermissionsPanel from "../components/AccountantPermissionsPanel";
+import { defaultAccountantPermissions } from "../utils/accountantPermissions";
 
 const LABELS = {
   default_tax_rate: "نسبة الضريبة الافتراضية (0–1)",
@@ -30,7 +33,8 @@ const LABELS = {
   receipt_logo_url: "رابط الشعار في الإيصال",
   default_opening_cash: "النقد الافتتاحي الافتراضي (₪)",
   shift_variance_threshold: "حد الفارق في الوردية (₪)",
-  expiry_alert_days: "تنبيه الصلاحية عبر تيليجرام (أيام)",
+  expiry_alert_days: "تنبيه الأصناف الأخرى (أيام)",
+  expiry_alert_days_dairy: "تنبيه منتجات الألبان (أيام)",
   pos_shortcut_hold_cart: "اختصار تعليق الفاتورة (مثل F6 أو Ctrl+H)",
   pos_shortcut_suspended_carts: "اختصار الفواتير المعلقة (مثل F7 أو Ctrl+L)",
 };
@@ -43,6 +47,8 @@ export default function StoreSettings() {
   const [settings, setSettings] = useState(null);
   const [form, setForm] = useState({});
   const [quickCategories, setQuickCategories] = useState([]);
+  const [dairyCategories, setDairyCategories] = useState([]);
+  const [newDairyCategoryName, setNewDairyCategoryName] = useState("");
   const [quickButtons, setQuickButtons] = useState([]);
   const [favoriteLabels, setFavoriteLabels] = useState({});
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -74,14 +80,19 @@ export default function StoreSettings() {
           default_opening_cash: data.default_opening_cash ?? 0,
           shift_variance_threshold: data.shift_variance_threshold ?? 50,
           expiry_alert_days: data.expiry_alert_days ?? 7,
+          expiry_alert_days_dairy: data.expiry_alert_days_dairy ?? 3,
           pos_shortcut_hold_cart: data.pos_shortcut_hold_cart ?? "",
           pos_shortcut_suspended_carts: data.pos_shortcut_suspended_carts ?? "",
+          accountant_permissions: data.accountant_permissions ?? defaultAccountantPermissions(),
         });
         const categories = Array.isArray(data.pos_quick_categories)
           ? data.pos_quick_categories
           : [];
         const buttons = Array.isArray(data.pos_quick_buttons) ? data.pos_quick_buttons : [];
         setQuickCategories(categories);
+        setDairyCategories(
+          Array.isArray(data.expiry_dairy_categories) ? data.expiry_dairy_categories : []
+        );
         setQuickButtons(buttons);
         const products = productsRes.data || [];
         setAllProducts(products);
@@ -174,6 +185,23 @@ export default function StoreSettings() {
     setError(null);
   }
 
+  function deleteDairyCategory(name) {
+    setDairyCategories((prev) => prev.filter((c) => c !== name));
+    setError(null);
+  }
+
+  function addDairyCategory() {
+    const name = newDairyCategoryName.trim();
+    if (!name) return;
+    if (dairyCategories.includes(name)) {
+      setError("هذا التصنيف موجود بالفعل");
+      return;
+    }
+    setDairyCategories((prev) => [...prev, name]);
+    setNewDairyCategoryName("");
+    setError(null);
+  }
+
   function onChange(key, value) {
     setForm((p) => ({ ...p, [key]: value }));
     setMsg(null);
@@ -192,13 +220,21 @@ export default function StoreSettings() {
         default_opening_cash: Number(form.default_opening_cash),
         shift_variance_threshold: Number(form.shift_variance_threshold),
         expiry_alert_days: Number(form.expiry_alert_days),
+        expiry_alert_days_dairy: Number(form.expiry_alert_days_dairy),
+        expiry_dairy_categories: dairyCategories,
         pos_quick_categories: quickCategories,
         pos_quick_buttons: quickButtons,
+        accountant_permissions: form.accountant_permissions,
       };
       const { data } = await api.patch("/api/settings", patch, { headers: getAuthHeaders() });
       setSettings(data);
       setQuickCategories(data.pos_quick_categories || quickCategories);
+      setDairyCategories(data.expiry_dairy_categories || dairyCategories);
       setQuickButtons(data.pos_quick_buttons || quickButtons);
+      setForm((prev) => ({
+        ...prev,
+        accountant_permissions: data.accountant_permissions ?? prev.accountant_permissions,
+      }));
       setMsg("تم الحفظ بنجاح");
       toast.success("تم الحفظ بنجاح");
     } catch (e) {
@@ -217,7 +253,15 @@ export default function StoreSettings() {
         headers: getAuthHeaders(),
       });
       if (data.sent) {
-        toast.success(`تم إرسال تنبيه الصلاحية (${data.count} صنف)`);
+        const dairyCount = data.dairy?.count ?? 0;
+        const otherCount = data.other?.count ?? data.count ?? 0;
+        if (data.dairy && data.other) {
+          toast.success(
+            `تم إرسال تنبيه الصلاحية (ألبان: ${dairyCount}، أخرى: ${otherCount})`
+          );
+        } else {
+          toast.success(`تم إرسال تنبيه الصلاحية (${data.count} صنف)`);
+        }
       } else if (data.reason === "no_items") {
         toast.success("لا توجد أصناف قريبة من انتهاء الصلاحية");
       } else if (data.reason === "telegram_not_configured") {
@@ -290,12 +334,26 @@ export default function StoreSettings() {
                 onChange={(e) => onChange("receipt_show_cashier", e.target.checked)}
               />
             </FormField>
-            <FormField label={LABELS.receipt_logo_url}>
+            <FormField
+              label={LABELS.receipt_logo_url}
+              hint={`اتركه فارغاً لاستخدام الشعار الافتراضي (${STORE_LOGO_PATH || "/store-logo.png"})`}
+            >
               <Input
                 type="text"
                 value={form.receipt_logo_url}
                 onChange={(e) => onChange("receipt_logo_url", e.target.value)}
-                placeholder="https://..."
+                placeholder="اتركه فارغاً للشعار الافتراضي"
+              />
+              <img
+                src={resolveStoreLogoUrl(form.receipt_logo_url)}
+                alt=""
+                style={{
+                  display: "block",
+                  marginTop: "0.5rem",
+                  maxWidth: "140px",
+                  maxHeight: "90px",
+                  objectFit: "contain",
+                }}
               />
             </FormField>
           </FormGrid>
@@ -324,8 +382,21 @@ export default function StoreSettings() {
               />
             </FormField>
             <FormField
+              label={LABELS.expiry_alert_days_dairy}
+              hint="تنبيه منفصل عبر تيليجرام لمنتجات الألبان التي تنتهي خلال هذه المدة"
+            >
+              <Input
+                type="number"
+                min="1"
+                max="365"
+                step="1"
+                value={form.expiry_alert_days_dairy}
+                onChange={(e) => onChange("expiry_alert_days_dairy", e.target.value)}
+              />
+            </FormField>
+            <FormField
               label={LABELS.expiry_alert_days}
-              hint="يُرسل ملخص يومي عبر تيليجرام للأصناف والدفعات التي تنتهي خلال هذه المدة"
+              hint="تنبيه منفصل للأصناف غير المصنّفة كألبان"
             >
               <Input
                 type="number"
@@ -345,6 +416,37 @@ export default function StoreSettings() {
               </PrimaryButton>
             </FormField>
           </FormGrid>
+
+          <SectionTitle>تصنيفات الألبان للتنبيه</SectionTitle>
+          <p className="settings-favorites-hint">
+            الأصناف التي يطابق تصنيفها (category) أحد الأسماء أدناه تُرسل في تنبيه الألبان.
+            اترك القائمة فارغة لإرسال تنبيه واحد لجميع الأصناف.
+          </p>
+          <div className="quick-category-list">
+            {dairyCategories.map((cat) => (
+              <div key={cat} className="quick-category-row">
+                <span className="quick-category-name">{cat}</span>
+                <button
+                  type="button"
+                  className="quick-category-delete"
+                  onClick={() => deleteDairyCategory(cat)}
+                >
+                  حذف
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="quick-category-add">
+            <Input
+              type="text"
+              value={newDairyCategoryName}
+              onChange={(e) => setNewDairyCategoryName(e.target.value)}
+              placeholder="مثال: ألبان"
+            />
+            <SecondaryButton type="button" onClick={addDairyCategory}>
+              إضافة تصنيف
+            </SecondaryButton>
+          </div>
 
           <SectionTitle>أقسام الأزرار السريعة</SectionTitle>
           <p className="settings-favorites-hint">
@@ -372,6 +474,7 @@ export default function StoreSettings() {
                 value={newCategoryName}
                 onChange={(e) => setNewCategoryName(e.target.value)}
                 placeholder="اسم قسم جديد…"
+                data-enter-nav-skip=""
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -383,6 +486,17 @@ export default function StoreSettings() {
                 إضافة قسم
               </PrimaryButton>
             </div>
+
+          <SectionTitle>صلاحيات المحاسب</SectionTitle>
+          <p className="settings-favorites-hint">
+            اختر الصفحات والميزات التي يمكن لجميع حسابات المحاسب الوصول إليها في لوحة الإدارة.
+          </p>
+          <AccountantPermissionsPanel
+            value={form.accountant_permissions}
+            onChange={(accountant_permissions) =>
+              setForm((prev) => ({ ...prev, accountant_permissions }))
+            }
+          />
 
           <SectionTitle>اختصارات نقطة البيع</SectionTitle>
           <FormGrid>

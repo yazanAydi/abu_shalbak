@@ -12,12 +12,14 @@ import PosSuspendedDetailModal from "../components/pos/PosSuspendedDetailModal";
 import PosRestoreConflictModal from "../components/pos/PosRestoreConflictModal";
 import PosRefundModal from "../components/pos/PosRefundModal";
 import PosRefundNotifications from "../components/pos/PosRefundNotifications";
+import PosApprovalWaitingModal, { approvalIls } from "../components/pos/PosApprovalWaitingModal";
+import PosAdvanceRequestModal from "../components/pos/PosAdvanceRequestModal";
 import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
 import { requiresShiftForPos } from "../utils/roles";
 import ShiftStart from "../components/ShiftStart";
 import ShiftEnd from "../components/ShiftEnd";
 import { printReceipt } from "../utils/printReceipt";
-import { estimateCartTotals } from "../utils/posTotals";
+import { estimateCartTotals, buildCartLineDiscounts } from "../utils/posTotals";
 import { checkoutReducer, checkoutInitialState } from "../utils/checkoutCartReducer";
 import {
   formatShortcutHint,
@@ -61,6 +63,7 @@ export default function Checkout() {
   const { cartItems, lastScannedCartKey, error, blockedScan, receiptData } = state;
 
   const [appSettings, setAppSettings] = useState(null);
+  const [activePromos, setActivePromos] = useState([]);
   const [selectedPayment, setSelectedPayment] = useState(null);
   const [customerId, setCustomerId] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -73,6 +76,8 @@ export default function Checkout() {
   const [suspendedSales, setSuspendedSales] = useState([]);
   const [endShiftOpen, setEndShiftOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
+  const [advanceOpen, setAdvanceOpen] = useState(false);
+  const [onAccountWaitingId, setOnAccountWaitingId] = useState(null);
   const [holdLoading, setHoldLoading] = useState(false);
   const [posActionError, setPosActionError] = useState("");
   const [suspendedModalOpen, setSuspendedModalOpen] = useState(false);
@@ -118,13 +123,33 @@ export default function Checkout() {
     idempotencyKeyRef.current = null;
   }, [cartItems]);
 
+  const loadActivePromos = useCallback(() => {
+    api
+      .get("/api/marketing/active", { headers: getAuthHeaders() })
+      .then(({ data }) => setActivePromos(Array.isArray(data) ? data : []))
+      .catch(() => setActivePromos([]));
+  }, []);
+
   useEffect(() => {
     warmPosSounds();
     api
       .get("/api/settings", { headers: getAuthHeaders() })
       .then(({ data }) => setAppSettings(data))
       .catch(() => setAppSettings(null));
-  }, []);
+    loadActivePromos();
+  }, [loadActivePromos]);
+
+  useEffect(() => {
+    loadActivePromos();
+  }, [cartItems, loadActivePromos]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") loadActivePromos();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [loadActivePromos]);
 
   const loadSuspendedList = useCallback(async () => {
     if (!shiftReady) {
@@ -173,11 +198,16 @@ export default function Checkout() {
   }, [shiftReady, loadSuspendedList]);
 
   const estimated = useMemo(
-    () => estimateCartTotals(cartItems, appSettings),
-    [cartItems, appSettings]
+    () => estimateCartTotals(cartItems, appSettings, activePromos),
+    [cartItems, appSettings, activePromos]
   );
 
-  const { subtotal, tax, total } = estimated;
+  const lineDiscounts = useMemo(
+    () => buildCartLineDiscounts(cartItems, activePromos),
+    [cartItems, activePromos]
+  );
+
+  const { subtotal, tax, discount, total } = estimated;
 
   const addToCart = useCallback((product) => {
     dispatch({ type: "ADD_PRODUCT", product });
@@ -332,9 +362,15 @@ export default function Checkout() {
             "Content-Type": "application/json",
           },
         });
-        dispatch({ type: "CHECKOUT_SUCCESS", data });
+        const payload = data?.data ?? data;
+        if (payload?.pending_approval && payload?.request_id) {
+          setOnAccountWaitingId(payload.request_id);
+          setPayModalOpen(false);
+          return;
+        }
+        dispatch({ type: "CHECKOUT_SUCCESS", data: payload });
         playCheckoutDone();
-        receiptToPrint = data?.receipt_text || null;
+        receiptToPrint = payload?.receipt_html || payload?.receipt_text ? payload : null;
         idempotencyKeyRef.current = null;
         setSelectedPayment(null);
         setCustomerId(null);
@@ -368,8 +404,34 @@ export default function Checkout() {
     ]
   );
 
+  const finalizeApprovedOnAccountSale = useCallback(
+    (detail) => {
+      const checkout = detail?.checkout;
+      if (!checkout) return;
+      dispatch({ type: "CHECKOUT_SUCCESS", data: checkout });
+      playCheckoutDone();
+      idempotencyKeyRef.current = null;
+      setSelectedPayment(null);
+      setCustomerId(null);
+      setOnAccountWaitingId(null);
+      setActiveSuspendedSaleId(null);
+      loadShift();
+      loadSuspendedList();
+      focusBarcodeInput();
+      if (checkout.receipt_html || checkout.receipt_text) {
+        printReceipt(checkout);
+      }
+    },
+    [loadShift, loadSuspendedList]
+  );
+
+  function handleOnAccountWaitingClose() {
+    setOnAccountWaitingId(null);
+    focusBarcodeInput();
+  }
+
   function doPrintLocal() {
-    if (receiptData?.receipt_text) printReceipt(receiptData.receipt_text);
+    if (receiptData?.receipt_html || receiptData?.receipt_text) printReceipt(receiptData);
   }
 
   function handleCompleteClick() {
@@ -578,6 +640,8 @@ export default function Checkout() {
         <PosCartTable
           cartItems={cartItems}
           scrollToCartKey={lastScannedCartKey}
+          lineDiscounts={lineDiscounts}
+          activePromos={activePromos}
           onQuantityChange={changeQuantity}
           onRemoveItem={removeFromCart}
           onUnitChange={changeUnit}
@@ -611,9 +675,9 @@ export default function Checkout() {
           <button type="button" className="pos-toolbar-btn" onClick={() => setRefundOpen(true)}>
             استرجاع
           </button>
-          <a href="/my-refunds" className="pos-toolbar-btn">
-            طلباتي
-          </a>
+          <button type="button" className="pos-toolbar-btn" onClick={() => setAdvanceOpen(true)}>
+            سلف
+          </button>
         </div>
         <div className="pos-shortcut-hints">
           <span>{formatShortcutHint(shortcuts.undoLastScan)}</span>
@@ -628,6 +692,7 @@ export default function Checkout() {
         <PosPaymentPanel
           subtotal={subtotal}
           tax={tax}
+          discount={discount}
           total={total}
           error={error}
           isLoading={isLoading}
@@ -683,6 +748,34 @@ export default function Checkout() {
           setRestoreConflictOpen(false);
           setPendingRestoreId(null);
           focusBarcodeInput();
+        }}
+      />
+
+      <PosAdvanceRequestModal open={advanceOpen} onClose={() => setAdvanceOpen(false)} />
+
+      <PosApprovalWaitingModal
+        open={!!onAccountWaitingId}
+        requestId={onAccountWaitingId}
+        apiPath="/api/on-account-requests"
+        titlePrefix="طلب ذمة"
+        statusLabels={{
+          pending: "بانتظار موافقة المدير على البيع بالذمة…",
+          approved: "تمت الموافقة — اكتمل البيع",
+          rejected: "تم رفض البيع على الذمة",
+          expired: "انتهت صلاحية الطلب",
+        }}
+        detailLine={(d) => {
+          if (!d) return null;
+          const parts = [];
+          if (d.customer_name) parts.push(`العميل: ${d.customer_name}`);
+          if (d.on_account_amount != null) parts.push(`الذمة: ${approvalIls(d.on_account_amount)}`);
+          return parts.length ? parts.join(" — ") : null;
+        }}
+        onClose={handleOnAccountWaitingClose}
+        onTerminal={(detail) => {
+          if (detail.status === "approved") {
+            finalizeApprovedOnAccountSale(detail);
+          }
         }}
       />
 

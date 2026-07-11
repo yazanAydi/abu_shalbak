@@ -6,8 +6,11 @@ import {
   fetchAllImportedStatementEntries,
   mergePartyAccountStatement,
 } from "./accountStatementMerge.js";
-
-const STORE_NAME = "أبو شلبك";
+import {
+  STORE_LICENSE_LINE,
+  STORE_NAME_AR,
+  STORE_PHONE,
+} from "./storeBranding.js";
 
 /**
  * @param {string} [value]
@@ -124,10 +127,10 @@ export async function getAccountStatement(db, opts) {
           ledger,
           importedHistory,
           { from, to },
-          { storeName: STORE_NAME }
+          { storeName: STORE_NAME_AR }
         )
       : formatHesabatiStatement(normalizedType, party, ledger, { from, to }, {
-          storeName: STORE_NAME,
+          storeName: STORE_NAME_AR,
         });
 
   const movementRows = formatted.rows.filter((r) => r.ev_type !== "opening");
@@ -160,7 +163,9 @@ export async function getAccountStatement(db, opts) {
       : ledger.closing_balance;
 
   return {
-    store_name: STORE_NAME,
+    store_name: STORE_NAME_AR,
+    store_phone: STORE_PHONE,
+    store_license: STORE_LICENSE_LINE,
     party_type: normalizedType,
     report_title: normalizedType === "supplier" ? "كشف حساب مورد" : "كشف حساب عميل",
     party: formatted.party,

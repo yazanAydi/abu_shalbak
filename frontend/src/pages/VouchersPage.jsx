@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { voucherPartyName } from "../utils/partySearch";
@@ -25,6 +25,7 @@ import {
 
 const ils = (n) => `₪${Number(n ?? 0).toFixed(2)}`;
 const TYPE_AR = { receipt: "سند قبض", payment: "سند صرف" };
+const VALID_VOUCHER_TYPES = new Set(["receipt", "payment"]);
 const STATUS_AR = { draft: "مسودة", posted: "مرحّل" };
 const STATUS_TONE = { draft: "orange", posted: "green" };
 
@@ -46,10 +47,13 @@ function resetForm(setLines, setNotes, setParty) {
 
 export default function VouchersPage() {
   const toast = useToast();
+  const { type: typeParam } = useParams();
+  const lockedType = VALID_VOUCHER_TYPES.has(typeParam) ? typeParam : null;
+  const pageTitle = lockedType ? TYPE_AR[lockedType] : "سندات القبض والصرف";
   const [vouchers, setVouchers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [voucherType, setVoucherType] = useState("receipt");
+  const [voucherType, setVoucherType] = useState(lockedType || "receipt");
   const [voucherDate, setVoucherDate] = useState(new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([{ ...emptyLine }]);
@@ -57,8 +61,15 @@ export default function VouchersPage() {
   const [saving, setSaving] = useState(false);
   const [detail, setDetail] = useState(null);
   const [editId, setEditId] = useState(null);
-  const [filter, setFilter] = useState({ type: "", status: "" });
+  const [filter, setFilter] = useState({ type: lockedType || "", status: "" });
   const [searchParams, setSearchParams] = useSearchParams();
+
+  useEffect(() => {
+    if (lockedType) {
+      setFilter((prev) => (prev.type === lockedType ? prev : { ...prev, type: lockedType }));
+      setVoucherType(lockedType);
+    }
+  }, [lockedType]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -211,7 +222,7 @@ export default function VouchersPage() {
   function openNewForm() {
     setEditId(null);
     resetForm(setLines, setNotes, setParty);
-    setVoucherType("receipt");
+    setVoucherType(lockedType || "receipt");
     setVoucherDate(new Date().toISOString().slice(0, 10));
     setShowForm(true);
   }
@@ -285,16 +296,16 @@ export default function VouchersPage() {
   return (
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
-        title="سندات القبض والصرف"
-        subtitle="سندات القبض والصرف المالية"
+        title={pageTitle}
+        subtitle={lockedType ? `${pageTitle} المالية` : "سندات القبض والصرف المالية"}
         icon="vouchers"
         actions={
           !detail ? (
             <ReportToolbar
-              title="سندات القبض والصرف"
+              title={pageTitle}
               columns={VOUCHER_COLUMNS}
               rows={vouchers}
-              filename="vouchers"
+              filename={lockedType ? `vouchers-${lockedType}` : "vouchers"}
               disabled={loading}
             />
           ) : null
@@ -332,13 +343,15 @@ export default function VouchersPage() {
       ) : (
         <>
           <FilterBar actions={<Button onClick={openNewForm}>+ سند جديد</Button>}>
-            <FormField label="النوع">
-              <Select value={filter.type} onChange={(e) => setFilter((p) => ({ ...p, type: e.target.value }))}>
-                <option value="">كل الأنواع</option>
-                <option value="receipt">قبض</option>
-                <option value="payment">صرف</option>
-              </Select>
-            </FormField>
+            {!lockedType ? (
+              <FormField label="النوع">
+                <Select value={filter.type} onChange={(e) => setFilter((p) => ({ ...p, type: e.target.value }))}>
+                  <option value="">كل الأنواع</option>
+                  <option value="receipt">قبض</option>
+                  <option value="payment">صرف</option>
+                </Select>
+              </FormField>
+            ) : null}
             <FormField label="الحالة">
               <Select
                 value={filter.status}
@@ -380,7 +393,11 @@ export default function VouchersPage() {
         <form id="voucher-form" onSubmit={submit}>
           <FormGrid>
             <FormField label="النوع">
-              <Select value={voucherType} onChange={(e) => setVoucherType(e.target.value)}>
+              <Select
+                value={voucherType}
+                onChange={(e) => setVoucherType(e.target.value)}
+                disabled={Boolean(lockedType)}
+              >
                 <option value="receipt">سند قبض</option>
                 <option value="payment">سند صرف</option>
               </Select>

@@ -5,7 +5,7 @@ import { lookupProductByBarcode, normalizeBarcode } from "./barcode";
 /**
  * Search products by name or any barcode (including unit barcodes in product_barcodes).
  * @param {string} query
- * @param {{ limit?: number, excludeIds?: number[] }} [opts]
+ * @param {{ limit?: number, excludeIds?: number[], scope?: 'retail' | 'bakery' }} [opts]
  */
 export async function searchProductsApi(query, opts = {}) {
   const q = String(query ?? "").trim();
@@ -13,13 +13,15 @@ export async function searchProductsApi(query, opts = {}) {
 
   const limit = opts.limit ?? 20;
   const exclude = new Set((opts.excludeIds ?? []).map(Number));
+  const params = { search: q };
+  if (opts.scope) params.scope = opts.scope;
 
   const { data } = await api.get("/api/products", {
-    params: { search: q },
+    params,
     headers: getAuthHeaders(),
   });
 
-  let rows = Array.isArray(data) ? data : [];
+  let rows = Array.isArray(data?.data ?? data) ? (data?.data ?? data) : [];
 
   if (rows.length === 0 && /^\d+$/.test(normalizeBarcode(q))) {
     try {

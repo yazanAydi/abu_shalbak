@@ -22,8 +22,9 @@ const QUICK_PATHS = [
 export default function OfficeSideRail() {
   const user = getUser();
   const role = user?.role || "";
+  const permissions = user?.permissions ?? null;
   const quickLinks = OFFICE_NAV.filter(
-    (item) => item.visible(role) && QUICK_PATHS.includes(item.path)
+    (item) => item.visible(role, permissions) && QUICK_PATHS.includes(item.path)
   );
 
   const [lowStock, setLowStock] = useState([]);

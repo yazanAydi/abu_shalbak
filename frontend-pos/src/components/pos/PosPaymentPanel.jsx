@@ -5,6 +5,7 @@ const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 export default function PosPaymentPanel({
   subtotal,
   tax,
+  discount = 0,
   total,
   error,
   isLoading,
@@ -24,6 +25,12 @@ export default function PosPaymentPanel({
           <div className="pos-total-row">
             <span>ضريبة</span>
             <span>{ils(tax)}</span>
+          </div>
+        ) : null}
+        {discount > 0 ? (
+          <div className="pos-total-row pos-total-row--discount">
+            <span>عرض / خصم</span>
+            <span>-{ils(discount)}</span>
           </div>
         ) : null}
         <div className="pos-total-row pos-total-row--grand">

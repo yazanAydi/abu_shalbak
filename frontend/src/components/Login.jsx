@@ -48,7 +48,7 @@ export default function Login() {
       }
       setToken(data.token);
       setUser(data.user);
-      navigate(homePathForRole(data.user?.role), { replace: true });
+      navigate(homePathForRole(data.user?.role, data.user?.permissions), { replace: true });
     } catch (e) {
       const msg =
         e.response?.data?.error ||
@@ -72,7 +72,7 @@ export default function Login() {
         <span className="login-brand-tag">لوحة الإدارة</span>
       </section>
       <section className="login-panel">
-        <div className="login-card">
+        <div className="login-card" data-enter-nav="off">
           <h2 className="login-card-title">تسجيل الدخول</h2>
           <p className="login-sub">أدخل بيانات حسابك للمتابعة</p>
           <label className="login-label">

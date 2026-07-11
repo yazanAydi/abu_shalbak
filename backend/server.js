@@ -81,9 +81,11 @@ if (process.env.NODE_ENV !== "test") {
       try {
         const result = await sendExpiryAlert(db);
         if (result.sent) {
-          console.log(
-            `[expiry-alert] Sent Telegram alert: ${result.count} items (${result.products} products, ${result.batches} batches)`
-          );
+          const dairyPart = result.dairy ? ` dairy ${result.dairy.count}` : "";
+          const otherPart = result.other
+            ? ` other ${result.other.count}`
+            : ` (${result.products} products, ${result.batches} batches)`;
+          console.log(`[expiry-alert] Sent Telegram alert: ${result.count} items${dairyPart}${otherPart}`);
         }
       } catch (e) {
         console.error("[expiry-alert] Telegram alert failed:", e.message);

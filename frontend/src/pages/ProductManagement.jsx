@@ -71,6 +71,22 @@ async function lookupProductByBarcodeApi(barcode) {
   }
 }
 
+async function fetchSuggestedBarcode() {
+  try {
+    const { data } = await api.get("/api/products/next-barcode", {
+      headers: getAuthHeaders(),
+    });
+    return data?.barcode ?? "";
+  } catch {
+    return "";
+  }
+}
+
+async function freshAddForm() {
+  const barcode = await fetchSuggestedBarcode();
+  return { ...emptyForm, barcode };
+}
+
 function formToPayload(form) {
   return {
     barcode: form.barcode.trim(),
@@ -133,9 +149,10 @@ export default function ProductManagement() {
     setLoading(true);
     try {
       const { data } = await api.get("/api/products", {
+        params: { scope: "retail" },
         headers: getAuthHeaders(),
       });
-      setProducts(Array.isArray(data) ? data : []);
+      setProducts(Array.isArray(data?.data ?? data) ? (data?.data ?? data) : []);
       setSearchResults(null);
     } catch (e) {
       toast.error(e.response?.data?.error || e.message);
@@ -149,6 +166,18 @@ export default function ProductManagement() {
   }, [load]);
 
   useEffect(() => {
+    let cancelled = false;
+    fetchSuggestedBarcode().then((barcode) => {
+      if (!cancelled && barcode) {
+        setForm((f) => (f.barcode ? f : { ...f, barcode }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const q = search.trim();
     if (!q) {
       setSearchResults(null);
@@ -159,7 +188,7 @@ export default function ProductManagement() {
     setSearchLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchProductsApi(q, { limit: 500 });
+        const rows = await searchProductsApi(q, { limit: 500, scope: "retail" });
         setSearchResults(rows);
       } catch (e) {
         toast.error(e.response?.data?.error || e.message);
@@ -271,7 +300,7 @@ export default function ProductManagement() {
         formToPayload(form),
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
-      setForm(emptyForm);
+      setForm(await freshAddForm());
       setConflictProduct(null);
       toast.success("تمت إضافة المنتج");
       await load();
@@ -306,7 +335,7 @@ export default function ProductManagement() {
         formToPayload(form),
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
-      setForm(emptyForm);
+      setForm(await freshAddForm());
       setConflictProduct(null);
       toast.success("تم استبدال المنتج");
       await load();
@@ -574,11 +603,16 @@ export default function ProductManagement() {
           <h2 className="dashboard-section-title">إضافة منتج</h2>
           <form onSubmit={addProduct}>
             <FormGrid>
-              <FormField label="الباركود" required>
+              <FormField
+                label="الباركود"
+                required
+                hint="مقترح — يمكن تعديله أو مسح باركود آخر"
+              >
                 <div className="barcode-input-row">
                   <Input
                     value={form.barcode}
                     onChange={(e) => setForm({ ...form, barcode: e.target.value })}
+                    placeholder="00000000001"
                     required
                   />
                   <CameraBarcodeButton

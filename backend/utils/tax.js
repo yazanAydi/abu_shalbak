@@ -59,3 +59,52 @@ export function computeSaleTotals(lines, settings) {
 
   return { subtotal, tax, total: round2(subtotal + tax), lines: detailed };
 }
+
+/** Apply supplier line discount (0–100%) to a pre-discount gross amount. */
+export function applyPurchaseDiscount(gross, discountPct) {
+  const d = Math.min(100, Math.max(0, Number(discountPct) || 0));
+  return round2((Number(gross) || 0) * (1 - d / 100));
+}
+
+/**
+ * Compute purchase invoice totals from line items.
+ * total_cost is pre-discount VAT-inclusive; discount_pct reduces payable before VAT split.
+ *
+ * @param {Array<{ total_cost: number, discount_pct?: number, vat_rate?: number }>} lines
+ * @param {number} defaultRate store default tax rate (0–1)
+ */
+export function computePurchaseInvoiceTotals(lines, defaultRate = 0) {
+  const def = Math.max(0, Number(defaultRate) || 0);
+  let subtotal = 0;
+  let vat = 0;
+  let grossTotal = 0;
+  const detailed = [];
+
+  for (const line of lines) {
+    const rate = Number.isFinite(line.vat_rate) ? Math.max(0, line.vat_rate) : def;
+    const lineGross = applyPurchaseDiscount(line.total_cost, line.discount_pct);
+    let lineNet;
+    let lineVat;
+
+    if (rate > 0) {
+      lineVat = round2(lineGross * rate);
+      lineNet = round2(lineGross - lineVat);
+    } else {
+      lineNet = lineGross;
+      lineVat = 0;
+    }
+
+    subtotal = round2(subtotal + lineNet);
+    vat = round2(vat + lineVat);
+    grossTotal = round2(grossTotal + lineGross);
+    detailed.push({
+      ...line,
+      vat_rate: rate,
+      line_net: lineNet,
+      line_vat: lineVat,
+      line_total: lineGross,
+    });
+  }
+
+  return { subtotal, vat, total: grossTotal, lines: detailed };
+}

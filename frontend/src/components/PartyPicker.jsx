@@ -58,6 +58,21 @@ export default function PartyPicker({
     setOpen(false);
   }
 
+  function pickParty(p) {
+    onPick(p);
+    setQ("");
+    setOpen(false);
+    setResults([]);
+  }
+
+  function onSearchKeyDown(e) {
+    if (e.key !== "Enter" || e.defaultPrevented) return;
+    if (open && q.trim() && !loading && results.length > 0) {
+      e.preventDefault();
+      pickParty(results[0]);
+    }
+  }
+
   if (value) {
     return (
       <div className="party-picker party-picker--selected" ref={ref}>
@@ -87,6 +102,7 @@ export default function PartyPicker({
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
+          onKeyDown={onSearchKeyDown}
         />
         {open && q.trim() && loading && (
           <p className="search-dropdown-hint" style={{ margin: "0.35rem 0", fontSize: "0.85rem" }}>
@@ -111,12 +127,7 @@ export default function PartyPicker({
             {results.map((p) => (
               <li
                 key={`${p.type}-${p.id}`}
-                onClick={() => {
-                  onPick(p);
-                  setQ("");
-                  setOpen(false);
-                  setResults([]);
-                }}
+                onClick={() => pickParty(p)}
               >
                 <span className="party-badge">{p.badge}</span>
                 <strong>{p.name}</strong>

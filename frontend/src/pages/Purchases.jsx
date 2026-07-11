@@ -11,6 +11,9 @@ import {
 import { pickExportColumns } from "../utils/reportExport";
 import { printPurchaseDoc } from "../utils/purchaseDocPrint";
 import QtyStepper from "../components/QtyStepper";
+import { handleEnterNavKeyDown } from "../utils/focusNavigation";
+import { computePurchaseEditorTotals, computePurchaseLinePayable, computePurchaseLineVat, computePurchaseSimpleTotal, deriveTotalCost, deriveUnitCost, formatDiscountPercent, formatTaxRatePercent } from "../utils/purchaseTotals";
+import "./purchase-item-editor.css";
 
 const STATUS_TONE = { draft: "neutral", posted: "green", confirmed: "blue", received: "green", cancelled: "red" };
 const STATUS_LABEL = { draft: "مسودة", posted: "مرحّلة", confirmed: "مؤكد", received: "مستلم", cancelled: "ملغي" };
@@ -39,7 +42,49 @@ function pickDefaultPurchaseUnit(units) {
   return def ? def.id : null;
 }
 
-function ItemEditor({ items, setItems, withVat }) {
+/** Supplier-style summary block (matches PALCO invoice layout). */
+function PurchaseSummaryFooter({ withVat, vatTotals, simpleTotals }) {
+  const listTotal = withVat ? vatTotals?.listGrossTotal : simpleTotals?.listGrossTotal;
+  const discountSaved = withVat ? vatTotals?.discountSaved : simpleTotals?.discountSaved;
+  const discountPct = withVat ? vatTotals?.effectiveDiscountPct : simpleTotals?.effectiveDiscountPct;
+  const afterDiscount = withVat ? vatTotals?.grossTotal : simpleTotals?.total;
+  const hasDiscount = (discountSaved ?? 0) > 0;
+
+  if (listTotal == null && afterDiscount == null) return null;
+
+  const rows = [
+    { label: "المجموع (يشمل ض.ق.م)", value: ils(listTotal ?? 0), muted: false },
+    ...(hasDiscount
+      ? [
+          { label: `الخصم ${formatDiscountPercent(discountPct)}%`, value: ils(discountSaved), muted: true },
+          { label: "بعد الخصم", value: ils(afterDiscount ?? 0), muted: true },
+        ]
+      : []),
+    ...(withVat && vatTotals
+      ? [{ label: `ضريبة ${formatTaxRatePercent(vatTotals.rate)}%`, value: ils(vatTotals.vat), muted: true }]
+      : []),
+    { label: "الصافي", value: ils(afterDiscount ?? 0), grand: true },
+  ];
+
+  return (
+    <table className="purchase-summary-table" style={{ marginTop: "0.75rem", marginInlineStart: "auto", borderCollapse: "collapse", fontSize: "0.95rem" }}>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.label} style={row.grand ? { background: "var(--office-panel-muted-bg, #eef2f7)", fontWeight: 700 } : undefined}>
+            <td style={{ padding: "0.35rem 1rem 0.35rem 0", textAlign: "right", color: row.muted ? "var(--office-panel-muted)" : undefined, whiteSpace: "nowrap" }}>
+              {row.label}
+            </td>
+            <td className="num" style={{ padding: "0.35rem 0", textAlign: "left", fontWeight: row.grand ? 700 : 500, minWidth: 90 }}>
+              {row.value}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "retail" }) {
   async function addProduct(p) {
     let exists = false;
     setItems((prev) => {
@@ -60,7 +105,10 @@ function ItemEditor({ items, setItems, withVat }) {
           unit_id: pickDefaultPurchaseUnit(units),
           units,
           total_cost: "",
-          vat_rate: "",
+          unit_cost: "",
+          cost_mode: "total",
+          discount_pct: "",
+          bonus_quantity: "",
         },
       ];
     });
@@ -68,37 +116,114 @@ function ItemEditor({ items, setItems, withVat }) {
   function update(i, key, val) {
     setItems((prev) => prev.map((x, idx) => (idx === i ? { ...x, [key]: val } : x)));
   }
+  function updateTotalCost(i, val) {
+    setItems((prev) => prev.map((x, idx) => {
+      if (idx !== i) return x;
+      const qty = Number(x.quantity) || 0;
+      return {
+        ...x,
+        total_cost: val,
+        unit_cost: deriveUnitCost(val, qty),
+        cost_mode: "total",
+      };
+    }));
+  }
+  function updateUnitCost(i, val) {
+    setItems((prev) => prev.map((x, idx) => {
+      if (idx !== i) return x;
+      const qty = Number(x.quantity) || 0;
+      return {
+        ...x,
+        unit_cost: val,
+        total_cost: deriveTotalCost(val, qty),
+        cost_mode: "unit",
+      };
+    }));
+  }
+  function updateQuantity(i, val) {
+    setItems((prev) => prev.map((x, idx) => {
+      if (idx !== i) return x;
+      const qty = Number(val) || 0;
+      if (x.cost_mode === "unit" && x.unit_cost !== "") {
+        return { ...x, quantity: val, total_cost: deriveTotalCost(x.unit_cost, qty) };
+      }
+      if (x.total_cost !== "") {
+        return { ...x, quantity: val, unit_cost: deriveUnitCost(x.total_cost, qty) };
+      }
+      return { ...x, quantity: val };
+    }));
+  }
   function applyUnitSuggestion(i, unitId, quantity) {
-    setItems((prev) => prev.map((x, idx) => (idx === i ? { ...x, unit_id: unitId, quantity } : x)));
+    setItems((prev) => prev.map((x, idx) => {
+      if (idx !== i) return x;
+      const qty = Number(quantity) || 0;
+      const next = { ...x, unit_id: unitId, quantity };
+      if (x.cost_mode === "unit" && x.unit_cost !== "") {
+        next.total_cost = deriveTotalCost(x.unit_cost, qty);
+      } else if (x.total_cost !== "") {
+        next.unit_cost = deriveUnitCost(x.total_cost, qty);
+      }
+      return next;
+    }));
   }
   function remove(i) { setItems((prev) => prev.filter((_, idx) => idx !== i)); }
 
-  const total = items.reduce((s, it) => s + (Number(it.total_cost) || 0), 0);
+  const simpleTotals = !withVat ? computePurchaseSimpleTotal(items) : null;
+  const vatTotals = withVat ? computePurchaseEditorTotals(items, defaultTaxRate) : null;
+  const colSpan = 9;
 
   return (
-    <>
+    <div className="purchase-item-editor" data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
       <div style={{ marginBottom: "0.75rem" }}>
-        <ProductPicker onPick={addProduct} />
+        <ProductPicker onPick={addProduct} scope={scope} />
       </div>
-      <div className="ui-table-wrap" style={{ marginBottom: "0.75rem" }}>
+      {withVat ? (
+        <div className="purchase-item-editor__hint">الأسعار شامل ضريبة القيمة المضافة</div>
+      ) : null}
+      <div className="ui-table-wrap">
         <table className="ui-table">
+          <colgroup>
+            <col style={{ width: "20%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "12%" }} />
+            <col style={{ width: "7%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "11%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "14%" }} />
+          </colgroup>
           <thead>
             <tr>
-              <th>الصنف</th><th>الوحدة</th><th>الكمية</th><th>إجمالي الكلفة</th><th>كلفة الوحدة</th>{withVat && <th>ض.ق.م %</th>}<th>الإجمالي</th><th></th>
+              <th>الصنف</th>
+              <th>الوحدة</th>
+              <th title="كلفة الوحدة">سعر</th>
+              <th>الكمية</th>
+              <th title="خصم %">خصم</th>
+              <th title="بونص مجاني">بونص</th>
+              <th title="إجمالي الكلفة قبل الخصم">إجمالي</th>
+              <th title="الإجمالي بعد الخصم">الإجمالي</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {items.length === 0 && <tr><td colSpan={withVat ? 8 : 7} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً</td></tr>}
+            {items.length === 0 && <tr><td colSpan={colSpan} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً</td></tr>}
             {items.map((it, i) => {
               const qtyNum = Number(it.quantity) || 0;
+              const bonusNum = Number(it.bonus_quantity) || 0;
               const totalNum = Number(it.total_cost) || 0;
-              const unitCost = qtyNum > 0 ? totalNum / qtyNum : 0;
+              const lineVat = withVat
+                ? computePurchaseLineVat(it.total_cost, it.discount_pct, "", defaultTaxRate)
+                : null;
+              const linePayable = !withVat ? computePurchaseLinePayable(it.total_cost, it.discount_pct) : null;
               const units = Array.isArray(it.units) ? it.units : [];
               const purchasable = units.filter((u) => u.purchase_enabled !== false);
               const selectable = purchasable.length ? purchasable : units;
               const selectedUnit = units.find((u) => u.id === Number(it.unit_id));
               const conv = selectedUnit ? Number(selectedUnit.conversion_to_base) || 1 : 1;
               const baseQty = qtyNum * conv;
+              const bonusBaseQty = bonusNum * conv;
+              const stockBaseQty = baseQty + bonusBaseQty;
               // Smart suggest: entering pieces (conv 1) that divide evenly into a
               // larger purchasable unit -> offer a one-click switch (never auto).
               let suggestion = null;
@@ -113,41 +238,50 @@ function ItemEditor({ items, setItems, withVat }) {
               }
               return (
               <tr key={it.product_id}>
-                <td>{it.name}</td>
+                <td className="purchase-item-editor__name" title={it.name}>{it.name}</td>
                 <td>
                   {selectable.length > 0 ? (
-                    <select className="ui-input" style={{ width: 110 }} value={it.unit_id ?? ""} onChange={(e) => update(i, "unit_id", e.target.value ? Number(e.target.value) : null)}>
+                    <select className="ui-input" value={it.unit_id ?? ""} onChange={(e) => update(i, "unit_id", e.target.value ? Number(e.target.value) : null)}>
                       {selectable.map((u) => <option key={u.id} value={u.id}>{u.unit_name}</option>)}
                     </select>
                   ) : <span style={{ color: "var(--office-panel-muted)" }}>—</span>}
                 </td>
                 <td>
-                  <QtyStepper className="ui-input" style={{ width: 130 }} min={0} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => update(i, "quantity", e.target.value)} />
-                  {conv > 1 && qtyNum > 0 ? <div style={{ fontSize: "0.72rem", color: "var(--office-panel-muted)" }}>= {fmtQty(baseQty)} حبة</div> : null}
+                  <input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.unit_cost ?? ""} onFocus={selectInputOnFocus} onChange={(e) => updateUnitCost(i, e.target.value)} />
+                </td>
+                <td>
+                  <QtyStepper className="ui-input" min={0} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
+                  {conv > 1 && qtyNum > 0 ? <div className="purchase-item-editor__meta">= {fmtQty(baseQty)} حبة</div> : null}
                   {suggestion ? (
                     <button
                       type="button"
-                      className="ui-link-button"
-                      style={{ fontSize: "0.72rem", color: "var(--office-accent, #2563eb)", background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "underline" }}
+                      className="purchase-item-editor__suggest"
                       onClick={() => applyUnitSuggestion(i, suggestion.unit.id, suggestion.count)}
                     >
                       هل تقصد {fmtQty(suggestion.count)} {suggestion.unit.unit_name}؟
                     </button>
                   ) : null}
                 </td>
-                <td><input className="ui-input" style={{ width: 100 }} type="number" min="0" step="0.01" placeholder="0" value={it.total_cost} onFocus={selectInputOnFocus} onChange={(e) => update(i, "total_cost", e.target.value)} /></td>
-                <td className="num">{qtyNum > 0 ? ils(unitCost) : "—"}</td>
-                {withVat && <td><input className="ui-input" style={{ width: 80 }} type="number" min="0" max="100" step="1" placeholder="افتراضي" value={it.vat_rate} onFocus={selectInputOnFocus} onChange={(e) => update(i, "vat_rate", e.target.value)} /></td>}
-                <td className="num">{ils(totalNum)}</td>
-                <td><Button variant="ghost" size="sm" icon="trash" onClick={() => remove(i)} /></td>
+                <td><input className="ui-input" type="number" min="0" max="100" step="0.1" placeholder="0" value={it.discount_pct ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "discount_pct", e.target.value)} /></td>
+                <td>
+                  <QtyStepper className="ui-input" min={0} value={it.bonus_quantity ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "bonus_quantity", e.target.value)} />
+                  {bonusNum > 0 ? (
+                    <div className="purchase-item-editor__meta purchase-item-editor__meta--accent">
+                      + {fmtQty(bonusNum)} بونص{stockBaseQty > baseQty ? ` = ${fmtQty(stockBaseQty)} حبة` : ""}
+                    </div>
+                  ) : null}
+                </td>
+                <td><input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.total_cost} onFocus={selectInputOnFocus} onChange={(e) => updateTotalCost(i, e.target.value)} /></td>
+                <td className="num purchase-item-editor__total-final">{ils(lineVat ? lineVat.lineTotal : linePayable ? linePayable.payable : totalNum)}</td>
+                <td className="purchase-item-editor__actions"><Button variant="ghost" size="sm" icon="trash" onClick={() => remove(i)} /></td>
               </tr>
               );
             })}
           </tbody>
         </table>
       </div>
-      <div style={{ textAlign: "left", fontWeight: 700, fontSize: "1.05rem" }}>الإجمالي قبل الضريبة: {ils(total)}</div>
-    </>
+      <PurchaseSummaryFooter withVat={withVat} vatTotals={vatTotals} simpleTotals={simpleTotals} />
+    </div>
   );
 }
 
@@ -235,6 +369,11 @@ export default function Purchases() {
     const mapped = await Promise.all(
       docItems.map(async (it) => {
         const units = await fetchProductUnits(it.product_id);
+        const qty = Number(it.quantity) || 0;
+        const totalCost = it.total_cost;
+        const unitCost = it.unit_cost != null && it.unit_cost !== ""
+          ? it.unit_cost
+          : deriveUnitCost(totalCost, qty);
         return {
           product_id: it.product_id,
           name: it.name,
@@ -242,8 +381,11 @@ export default function Purchases() {
           quantity: it.quantity,
           unit_id: it.product_unit_id ?? pickDefaultPurchaseUnit(units),
           units,
-          total_cost: it.total_cost,
-          vat_rate: which === "invoices" && it.vat_rate != null ? Math.round(it.vat_rate * 100) : "",
+          total_cost: totalCost,
+          unit_cost: unitCost,
+          cost_mode: "total",
+          discount_pct: it.discount_pct != null && it.discount_pct !== 0 ? it.discount_pct : "",
+          bonus_quantity: it.bonus_quantity != null && it.bonus_quantity !== 0 ? it.bonus_quantity : "",
         };
       })
     );
@@ -264,7 +406,8 @@ export default function Purchases() {
         quantity: Number(it.quantity),
         unit_id: it.unit_id != null ? Number(it.unit_id) : undefined,
         total_cost: Number(it.total_cost),
-        vat_rate: it.vat_rate === "" ? undefined : Number(it.vat_rate) / 100,
+        discount_pct: it.discount_pct === "" ? undefined : Number(it.discount_pct),
+        bonus_quantity: it.bonus_quantity === "" ? undefined : Number(it.bonus_quantity),
       })),
     };
     try {
@@ -416,7 +559,7 @@ export default function Purchases() {
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
-      <PageHeader icon="purchases" title="المشتريات" subtitle="أوامر وفواتير ومرتجعات الشراء"
+      <PageHeader icon="purchases" title="فتورة مشتريات" subtitle="فواتير وأوامر ومرتجعات الشراء"
         actions={
           <>
             <ReportToolbar
@@ -438,7 +581,7 @@ export default function Purchases() {
 
       <DataTable columns={cols} rows={rows} loading={loading} emptyIcon="purchases" empty="لا توجد مستندات" emptyHint="أنشئ مستنداً جديداً للبدء" />
 
-      <Modal open={showForm} title={editId ? "تعديل المسودة" : newLabel} onClose={() => { setShowForm(false); setEditId(null); }} size="lg"
+      <Modal open={showForm} title={editId ? "تعديل المسودة" : newLabel} onClose={() => { setShowForm(false); setEditId(null); }} size="xl"
         footer={<>
           <Button onClick={save} disabled={saving}>{saving ? "جاري الحفظ…" : editId ? "حفظ التعديلات" : "حفظ كمسودة"}</Button>
           {editId && tab !== "orders" && <Button variant="outline" icon="check" onClick={saveAndPost} disabled={saving}>ترحيل</Button>}
@@ -456,7 +599,7 @@ export default function Purchases() {
           {tab === "invoices" && <FormField label="مرجع الفاتورة"><Input value={refText} onChange={(e) => setRefText(e.target.value)} /></FormField>}
         </FormGrid>
         <div style={{ margin: "1rem 0 0.5rem", fontWeight: 700 }}>الأصناف</div>
-        <ItemEditor items={items} setItems={setItems} withVat={tab === "invoices"} />
+        <ItemEditor items={items} setItems={setItems} withVat={tab === "invoices"} defaultTaxRate={store.default_tax_rate} />
         <FormField label="ملاحظات" className="ui-field--full"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></FormField>
       </Modal>
 
@@ -475,6 +618,8 @@ export default function Purchases() {
                 { key: "quantity", header: "الكمية", align: "left", render: (it) => fmtQty(it.quantity) },
                 { key: "base_quantity", header: "بالحبة", align: "left", render: (it) => fmtQty(it.base_quantity ?? it.quantity) },
                 { key: "total_cost", header: "إجمالي الكلفة", align: "left", className: "num", render: (it) => ils(it.total_cost) },
+                { key: "discount_pct", header: "خصم %", align: "left", render: (it) => (it.discount_pct ? `${it.discount_pct}%` : "—") },
+                { key: "bonus_quantity", header: "بونص", align: "left", render: (it) => (it.bonus_quantity ? fmtQty(it.bonus_quantity) : "—") },
                 { key: "unit_cost", header: "كلفة الوحدة", align: "left", className: "num", render: (it) => ils(it.unit_cost) },
                 { key: "line_total", header: "الإجمالي", align: "left", className: "num", render: (it) => ils(it.line_total) },
               ]}
@@ -487,3 +632,5 @@ export default function Purchases() {
     </div>
   );
 }
+
+export { pickDefaultPurchaseUnit, ItemEditor };

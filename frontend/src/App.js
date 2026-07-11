@@ -17,15 +17,19 @@ const SupplierFinance = lazy(() => import("./pages/SupplierFinance"));
 const ShiftAudit = lazy(() => import("./pages/ShiftAudit"));
 const RefundsPage = lazy(() => import("./pages/RefundsPage"));
 const RefundApprovals = lazy(() => import("./pages/RefundApprovals"));
+const OnAccountApprovals = lazy(() => import("./pages/OnAccountApprovals"));
+const AdvanceApprovals = lazy(() => import("./pages/AdvanceApprovals"));
 const StoreSettings = lazy(() => import("./pages/StoreSettings"));
 const CurrencySettings = lazy(() => import("./pages/CurrencySettings"));
 const Inventory = lazy(() => import("./pages/Inventory"));
+const BakerySupplies = lazy(() => import("./pages/BakerySupplies"));
 const ExpiryReports = lazy(() => import("./pages/ExpiryReports"));
 const SalesByPrice = lazy(() => import("./pages/SalesByPrice"));
 const CustomerManagement = lazy(() => import("./pages/CustomerManagement"));
 const SupplierManagement = lazy(() => import("./pages/SupplierManagement"));
 const SupplierStatement = lazy(() => import("./pages/SupplierStatement"));
 const Purchases = lazy(() => import("./pages/Purchases"));
+const SalesInvoices = lazy(() => import("./pages/SalesInvoices"));
 const UnitsManagement = lazy(() => import("./pages/UnitsManagement"));
 const Expenses = lazy(() => import("./pages/Expenses"));
 const Deliveries = lazy(() => import("./pages/Deliveries"));
@@ -35,6 +39,8 @@ const BanksChecks = lazy(() => import("./pages/BanksChecks"));
 const VouchersPage = lazy(() => import("./pages/VouchersPage"));
 const AccountStatement = lazy(() => import("./pages/AccountStatement"));
 const SupplierBalanceImport = lazy(() => import("./pages/SupplierBalanceImport"));
+const SalesReports = lazy(() => import("./pages/SalesReports"));
+const CashierPayroll = lazy(() => import("./pages/CashierPayroll"));
 
 function PageFallback() {
   return (
@@ -54,12 +60,12 @@ function AuthenticatedHomeRedirect() {
     return <Navigate to="/login?wrong_portal=1" replace />;
   }
 
-  return <Navigate to={homePathForRole(u?.role)} replace />;
+  return <Navigate to={homePathForRole(u?.role, u?.permissions)} replace />;
 }
 
-function OfficeRoute({ children, adminOnly, requireReports }) {
+function OfficeRoute({ children, adminOnly, requirePermission }) {
   return (
-    <ProtectedRoute adminOnly={adminOnly} requireReports={requireReports} requireOffice>
+    <ProtectedRoute adminOnly={adminOnly} requirePermission={requirePermission} requireOffice>
       <Suspense fallback={<PageFallback />}>{children}</Suspense>
     </ProtectedRoute>
   );
@@ -81,7 +87,7 @@ function App() {
           <Route
             path="/reports"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="dashboard">
                 <DailyReport />
               </OfficeRoute>
             }
@@ -113,23 +119,39 @@ function App() {
           <Route
             path="/finance"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="finance">
                 <SupplierFinance />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/sales-reports"
+            element={
+              <OfficeRoute requirePermission="sales_reports">
+                <SalesReports />
               </OfficeRoute>
             }
           />
           <Route
             path="/shift-audit"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="shift_audit">
                 <ShiftAudit />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/cashier-payroll"
+            element={
+              <OfficeRoute requirePermission="employee_payroll">
+                <CashierPayroll />
               </OfficeRoute>
             }
           />
           <Route
             path="/refunds"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="refunds">
                 <RefundsPage />
               </OfficeRoute>
             }
@@ -137,8 +159,24 @@ function App() {
           <Route
             path="/refund-approvals"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="refund_approvals">
                 <RefundApprovals />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/on-account-approvals"
+            element={
+              <OfficeRoute requirePermission="on_account_approvals">
+                <OnAccountApprovals />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/advance-approvals"
+            element={
+              <OfficeRoute requirePermission="advance_approvals">
+                <AdvanceApprovals />
               </OfficeRoute>
             }
           />
@@ -175,9 +213,17 @@ function App() {
             }
           />
           <Route
+            path="/bakery-supplies"
+            element={
+              <OfficeRoute adminOnly>
+                <BakerySupplies />
+              </OfficeRoute>
+            }
+          />
+          <Route
             path="/expiry"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="expiry">
                 <ExpiryReports />
               </OfficeRoute>
             }
@@ -185,7 +231,7 @@ function App() {
           <Route
             path="/sales-by-price"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="sales_by_price">
                 <SalesByPrice />
               </OfficeRoute>
             }
@@ -209,7 +255,7 @@ function App() {
           <Route
             path="/suppliers/:supplierId/statement"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="account_statement">
                 <SupplierStatement />
               </OfficeRoute>
             }
@@ -223,9 +269,17 @@ function App() {
             }
           />
           <Route
+            path="/sales-invoices"
+            element={
+              <OfficeRoute adminOnly>
+                <SalesInvoices />
+              </OfficeRoute>
+            }
+          />
+          <Route
             path="/expenses"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="expenses">
                 <Expenses />
               </OfficeRoute>
             }
@@ -233,7 +287,7 @@ function App() {
           <Route
             path="/deliveries"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="deliveries">
                 <Deliveries />
               </OfficeRoute>
             }
@@ -257,7 +311,7 @@ function App() {
           <Route
             path="/banks"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="banks">
                 <BanksChecks />
               </OfficeRoute>
             }
@@ -265,7 +319,7 @@ function App() {
           <Route
             path="/account-statement"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="account_statement">
                 <AccountStatement />
               </OfficeRoute>
             }
@@ -280,8 +334,12 @@ function App() {
           />
           <Route
             path="/vouchers"
+            element={<Navigate to="/vouchers/receipt" replace />}
+          />
+          <Route
+            path="/vouchers/:type"
             element={
-              <OfficeRoute requireReports>
+              <OfficeRoute requirePermission="vouchers">
                 <VouchersPage />
               </OfficeRoute>
             }

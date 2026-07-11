@@ -1,8 +1,7 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 
-const requireReports = requireRoles("admin", "accountant");
 const PAY_METHODS = ["cash", "transfer", "check", "other"];
 
 function parseDate(s) {
@@ -13,6 +12,7 @@ function parseDate(s) {
 
 export function createExpensesRouter(db) {
   const router = Router();
+  const requireReports = requireReportsPermission(db, "expenses");
 
   // ───── Categories ─────
 

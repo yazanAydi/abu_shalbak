@@ -1,3 +1,6 @@
+import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
+import { printDocumentWhenReady } from "./printDocument";
+
 const MOVEMENT_TYPE_AR = {
   opening_balance: "رصيد افتتاحي",
   purchase_invoice: "فاتورة مشتريات",
@@ -104,11 +107,12 @@ export function printSupplierStatement(report) {
     .signatures { margin-top: 36px; display: flex; justify-content: space-between; }
     .signatures div { width: 30%; border-top: 1px solid #333; padding-top: 6px; text-align: center; font-size: 12px; }
     .footer { margin-top: 12px; font-size: 10px; color: #666; text-align: center; }
+    ${PRINT_BRANDING_CSS}
     @media print { thead { display: table-header-group; } tr { page-break-inside: avoid; } }
   </style>
 </head>
 <body>
-  <div class="store">${escapeHtml(report.store_name || "أبو شلبك")}</div>
+  ${buildPrintBrandingHtml()}
   <h1>${escapeHtml(report.report_title || "كشف حساب المورد")}</h1>
   <div class="meta">
     <div><strong>المورد:</strong> ${escapeHtml(supplier.name || "")}</div>
@@ -141,14 +145,13 @@ export function printSupplierStatement(report) {
     <div>توقيع المورد</div>
     <div>الإدارة</div>
   </div>
-  <p class="footer">${escapeHtml(report.store_name || "أبو شلبك")} — كشف حساب المورد</p>
+  <p class="footer">${escapeHtml(report.store_name || STORE_NAME_AR)} — كشف حساب المورد</p>
 </body>
 </html>`;
 
   w.document.write(html);
   w.document.close();
-  w.focus();
-  w.print();
+  printDocumentWhenReady(w.document);
 }
 
 /**

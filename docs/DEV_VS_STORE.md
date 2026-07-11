@@ -18,6 +18,8 @@ Run **only on the shop server PC**. Cashier PCs use a browser only.
 
 Setup: copy `.env.store.example` → `.env.store`, fill secrets, then `npm run store:up`.
 
+Before the first sale, verify the shop server Windows clock and timezone (Jerusalem). Docker sets `TZ=Asia/Jerusalem`; confirm with `docker exec supermarket-pos date` and `/api/v1/health`. See `docs/LAN_DEPLOYMENT_CHECKLIST.md`.
+
 ## Development (your PC)
 
 | Item | Value |

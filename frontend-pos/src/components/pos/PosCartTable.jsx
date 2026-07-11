@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
+import { cartItemPromoKey, computeDealLineTotal } from "../../utils/posTotals";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -59,6 +60,8 @@ function CartTableHeader() {
 function CartTableBody({
   cartItems,
   scrollToCartKey,
+  lineDiscounts,
+  activePromos,
   onQuantityChange,
   onRemoveItem,
   onUnitChange,
@@ -91,8 +94,11 @@ function CartTableBody({
               const units = it.availableUnits || [];
               const multiUnit = units.length > 1;
               const key = cartKey(it);
+              const promoKey = cartItemPromoKey(it);
+              const lineDiscount = Number(lineDiscounts?.[promoKey]) || 0;
+              const lineTotal = computeDealLineTotal(it, activePromos);
               return (
-                <tr key={key} data-cart-key={key}>
+                <tr key={key} data-cart-key={key} className={lineDiscount > 0 ? "pos-line--deal" : undefined}>
                   <td>{i + 1}</td>
                   <td className="pos-col-name" title={it.name}>
                     {it.name}
@@ -152,7 +158,10 @@ function CartTableBody({
                     )}
                   </td>
                   <td className="pos-col-money">{formatUnitPrice(it)}</td>
-                  <td className="pos-col-money">{ils(it.subtotal)}</td>
+                  <td className="pos-col-money">
+                    {ils(lineTotal)}
+                    {lineDiscount > 0 ? <span className="pos-line-deal-hint">عرض</span> : null}
+                  </td>
                   <td className="pos-col-actions">
                     <button
                       type="button"
@@ -180,6 +189,8 @@ function CartTableBody({
 export default function PosCartTable({
   cartItems,
   scrollToCartKey,
+  lineDiscounts,
+  activePromos,
   onQuantityChange,
   onRemoveItem,
   onUnitChange,
@@ -190,6 +201,8 @@ export default function PosCartTable({
       <CartTableBody
         cartItems={cartItems}
         scrollToCartKey={scrollToCartKey}
+        lineDiscounts={lineDiscounts}
+        activePromos={activePromos}
         onQuantityChange={onQuantityChange}
         onRemoveItem={onRemoveItem}
         onUnitChange={onUnitChange}

@@ -4,6 +4,7 @@ import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
 import ProductPicker from "../components/ProductPicker";
 import QtyStepper from "../components/QtyStepper";
+import { handleEnterNavKeyDown } from "../utils/focusNavigation";
 import {
   PageHeader, Button, DataTable, Modal, Tabs, StatusPill,
   FormField, FormGrid, Input, Select, Textarea, Icon, ReportToolbar, useToast,
@@ -266,6 +267,7 @@ export default function Warehouses() {
           <FormField label="التاريخ"><Input type="date" value={transferForm.transfer_date} onChange={(e) => setTransferForm((f) => ({ ...f, transfer_date: e.target.value }))} /></FormField>
         </FormGrid>
         <div style={{ margin: "1rem 0 0.5rem", fontWeight: 700 }}>الأصناف</div>
+        <div data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
         <div style={{ marginBottom: "0.75rem" }}><ProductPicker onPick={addItem} /></div>
         <div className="ui-table-wrap" style={{ marginBottom: "0.75rem" }}>
           <table className="ui-table">
@@ -281,6 +283,7 @@ export default function Warehouses() {
               ))}
             </tbody>
           </table>
+        </div>
         </div>
         <FormField label="ملاحظات"><Textarea value={transferForm.notes} onChange={(e) => setTransferForm((f) => ({ ...f, notes: e.target.value }))} /></FormField>
       </Modal>

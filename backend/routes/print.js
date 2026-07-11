@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess } from "../middleware/auth.js";
-import { buildReceiptText } from "../utils/receipt.js";
+import { buildReceiptPayload } from "../utils/receipt.js";
 import { getAppSettings } from "../utils/settings.js";
 import { loadSalePayments } from "../utils/salePayments.js";
 
@@ -39,7 +39,7 @@ export function createPrintRouter(db) {
         (Number(it.quantity) || 0) * (Number(it.price) || 0),
     }));
 
-    const receipt_text = buildReceiptText({
+    const { receipt_text, receipt_html } = buildReceiptPayload({
       transactionId: tid,
       timestamp: tx.created_at,
       cashierName: cashier?.username || "",
@@ -56,6 +56,7 @@ export function createPrintRouter(db) {
     res.json({
       success: true,
       receipt_text,
+      receipt_html,
       transaction_id: tid,
     });
   });

@@ -11,16 +11,27 @@ import "./DashboardChart.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
+/** @typedef {"week"|"rolling30"|"calendarMonth"} ChartPeriod */
+
+const PERIOD_LABELS = {
+  week: "7 أيام",
+  rolling30: "30 يوم",
+  calendarMonth: "هذا الشهر",
+};
+
 /**
  * @param {object} props
- * @param {Array<{ label: string, chartRevenue: number }>} props.data
+ * @param {Array<{ label: string, chartRevenue: number, date?: string }>} props.data
  * @param {boolean} props.isDemo
- * @param {"week"|"month"} props.period
- * @param {(p: "week"|"month") => void} [props.onPeriodChange]
+ * @param {ChartPeriod} props.period
+ * @param {(p: ChartPeriod) => void} [props.onPeriodChange]
+ * @param {(date: string) => void} [props.onDayClick]
  */
-export default function DashboardChart({ data, isDemo, period, onPeriodChange }) {
+export default function DashboardChart({ data, isDemo, period, onPeriodChange, onDayClick }) {
   const safe = Array.isArray(data) && data.length > 0 ? data : [];
-  const periodLabel = period === "month" ? "30 يوماً" : "7 أيام";
+  const periodLabel = PERIOD_LABELS[period] || PERIOD_LABELS.week;
+  const isLongSeries = safe.length > 14;
+  const clickable = Boolean(onDayClick) && !isDemo;
 
   return (
     <div className="dashboard-chart-wrap" dir="rtl" lang="ar">
@@ -31,14 +42,21 @@ export default function DashboardChart({ data, isDemo, period, onPeriodChange })
             className={period === "week" ? "active" : ""}
             onClick={() => onPeriodChange?.("week")}
           >
-            أسبوع
+            7 أيام
           </button>
           <button
             type="button"
-            className={period === "month" ? "active" : ""}
-            onClick={() => onPeriodChange?.("month")}
+            className={period === "rolling30" ? "active" : ""}
+            onClick={() => onPeriodChange?.("rolling30")}
           >
-            شهر
+            30 يوم
+          </button>
+          <button
+            type="button"
+            className={period === "calendarMonth" ? "active" : ""}
+            onClick={() => onPeriodChange?.("calendarMonth")}
+          >
+            هذا الشهر
           </button>
         </div>
       </div>
@@ -50,7 +68,8 @@ export default function DashboardChart({ data, isDemo, period, onPeriodChange })
         </div>
       ) : (
         <p className="dashboard-chart-hint">
-          صافي الإيراد اليومي — آخر {periodLabel}
+          صافي الإيراد اليومي — {periodLabel}
+          {clickable ? " — انقر على يوم لعرض التقرير" : ""}
         </p>
       )}
 
@@ -60,8 +79,8 @@ export default function DashboardChart({ data, isDemo, period, onPeriodChange })
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
             <XAxis
               dataKey="label"
-              tick={{ fontSize: period === "month" ? 10 : 12, fill: "#64748b" }}
-              interval={period === "month" ? 4 : 0}
+              tick={{ fontSize: isLongSeries ? 10 : 12, fill: "#64748b" }}
+              interval={isLongSeries ? 4 : 0}
             />
             <YAxis
               tick={{ fontSize: 12, fill: "#64748b" }}
@@ -70,7 +89,10 @@ export default function DashboardChart({ data, isDemo, period, onPeriodChange })
             />
             <Tooltip
               formatter={(value) => [ils(value), "صافي الإيراد"]}
-              labelFormatter={(label) => `اليوم ${label}`}
+              labelFormatter={(label, payload) => {
+                const date = payload?.[0]?.payload?.date;
+                return date ? `${date} (${label})` : `اليوم ${label}`;
+              }}
               contentStyle={{
                 background: "#ffffff",
                 border: "1px solid #e2e8f0",
@@ -85,7 +107,22 @@ export default function DashboardChart({ data, isDemo, period, onPeriodChange })
               name="صافي الإيراد"
               stroke={isDemo ? "#94a3b8" : "#0f766e"}
               strokeWidth={2.5}
-              dot={{ r: period === "month" ? 2 : 4, fill: isDemo ? "#94a3b8" : "#0f766e" }}
+              dot={(props) => {
+                const { cx, cy, payload } = props;
+                if (cx == null || cy == null) return null;
+                return (
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={isLongSeries ? 2 : 4}
+                    fill={isDemo ? "#94a3b8" : "#0f766e"}
+                    style={{ cursor: clickable ? "pointer" : "default" }}
+                    onClick={() => {
+                      if (clickable && payload?.date) onDayClick(payload.date);
+                    }}
+                  />
+                );
+              }}
               activeDot={{ r: 6 }}
               strokeDasharray={isDemo ? "6 4" : undefined}
             />
