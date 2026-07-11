@@ -4,6 +4,8 @@ import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
 import ProductPicker from "../components/ProductPicker";
+import { fetchLastPurchaseCost } from "../utils/productSearch";
+import SellPriceUpdateModal from "./SellPriceUpdateModal";
 import {
   PageHeader, Button, DataTable, Modal, Tabs, StatusPill,
   FormField, FormGrid, Input, Textarea, Select, Icon, ReportToolbar, useToast,
@@ -12,7 +14,7 @@ import { pickExportColumns } from "../utils/reportExport";
 import { printPurchaseDoc } from "../utils/purchaseDocPrint";
 import QtyStepper from "../components/QtyStepper";
 import { handleEnterNavKeyDown } from "../utils/focusNavigation";
-import { computePurchaseEditorTotals, computePurchaseLinePayable, computePurchaseLineVat, computePurchaseSimpleTotal, deriveTotalCost, deriveUnitCost, formatDiscountPercent, formatTaxRatePercent } from "../utils/purchaseTotals";
+import { computePurchaseEditorTotals, computePurchaseLinePayable, computePurchaseLineVat, computePurchaseSimpleTotal, deriveTotalCost, deriveUnitCost, formatCostInput, formatDiscountPercent, formatTaxRatePercent } from "../utils/purchaseTotals";
 import "./purchase-item-editor.css";
 
 const STATUS_TONE = { draft: "neutral", posted: "green", confirmed: "blue", received: "green", cancelled: "red" };
@@ -20,6 +22,10 @@ const STATUS_LABEL = { draft: "مسودة", posted: "مرحّلة", confirmed: "
 
 function selectInputOnFocus(e) {
   e.target.select();
+}
+
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
 }
 
 // Fetch a product's configured units and pick a sensible purchase default.
@@ -85,6 +91,8 @@ function PurchaseSummaryFooter({ withVat, vatTotals, simpleTotals }) {
 }
 
 function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "retail" }) {
+  const [sellPricePrompt, setSellPricePrompt] = useState(null);
+
   async function addProduct(p) {
     let exists = false;
     setItems((prev) => {
@@ -92,7 +100,18 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
       return prev;
     });
     if (exists) return;
-    const units = await fetchProductUnits(p.id);
+    const [units, pricing] = await Promise.all([
+      fetchProductUnits(p.id),
+      fetchLastPurchaseCost(p.id),
+    ]);
+    const last = pricing?.last_purchase;
+    const lastCost = last?.unit_cost ?? null;
+    let unitId = pickDefaultPurchaseUnit(units);
+    if (last?.product_unit_id && units.some((u) => u.id === Number(last.product_unit_id))) {
+      unitId = Number(last.product_unit_id);
+    }
+    const unitCostStr = lastCost != null ? formatCostInput(lastCost) : "";
+    const totalCostStr = unitCostStr !== "" ? deriveTotalCost(unitCostStr, 1) : "";
     setItems((prev) => {
       if (prev.some((x) => x.product_id === p.id)) return prev;
       return [
@@ -102,16 +121,53 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
           name: p.name,
           barcode: p.barcode,
           quantity: 1,
-          unit_id: pickDefaultPurchaseUnit(units),
+          unit_id: unitId,
           units,
-          total_cost: "",
-          unit_cost: "",
-          cost_mode: "total",
+          total_cost: totalCostStr,
+          unit_cost: unitCostStr,
+          cost_mode: unitCostStr !== "" ? "unit" : "total",
           discount_pct: "",
           bonus_quantity: "",
+          last_purchase_cost: lastCost,
+          sell_price: pricing?.sell_price ?? p.price ?? null,
+          min_price: pricing?.min_price ?? p.min_price ?? null,
+          max_price: pricing?.max_price ?? p.max_price ?? null,
+          sell_price_prompted_for: null,
         },
       ];
     });
+  }
+  function handleUnitCostBlur(i) {
+    const it = items[i];
+    if (!it) return;
+    const entered = round2(Number(it.unit_cost));
+    const last = it.last_purchase_cost;
+    if (last == null || !Number.isFinite(entered) || entered <= 0) return;
+    if (round2(last) === entered) return;
+    if (it.sell_price_prompted_for === entered) return;
+
+    const ok = window.confirm("سعر الشراء اختلف عن آخر سعر — هل تريد تغيير سعر البيع؟");
+    setItems((prev) => prev.map((x, idx) => (
+      idx === i ? { ...x, sell_price_prompted_for: entered } : x
+    )));
+    if (ok) {
+      setSellPricePrompt({
+        index: i,
+        productId: it.product_id,
+        name: it.name,
+        oldSellPrice: it.sell_price,
+        newPurchaseCost: entered,
+        min_price: it.min_price,
+        max_price: it.max_price,
+      });
+    }
+  }
+  function handleSellPriceSaved(newPrice) {
+    if (sellPricePrompt == null) return;
+    setItems((prev) => prev.map((x, idx) => (
+      idx === sellPricePrompt.index ? { ...x, sell_price: newPrice } : x
+    )));
+    setSellPricePrompt(null);
   }
   function update(i, key, val) {
     setItems((prev) => prev.map((x, idx) => (idx === i ? { ...x, [key]: val } : x)));
@@ -247,7 +303,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                   ) : <span style={{ color: "var(--office-panel-muted)" }}>—</span>}
                 </td>
                 <td>
-                  <input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.unit_cost ?? ""} onFocus={selectInputOnFocus} onChange={(e) => updateUnitCost(i, e.target.value)} />
+                  <input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.unit_cost ?? ""} onFocus={selectInputOnFocus} onChange={(e) => updateUnitCost(i, e.target.value)} onBlur={() => handleUnitCostBlur(i)} />
                 </td>
                 <td>
                   <QtyStepper className="ui-input" min={0} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
@@ -281,6 +337,17 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
         </table>
       </div>
       <PurchaseSummaryFooter withVat={withVat} vatTotals={vatTotals} simpleTotals={simpleTotals} />
+      <SellPriceUpdateModal
+        open={sellPricePrompt != null}
+        onClose={() => setSellPricePrompt(null)}
+        productId={sellPricePrompt?.productId}
+        productName={sellPricePrompt?.name}
+        oldSellPrice={sellPricePrompt?.oldSellPrice}
+        newPurchaseCost={sellPricePrompt?.newPurchaseCost}
+        minPrice={sellPricePrompt?.min_price}
+        maxPrice={sellPricePrompt?.max_price}
+        onSaved={handleSellPriceSaved}
+      />
     </div>
   );
 }
@@ -368,7 +435,10 @@ export default function Purchases() {
     const docItems = data.items || [];
     const mapped = await Promise.all(
       docItems.map(async (it) => {
-        const units = await fetchProductUnits(it.product_id);
+        const [units, pricing] = await Promise.all([
+          fetchProductUnits(it.product_id),
+          fetchLastPurchaseCost(it.product_id),
+        ]);
         const qty = Number(it.quantity) || 0;
         const totalCost = it.total_cost;
         const unitCost = it.unit_cost != null && it.unit_cost !== ""
@@ -386,6 +456,11 @@ export default function Purchases() {
           cost_mode: "total",
           discount_pct: it.discount_pct != null && it.discount_pct !== 0 ? it.discount_pct : "",
           bonus_quantity: it.bonus_quantity != null && it.bonus_quantity !== 0 ? it.bonus_quantity : "",
+          last_purchase_cost: pricing?.last_purchase?.unit_cost ?? null,
+          sell_price: pricing?.sell_price ?? null,
+          min_price: pricing?.min_price ?? null,
+          max_price: pricing?.max_price ?? null,
+          sell_price_prompted_for: null,
         };
       })
     );

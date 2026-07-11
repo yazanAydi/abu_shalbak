@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { ils } from "../utils/format";
+import { ils, dateTime, dateTimeSeconds } from "../utils/format";
 import { SHIFT_VARIANCE_WARNING } from "../components/ShiftEnd";
 import {
   PageHeader,
@@ -104,11 +104,11 @@ function shiftStatusBadge(status) {
 }
 
 function formatDt(v) {
-  return v ? v.replace("T", " ").slice(0, 16) : "—";
+  return dateTime(v);
 }
 
 function formatCashTime(v) {
-  return v ? v.replace("T", " ").slice(0, 19) : "—";
+  return dateTimeSeconds(v);
 }
 
 function matchesReceiptSearch(query, { receiptNumber, saleId, refundId, description }) {

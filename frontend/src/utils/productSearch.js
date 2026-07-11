@@ -38,3 +38,19 @@ export async function searchProductsApi(query, opts = {}) {
 
   return rows.slice(0, limit);
 }
+
+/**
+ * Latest posted purchase cost + current sell price for purchase invoice prefill.
+ * @param {number} productId
+ * @returns {Promise<{ product_id: number, sell_price: number, min_price: number|null, max_price: number|null, last_purchase: { unit_cost: number, product_unit_id: number|null, unit_name: string|null, invoice_date: string|null }|null }|null>}
+ */
+export async function fetchLastPurchaseCost(productId) {
+  try {
+    const { data } = await api.get(`/api/products/${productId}/last-purchase-cost`, {
+      headers: getAuthHeaders(),
+    });
+    return data ?? null;
+  } catch {
+    return null;
+  }
+}

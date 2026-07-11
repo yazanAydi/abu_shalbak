@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { ils } from "../utils/format";
+import { ils, dateTime } from "../utils/format";
 import {
   PageHeader,
   Card,
@@ -19,7 +19,7 @@ import {
 import { pickExportColumns } from "../utils/reportExport";
 
 function formatDt(v) {
-  return v ? String(v).replace("T", " ").slice(0, 16) : "—";
+  return dateTime(v);
 }
 
 function statusLabel(status) {

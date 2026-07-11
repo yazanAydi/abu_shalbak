@@ -1,5 +1,7 @@
 /** @typedef {'critical'|'warning'|'info'} AlertSeverity */
 
+import { parseServerDate } from "./format.js";
+
 export const VARIANCE_WARNING_NIS = 50;
 export const VARIANCE_CRITICAL_NIS = 200;
 export const SHIFT_LONG_HOURS = 12;
@@ -26,10 +28,9 @@ export function formatCount(n, hasData) {
 
 /** @param {string | undefined} startIso */
 export function shiftOpenDurationMs(startIso) {
-  if (!startIso) return 0;
-  const t = Date.parse(startIso);
-  if (Number.isNaN(t)) return 0;
-  return Math.max(0, Date.now() - t);
+  const d = parseServerDate(startIso);
+  if (!d) return 0;
+  return Math.max(0, Date.now() - d.getTime());
 }
 
 export function formatDurationAr(ms) {

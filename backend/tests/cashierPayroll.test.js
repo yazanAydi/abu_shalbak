@@ -54,6 +54,14 @@ describe("cashier payroll", () => {
     expect(shiftPay(0, 8)).toBe(0);
   });
 
+  test("shiftHours treats SQLite space-format start_time as UTC (no phantom offset)", () => {
+    // start_time from SQLite datetime('now'): "YYYY-MM-DD HH:MM:SS" (UTC, no marker)
+    // end_time from JS toISOString(): "...Z". A 3-second shift must read as ~0h,
+    // regardless of the machine's local timezone.
+    expect(shiftHours("2026-07-01 08:00:00", "2026-07-01T08:00:03.000Z")).toBe(0);
+    expect(shiftHours("2026-07-01 08:00:00", "2026-07-01T16:00:00.000Z")).toBe(8);
+  });
+
   test("PATCH hourly rate for cashier", async () => {
     const res = await request(ctx.app)
       .patch(`/api/v1/payroll/cashiers/${cashierId}`)

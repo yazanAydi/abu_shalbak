@@ -511,6 +511,35 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, units });
   });
 
+  router.get("/:id/last-purchase-cost", requireAuth, requireAdmin, async (req, res) => {
+    const product = await loadProductById(req.params.id);
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
+
+    const row = await db.get(
+      `SELECT pii.unit_cost, pii.product_unit_id, pii.unit_name, pi.invoice_date
+       FROM purchase_invoice_items pii
+       JOIN purchase_invoices pi ON pi.id = pii.invoice_id AND pi.status = 'posted'
+       WHERE pii.product_id = ?
+       ORDER BY pi.invoice_date DESC, pi.id DESC LIMIT 1`,
+      [product.id]
+    );
+
+    res.json({
+      product_id: product.id,
+      sell_price: round2(product.price),
+      min_price: product.min_price ?? null,
+      max_price: product.max_price ?? null,
+      last_purchase: row
+        ? {
+            unit_cost: round2(row.unit_cost),
+            product_unit_id: row.product_unit_id ?? null,
+            unit_name: row.unit_name ?? null,
+            invoice_date: row.invoice_date ?? null,
+          }
+        : null,
+    });
+  });
+
   router.post("/:id/units", requireAuth, requireAdmin, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });

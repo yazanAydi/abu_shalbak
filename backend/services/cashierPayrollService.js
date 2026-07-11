@@ -5,14 +5,32 @@ export function round2(n) {
 }
 
 /**
+ * Parse a timestamp to epoch ms. Timestamps in this app come from two sources:
+ * SQLite `datetime('now')` → "YYYY-MM-DD HH:MM:SS" (UTC, no zone marker) and
+ * JS `new Date().toISOString()` → "...Z". Without normalizing, Date.parse treats
+ * the space-format string as *local* time, creating a phantom offset (e.g. a few
+ * seconds reading as ~3 hours on a UTC+3 machine). SQLite emits UTC, so we treat
+ * the space-format string as UTC explicitly.
+ * @param {string|null|undefined} ts
+ * @returns {number} epoch ms, or NaN if unparseable
+ */
+export function parseTimestampMs(ts) {
+  if (typeof ts !== "string") return NaN;
+  const trimmed = ts.trim();
+  const m = trimmed.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/);
+  if (m) return Date.parse(`${m[1]}T${m[2]}Z`);
+  return Date.parse(trimmed);
+}
+
+/**
  * @param {string|null|undefined} startIso
  * @param {string|null|undefined} endIso
  * @returns {number} hours rounded to 2 decimals
  */
 export function shiftHours(startIso, endIso) {
   if (!startIso || !endIso) return 0;
-  const start = Date.parse(startIso);
-  const end = Date.parse(endIso);
+  const start = parseTimestampMs(startIso);
+  const end = parseTimestampMs(endIso);
   if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 0;
   return round2((end - start) / 3_600_000);
 }
