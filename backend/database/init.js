@@ -1659,6 +1659,28 @@ async function migrateHourlyRateColumn(db) {
   }
 }
 
+async function migrateAttendanceTables(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS attendance_punches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      punch_time TEXT NOT NULL DEFAULT (datetime('now')),
+      type TEXT NOT NULL CHECK (type IN ('in','out')),
+      source TEXT NOT NULL DEFAULT 'kiosk'
+    );
+    CREATE INDEX IF NOT EXISTS idx_attendance_punches_user_time
+      ON attendance_punches(user_id, punch_time);
+
+    CREATE TABLE IF NOT EXISTS face_descriptors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      descriptor_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_face_descriptors_user ON face_descriptors(user_id);
+  `);
+}
+
 async function migrateStoresTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS stores (
@@ -1957,6 +1979,7 @@ export async function initDatabase(dbPath) {
   await migrateShiftCashMovementsAdvanceType(db);
   await migrateMustChangePasswordColumn(db);
   await migrateHourlyRateColumn(db);
+  await migrateAttendanceTables(db);
   await migrateStoresTable(db);
   await migrateStoreIdColumns(db);
   await migrateProductBarcodesTable(db);

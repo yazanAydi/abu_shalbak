@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { todayISO } from "../utils/format";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
@@ -26,7 +27,7 @@ export default function Warehouses() {
   const [whForm, setWhForm] = useState({ name: "", code: "", type: "store" });
 
   const [showTransfer, setShowTransfer] = useState(false);
-  const [transferForm, setTransferForm] = useState({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: new Date().toISOString().slice(0, 10), notes: "" });
+  const [transferForm, setTransferForm] = useState({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: todayISO(), notes: "" });
   const [transferItems, setTransferItems] = useState([]);
   const [detail, setDetail] = useState(null);
   const [editId, setEditId] = useState(null);
@@ -104,7 +105,7 @@ export default function Warehouses() {
     setTransferForm({
       from_warehouse_id: String(data.from_warehouse_id),
       to_warehouse_id: String(data.to_warehouse_id),
-      transfer_date: data.transfer_date?.slice(0, 10) || new Date().toISOString().slice(0, 10),
+      transfer_date: data.transfer_date?.slice(0, 10) || todayISO(),
       notes: data.notes || "",
     });
     setTransferItems((data.items || []).map((it) => ({ product_id: it.product_id, name: it.name, quantity: it.quantity })));
@@ -182,7 +183,7 @@ export default function Warehouses() {
               disabled={loading && tab !== "warehouses"}
             />
             {tab === "warehouses" ? <Button icon="plus" onClick={() => setShowWh(true)}>مستودع جديد</Button>
-              : tab === "transfers" ? <Button icon="plus" onClick={() => { setEditId(null); setTransferForm({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: new Date().toISOString().slice(0, 10), notes: "" }); setTransferItems([]); setShowTransfer(true); }}>تحويل جديد</Button> : null}
+              : tab === "transfers" ? <Button icon="plus" onClick={() => { setEditId(null); setTransferForm({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: todayISO(), notes: "" }); setTransferItems([]); setShowTransfer(true); }}>تحويل جديد</Button> : null}
           </>
         } />
 

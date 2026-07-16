@@ -83,11 +83,23 @@ export const advanceRequestCreateSchema = z.object({
 export const advanceRequestReviewSchema = refundRequestReviewSchema;
 export const onAccountRequestReviewSchema = refundRequestReviewSchema;
 
-export const createUserSchema = z.object({
-  username: z.string().trim().min(1).max(50),
-  password: z.string().min(6).max(100),
-  role: z.string().min(1),
-});
+export const createUserSchema = z
+  .object({
+    username: z.string().trim().min(1).max(50),
+    password: z.string().min(6).max(100).optional(),
+    role: z.string().min(1),
+  })
+  .superRefine((data, ctx) => {
+    const kioskOnly =
+      data.role === "bakery_employee" || data.role === "shelves_employee";
+    if (!kioskOnly && (!data.password || data.password.length < 6)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "كلمة المرور مطلوبة لهذا الدور",
+        path: ["password"],
+      });
+    }
+  });
 
 export const changePasswordSchema = z.object({
   current_password: z.string().min(1).max(100),

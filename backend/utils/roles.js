@@ -10,6 +10,17 @@ export const USER_ROLES = [
   "bakery_employee",
 ];
 
+/** Shop-floor roles tracked in employee attendance / payroll */
+export const ATTENDANCE_ROLES = ["cashier", "bakery_employee", "shelves_employee"];
+
+/** Roles that clock in/out via face kiosk punches */
+export const PUNCH_ROLES = ["bakery_employee", "shelves_employee"];
+
+/** Face-kiosk employees — no app login; username is for attendance only */
+export function isKioskOnlyRole(role) {
+  return PUNCH_ROLES.includes(String(role));
+}
+
 export function isValidRole(role) {
   return USER_ROLES.includes(String(role));
 }

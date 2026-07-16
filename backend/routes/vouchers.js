@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 export function createVouchersRouter(db) {
   const router = Router();
@@ -77,7 +78,7 @@ export function createVouchersRouter(db) {
       const ins = await db.run(
         `INSERT INTO vouchers (voucher_type, voucher_date, notes, total_amount, recorded_by_id)
          VALUES (?, ?, ?, ?, ?)`,
-        [voucher_type, voucher_date || new Date().toISOString().slice(0, 10), notes || null, total, req.user.id]
+        [voucher_type, voucher_date || shopTodayYmd(), notes || null, total, req.user.id]
       );
       const voucherId = ins.lastID;
 

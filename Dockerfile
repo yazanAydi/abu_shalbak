@@ -1,5 +1,7 @@
 FROM node:20-bookworm-slim AS admin-builder
 WORKDIR /frontend
+ARG REACT_APP_KIOSK_API_KEY=
+ENV REACT_APP_KIOSK_API_KEY=$REACT_APP_KIOSK_API_KEY
 COPY frontend/package.json ./
 RUN npm install
 COPY frontend/ ./

@@ -8,6 +8,7 @@ import { handleSupplierBalanceUpload } from "./hesabatiUploadHandlers.js";
 import { ensureEntityCode } from "../utils/entityCodes.js";
 import { buildSupplierLedger } from "../utils/supplierLedger.js";
 import { buildSupplierStatementLedger } from "../utils/supplierStatementLedger.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 import {
   createStatementHistoryPreviewHandler,
   createStatementHistoryConfirmHandler,
@@ -388,7 +389,7 @@ export function createSuppliersRouter(db) {
     }
     const entryDate = b.entry_date
       ? parseStatementDate(b.entry_date)
-      : new Date().toISOString().slice(0, 10);
+      : shopTodayYmd();
     if (b.entry_date && !entryDate) {
       return res.status(400).json({ error: "التاريخ غير صالح", code: "VALIDATION_ERROR" });
     }

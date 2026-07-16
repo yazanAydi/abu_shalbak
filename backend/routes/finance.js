@@ -5,16 +5,33 @@ import {
   snapshotRefundCogsForRange,
 } from "../utils/cogs.js";
 import { round2 } from "../utils/money.js";
+import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
 import {
-  TX_BUSINESS_DAY_JOIN,
-  REFUND_BUSINESS_DAY_JOIN,
-  txBusinessDayBetween,
-  refundBusinessDayBetween,
+  fetchRefundsForShopDate,
+  fetchTransactionsForShopDate,
 } from "../utils/businessDay.js";
+import { shopDateRange } from "../utils/shopTime.js";
 
 function parseDateParam(s) {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return null;
   return s.trim();
+}
+
+async function shopDayCashCardTotals(db, day) {
+  const paymentAgg = await aggregatePaymentLinesForDate(db, day);
+  const refundRows = await fetchRefundsForShopDate(db, day);
+  let refund_cash = 0;
+  let refund_card = 0;
+  for (const r of refundRows) {
+    if (r.payment_method === "cash") refund_cash = round2(refund_cash + Number(r.total));
+    else refund_card = round2(refund_card + Number(r.total));
+  }
+  return {
+    sales_cash: paymentAgg.cash_total,
+    sales_card: paymentAgg.card_total,
+    refund_cash,
+    refund_card,
+  };
 }
 
 export function createFinanceRouter(db) {
@@ -33,26 +50,27 @@ export function createFinanceRouter(db) {
       return res.status(400).json({ error: "from يجب أن يكون قبل to أو يساويه" });
     }
 
-    const salesRow = await db.get(
-      `SELECT COALESCE(SUM(t.total), 0) as total, COUNT(*) as n
-       FROM transactions t
-       ${TX_BUSINESS_DAY_JOIN}
-       WHERE ${txBusinessDayBetween("?", "?")}`,
-      [from, to]
-    );
-
+    const dates = shopDateRange(from, to);
+    let posGross = 0;
+    let posCount = 0;
+    let refundTotal = 0;
+    let refundCount = 0;
+    for (const day of dates) {
+      const txRows = await fetchTransactionsForShopDate(db, day);
+      posCount += txRows.length;
+      for (const row of txRows) {
+        posGross = round2(posGross + Number(row.total));
+      }
+      const refRows = await fetchRefundsForShopDate(db, day);
+      refundCount += refRows.length;
+      for (const row of refRows) {
+        refundTotal = round2(refundTotal + Number(row.total));
+      }
+    }
     const payRow = await db.get(
       `SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as n
        FROM supplier_payments
        WHERE paid_on >= ? AND paid_on <= ?`,
-      [from, to]
-    );
-
-    const refRow = await db.get(
-      `SELECT COALESCE(SUM(r.total), 0) as total, COUNT(*) as n
-       FROM refunds r
-       ${REFUND_BUSINESS_DAY_JOIN}
-       WHERE ${refundBusinessDayBetween("?", "?")}`,
       [from, to]
     );
     const expRow = await db.get(
@@ -62,8 +80,8 @@ export function createFinanceRouter(db) {
       [from, to]
     );
 
-    const posGross = round2(Number(salesRow?.total) || 0);
-    const refundTotal = round2(Number(refRow?.total) || 0);
+    posGross = round2(posGross);
+    refundTotal = round2(refundTotal);
     const netPos = round2(posGross - refundTotal);
 
     // Historical COGS from sale-item snapshots (immune to later cost changes).
@@ -88,9 +106,9 @@ export function createFinanceRouter(db) {
       from,
       to,
       pos_sales_total: posGross,
-      pos_transaction_count: Number(salesRow?.n) || 0,
+      pos_transaction_count: posCount,
       refunds_total: refundTotal,
-      refund_count: Number(refRow?.n) || 0,
+      refund_count: refundCount,
       net_pos_sales: netPos,
       operating_expenses_total: round2(Number(expRow?.total) || 0),
       operating_expense_count: Number(expRow?.n) || 0,
@@ -362,38 +380,15 @@ export function createFinanceRouter(db) {
   router.get("/cash/expected", async (req, res) => {
     const day = parseDateParam(String(req.query.date || ""));
     if (!day) return res.status(400).json({ error: "مطلوب date=YYYY-MM-DD" });
-    const cashR = await db.get(
-      `SELECT COALESCE(SUM(sp.amount),0) t, COUNT(DISTINCT sp.transaction_id) n
-       FROM sale_payments sp
-       INNER JOIN transactions t ON t.id = sp.transaction_id
-       WHERE date(t.created_at) = ? AND sp.payment_method = 'cash'`,
-      [day]
-    );
-    const cardR = await db.get(
-      `SELECT COALESCE(SUM(sp.amount),0) t, COUNT(DISTINCT sp.transaction_id) n
-       FROM sale_payments sp
-       INNER JOIN transactions t ON t.id = sp.transaction_id
-       WHERE date(t.created_at) = ? AND sp.payment_method = 'visa'`,
-      [day]
-    );
-    const refCash = await db.get(
-      `SELECT COALESCE(SUM(total),0) t FROM refunds
-       WHERE date(created_at) = ? AND payment_method = 'cash'`,
-      [day]
-    );
-    const refCard = await db.get(
-      `SELECT COALESCE(SUM(total),0) t FROM refunds
-       WHERE date(created_at) = ? AND payment_method = 'visa'`,
-      [day]
-    );
+    const totals = await shopDayCashCardTotals(db, day);
     res.json({
       date: day,
-      expected_cash: round2(Number(cashR?.t) - Number(refCash?.t)),
-      expected_card: round2(Number(cardR?.t) - Number(refCard?.t)),
-      sales_cash: round2(Number(cashR?.t) || 0),
-      sales_card: round2(Number(cardR?.t) || 0),
-      refund_cash: round2(Number(refCash?.t) || 0),
-      refund_card: round2(Number(refCard?.t) || 0),
+      expected_cash: round2(totals.sales_cash - totals.refund_cash),
+      expected_card: round2(totals.sales_card - totals.refund_card),
+      sales_cash: round2(totals.sales_cash),
+      sales_card: round2(totals.sales_card),
+      refund_cash: totals.refund_cash,
+      refund_card: totals.refund_card,
     });
   });
 
@@ -408,30 +403,9 @@ export function createFinanceRouter(db) {
     const { recon_date, counted_cash, note } = req.body || {};
     const day = parseDateParam(recon_date) || (typeof recon_date === "string" ? recon_date.slice(0, 10) : null);
     if (!day) return res.status(400).json({ error: "مطلوب recon_date (YYYY-MM-DD)" });
-    const cashR = await db.get(
-      `SELECT COALESCE(SUM(sp.amount),0) t FROM sale_payments sp
-       INNER JOIN transactions t ON t.id = sp.transaction_id
-       WHERE date(t.created_at) = ? AND sp.payment_method = 'cash'`,
-      [day]
-    );
-    const cardR = await db.get(
-      `SELECT COALESCE(SUM(sp.amount),0) t FROM sale_payments sp
-       INNER JOIN transactions t ON t.id = sp.transaction_id
-       WHERE date(t.created_at) = ? AND sp.payment_method = 'visa'`,
-      [day]
-    );
-    const refCash = await db.get(
-      `SELECT COALESCE(SUM(total),0) t FROM refunds
-       WHERE date(created_at) = ? AND payment_method = 'cash'`,
-      [day]
-    );
-    const refCard = await db.get(
-      `SELECT COALESCE(SUM(total),0) t FROM refunds
-       WHERE date(created_at) = ? AND payment_method = 'visa'`,
-      [day]
-    );
-    const expCash = round2(Number(cashR?.t) - Number(refCash?.t));
-    const expCard = round2(Number(cardR?.t) - Number(refCard?.t));
+    const totals = await shopDayCashCardTotals(db, day);
+    const expCash = round2(totals.sales_cash - totals.refund_cash);
+    const expCard = round2(totals.sales_card - totals.refund_card);
     const got = round2(Number(counted_cash));
     if (Number.isNaN(got)) return res.status(400).json({ error: "مطلوب counted_cash" });
     const overShort = round2(got - expCash);

@@ -10,6 +10,7 @@ import {
   openingBalanceToDebitCredit,
 } from "./balanceSheetImport.js";
 import { assignEntityCodeIfMissing, ensureEntityCode } from "./entityCodes.js";
+import { shopTodayYmd } from "./shopTime.js";
 
 export const HESABATI_OPENING_SOURCE = "hesabati_import";
 export const OPENING_ENTRY_SOURCE_TYPE = "opening_balance_import";
@@ -359,7 +360,7 @@ export async function applySupplierBalanceImport(db, rows, options = {}) {
   const importZeroBalances = Boolean(options.importZeroBalances);
   const force = Boolean(options.force);
   const overwriteExistingOpeningBalances = Boolean(options.overwriteExistingOpeningBalances);
-  const openingBalanceDate = options.openingBalanceDate || new Date().toISOString().slice(0, 10);
+  const openingBalanceDate = options.openingBalanceDate || shopTodayYmd();
   const sourceId = options.sourceId || null;
 
   const plan = await buildSupplierBalanceImportPlan(db, rows, {

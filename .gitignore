@@ -8,6 +8,9 @@ node_modules/
 !.env.example
 !.env.store.example
 !.env.development.example
+!frontend/.env.example
+!frontend/.env.development.example
+!frontend-pos/.env.example
 
 # ── SQLite database — the shop's live data, NEVER commit ─
 *.db

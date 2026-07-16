@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { todayISO } from "../utils/format";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -15,7 +16,7 @@ import SupplierBalanceImportPreview from "../components/SupplierBalanceImportPre
 import ImportSummaryModal from "./productDashboard/ImportSummaryModal";
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  return todayISO();
 }
 
 export default function SupplierBalanceImport() {

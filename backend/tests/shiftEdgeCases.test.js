@@ -129,10 +129,10 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
     ).rejects.toMatchObject({ code: "NO_OPEN_SHIFT_FOR_REFUND" });
   });
 
-  test("cross-midnight sale reports under shift start business day", async () => {
-    const businessDay = "2020-06-15";
-    const shiftStart = `${businessDay}T22:00:00.000Z`;
+  test("cross-midnight sale reports under shift start business day (Ramallah)", async () => {
+    const shiftStart = "2020-06-15T22:00:00.000Z";
     const saleTime = "2020-06-16T00:30:00.000Z";
+    const businessDay = "2020-06-16";
 
     const cashier = await ctx.db.get("SELECT id FROM users WHERE username = 'testcashier'");
     const ins = await ctx.db.run(
@@ -169,7 +169,7 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
     expect(report.total_sales).toBe(10);
 
     const wrongDayRes = await request(ctx.app)
-      .get("/api/v1/reports/daily?date=2020-06-16")
+      .get("/api/v1/reports/daily?date=2020-06-15")
       .set(authHeader(adminToken));
     const wrongReport = wrongDayRes.body.data ?? wrongDayRes.body;
     expect(wrongReport.total_transactions).toBe(0);
@@ -184,7 +184,7 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
     expect(overview.pos_sales_total).toBe(10);
 
     const wrongFinanceRes = await request(ctx.app)
-      .get("/api/v1/finance/overview?from=2020-06-16&to=2020-06-16")
+      .get("/api/v1/finance/overview?from=2020-06-15&to=2020-06-15")
       .set(authHeader(adminToken));
     const wrongOverview = wrongFinanceRes.body.data ?? wrongFinanceRes.body;
     expect(wrongOverview.pos_transaction_count).toBe(0);

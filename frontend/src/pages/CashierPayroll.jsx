@@ -9,6 +9,7 @@ import {
   formatHoursAr,
   formatShiftStatus,
 } from "../utils/payrollHelpers";
+import FaceEnrollmentPanel from "../components/FaceEnrollmentPanel";
 import "./CashierPayroll.css";
 import {
   PageHeader,
@@ -29,17 +30,34 @@ import {
   useToast,
 } from "../components/ui";
 
+const ROLE_LABELS = {
+  cashier: "كاشير",
+  bakery_employee: "موظف مخبز",
+  shelves_employee: "موظف رفوف",
+};
+
 const PAGE_TABS = [
   { id: "rates", label: "أجور الساعة" },
-  { id: "report", label: "تقرير الرواتب" },
+  { id: "enroll", label: "تسجيل الوجه" },
+  { id: "report", label: "تقرير الساعات" },
 ];
 
 const REPORT_SUMMARY_COLUMNS = [
-  { key: "username", header: "الكاشير", value: (r) => r.username },
+  { key: "username", header: "الموظف", value: (r) => r.username },
+  {
+    key: "role_label",
+    header: "الدور",
+    value: (r) => r.role_label || ROLE_LABELS[r.role] || r.role,
+  },
   {
     key: "hourly_rate",
     header: "أجر الساعة",
     value: (r) => (r.hourly_rate > 0 ? ils(r.hourly_rate) : "—"),
+  },
+  {
+    key: "hours_source",
+    header: "مصدر الساعات",
+    value: (r) => (r.hours_source === "shift" ? "ورديات" : "حضور"),
   },
   {
     key: "total_hours",
@@ -53,41 +71,11 @@ const REPORT_SUMMARY_COLUMNS = [
   },
 ];
 
-const REPORT_SHIFT_COLUMNS = [
-  { key: "username", header: "الكاشير", value: (r) => r.username },
-  { key: "shift_id", header: "الوردية", value: (r) => r.shift_id },
-  {
-    key: "start_time",
-    header: "بداية الوردية",
-    value: (r) => formatDateTimeAr(r.start_time),
-  },
-  {
-    key: "end_time",
-    header: "نهاية الوردية",
-    value: (r) => formatDateTimeAr(r.end_time),
-  },
-  {
-    key: "hours",
-    header: "الساعات",
-    value: (r) => formatHoursAr(r.hours),
-  },
-  {
-    key: "pay",
-    header: "المبلغ",
-    value: (r) => ils(r.pay),
-  },
-  {
-    key: "status",
-    header: "الحالة",
-    value: (r) => formatShiftStatus(r.status),
-  },
-];
-
 export default function CashierPayroll() {
   const toast = useToast();
   const [tab, setTab] = useState("rates");
 
-  const [cashiers, setCashiers] = useState([]);
+  const [employees, setEmployees] = useState([]);
   const [ratesLoading, setRatesLoading] = useState(true);
   const [ratesErr, setRatesErr] = useState("");
   const [editingId, setEditingId] = useState(null);
@@ -96,22 +84,28 @@ export default function CashierPayroll() {
 
   const [from, setFrom] = useState(firstOfCurrentMonthYmd());
   const [to, setTo] = useState(todayYmd());
-  const [cashierFilter, setCashierFilter] = useState("");
+  const [employeeFilter, setEmployeeFilter] = useState("");
   const [report, setReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportErr, setReportErr] = useState("");
-  const [expandedCashier, setExpandedCashier] = useState(null);
+  const [expandedUser, setExpandedUser] = useState(null);
+  const [manualPunchType, setManualPunchType] = useState("out");
+  const [manualPunchTime, setManualPunchTime] = useState("");
+  const [punchSaving, setPunchSaving] = useState(false);
+  const [editingPunchId, setEditingPunchId] = useState(null);
+  const [editPunchTime, setEditPunchTime] = useState("");
+  const [editPunchType, setEditPunchType] = useState("in");
 
   const presets = useMemo(() => getDatePresets(), []);
 
-  const loadCashiers = useCallback(async () => {
+  const loadEmployees = useCallback(async () => {
     setRatesLoading(true);
     setRatesErr("");
     try {
-      const { data } = await api.get("/api/payroll/cashiers", { headers: getAuthHeaders() });
-      setCashiers(Array.isArray(data) ? data : []);
+      const { data } = await api.get("/api/payroll/employees", { headers: getAuthHeaders() });
+      setEmployees(Array.isArray(data) ? data : []);
     } catch (e) {
-      setRatesErr(e.response?.data?.error || e.message || "فشل تحميل الكاشير");
+      setRatesErr(e.response?.data?.error || e.message || "فشل تحميل الموظفين");
     } finally {
       setRatesLoading(false);
     }
@@ -126,28 +120,34 @@ export default function CashierPayroll() {
     setReportErr("");
     try {
       const params = { date_from: from, date_to: to };
-      if (cashierFilter) params.cashier_id = cashierFilter;
-      const { data } = await api.get("/api/payroll/report", {
+      if (employeeFilter) params.user_id = employeeFilter;
+      const { data } = await api.get("/api/attendance/report", {
         params,
         headers: getAuthHeaders(),
       });
       setReport(data);
-      setExpandedCashier(null);
+      setExpandedUser(null);
     } catch (e) {
       setReport(null);
       setReportErr(e.response?.data?.error || e.message || "فشل تحميل التقرير");
     } finally {
       setReportLoading(false);
     }
-  }, [from, to, cashierFilter]);
+  }, [from, to, employeeFilter]);
 
   useEffect(() => {
-    loadCashiers();
-  }, [loadCashiers]);
+    loadEmployees();
+  }, [loadEmployees]);
 
   useEffect(() => {
     if (tab === "report") loadReport();
   }, [tab, loadReport]);
+
+  useEffect(() => {
+    cancelEditPunch();
+    setManualPunchTime("");
+    setManualPunchType("out");
+  }, [expandedUser]);
 
   function startEditRate(c) {
     setEditingId(c.id);
@@ -174,7 +174,7 @@ export default function CashierPayroll() {
       );
       toast.success("تم حفظ أجر الساعة");
       cancelEditRate();
-      loadCashiers();
+      loadEmployees();
     } catch (e) {
       toast.error(e.response?.data?.error || e.message || "فشل الحفظ");
     } finally {
@@ -192,14 +192,15 @@ export default function CashierPayroll() {
     }
   }
 
-  const flatShiftRows = useMemo(() => {
+  const flatSessionRows = useMemo(() => {
     if (!report?.employees?.length) return [];
     const rows = [];
     for (const emp of report.employees) {
-      for (const shift of emp.shifts || []) {
+      for (const session of emp.sessions || []) {
         rows.push({
-          ...shift,
+          ...session,
           username: emp.username,
+          role_label: emp.role_label,
           hourly_rate: emp.hourly_rate,
         });
       }
@@ -207,19 +208,136 @@ export default function CashierPayroll() {
     return rows;
   }, [report]);
 
+  function punchTypeLabel(type) {
+    return type === "in" ? "حضور" : "انصراف";
+  }
+
+  function punchSourceLabel(source) {
+    if (source === "manual") return "يدوي";
+    if (source === "kiosk") return "كشك";
+    return source || "—";
+  }
+
+  function toDatetimeLocalValue(sqlTime) {
+    if (!sqlTime) return "";
+    const normalized = String(sqlTime).trim().replace(" ", "T");
+    return normalized.slice(0, 16);
+  }
+
+  function fromDatetimeLocalValue(value) {
+    if (!value) return "";
+    return `${value.replace("T", " ")}:00`.slice(0, 19);
+  }
+
+  const expandedEmployee = useMemo(
+    () => report?.employees?.find((e) => e.user_id === expandedUser) || null,
+    [report, expandedUser]
+  );
+
+  async function saveManualPunch() {
+    if (!expandedEmployee || expandedEmployee.hours_source !== "punch") return;
+    if (!manualPunchTime) {
+      toast.error("حدد وقت التسجيل");
+      return;
+    }
+    setPunchSaving(true);
+    try {
+      await api.post(
+        "/api/attendance/manual-punch",
+        {
+          user_id: expandedEmployee.user_id,
+          punch_time: fromDatetimeLocalValue(manualPunchTime),
+          type: manualPunchType,
+        },
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+      toast.success("تمت إضافة التسجيل");
+      setManualPunchTime("");
+      loadReport();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "فشل إضافة التسجيل");
+    } finally {
+      setPunchSaving(false);
+    }
+  }
+
+  function startEditPunch(punch) {
+    setEditingPunchId(punch.id);
+    setEditPunchTime(toDatetimeLocalValue(punch.punch_time));
+    setEditPunchType(punch.type);
+  }
+
+  function cancelEditPunch() {
+    setEditingPunchId(null);
+    setEditPunchTime("");
+    setEditPunchType("in");
+  }
+
+  async function saveEditPunch() {
+    if (!editingPunchId || !editPunchTime) {
+      toast.error("حدد وقت التسجيل");
+      return;
+    }
+    setPunchSaving(true);
+    try {
+      await api.patch(
+        `/api/attendance/punch/${editingPunchId}`,
+        {
+          punch_time: fromDatetimeLocalValue(editPunchTime),
+          type: editPunchType,
+        },
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+      toast.success("تم تحديث التسجيل");
+      cancelEditPunch();
+      loadReport();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "فشل تحديث التسجيل");
+    } finally {
+      setPunchSaving(false);
+    }
+  }
+
+  async function removePunch(punchId) {
+    if (!window.confirm("حذف هذا التسجيل؟")) return;
+    setPunchSaving(true);
+    try {
+      await api.delete(`/api/attendance/punch/${punchId}`, { headers: getAuthHeaders() });
+      toast.success("تم حذف التسجيل");
+      if (editingPunchId === punchId) cancelEditPunch();
+      loadReport();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "فشل حذف التسجيل");
+    } finally {
+      setPunchSaving(false);
+    }
+  }
+
   function onExportCsv() {
-    if (!flatShiftRows.length) {
+    if (!flatSessionRows.length) {
       toast.info("لا توجد بيانات للتصدير");
       return;
     }
-    exportToCsv(`cashier-payroll-${from}-${to}`, REPORT_SHIFT_COLUMNS, flatShiftRows);
+    exportToCsv(`employee-hours-${from}-${to}`, [
+      { key: "username", header: "الموظف", value: (r) => r.username },
+      { key: "role_label", header: "الدور", value: (r) => r.role_label },
+      { key: "start_time", header: "البداية", value: (r) => formatDateTimeAr(r.start_time) },
+      { key: "end_time", header: "النهاية", value: (r) => formatDateTimeAr(r.end_time) },
+      { key: "hours", header: "الساعات", value: (r) => formatHoursAr(r.hours) },
+      { key: "status", header: "الحالة", value: (r) => formatShiftStatus(r.status) },
+    ], flatSessionRows);
   }
 
   const rateColumns = [
     {
       key: "username",
-      header: "الكاشير",
+      header: "الموظف",
       value: (c) => c.username,
+    },
+    {
+      key: "role",
+      header: "الدور",
+      value: (c) => ROLE_LABELS[c.role] || c.role,
     },
     {
       key: "hourly_rate",
@@ -279,24 +397,24 @@ export default function CashierPayroll() {
   return (
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
-        title="رواتب الكاشير"
-        subtitle="ساعات العمل من الورديات وأجور الساعة لكل كاشير"
+        title="الموظفون"
+        subtitle="أجور الساعة، تسجيل الوجه، وتقرير ساعات العمل"
         icon="shifts"
         actions={
           tab === "report" ? (
             <>
-              <SecondaryButton type="button" onClick={onExportCsv} disabled={!flatShiftRows.length}>
+              <SecondaryButton type="button" onClick={onExportCsv} disabled={!flatSessionRows.length}>
                 تصدير CSV
               </SecondaryButton>
               <PrimaryButton type="button" onClick={loadReport} disabled={reportLoading}>
                 {reportLoading ? "جاري التحميل…" : "تحديث"}
               </PrimaryButton>
             </>
-          ) : (
-            <SecondaryButton type="button" onClick={loadCashiers} disabled={ratesLoading}>
+          ) : tab === "rates" ? (
+            <SecondaryButton type="button" onClick={loadEmployees} disabled={ratesLoading}>
               تحديث
             </SecondaryButton>
-          )
+          ) : null
         }
       />
 
@@ -306,19 +424,21 @@ export default function CashierPayroll() {
         <Card className="ui-mt-md">
           <CardBody>
             <p className="ui-text-muted" style={{ marginTop: 0 }}>
-              حدّد أجر الساعة لكل كاشير — يُستخدم لحساب الراتب في تقرير الورديات.
+              حدّد أجر الساعة لكل موظف — يُستخدم لحساب الراتب في تقرير الساعات.
             </p>
             {ratesLoading ? (
               <Skeleton style={{ height: 200 }} />
             ) : ratesErr ? (
               <EmptyState title={ratesErr} className="ui-mt-md" />
-            ) : cashiers.length === 0 ? (
-              <EmptyState title="لا يوجد كاشير مسجّل" />
+            ) : employees.length === 0 ? (
+              <EmptyState title="لا يوجد موظفون مسجّلون" />
             ) : (
-              <DataTable columns={rateColumns} rows={cashiers} keyField="id" />
+              <DataTable columns={rateColumns} rows={employees} keyField="id" />
             )}
           </CardBody>
         </Card>
+      ) : tab === "enroll" ? (
+        <FaceEnrollmentPanel />
       ) : (
         <>
           <Card className="ui-mt-md payroll-report-filters-card">
@@ -330,10 +450,10 @@ export default function CashierPayroll() {
                 <FormField label="إلى">
                   <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
                 </FormField>
-                <FormField label="الكاشير">
-                  <Select value={cashierFilter} onChange={(e) => setCashierFilter(e.target.value)}>
+                <FormField label="الموظف">
+                  <Select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)}>
                     <option value="">الكل</option>
-                    {cashiers.map((c) => (
+                    {employees.map((c) => (
                       <option key={c.id} value={String(c.id)}>
                         {c.username}
                       </option>
@@ -366,43 +486,44 @@ export default function CashierPayroll() {
               >
                 <StatCard label="إجمالي الساعات" value={formatHoursAr(report.grand_total_hours)} />
                 <StatCard label="إجمالي الرواتب" value={ils(report.grand_total_pay)} />
-                <StatCard label="عدد الكاشير" value={String(report.employees?.length ?? 0)} />
+                <StatCard label="عدد الموظفين" value={String(report.employees?.length ?? 0)} />
               </div>
 
               {report.employees?.length === 0 ? (
                 <EmptyState
-                  title="لا توجد ورديات منتهية في هذه الفترة"
-                  subtitle="تُحسب فقط الورديات التي أُغلقت (بانتظار العد أو مغلقة)"
+                  title="لا توجد ساعات عمل في هذه الفترة"
+                  subtitle="الكاشير من الورديات، المخبز والرفوف من سجل الحضور"
                   className="ui-mt-md"
                 />
               ) : (
                 <>
                   <Card className="ui-mt-md">
                     <CardBody>
-                      <h3 style={{ marginTop: 0 }}>ملخص حسب الكاشير</h3>
+                      <h3 style={{ marginTop: 0 }}>ملخص حسب الموظف</h3>
                       <DataTable
                         columns={summaryTableColumns}
                         rows={report.employees}
-                        keyField="cashier_id"
+                        keyField="user_id"
                         onRowClick={(row) =>
-                          setExpandedCashier((prev) =>
-                            prev === row.cashier_id ? null : row.cashier_id
-                          )
+                          setExpandedUser((prev) => (prev === row.user_id ? null : row.user_id))
                         }
                       />
                     </CardBody>
                   </Card>
 
-                  {expandedCashier != null ? (
+                  {expandedUser != null ? (
                     <Card className="ui-mt-md">
                       <CardBody>
                         <h3 style={{ marginTop: 0 }}>
-                          تفاصيل الورديات —{" "}
-                          {report.employees.find((e) => e.cashier_id === expandedCashier)?.username}
+                          التفاصيل — {expandedEmployee?.username}
                         </h3>
                         <DataTable
                           columns={[
-                            { key: "shift_id", header: "الوردية", value: (s) => s.shift_id },
+                            {
+                              key: "source",
+                              header: "المصدر",
+                              value: (s) => (s.source === "shift" ? "وردية" : "حضور"),
+                            },
                             {
                               key: "start_time",
                               header: "البداية",
@@ -418,19 +539,130 @@ export default function CashierPayroll() {
                               header: "الساعات",
                               value: (s) => formatHoursAr(s.hours),
                             },
-                            { key: "pay", header: "المبلغ", value: (s) => ils(s.pay) },
                             {
                               key: "status",
                               header: "الحالة",
                               value: (s) => formatShiftStatus(s.status),
                             },
                           ]}
-                          rows={
-                            report.employees.find((e) => e.cashier_id === expandedCashier)?.shifts ||
-                            []
-                          }
-                          keyField="shift_id"
+                          rows={expandedEmployee?.sessions || []}
+                          keyField="session_id"
                         />
+
+                        {expandedEmployee?.hours_source === "punch" ? (
+                          <div className="ui-mt-md">
+                            <h4 style={{ marginTop: 24 }}>تسجيلات الحضور (تصحيح يدوي)</h4>
+                            <p className="ui-text-muted" style={{ marginTop: 0 }}>
+                              أضف أو عدّل تسجيلات الحضور لإغلاق الجلسات المفتوحة أو تصحيح الأخطاء.
+                            </p>
+
+                            <FormGrid columns={3}>
+                              <FormField label="نوع التسجيل">
+                                <Select
+                                  value={manualPunchType}
+                                  onChange={(e) => setManualPunchType(e.target.value)}
+                                >
+                                  <option value="in">حضور</option>
+                                  <option value="out">انصراف</option>
+                                </Select>
+                              </FormField>
+                              <FormField label="الوقت">
+                                <Input
+                                  type="datetime-local"
+                                  value={manualPunchTime}
+                                  onChange={(e) => setManualPunchTime(e.target.value)}
+                                />
+                              </FormField>
+                              <FormField label=" ">
+                                <PrimaryButton
+                                  type="button"
+                                  onClick={saveManualPunch}
+                                  disabled={punchSaving || !manualPunchTime}
+                                >
+                                  {punchSaving ? "جاري الحفظ…" : "إضافة تسجيل"}
+                                </PrimaryButton>
+                              </FormField>
+                            </FormGrid>
+
+                            <DataTable
+                              columns={[
+                                {
+                                  key: "punch_time",
+                                  header: "الوقت",
+                                  render: (p) =>
+                                    editingPunchId === p.id ? (
+                                      <Input
+                                        type="datetime-local"
+                                        value={editPunchTime}
+                                        onChange={(e) => setEditPunchTime(e.target.value)}
+                                        onClick={(e) => e.stopPropagation()}
+                                      />
+                                    ) : (
+                                      formatDateTimeAr(p.punch_time)
+                                    ),
+                                },
+                                {
+                                  key: "type",
+                                  header: "النوع",
+                                  render: (p) =>
+                                    editingPunchId === p.id ? (
+                                      <Select
+                                        value={editPunchType}
+                                        onChange={(e) => setEditPunchType(e.target.value)}
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <option value="in">حضور</option>
+                                        <option value="out">انصراف</option>
+                                      </Select>
+                                    ) : (
+                                      punchTypeLabel(p.type)
+                                    ),
+                                },
+                                {
+                                  key: "source",
+                                  header: "المصدر",
+                                  value: (p) => punchSourceLabel(p.source),
+                                },
+                                {
+                                  key: "actions",
+                                  header: "إجراءات",
+                                  render: (p) =>
+                                    editingPunchId === p.id ? (
+                                      <div className="ui-table__actions" onClick={(e) => e.stopPropagation()}>
+                                        <PrimaryButton
+                                          size="sm"
+                                          type="button"
+                                          onClick={saveEditPunch}
+                                          disabled={punchSaving}
+                                        >
+                                          حفظ
+                                        </PrimaryButton>
+                                        <SecondaryButton size="sm" type="button" onClick={cancelEditPunch}>
+                                          إلغاء
+                                        </SecondaryButton>
+                                      </div>
+                                    ) : (
+                                      <div className="ui-table__actions" onClick={(e) => e.stopPropagation()}>
+                                        <SecondaryButton size="sm" type="button" onClick={() => startEditPunch(p)}>
+                                          تعديل
+                                        </SecondaryButton>
+                                        <SecondaryButton
+                                          size="sm"
+                                          type="button"
+                                          onClick={() => removePunch(p.id)}
+                                          disabled={punchSaving}
+                                        >
+                                          حذف
+                                        </SecondaryButton>
+                                      </div>
+                                    ),
+                                },
+                              ]}
+                              rows={expandedEmployee?.punches || []}
+                              keyField="id"
+                            />
+                          </div>
+                        ) : null}
                       </CardBody>
                     </Card>
                   ) : null}

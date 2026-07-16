@@ -11,7 +11,9 @@ import { resolveDatabasePath } from "./utils/dbPath.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const PORT = Number(process.env.PORT) || 5000;
+const PORT =
+  Number(process.env.PORT) ||
+  (process.env.NODE_ENV === "development" ? 5001 : 5000);
 
 let dbPath;
 try {

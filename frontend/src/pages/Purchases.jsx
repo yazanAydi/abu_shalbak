@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { todayISO } from "../utils/format";
 import { useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -364,7 +365,7 @@ export default function Purchases() {
 
   const [showForm, setShowForm] = useState(false);
   const [supplierId, setSupplierId] = useState("");
-  const [docDate, setDocDate] = useState(new Date().toISOString().slice(0, 10));
+  const [docDate, setDocDate] = useState(todayISO());
   const [refText, setRefText] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState([]);
@@ -422,14 +423,14 @@ export default function Purchases() {
 
   function openForm() {
     setEditId(null);
-    setSupplierId(""); setDocDate(new Date().toISOString().slice(0, 10));
+    setSupplierId(""); setDocDate(todayISO());
     setRefText(""); setNotes(""); setItems([]); setShowForm(true);
   }
 
   async function fillFormFromDoc(which, data, id) {
     setSupplierId(String(data.supplier_id));
     const docDateValue = which === "returns" ? data.return_date : which === "orders" ? data.order_date : data.invoice_date;
-    setDocDate(docDateValue?.slice(0, 10) || new Date().toISOString().slice(0, 10));
+    setDocDate(docDateValue?.slice(0, 10) || todayISO());
     setRefText(data.ref_text || "");
     setNotes(data.notes || "");
     const docItems = data.items || [];

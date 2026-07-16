@@ -1,6 +1,11 @@
 import { round2 } from "./tax.js";
 import { listCurrencies, getBaseCurrency, round2Rate } from "./currencies.js";
-import { TX_BUSINESS_DAY_JOIN, txBusinessDayEquals } from "./businessDay.js";
+import {
+  TX_BUSINESS_DAY_JOIN,
+  shopDateUtcPrefilter,
+  txMatchesShopDate,
+  toSqlUtc,
+} from "./businessDay.js";
 
 const ALLOWED = ["cash", "visa", "on_account"];
 const INVOICE_ALLOWED = ["cash", "visa", "on_account", "check"];
@@ -250,18 +255,29 @@ export async function sumShiftCardPayments(db, shiftId) {
   return round2(Number(row?.s) || 0);
 }
 
-/** Aggregate payment lines for transactions on a given date. */
+/** Aggregate payment lines for transactions on a given shop calendar date. */
 export async function aggregatePaymentLinesForDate(db, dateStr) {
+  const { startIso, endIso } = shopDateUtcPrefilter(dateStr);
+  const startSql = toSqlUtc(startIso);
+  const endSql = toSqlUtc(endIso);
   const rows = await db.all(
     `SELECT sp.payment_method, sp.amount, sp.transaction_id, t.payment_method AS tx_method,
             sp.currency_id, sp.original_amount, sp.nis_equivalent,
-            c.code AS currency_code, c.symbol AS currency_symbol, c.name AS currency_name
+            c.code AS currency_code, c.symbol AS currency_symbol, c.name AS currency_name,
+            t.created_at, cs.start_time AS shift_start_time
      FROM sale_payments sp
      INNER JOIN transactions t ON t.id = sp.transaction_id
      ${TX_BUSINESS_DAY_JOIN}
      LEFT JOIN currencies c ON c.id = sp.currency_id
-     WHERE ${txBusinessDayEquals("?")}`,
-    [dateStr]
+     WHERE (datetime(t.created_at) >= datetime(?)
+       AND datetime(t.created_at) <= datetime(?))
+        OR (cs.start_time IS NOT NULL
+            AND datetime(cs.start_time) >= datetime(?)
+            AND datetime(cs.start_time) <= datetime(?))`,
+    [startSql, endSql, startSql, endSql]
+  );
+  const matched = rows.filter((r) =>
+    txMatchesShopDate({ start_time: r.shift_start_time, created_at: r.created_at }, dateStr)
   );
 
   let cash_total = 0;
@@ -270,7 +286,7 @@ export async function aggregatePaymentLinesForDate(db, dateStr) {
   const txMethods = new Map();
   const currencyMap = new Map();
 
-  for (const r of rows) {
+  for (const r of matched) {
     const amt = round2(Number(r.amount) || 0);
     if (r.payment_method === "cash") cash_total = round2(cash_total + amt);
     else if (r.payment_method === "on_account") on_account_total = round2(on_account_total + amt);
@@ -302,7 +318,7 @@ export async function aggregatePaymentLinesForDate(db, dateStr) {
   let on_account_transactions = 0;
 
   for (const [txId, methods] of txMethods) {
-    const txRow = rows.find((r) => r.transaction_id === txId);
+    const txRow = matched.find((r) => r.transaction_id === txId);
     if (methods.size > 1 || txRow?.tx_method === "mixed") {
       mixed_sales_count++;
     }

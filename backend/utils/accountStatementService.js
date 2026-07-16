@@ -11,6 +11,7 @@ import {
   STORE_NAME_AR,
   STORE_PHONE,
 } from "./storeBranding.js";
+import { shopTodayYmd } from "./shopTime.js";
 
 /**
  * @param {string} [value]
@@ -26,9 +27,8 @@ export function parseStatementDate(value) {
  * Default range: current calendar year through today.
  */
 export function defaultStatementDateRange() {
-  const now = new Date();
-  const from = `${now.getFullYear()}-01-01`;
-  const to = now.toISOString().slice(0, 10);
+  const to = shopTodayYmd();
+  const from = `${to.slice(0, 4)}-01-01`;
   return { from, to };
 }
 
@@ -178,7 +178,7 @@ export async function getAccountStatement(db, opts) {
     openingBalanceFormatted: openingFormatted,
     date_from: from,
     date_to: to,
-    print_date: new Date().toISOString().slice(0, 10),
+    print_date: shopTodayYmd(),
     rows: pagedRows,
     all_rows_count: totalRows,
     pagination: pageSize

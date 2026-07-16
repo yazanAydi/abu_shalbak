@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { recordMovement } from "../utils/inventory.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 const requireReports = requireRoles("admin", "accountant");
 const WH_TYPES = ["main", "store", "returns", "damaged"];
@@ -153,7 +154,7 @@ export function createWarehousesRouter(db) {
       const ins = await db.run(
         `INSERT INTO warehouse_transfers (transfer_no, from_warehouse_id, to_warehouse_id, transfer_date, status, notes, created_by)
          VALUES (?, ?, ?, ?, 'draft', ?, ?)`,
-        [no, from, to, transfer_date || new Date().toISOString().slice(0, 10), notes || null, req.user.id]
+        [no, from, to, transfer_date || shopTodayYmd(), notes || null, req.user.id]
       );
       for (const it of norm) {
         await db.run(

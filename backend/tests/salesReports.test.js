@@ -5,12 +5,13 @@ import {
   login,
   authHeader,
 } from "./helpers.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 describe("Sales reports API: range and daily-series", () => {
   let ctx;
   let adminToken;
   let cashierToken;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = shopTodayYmd();
 
   beforeAll(async () => {
     ctx = await createTestContext();

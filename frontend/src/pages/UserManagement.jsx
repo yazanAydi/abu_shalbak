@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
-import { ROLE_LABELS_AR, USER_ROLES } from "../utils/roles";
+import { ROLE_LABELS_AR, USER_ROLES, isKioskOnlyRole, roleNeedsPassword } from "../utils/roles";
 import {
   PageHeader,
   Card,
@@ -48,21 +48,24 @@ export default function UserManagement() {
   }, [load]);
 
   async function addUser() {
-    if (!form.username.trim() || !form.password) {
-      toast.error("اسم المستخدم وكلمة المرور مطلوبان");
+    if (!form.username.trim()) {
+      toast.error("اسم المستخدم مطلوب");
+      return;
+    }
+    if (roleNeedsPassword(form.role) && !form.password) {
+      toast.error("كلمة المرور مطلوبة لهذا الدور");
       return;
     }
     setSaving(true);
     try {
-      await api.post(
-        "/api/admin/users",
-        {
-          username: form.username.trim(),
-          password: form.password,
-          role: form.role,
-        },
-        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
-      );
+      const body = {
+        username: form.username.trim(),
+        role: form.role,
+      };
+      if (form.password) body.password = form.password;
+      await api.post("/api/admin/users", body, {
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+      });
       setForm({ username: "", password: "", role: "cashier" });
       toast.success("تم إنشاء المستخدم");
       load();
@@ -226,18 +229,33 @@ export default function UserManagement() {
                 autoComplete="off"
               />
             </FormField>
-            <FormField label="كلمة المرور">
-              <Input
-                type="password"
-                value={form.password}
-                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                autoComplete="new-password"
-              />
-            </FormField>
+            {roleNeedsPassword(form.role) ? (
+              <FormField label="كلمة المرور">
+                <Input
+                  type="password"
+                  value={form.password}
+                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                  autoComplete="new-password"
+                />
+              </FormField>
+            ) : (
+              <FormField label="كلمة المرور">
+                <p className="ui-hint" style={{ margin: 0 }}>
+                  غير مطلوبة — موظفو المخبز/الرفوف يسجّلون الحضور عبر كشك الوجه فقط
+                </p>
+              </FormField>
+            )}
             <FormField label="الدور">
               <Select
                 value={form.role}
-                onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+                onChange={(e) => {
+                  const role = e.target.value;
+                  setForm((f) => ({
+                    ...f,
+                    role,
+                    password: isKioskOnlyRole(role) ? "" : f.password,
+                  }));
+                }}
               >
                 {USER_ROLES.map((r) => (
                   <option key={r} value={r}>

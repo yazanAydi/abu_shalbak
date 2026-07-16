@@ -6,10 +6,10 @@ Sales, shifts, and daily reports use the **server clock**. If the clock is wrong
 
 - [ ] **Windows date & time** — Settings → Time & language → Date & time:
   - Turn on **Set time automatically**
-  - Set timezone to **(UTC+02:00) Jerusalem** (or your Palestine region)
+  - Set timezone to **(UTC+02:00) Ramallah / Palestine** (Windows: same region as `(UTC+02:00) Jerusalem` if Ramallah is not listed)
   - Click **Sync now** under Additional settings
 - [ ] Confirm in PowerShell: `Get-Date` and `tzutil /g` show the correct local time
-- [ ] **Docker store** (`npm run store:up`): container uses `TZ=Asia/Jerusalem` — verify with `docker exec supermarket-pos date`
+- [ ] **Docker store** (`npm run store:up`): container uses `TZ=Asia/Hebron` (Ramallah) — verify with `docker exec supermarket-pos date`
 - [ ] **API health**: open `http://SERVER_IP:3000/api/v1/health` — `serverTime` should match your wall clock (within a few seconds)
 - [ ] Sync cashier PC clocks too (POS header clock uses the browser PC time for display only)
 - [ ] Only after the above: start the first cashier shift

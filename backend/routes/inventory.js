@@ -3,6 +3,7 @@ import { requireAuth, requireAdmin, requireReportsPermission, requireRoles } fro
 import { recordMovement, applyStockDelta } from "../utils/inventory.js";
 import { round2 } from "../utils/tax.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
 // Maps adjustment type -> ledger movement_type and sign of stock change.
 const ADJ_MOVEMENT = {
@@ -220,7 +221,7 @@ export function createInventoryRouter(db) {
       const ins = await db.run(
         `INSERT INTO stock_adjustments (adjustment_no, adjustment_date, adjustment_type, status, notes, created_by)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [no, adjustment_date || new Date().toISOString().slice(0, 10), adjustment_type, post ? "posted" : "draft", notes || null, req.user.id]
+        [no, adjustment_date || shopTodayYmd(), adjustment_type, post ? "posted" : "draft", notes || null, req.user.id]
       );
       const adjId = ins.lastID;
       const map = ADJ_MOVEMENT[adjustment_type];

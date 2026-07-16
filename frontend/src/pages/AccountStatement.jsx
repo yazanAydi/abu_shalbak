@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { todayISO } from "../utils/format";
 import api from "../apiClient";
 import PartyPicker from "../components/PartyPicker";
 import AccountStatementView from "../components/AccountStatementView";
@@ -23,7 +24,7 @@ import {
 
 function currentYearRange() {
   const y = new Date().getFullYear();
-  return { from: `${y}-01-01`, to: new Date().toISOString().slice(0, 10) };
+  return { from: `${y}-01-01`, to: todayISO() };
 }
 
 export default function AccountStatement() {

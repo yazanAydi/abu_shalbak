@@ -34,6 +34,7 @@ import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { ensureEntityCode } from "../utils/entityCodes.js";
 import { recordPriceChange } from "../utils/priceHistory.js";
 import { getSalesByPrice } from "../utils/salesByPrice.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -717,7 +718,7 @@ export function createProductsRouter(db) {
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const pid = product.id;
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = shopTodayYmd();
     const monthStart = `${today.slice(0, 8)}01`;
 
     const todayRow = await db.get(

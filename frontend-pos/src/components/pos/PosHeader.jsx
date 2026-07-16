@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { dateTime } from "../../utils/format";
+import { SHOP_TZ } from "../../utils/shopTime";
 import BarcodeInput from "../BarcodeInput";
 import PosProductSearch from "./PosProductSearch";
 
@@ -11,6 +13,7 @@ function LiveClock() {
   return (
     <span className="pos-pill clock">
       {now.toLocaleString("ar", {
+        timeZone: SHOP_TZ,
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
@@ -39,7 +42,7 @@ export default function PosHeader({
         {posNeedsShift && activeShift ? (
           <>
             <span className="pos-pill">
-              وردية {activeShift.start_time?.replace("T", " ").slice(0, 16) || "—"}
+              وردية {activeShift.start_time ? dateTime(activeShift.start_time) : "—"}
               <span className="pos-meta-divider"> · </span>
               مبيعات: {shiftTxCount}
             </span>

@@ -51,4 +51,7 @@ module.exports = {
   webpack: {
     configure: patchSourceMapLoaderExclude,
   },
+  devServer: {
+    allowedHosts: "all",
+  },
 };

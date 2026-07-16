@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { todayISO } from "../utils/format";
 import { useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -50,7 +51,7 @@ export default function VouchersPage() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [voucherType, setVoucherType] = useState("receipt");
-  const [voucherDate, setVoucherDate] = useState(new Date().toISOString().slice(0, 10));
+  const [voucherDate, setVoucherDate] = useState(todayISO());
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([{ ...emptyLine }]);
   const [party, setParty] = useState(null);
@@ -175,7 +176,7 @@ export default function VouchersPage() {
 
   function fillFormFromDoc(data) {
     setVoucherType(data.voucher_type);
-    setVoucherDate(data.voucher_date?.slice(0, 10) || new Date().toISOString().slice(0, 10));
+    setVoucherDate(data.voucher_date?.slice(0, 10) || todayISO());
     setNotes(data.notes || "");
     const firstWithParty = data.lines?.find((L) => L.customer_id || L.supplier_id);
     if (firstWithParty?.customer_id) {
@@ -212,7 +213,7 @@ export default function VouchersPage() {
     setEditId(null);
     resetForm(setLines, setNotes, setParty);
     setVoucherType("receipt");
-    setVoucherDate(new Date().toISOString().slice(0, 10));
+    setVoucherDate(todayISO());
     setShowForm(true);
   }
 

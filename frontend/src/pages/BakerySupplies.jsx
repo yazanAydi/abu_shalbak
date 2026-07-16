@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { todayISO } from "../utils/format";
 import { useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -258,7 +259,7 @@ function BakeryPurchases() {
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState(null);
   const [supplierId, setSupplierId] = useState("");
-  const [docDate, setDocDate] = useState(new Date().toISOString().slice(0, 10));
+  const [docDate, setDocDate] = useState(todayISO());
   const [refText, setRefText] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState([]);
@@ -435,7 +436,7 @@ function BakeryPurchases() {
         <Button icon="plus" onClick={() => {
           setEditId(null);
           setSupplierId("");
-          setDocDate(new Date().toISOString().slice(0, 10));
+          setDocDate(todayISO());
           setRefText("");
           setNotes("");
           setItems([]);
@@ -493,7 +494,7 @@ function BakeryConsumption() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [show, setShow] = useState(false);
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayISO());
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -556,7 +557,7 @@ function BakeryConsumption() {
     <>
       <div className="ui-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <ReportToolbar title="استهلاك مواد المخبز" columns={pickExportColumns(columns)} rows={list} filename="bakery-consumption" disabled={loading} />
-        <Button icon="plus" onClick={() => { setDate(new Date().toISOString().slice(0, 10)); setNotes(""); setItems([]); setShow(true); }}>تسجيل استهلاك</Button>
+        <Button icon="plus" onClick={() => { setDate(todayISO()); setNotes(""); setItems([]); setShow(true); }}>تسجيل استهلاك</Button>
       </div>
       <DataTable columns={columns} rows={list} loading={loading} emptyIcon="inventory" empty="لا يوجد استهلاك مسجّل" />
 

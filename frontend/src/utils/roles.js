@@ -17,6 +17,17 @@ export const ROLE_LABELS_AR = {
   bakery_employee: "موظف مخبز",
 };
 
+/** Roles that use face kiosk only — no password / app login */
+export const KIOSK_ONLY_ROLES = ["bakery_employee", "shelves_employee"];
+
+export function isKioskOnlyRole(role) {
+  return KIOSK_ONLY_ROLES.includes(role);
+}
+
+export function roleNeedsPassword(role) {
+  return !isKioskOnlyRole(role);
+}
+
 export function isAdminRole(role) {
   return role === "admin";
 }

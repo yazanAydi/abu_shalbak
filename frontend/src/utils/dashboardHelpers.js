@@ -1,6 +1,7 @@
 /** @typedef {'critical'|'warning'|'info'} AlertSeverity */
 
-import { parseServerDate } from "./format.js";
+import { parseServerDate, todayISO } from "./format.js";
+import { addShopDays, shopTodayYmd } from "./shopTime.js";
 
 export const VARIANCE_WARNING_NIS = 50;
 export const VARIANCE_CRITICAL_NIS = 200;
@@ -60,9 +61,7 @@ export function buildDemoChartSeries(days, opts = {}) {
   if (base.length === 0) {
     const out = [];
     for (let i = span; i >= 0; i--) {
-      const dt = new Date();
-      dt.setDate(dt.getDate() - i);
-      const date = dt.toISOString().slice(0, 10);
+      const date = addShopDays(shopTodayYmd(), -i) || todayISO();
       const dr = 800 + (span - i) * (pointCount > 7 ? 40 : 120);
       out.push({
         date,

@@ -4,6 +4,7 @@ import { getDefaultUnit } from "../utils/productUnits.js";
 import { recordMovement } from "../utils/inventory.js";
 import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { resolveInvoicePayments, insertSalePayments } from "../utils/salePayments.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 function round6(n) {
   return Math.round((Number(n) || 0) * 1e6) / 1e6;
@@ -170,7 +171,7 @@ export async function createSalesInvoiceDraft(db, body, userId) {
         no,
         cid,
         ref_text || null,
-        invoice_date || new Date().toISOString().slice(0, 10),
+        invoice_date || shopTodayYmd(),
         subtotal,
         tax,
         total,

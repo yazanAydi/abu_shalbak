@@ -2,8 +2,8 @@ import { Router } from "express";
 import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import {
   buildPayrollReport,
-  listCashiers,
-  updateCashierHourlyRate,
+  listEmployees,
+  updateEmployeeHourlyRate,
 } from "../services/cashierPayrollService.js";
 
 export function createPayrollRouter(db) {
@@ -12,7 +12,16 @@ export function createPayrollRouter(db) {
 
   router.get("/cashiers", requireAuth, requirePayroll, async (_req, res, next) => {
     try {
-      const rows = await listCashiers(db);
+      const rows = await listEmployees(db);
+      res.json(rows);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get("/employees", requireAuth, requirePayroll, async (_req, res, next) => {
+    try {
+      const rows = await listEmployees(db);
       res.json(rows);
     } catch (e) {
       next(e);
@@ -25,7 +34,7 @@ export function createPayrollRouter(db) {
       if (hourly_rate === undefined || hourly_rate === null || hourly_rate === "") {
         return res.status(400).json({ error: "أجر الساعة مطلوب" });
       }
-      const row = await updateCashierHourlyRate(db, req.params.id, hourly_rate);
+      const row = await updateEmployeeHourlyRate(db, req.params.id, hourly_rate);
       res.json(row);
     } catch (e) {
       next(e);

@@ -1,38 +1,37 @@
-/** Date helpers for sales report presets (YYYY-MM-DD). */
+/** Date helpers for sales report presets (YYYY-MM-DD, Ramallah shop calendar). */
+
+import {
+  addShopDays,
+  shopFirstOfLastMonthYmd,
+  shopFirstOfMonthYmd,
+  shopLastOfLastMonthYmd,
+  shopStartOfWeekYmd,
+  shopTodayYmd,
+  shopYesterdayYmd,
+} from "./shopTime.js";
 
 export function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
+  return shopTodayYmd();
 }
 
 export function yesterdayYmd() {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return shopYesterdayYmd();
 }
 
 export function firstOfMonthYmd(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+  return shopFirstOfMonthYmd(date);
 }
 
 export function firstOfLastMonthYmd() {
-  const d = new Date();
-  d.setDate(1);
-  d.setMonth(d.getMonth() - 1);
-  return firstOfMonthYmd(d);
+  return shopFirstOfLastMonthYmd();
 }
 
 export function lastOfLastMonthYmd() {
-  const d = new Date();
-  d.setDate(0);
-  return d.toISOString().slice(0, 10);
+  return shopLastOfLastMonthYmd();
 }
 
 export function startOfWeekYmd() {
-  const d = new Date();
-  const day = d.getDay();
-  const diff = day === 0 ? 6 : day - 1;
-  d.setDate(d.getDate() - diff);
-  return d.toISOString().slice(0, 10);
+  return shopStartOfWeekYmd();
 }
 
 /** @typedef {{ id: string, label: string, mode: 'day' | 'range', date?: string, from?: string, to?: string }} DatePreset */
@@ -70,3 +69,5 @@ export function getDatePresets() {
 export function firstOfCurrentMonthYmd() {
   return firstOfMonthYmd();
 }
+
+export { addShopDays };

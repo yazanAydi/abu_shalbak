@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
@@ -29,12 +30,11 @@ const REFUND_COLUMNS = [
 ];
 
 function firstOfMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  return firstOfCurrentMonthYmd();
 }
 
-function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
+function todayYmdLocal() {
+  return todayYmd();
 }
 
 export default function RefundsPage() {
@@ -46,7 +46,7 @@ export default function RefundsPage() {
 
   const initialFilters = {
     dateFrom: firstOfMonth(),
-    dateTo: todayYmd(),
+    dateTo: todayYmdLocal(),
     cashierName: "",
     status: "",
     minAmount: "",

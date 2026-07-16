@@ -10,6 +10,7 @@ import { isAdminRole, requiresShiftForPos } from "../utils/roles";
 import ShiftStart from "../components/ShiftStart";
 import ShiftEnd from "../components/ShiftEnd";
 import { printReceipt } from "../utils/printReceipt";
+import { dateTime } from "../utils/format";
 import "../components/ShiftModal.css";
 import "./Checkout.css";
 
@@ -293,7 +294,7 @@ export default function Checkout() {
           {posNeedsShift && activeShift ? (
             <div className="checkout-shift-info">
               <span className="checkout-shift-pill">
-                وردية من {activeShift.start_time?.replace("T", " ").slice(0, 16) || "—"}
+                وردية من {activeShift.start_time ? dateTime(activeShift.start_time) : "—"}
               </span>
               <span className="checkout-shift-pill">مبيعات: {shiftTxCount}</span>
               <button

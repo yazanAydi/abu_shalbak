@@ -22,11 +22,10 @@ import {
 import XLSX from "xlsx";
 import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
 import {
-  TX_BUSINESS_DAY_JOIN,
-  txBusinessDayEquals,
-  REFUND_BUSINESS_DAY_JOIN,
-  refundBusinessDayEquals,
+  fetchRefundsForShopDate,
+  fetchTransactionsForShopDate,
 } from "../utils/businessDay.js";
+import { addShopDays, shopDateRange, shopTodayYmd } from "../utils/shopTime.js";
 
 function parseDateParam(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return null;
@@ -48,13 +47,7 @@ function parsePositiveInt(value) {
 }
 
 async function aggregateDay(db, dateStr) {
-  const rows = await db.all(
-    `SELECT t.id, t.items_json, t.subtotal, t.tax, t.total, t.change_amount, t.payment_method, t.created_at
-     FROM transactions t
-     ${TX_BUSINESS_DAY_JOIN}
-     WHERE ${txBusinessDayEquals("?")}`,
-    [dateStr]
-  );
+  const rows = await fetchTransactionsForShopDate(db, dateStr);
 
   const paymentAgg = await aggregatePaymentLinesForDate(db, dateStr);
 
@@ -111,12 +104,7 @@ async function aggregateDay(db, dateStr) {
       revenue: p.revenue,
     }));
 
-  const refundRows = await db.all(
-    `SELECT r.total, r.payment_method FROM refunds r
-     ${REFUND_BUSINESS_DAY_JOIN}
-     WHERE ${refundBusinessDayEquals("?")}`,
-    [dateStr]
-  );
+  const refundRows = await fetchRefundsForShopDate(db, dateStr);
   let refunds_total = 0;
   let refund_count = refundRows.length;
   let refund_cash = 0;
@@ -195,7 +183,7 @@ export function createReportsRouter(db) {
   router.use(requireAuth);
 
   router.get("/today", dashboard, async (_req, res) => {
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = shopTodayYmd();
     const r = await aggregateDay(db, dateStr);
     res.json({
       date: dateStr,
@@ -221,7 +209,7 @@ export function createReportsRouter(db) {
     const date =
       typeof req.query.date === "string" && req.query.date.trim()
         ? req.query.date.trim()
-        : new Date().toISOString().slice(0, 10);
+        : shopTodayYmd();
     const r = await aggregateDay(db, date);
     res.json({
       date,
@@ -308,10 +296,9 @@ export function createReportsRouter(db) {
 
   router.get("/last-7-days", dashboard, async (_req, res) => {
     const out = [];
+    const today = shopTodayYmd();
     for (let i = 6; i >= 0; i--) {
-      const dt = new Date();
-      dt.setDate(dt.getDate() - i);
-      const dateStr = dt.toISOString().slice(0, 10);
+      const dateStr = addShopDays(today, -i);
       const row = await aggregateDayProfit(db, dateStr);
       out.push(row);
     }
@@ -320,10 +307,9 @@ export function createReportsRouter(db) {
 
   router.get("/last-30-days", dashboard, async (_req, res) => {
     const out = [];
+    const today = shopTodayYmd();
     for (let i = 29; i >= 0; i--) {
-      const dt = new Date();
-      dt.setDate(dt.getDate() - i);
-      const dateStr = dt.toISOString().slice(0, 10);
+      const dateStr = addShopDays(today, -i);
       const row = await aggregateDayProfit(db, dateStr);
       out.push(row);
     }
@@ -334,7 +320,7 @@ export function createReportsRouter(db) {
     const date =
       typeof req.query.date === "string" && req.query.date.trim()
         ? req.query.date.trim()
-        : new Date().toISOString().slice(0, 10);
+        : shopTodayYmd();
     const report = await aggregateDay(db, date);
     res.json(report);
   });
@@ -348,12 +334,7 @@ export function createReportsRouter(db) {
     if (from > to) {
       return res.status(400).json({ error: "from يجب أن يسبق to أو يساويه" });
     }
-    const dates = [];
-    const start = new Date(`${from}T00:00:00Z`);
-    const end = new Date(`${to}T00:00:00Z`);
-    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
-      dates.push(d.toISOString().slice(0, 10));
-    }
+    const dates = shopDateRange(from, to);
     if (dates.length > 366) {
       return res.status(400).json({ error: "الفترة تتجاوز 366 يوماً" });
     }
@@ -413,12 +394,7 @@ export function createReportsRouter(db) {
     if (from > to) {
       return res.status(400).json({ error: "from يجب أن يسبق to أو يساويه" });
     }
-    const dates = [];
-    const start = new Date(`${from}T00:00:00Z`);
-    const end = new Date(`${to}T00:00:00Z`);
-    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
-      dates.push(d.toISOString().slice(0, 10));
-    }
+    const dates = shopDateRange(from, to);
     if (dates.length > 366) {
       return res.status(400).json({ error: "الفترة تتجاوز 366 يوماً" });
     }
@@ -431,10 +407,9 @@ export function createReportsRouter(db) {
 
   router.get("/last7days", dashboard, async (_req, res) => {
     const out = [];
+    const today = shopTodayYmd();
     for (let i = 6; i >= 0; i--) {
-      const dt = new Date();
-      dt.setDate(dt.getDate() - i);
-      const dateStr = dt.toISOString().slice(0, 10);
+      const dateStr = addShopDays(today, -i);
       const r = await aggregateDay(db, dateStr);
       out.push({
         date: dateStr,

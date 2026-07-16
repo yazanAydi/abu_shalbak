@@ -1,6 +1,9 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        REACT_APP_KIOSK_API_KEY: ${KIOSK_API_KEY:-}
     container_name: supermarket-pos
     ports:
       - "3000:3000"
@@ -11,7 +14,7 @@ services:
       NODE_ENV: production
       HOST: "0.0.0.0"
       PORT: "3000"
-      TZ: Asia/Jerusalem
+      TZ: Asia/Hebron
       DATABASE_PATH: /app/data/supermarket.db
       BACKUP_DIR: /app/backups
     volumes:

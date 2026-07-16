@@ -5,14 +5,15 @@ import { getToken, removeToken } from "./utils/auth";
  * API base URL — server root; requests to /api/* are rewritten to /api/v1/*.
  */
 function getBaseURL() {
+  if (process.env.NODE_ENV === "development") {
+    // Always same-origin in dev — setupProxy.js forwards /api → backend :5001.
+    // Ignore REACT_APP_API_BASE here so a stale frontend/.env.development cannot bypass the proxy.
+    return "";
+  }
   const env = process.env.REACT_APP_API_BASE;
   if (env != null && String(env).trim() !== "") {
     return String(env).trim().replace(/\/$/, "");
   }
-  if (process.env.NODE_ENV === "development") {
-    return "http://127.0.0.1:5000";
-  }
-  return "";
 }
 
 export const api = axios.create({
@@ -48,7 +49,10 @@ api.interceptors.response.use(
   (e) => {
     if (e?.response?.status === 401) {
       const url = String(e.config?.url || "");
-      if (!url.includes("/auth/login")) {
+      const onKiosk =
+        window.location.pathname.endsWith("/kiosk") ||
+        window.location.pathname.includes("/kiosk");
+      if (!url.includes("/auth/login") && !onKiosk) {
         removeToken();
         const loginPath = `${process.env.PUBLIC_URL || ""}/login`;
         const onLogin = window.location.pathname === loginPath || window.location.pathname.endsWith("/login");
@@ -64,7 +68,9 @@ api.interceptors.response.use(
     }
     if (e && e.message === "Network Error") {
       e.message =
-        "تعذّر الاتصال بالخادم. للتطوير: شغّل npm start من جذر المشروع (المنفذ 5000). للمتجر: افتح http://IP:3000/admin";
+        process.env.NODE_ENV === "development"
+          ? "تعذّر الاتصال بالخادم. شغّل npm start من جذر المشروع وتأكد من ظهور [api] Server running على المنفذ 5001. ثم نفّذ: npm run verify:dev"
+          : "تعذّر الاتصال بالخادم. للمتجر: افتح http://IP:3000/admin";
     }
     return Promise.reject(e);
   }

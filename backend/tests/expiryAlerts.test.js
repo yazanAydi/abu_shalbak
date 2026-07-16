@@ -6,14 +6,13 @@ import {
 } from "../services/expiryAlertService.js";
 import { initDatabase } from "../database/init.js";
 import { updateAppSettings } from "../utils/settings.js";
-import fs from "fs";
+import { addShopDays, shopTodayYmd } from "../utils/shopTime.js";
 import path from "path";
+import fs from "fs";
 import os from "os";
 
 function daysFromNow(n) {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return addShopDays(shopTodayYmd(), n) || shopTodayYmd();
 }
 
 describe("expiry alerts", () => {

@@ -15,7 +15,7 @@ export const ACCOUNTANT_PERMISSION_TOPICS = [
       { key: "expenses", labelAr: "المصروفات" },
       { key: "sales_reports", labelAr: "تقارير المبيعات" },
       { key: "shift_audit", labelAr: "الورديات" },
-      { key: "employee_payroll", labelAr: "رواتب الكاشير" },
+      { key: "employee_payroll", labelAr: "الموظفون" },
       { key: "refunds", labelAr: "الاسترجاعات" },
       { key: "refund_approvals", labelAr: "موافقات الاسترجاع" },
       { key: "on_account_approvals", labelAr: "موافقات الذمة" },

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { todayISO } from "../utils/format";
 import { useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -211,7 +212,7 @@ export default function SalesInvoices() {
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [customerId, setCustomerId] = useState("");
-  const [docDate, setDocDate] = useState(new Date().toISOString().slice(0, 10));
+  const [docDate, setDocDate] = useState(todayISO());
   const [refText, setRefText] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState([]);
@@ -271,7 +272,7 @@ export default function SalesInvoices() {
   function openForm() {
     setEditId(null);
     setCustomerId("");
-    setDocDate(new Date().toISOString().slice(0, 10));
+    setDocDate(todayISO());
     setRefText("");
     setNotes("");
     setItems([]);
@@ -280,7 +281,7 @@ export default function SalesInvoices() {
 
   async function fillFormFromDoc(data, id) {
     setCustomerId(String(data.customer_id));
-    setDocDate(data.invoice_date?.slice(0, 10) || new Date().toISOString().slice(0, 10));
+    setDocDate(data.invoice_date?.slice(0, 10) || todayISO());
     setRefText(data.ref_text || "");
     setNotes(data.notes || "");
     const mapped = await Promise.all(

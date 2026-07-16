@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
@@ -24,12 +25,7 @@ const OPEX_LABEL = {
 };
 
 function firstOfMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
-}
-
-function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
+  return firstOfCurrentMonthYmd();
 }
 
 export default function SupplierFinance() {

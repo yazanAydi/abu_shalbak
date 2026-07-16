@@ -5,6 +5,7 @@ import {
   login,
   authHeader,
 } from "./helpers.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 /**
  * Stage 2 — historical profit/COGS must come from sale-item snapshots.
@@ -19,7 +20,7 @@ describe("Historical profit from snapshots (Scenario A + C)", () => {
   let shiftId;
   let cashierId;
   let saleTxId;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = shopTodayYmd();
 
   beforeAll(async () => {
     ctx = await createTestContext();

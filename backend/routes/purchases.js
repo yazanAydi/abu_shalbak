@@ -4,6 +4,7 @@ import { round2, computePurchaseInvoiceTotals, applyPurchaseDiscount } from "../
 import { recordMovement } from "../utils/inventory.js";
 import { getAppSettings } from "../utils/settings.js";
 import { getDefaultUnit } from "../utils/productUnits.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 const requireReports = requireRoles("admin", "accountant");
 
@@ -153,7 +154,7 @@ export function createPurchasesRouter(db) {
       const ins = await db.run(
         `INSERT INTO purchase_orders (order_no, supplier_id, order_date, total_amount, notes, created_by)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [no, sid, order_date || new Date().toISOString().slice(0, 10), total, notes || null, req.user.id]
+        [no, sid, order_date || shopTodayYmd(), total, notes || null, req.user.id]
       );
       for (const i of norm) {
         await db.run(
@@ -263,7 +264,7 @@ export function createPurchasesRouter(db) {
            (invoice_no, supplier_id, order_id, ref_text, invoice_date, status, subtotal, vat, total, notes, created_by)
          VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`,
         [no, sid, order_id ? Number(order_id) : null, ref_text || null,
-         invoice_date || new Date().toISOString().slice(0, 10), subtotal, vat, total, notes || null, req.user.id]
+         invoice_date || shopTodayYmd(), subtotal, vat, total, notes || null, req.user.id]
       );
       for (const i of lines) {
         await db.run(
@@ -424,7 +425,7 @@ export function createPurchasesRouter(db) {
       const ins = await db.run(
         `INSERT INTO purchase_returns (return_no, supplier_id, invoice_id, return_date, status, total, notes, created_by)
          VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)`,
-        [no, sid, invoice_id ? Number(invoice_id) : null, return_date || new Date().toISOString().slice(0, 10), total, notes || null, req.user.id]
+        [no, sid, invoice_id ? Number(invoice_id) : null, return_date || shopTodayYmd(), total, notes || null, req.user.id]
       );
       for (const i of norm) {
         await db.run(

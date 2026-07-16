@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { formatDurationAr, shiftOpenDurationMs } from "../utils/dashboardHelpers";
+import { dateTime } from "../utils/format";
 import "./ShiftStatusCard.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -28,7 +29,7 @@ export default function ShiftStatusCard({ listRow, detail }) {
       <ul className="shift-status-list">
         <li>
           <span className="shift-status-k">⏱️ بدء الوردية</span>
-          <span className="shift-status-v">{start?.replace("T", " ").slice(0, 16) || "—"}</span>
+          <span className="shift-status-v">{start ? dateTime(start) : "—"}</span>
         </li>
         <li>
           <span className="shift-status-k">⏱️ مدة مفتوحة</span>

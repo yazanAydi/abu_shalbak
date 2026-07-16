@@ -15,6 +15,7 @@ import {
   STORE_NAME_AR,
   STORE_PHONE,
 } from "../utils/storeBranding.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -257,7 +258,7 @@ export function createRefundsRouter(db) {
   });
 
   router.get("/summary", requireAuth, requireRefunds, async (_req, res) => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = shopTodayYmd();
     const allRow = await db.get(
       `SELECT COUNT(*) AS count,
         COALESCE(SUM(CASE WHEN status IN ('approved','pending') THEN total ELSE 0 END),0) AS amount

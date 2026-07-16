@@ -1,4 +1,10 @@
 import { HttpError } from "../utils/httpError.js";
+import { ATTENDANCE_ROLES } from "../utils/roles.js";
+import {
+  addShopDays,
+  shopYmdInRange,
+  shopYmdRangeToUtcBounds,
+} from "../utils/shopTime.js";
 
 export function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -54,13 +60,20 @@ function parseDateYmd(s) {
 /**
  * @param {object} db
  */
-export async function listCashiers(db) {
+export async function listEmployees(db) {
+  const placeholders = ATTENDANCE_ROLES.map(() => "?").join(", ");
   return db.all(
-    `SELECT id, username, hourly_rate
+    `SELECT id, username, role, hourly_rate
      FROM users
-     WHERE role = 'cashier'
-     ORDER BY username COLLATE NOCASE`
+     WHERE role IN (${placeholders})
+     ORDER BY username COLLATE NOCASE`,
+    ATTENDANCE_ROLES
   );
+}
+
+/** @deprecated Use listEmployees */
+export async function listCashiers(db) {
+  return listEmployees(db);
 }
 
 /**
@@ -68,7 +81,7 @@ export async function listCashiers(db) {
  * @param {number} userId
  * @param {number} hourlyRate
  */
-export async function updateCashierHourlyRate(db, userId, hourlyRate) {
+export async function updateEmployeeHourlyRate(db, userId, hourlyRate) {
   const id = Number(userId);
   if (!id) throw new HttpError(400, "المعرّف غير صالح");
 
@@ -79,14 +92,31 @@ export async function updateCashierHourlyRate(db, userId, hourlyRate) {
 
   const user = await db.get("SELECT id, username, role, hourly_rate FROM users WHERE id = ?", [id]);
   if (!user) throw new HttpError(404, "المستخدم غير موجود");
-  if (user.role !== "cashier") {
-    throw new HttpError(400, "أجر الساعة يُحدَّد للكاشير فقط");
+  if (!ATTENDANCE_ROLES.includes(user.role)) {
+    throw new HttpError(400, "أجر الساعة يُحدَّد لموظفي المتجر فقط");
   }
 
   await db.run("UPDATE users SET hourly_rate = ? WHERE id = ?", [round2(rate), id]);
   return db.get(
-    "SELECT id, username, hourly_rate FROM users WHERE id = ?",
+    "SELECT id, username, role, hourly_rate FROM users WHERE id = ?",
     [id]
+  );
+}
+
+/** @deprecated Use updateEmployeeHourlyRate */
+export async function updateCashierHourlyRate(db, userId, hourlyRate) {
+  return updateEmployeeHourlyRate(db, userId, hourlyRate);
+}
+
+/**
+ * @param {object} db
+ */
+export async function listCashiersOnly(db) {
+  return db.all(
+    `SELECT id, username, hourly_rate
+     FROM users
+     WHERE role = 'cashier'
+     ORDER BY username COLLATE NOCASE`
   );
 }
 
@@ -104,6 +134,12 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
     throw new HttpError(400, "تاريخ البداية يجب أن يكون قبل تاريخ النهاية");
   }
 
+  const fetchFrom = addShopDays(from, -1) || from;
+  const fetchTo = addShopDays(to, 1) || to;
+  const { startIso, endIso } = shopYmdRangeToUtcBounds(fetchFrom, fetchTo);
+  const startSql = startIso.replace("T", " ").slice(0, 19);
+  const endSql = endIso.replace("T", " ").slice(0, 19);
+
   let sql = `
     SELECT s.id AS shift_id, s.cashier_id, u.username, u.hourly_rate,
            s.start_time, s.end_time, s.status
@@ -111,9 +147,9 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
     JOIN users u ON u.id = s.cashier_id
     WHERE u.role = 'cashier'
       AND s.end_time IS NOT NULL
-      AND date(s.start_time) >= ?
-      AND date(s.start_time) <= ?`;
-  const params = [from, to];
+      AND datetime(s.start_time) >= datetime(?)
+      AND datetime(s.start_time) <= datetime(?)`;
+  const params = [startSql, endSql];
 
   const cid =
     cashierId != null && String(cashierId).trim() !== "" ? Number(cashierId) : null;
@@ -124,7 +160,9 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
 
   sql += " ORDER BY u.username COLLATE NOCASE, datetime(s.start_time) ASC, s.id ASC";
 
-  const rows = await db.all(sql, params);
+  const rows = (await db.all(sql, params)).filter((row) =>
+    shopYmdInRange(row.start_time, from, to)
+  );
 
   /** @type {Map<number, object>} */
   const byCashier = new Map();

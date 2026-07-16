@@ -1,6 +1,7 @@
 import { cellValue } from "./reportExport";
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
+import { formatDateTimeShopAr } from "./format";
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -9,13 +10,7 @@ function escapeHtml(text) {
 }
 
 function formatPrintTimestamp() {
-  return new Date().toLocaleString("ar-EG", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTimeShopAr(new Date());
 }
 
 function buildSummaryHtml(summary) {

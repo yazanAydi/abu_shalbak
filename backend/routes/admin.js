@@ -1,7 +1,8 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
-import { isValidRole, USER_ROLES } from "../utils/roles.js";
+import { isKioskOnlyRole, isValidRole, USER_ROLES } from "../utils/roles.js";
 import {
   csvBufferToRecords,
   normalizeProductRow,
@@ -19,6 +20,7 @@ import {
   handleSupplierBalanceConfirm,
 } from "./hesabatiUploadHandlers.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
+import { shopYmdToUtcBounds } from "../utils/shopTime.js";
 import { assignEntityCodeIfMissing, ensureEntityCode, renumberAllEntityCodesBatch } from "../utils/entityCodes.js";
 import { createBackup } from "../utils/backup.js";
 import { syncProductsPrimaryBarcode } from "../utils/productBarcodes.js";
@@ -382,13 +384,25 @@ export function createAdminRouter(db, dbPath) {
 
   router.post("/users", async (req, res) => {
     const { username, password, role } = req.body || {};
-    if (!username?.trim() || !password || !role) {
-      return res.status(400).json({ error: "اسم المستخدم وكلمة المرور والدور مطلوبة" });
+    if (!username?.trim() || !role) {
+      return res.status(400).json({ error: "اسم المستخدم والدور مطلوبان" });
     }
     if (!isValidRole(role)) {
       return res.status(400).json({ error: "دور غير صالح", allowed: USER_ROLES });
     }
-    const hash = await bcrypt.hash(String(password), 10);
+    const kioskOnly = isKioskOnlyRole(role);
+    if (!kioskOnly && !password) {
+      return res.status(400).json({ error: "كلمة المرور مطلوبة لهذا الدور" });
+    }
+    if (password != null && String(password).length > 0 && String(password).length < 6) {
+      return res.status(400).json({ error: "كلمة المرور يجب أن تكون 6 أحرف على الأقل" });
+    }
+    const hash = await bcrypt.hash(
+      kioskOnly && !password
+        ? crypto.randomBytes(32).toString("hex")
+        : String(password),
+      10
+    );
     try {
       const info = await db.run(
         "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
@@ -490,12 +504,14 @@ export function createAdminRouter(db, dbPath) {
         params.push(String(entity_type));
       }
       if (date_from) {
-        sql += " AND date(created_at) >= ?";
-        params.push(String(date_from));
+        const { startIso } = shopYmdToUtcBounds(String(date_from));
+        sql += " AND datetime(created_at) >= datetime(?)";
+        params.push(startIso.replace("T", " ").slice(0, 19));
       }
       if (date_to) {
-        sql += " AND date(created_at) <= ?";
-        params.push(String(date_to));
+        const { endIso } = shopYmdToUtcBounds(String(date_to));
+        sql += " AND datetime(created_at) <= datetime(?)";
+        params.push(endIso.replace("T", " ").slice(0, 19));
       }
       sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?";
       params.push(limit, offset);

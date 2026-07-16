@@ -1,5 +1,6 @@
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
+import { formatDateTimeShopAr } from "./format";
 
 const MOVEMENT_TYPE_AR = {
   opening_balance: "رصيد افتتاحي",
@@ -36,14 +37,7 @@ function amountCell(n) {
 }
 
 function formatTimestamp(value) {
-  const d = value ? new Date(value) : new Date();
-  return d.toLocaleString("ar-EG", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTimeShopAr(value || new Date());
 }
 
 /**

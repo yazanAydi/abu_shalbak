@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { todayISO } from "../utils/format";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../apiClient";
 import { getUser } from "../utils/auth";
@@ -29,7 +30,7 @@ import {
   useToast,
 } from "../components/ui";
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayISO();
 
 const TYPE_OPTIONS = [
   { value: "", label: "كل الحركات" },

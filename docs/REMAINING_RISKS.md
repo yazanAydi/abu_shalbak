@@ -6,7 +6,7 @@
 |---|---|---|---|
 | Money as SQLite `REAL` | Medium | Centralized `round2`; per-line rounding | Integer minor-units migration (`MONEY_PRECISION_REPORT.md`) |
 | `xlsx` (SheetJS) vulnerabilities | Medium | Admin-only import; row/size caps; no formula eval | Replace library when maintained alternative available |
-| Report day boundaries use server local `date()` | Low | Document server TZ = store TZ | Explicit Asia/Jerusalem helpers if needed |
+| Report day boundaries use server local `date()` | Low | `shopTime.js` (Asia/Hebron / Ramallah) | — |
 | Telegram chat-level auth only | Low (accepted) | Manager chat ID gate | Per-user approver list (explicitly dropped) |
 
 ## Manual verification still required

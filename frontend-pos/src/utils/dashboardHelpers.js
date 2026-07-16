@@ -1,3 +1,5 @@
+import { todayISO } from "./format.js";
+import { addShopDays, shopTodayYmd } from "./shopTime.js";
 /** @typedef {'critical'|'warning'|'info'} AlertSeverity */
 
 export const VARIANCE_WARNING_NIS = 50;
@@ -55,9 +57,7 @@ export function buildDemoChartSeries(days) {
   if (base.length === 0) {
     const out = [];
     for (let i = 6; i >= 0; i--) {
-      const dt = new Date();
-      dt.setDate(dt.getDate() - i);
-      const date = dt.toISOString().slice(0, 10);
+      const date = addShopDays(shopTodayYmd(), -i) || todayISO();
       const dr = 800 + (6 - i) * 120;
       const dc = 500 + (6 - i) * 70;
       out.push({

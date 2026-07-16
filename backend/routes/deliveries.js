@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
 
 const SALES_STATUS = ["pending", "out", "delivered", "cancelled"];
 const RECV_STATUS = ["pending", "received", "cancelled"];
@@ -34,7 +35,7 @@ export function createDeliveriesRouter(db) {
         transaction_id ? Number(transaction_id) : null,
         customer_id ? Number(customer_id) : null,
         driver || null, vehicle || null, address || null,
-        delivery_date || new Date().toISOString().slice(0, 10),
+        delivery_date || shopTodayYmd(),
         notes || null, req.user.id,
       ]
     );
@@ -81,7 +82,7 @@ export function createDeliveriesRouter(db) {
         purchase_invoice_id ? Number(purchase_invoice_id) : null,
         supplier_id ? Number(supplier_id) : null,
         driver || null, vehicle || null,
-        received_date || new Date().toISOString().slice(0, 10),
+        received_date || shopTodayYmd(),
         notes || null, req.user.id,
       ]
     );

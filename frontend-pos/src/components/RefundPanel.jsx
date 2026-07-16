@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { todayISO } from "../utils/format";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import PosRefundWaitingModal from "./pos/PosRefundWaitingModal";
@@ -20,7 +21,7 @@ function saleLabel(sale) {
 }
 
 function todayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
+  return todayISO();
 }
 
 function SaleResultsList({ sales, loading, onSelect, loadingLookup }) {

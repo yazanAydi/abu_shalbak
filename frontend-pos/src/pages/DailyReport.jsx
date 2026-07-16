@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { todayISO } from "../utils/format";
 import api from "../apiClient";
 import { Link } from "react-router-dom";
 import { getAuthHeaders } from "../utils/auth";
@@ -88,7 +89,7 @@ export default function DailyReport() {
       }
 
       const headers = getAuthHeaders();
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = todayISO();
 
       try {
         const reconPromise = api

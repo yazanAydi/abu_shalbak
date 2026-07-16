@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { todayISO } from "../utils/format";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateTime, dateOnly, qty as fmtQty } from "../utils/format";
@@ -26,7 +27,7 @@ function Adjustments() {
   const [loading, setLoading] = useState(true);
   const [show, setShow] = useState(false);
   const [type, setType] = useState("in");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayISO());
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -86,7 +87,7 @@ function Adjustments() {
 
   function fillFormFromDoc(data) {
     setType(data.adjustment_type);
-    setDate(data.adjustment_date?.slice(0, 10) || new Date().toISOString().slice(0, 10));
+    setDate(data.adjustment_date?.slice(0, 10) || todayISO());
     setNotes(data.notes || "");
     setItems((data.items || []).map((it) => ({
       product_id: it.product_id,
@@ -117,7 +118,7 @@ function Adjustments() {
     <>
       <div className="ui-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <ReportToolbar title="تسويات المخزون" columns={pickExportColumns(adjColumns)} rows={list} filename="inventory-adjustments" disabled={loading} />
-        <Button icon="plus" onClick={() => { setEditId(null); setType("in"); setDate(new Date().toISOString().slice(0, 10)); setNotes(""); setItems([]); setShow(true); }}>تسوية جديدة</Button>
+        <Button icon="plus" onClick={() => { setEditId(null); setType("in"); setDate(todayISO()); setNotes(""); setItems([]); setShow(true); }}>تسوية جديدة</Button>
       </div>
       <DataTable
         loading={loading}

@@ -1,4 +1,4 @@
-import { parseServerDate } from "./format.js";
+import { formatDateTimeShopAr } from "./format.js";
 
 /** Format decimal hours as Arabic hours/minutes (e.g. 8س 15د). */
 export function formatHoursAr(hours) {
@@ -23,14 +23,5 @@ export function formatShiftStatus(status) {
 }
 
 export function formatDateTimeAr(iso) {
-  if (!iso) return "—";
-  const d = parseServerDate(iso);
-  if (!d) return String(iso);
-  return d.toLocaleString("ar-EG", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTimeShopAr(iso);
 }

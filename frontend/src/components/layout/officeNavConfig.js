@@ -222,7 +222,7 @@ export const OFFICE_NAV = [
   },
   {
     path: "/cashier-payroll",
-    label: "رواتب الكاشير",
+    label: "الموظفون",
     icon: "shifts",
     section: "admin",
     permissionKey: "employee_payroll",
@@ -260,7 +260,7 @@ export const ROUTE_TITLES = {
   "/finance": "المالية ودفعات الموردين",
   "/sales-reports": "تقارير المبيعات",
   "/shift-audit": "تدقيق الورديات",
-  "/cashier-payroll": "رواتب الكاشير",
+  "/cashier-payroll": "الموظفون",
   "/refunds": "الاسترجاعات",
   "/refund-approvals": "موافقات الاسترجاع",
   "/on-account-approvals": "موافقات الذمة",

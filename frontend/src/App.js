@@ -41,6 +41,7 @@ const AccountStatement = lazy(() => import("./pages/AccountStatement"));
 const SupplierBalanceImport = lazy(() => import("./pages/SupplierBalanceImport"));
 const SalesReports = lazy(() => import("./pages/SalesReports"));
 const CashierPayroll = lazy(() => import("./pages/CashierPayroll"));
+const AttendanceKiosk = lazy(() => import("./pages/AttendanceKiosk"));
 
 function PageFallback() {
   return (
@@ -76,6 +77,14 @@ function App() {
     <div className="app-root">
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route
+          path="/kiosk"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <AttendanceKiosk />
+            </Suspense>
+          }
+        />
 
         <Route
           element={

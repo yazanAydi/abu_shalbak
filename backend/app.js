@@ -36,6 +36,7 @@ import { createCurrenciesRouter } from "./routes/currencies.js";
 import { createDebugRouter } from "./routes/debug.js";
 import { createOfficeRouter } from "./routes/office.js";
 import { createPayrollRouter } from "./routes/payroll.js";
+import { createAttendanceRouter } from "./routes/attendance.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { responseEnvelope } from "./middleware/responseEnvelope.js";
 import { apiLimiter } from "./middleware/rateLimit.js";
@@ -58,6 +59,23 @@ function parseAllowedOrigins() {
     "http://localhost:3001",
     "http://localhost:3002",
   ];
+}
+
+/** Dev phone access via Tailscale Serve uses https://machine.tailXXXX.ts.net */
+function isDevTailscaleOrigin(origin) {
+  if (process.env.NODE_ENV !== "development" || !origin) return false;
+  try {
+    const { protocol, hostname } = new URL(origin);
+    return protocol === "https:" && hostname.endsWith(".ts.net");
+  } catch {
+    return false;
+  }
+}
+
+function isOriginAllowed(origin, allowedOrigins) {
+  if (!origin || allowedOrigins.length === 0) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  return isDevTailscaleOrigin(origin);
 }
 
 function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
@@ -98,6 +116,7 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/currencies", createCurrenciesRouter(db));
   router.use("/office", createOfficeRouter(db));
   router.use("/payroll", createPayrollRouter(db));
+  router.use("/attendance", createAttendanceRouter(db));
   router.use("/debug", createDebugRouter(db));
   router.use("/", createPrintRouter(db));
 }
@@ -113,7 +132,7 @@ export function createApp(db, dbPath, options = {}) {
   app.use(
     cors({
       origin(origin, callback) {
-        if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        if (isOriginAllowed(origin, allowedOrigins)) {
           callback(null, true);
         } else {
           callback(new Error("Not allowed by CORS"));
@@ -121,7 +140,14 @@ export function createApp(db, dbPath, options = {}) {
       },
       credentials: true,
       methods: ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization", "Accept", "X-Requested-With", "X-Request-Id"],
+      allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "Accept",
+        "X-Requested-With",
+        "X-Request-Id",
+        "X-Kiosk-Key",
+      ],
     })
   );
   app.use(express.json({ limit: "2mb" }));
