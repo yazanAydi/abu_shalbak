@@ -126,7 +126,22 @@ export function createApp(db, dbPath, options = {}) {
   const allowedOrigins = parseAllowedOrigins();
   const app = express();
 
-  app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+  // The app is served over plain HTTP on the store LAN. Helmet's default CSP
+  // includes `upgrade-insecure-requests`, which makes browsers rewrite all
+  // resource URLs to https:// — the JS bundle then fails to load on any
+  // non-localhost client (blank white page). Drop that directive and HSTS.
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+      hsts: false,
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          "upgrade-insecure-requests": null,
+        },
+      },
+    })
+  );
   app.use(compression());
   app.use(requestIdMiddleware);
   app.use(
