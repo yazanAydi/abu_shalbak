@@ -40,6 +40,47 @@ export function displayProductSku(code) {
 }
 
 /**
+ * @param {unknown} code
+ * @returns {number | null}
+ */
+export function parseProductSkuNumber(code) {
+  if (code == null || String(code).trim() === "") return null;
+  const s = String(code).trim();
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
+/**
+ * @param {Array<{ sku?: unknown, id?: unknown }>} rows
+ */
+export function sortProductsBySku(rows) {
+  return [...rows].sort((a, b) => {
+    const an = parseProductSkuNumber(a?.sku);
+    const bn = parseProductSkuNumber(b?.sku);
+    if (an != null && bn != null && an !== bn) return an - bn;
+    if (an != null && bn == null) return -1;
+    if (an == null && bn != null) return 1;
+    return (Number(a?.id) || 0) - (Number(b?.id) || 0);
+  });
+}
+
+/**
+ * If the query is a product رقم that exists, keep only that item.
+ * @param {Array<{ sku?: unknown }>} rows
+ * @param {string} query
+ */
+export function filterProductsBySkuQuery(rows, query) {
+  const q = String(query ?? "").trim();
+  if (!/^\d+$/.test(q)) return rows;
+  const n = parseProductSkuNumber(q);
+  if (n == null) return rows;
+  const exact = rows.filter((p) => parseProductSkuNumber(p?.sku) === n);
+  return exact.length ? exact : rows;
+}
+
+/**
  * Row number in a paginated list (1-based): 1, 2, 3… in visible table order.
  * @param {number} page
  * @param {number} pageSize

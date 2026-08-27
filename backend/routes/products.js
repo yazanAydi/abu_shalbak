@@ -29,7 +29,7 @@ import {
   upsertProductUnit,
 } from "../utils/productUnits.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
-import { ensureEntityCode } from "../utils/entityCodes.js";
+import { ensureEntityCode, parseNumericCode } from "../utils/entityCodes.js";
 import { recordPriceChange } from "../utils/priceHistory.js";
 import { getSalesByPrice } from "../utils/salesByPrice.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
@@ -162,26 +162,56 @@ export async function searchProducts(db, rawQuery, options = {}) {
         byId.set(row.id, row);
       }
     }
+
+    const skuNum = parseNumericCode(normalized);
+    if (skuNum != null) {
+      const fromSku = await db.all(
+        `SELECT ${PRODUCT_LIST_SELECT_P}
+         FROM products p
+         WHERE CAST(p.sku AS INTEGER) = ?${scopeSql}`,
+        [skuNum, ...scopeParams]
+      );
+      for (const row of fromSku) {
+        if (!byId.has(row.id)) byId.set(row.id, row);
+      }
+    }
   }
 
-  const likeRows = await db.all(
-    `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P}
-     FROM products p
-     LEFT JOIN product_barcodes pb ON pb.product_id = p.id
-     WHERE (p.name LIKE ?
-        OR CAST(p.barcode AS TEXT) LIKE ?
-        OR pb.barcode LIKE ?)${scopeSql}
-     ORDER BY p.name ASC
-     LIMIT ?`,
-    [likeLower, like, like, ...scopeParams, limit]
-  );
+  const skuQuery = /^\d+$/.test(normalized) ? parseNumericCode(normalized) : null;
+  const hasExactSku = skuQuery != null
+    && [...byId.values()].some((row) => parseNumericCode(row.sku) === skuQuery);
 
-  for (const row of likeRows) {
-    if (!byId.has(row.id)) byId.set(row.id, row);
+  // A الرقم query like "4" must not also pull barcodes that merely contain the digit 4.
+  if (!hasExactSku) {
+    const likeRows = await db.all(
+      `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P}
+       FROM products p
+       LEFT JOIN product_barcodes pb ON pb.product_id = p.id
+       WHERE (p.name LIKE ?
+          OR CAST(p.barcode AS TEXT) LIKE ?
+          OR pb.barcode LIKE ?)${scopeSql}
+       ORDER BY p.name ASC
+       LIMIT ?`,
+      [likeLower, like, like, ...scopeParams, limit]
+    );
+
+    for (const row of likeRows) {
+      if (!byId.has(row.id)) byId.set(row.id, row);
+    }
   }
 
   const rows = [...byId.values()]
-    .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""), "ar"))
+    .sort((a, b) => {
+      if (skuQuery != null) {
+        const aExact = parseNumericCode(a.sku) === skuQuery;
+        const bExact = parseNumericCode(b.sku) === skuQuery;
+        if (aExact !== bExact) return aExact ? -1 : 1;
+        const aSku = parseNumericCode(a.sku);
+        const bSku = parseNumericCode(b.sku);
+        if (aSku != null && bSku != null && aSku !== bSku) return aSku - bSku;
+      }
+      return String(a.name ?? "").localeCompare(String(b.name ?? ""), "ar");
+    })
     .slice(0, limit);
   await attachDisplayBarcodes(db, rows);
   return rows;
@@ -233,7 +263,7 @@ export function createProductsRouter(db) {
 
     if (String(req.query.fields || "") === "id") {
       const rows = await db.all(
-        `SELECT id FROM products WHERE 1=1${scopeSql} ORDER BY id ASC`,
+        `SELECT id FROM products WHERE 1=1${scopeSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC`,
         scopeParams
       );
       return res.json(rows);
@@ -249,7 +279,7 @@ export function createProductsRouter(db) {
       }
       const countRow = await db.get(`SELECT COUNT(*) AS total FROM products ${whereSql}`, params);
       const rows = await db.all(
-        `SELECT ${PRODUCT_LIST_SELECT} FROM products ${whereSql} ORDER BY id ASC LIMIT ? OFFSET ?`,
+        `SELECT ${PRODUCT_LIST_SELECT} FROM products ${whereSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC LIMIT ? OFFSET ?`,
         [...params, limit, offset]
       );
       await attachDisplayBarcodes(db, rows);
@@ -263,7 +293,7 @@ export function createProductsRouter(db) {
 
     const rows = await db.all(
       `SELECT ${PRODUCT_LIST_SELECT}
-       FROM products WHERE 1=1${scopeSql} ORDER BY id ASC`,
+       FROM products WHERE 1=1${scopeSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC`,
       scopeParams
     );
     await attachDisplayBarcodes(db, rows);

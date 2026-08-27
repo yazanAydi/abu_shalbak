@@ -29,7 +29,12 @@ import { pickExportColumns } from "../utils/reportExport";
 import "./productDashboard/productBarcodes.css";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import { normalizeBarcode } from "../utils/barcode";
-import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
+import {
+  displayProductBarcode,
+  displayProductSku,
+  filterProductsBySkuQuery,
+  sortProductsBySku,
+} from "../utils/entityCodeDisplay";
 import "../components/barcode/barcode-scanner.css";
 
 const emptyForm = {
@@ -193,7 +198,10 @@ export default function ProductManagement() {
   }, [search, toast]);
 
   const isSearchActive = Boolean(search.trim());
-  const baseList = isSearchActive ? (searchResults ?? []) : products;
+  const rawList = isSearchActive ? (searchResults ?? []) : products;
+  const baseList = isSearchActive
+    ? filterProductsBySkuQuery(rawList, search)
+    : sortProductsBySku(rawList);
   const filtered = showNeedsReviewOnly
     ? baseList.filter((p) => Number(p.needs_review) === 1)
     : baseList;
@@ -724,7 +732,7 @@ export default function ProductManagement() {
               <SearchInput
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="بحث بالباركود أو الاسم"
+                placeholder="بحث بالباركود أو الاسم أو الرقم"
               />
               <CameraBarcodeButton
                 onScan={(code) => setSearch(normalizeBarcode(code))}

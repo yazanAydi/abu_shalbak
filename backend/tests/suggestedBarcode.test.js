@@ -256,4 +256,79 @@ describe("suggestedBarcode", () => {
     expect(row.barcode).toBe("7290013586773");
     expect(row.sku).toBe("00000000001");
   });
+
+  async function seedSkuOrderedProducts() {
+    await ctx.db.run("DELETE FROM product_unit_barcodes");
+    await ctx.db.run("DELETE FROM product_units");
+    await ctx.db.run("DELETE FROM product_barcodes");
+    await ctx.db.run("DELETE FROM products");
+
+    const rows = [
+      { sku: "00000000004", barcode: "12332122", name: "hgt" },
+      { sku: "00000000001", barcode: "1234567890", name: "ui" },
+      { sku: "00000000002", barcode: "1234567891", name: "ty" },
+      { sku: "00000000003", barcode: "123456787", name: "tyt" },
+    ];
+    for (const row of rows) {
+      await ctx.db.run(
+        `INSERT INTO products (barcode, name, price, cost, category, stock, sku)
+         VALUES (?, ?, 10, 5, 'Test', 1, ?)`,
+        [row.barcode, row.name, row.sku]
+      );
+    }
+  }
+
+  test("GET /api/products returns items ordered by numeric sku", async () => {
+    await seedSkuOrderedProducts();
+    const loginRes = await login(ctx.app, "testadmin", "adminpass123");
+    const token = loginRes.body.token;
+
+    const res = await request(ctx.app)
+      .get("/api/products")
+      .set(authHeader(token));
+
+    expect(res.status).toBe(200);
+    const body = res.body.data ?? res.body;
+    const items = Array.isArray(body) ? body : body.items;
+    expect(items.map((p) => p.sku)).toEqual([
+      "00000000001",
+      "00000000002",
+      "00000000003",
+      "00000000004",
+    ]);
+  });
+
+  test("GET /api/products?search=4 returns the product with الرقم 4", async () => {
+    await seedSkuOrderedProducts();
+    const loginRes = await login(ctx.app, "testadmin", "adminpass123");
+    const token = loginRes.body.token;
+
+    const res = await request(ctx.app)
+      .get("/api/products")
+      .query({ search: "4" })
+      .set(authHeader(token));
+
+    expect(res.status).toBe(200);
+    const body = res.body.data ?? res.body;
+    expect(body).toHaveLength(1);
+    expect(body[0]?.sku).toBe("00000000004");
+    expect(body[0]?.name).toBe("hgt");
+  });
+
+  test("GET /api/products?search=00000000004 returns the same product", async () => {
+    await seedSkuOrderedProducts();
+    const loginRes = await login(ctx.app, "testadmin", "adminpass123");
+    const token = loginRes.body.token;
+
+    const res = await request(ctx.app)
+      .get("/api/products")
+      .query({ search: "00000000004" })
+      .set(authHeader(token));
+
+    expect(res.status).toBe(200);
+    const body = res.body.data ?? res.body;
+    expect(body).toHaveLength(1);
+    expect(body[0]?.sku).toBe("00000000004");
+    expect(body[0]?.name).toBe("hgt");
+  });
 });
