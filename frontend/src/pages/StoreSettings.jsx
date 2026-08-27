@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { searchProductsApi } from "../utils/productSearch";
@@ -109,6 +109,11 @@ export default function StoreSettings() {
 
   const favoriteIds = useMemo(() => quickButtons.map((b) => b.product_id), [quickButtons]);
 
+  // Read through a ref so adding or removing a quick button does not re-run the
+  // product search; the exclusion list is still current when the request fires.
+  const favoriteIdsRef = useRef(favoriteIds);
+  favoriteIdsRef.current = favoriteIds;
+
   useEffect(() => {
     const q = productSearch.trim();
     if (!q) {
@@ -119,7 +124,7 @@ export default function StoreSettings() {
       try {
         const rows = await searchProductsApi(q, {
           limit: 12,
-          excludeIds: favoriteIds,
+          excludeIds: favoriteIdsRef.current,
         });
         setSearchResults(rows);
       } catch {
@@ -127,7 +132,7 @@ export default function StoreSettings() {
       }
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [productSearch, favoriteIds]);
+  }, [productSearch]);
 
   function openAddModal(product) {
     if (quickButtons.length >= MAX_QUICK_BUTTONS) {

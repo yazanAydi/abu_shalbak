@@ -145,12 +145,16 @@ function validateAddForm(form) {
   return null;
 }
 
+const PRODUCT_PAGE_SIZE = 200;
+
 export default function ProductManagement() {
   const toast = useToast();
   const navigate = useNavigate();
   const [products, setProducts] = useState([]);
+  const [productsTotal, setProductsTotal] = useState(0);
   const [searchResults, setSearchResults] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [uploadFeedback, setUploadFeedback] = useState(null);
@@ -170,26 +174,60 @@ export default function ProductManagement() {
   const [pwError, setPwError] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
+  // The catalogue is fetched a page at a time rather than in one response; at a
+  // few thousand SKUs the full list was megabytes of JSON and a row per product
+  // in the DOM. "needs review" is filtered server-side so the toggle still sees
+  // the whole catalogue rather than just the pages loaded so far.
+  const fetchProductPage = useCallback(
+    async (offset) => {
+      const params = { scope: "retail", limit: PRODUCT_PAGE_SIZE, offset };
+      if (showNeedsReviewOnly) params.needs_review = 1;
+      const { data } = await api.get("/api/products", {
+        params,
+        headers: getAuthHeaders(),
+      });
+      const body = data?.data ?? data;
+      const items = Array.isArray(body?.items)
+        ? body.items
+        : Array.isArray(body)
+          ? body
+          : [];
+      const total = Number(body?.total);
+      return { items, total: Number.isFinite(total) ? total : items.length };
+    },
+    [showNeedsReviewOnly]
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get("/api/products", {
-        params: { scope: "retail" },
-        headers: getAuthHeaders(),
-      });
-      const rows = Array.isArray(data?.items)
-        ? data.items
-        : Array.isArray(data?.data ?? data)
-          ? (data?.data ?? data)
-          : [];
-      setProducts(rows);
+      const { items, total } = await fetchProductPage(0);
+      setProducts(items);
+      setProductsTotal(total);
       setSearchResults(null);
     } catch (e) {
       toast.error(e.response?.data?.error || e.message);
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [fetchProductPage, toast]);
+
+  const loadMoreProducts = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const { items, total } = await fetchProductPage(products.length);
+      setProductsTotal(total);
+      setProducts((prev) => {
+        // Rows can shift between pages if someone edits the catalogue mid-scroll.
+        const seen = new Set(prev.map((p) => p.id));
+        return [...prev, ...items.filter((p) => !seen.has(p.id))];
+      });
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [fetchProductPage, products.length, toast]);
 
   useEffect(() => {
     load();
@@ -493,6 +531,7 @@ export default function ProductManagement() {
   const columns = [
     {
       key: "select",
+      hideOnMobile: true,
       header: (
         <input
           type="checkbox"
@@ -512,12 +551,14 @@ export default function ProductManagement() {
     },
     {
       key: "barcode",
+      hideOnMobile: true,
       header: "الباركود",
       value: (p) => displayProductBarcode(p),
       render: (p) => displayProductBarcode(p),
     },
     {
       key: "sku",
+      hideOnMobile: true,
       header: "الرقم",
       className: "num",
       value: (p) => displayProductSku(p.sku),
@@ -561,6 +602,7 @@ export default function ProductManagement() {
     { key: "stock", header: "المخزون", className: "num" },
     {
       key: "is_active",
+      hideOnMobile: true,
       header: "الحالة",
       value: (p) => (Number(p.is_active) === 0 ? "غير نشط" : "نشط"),
       render: (p) => (Number(p.is_active) === 0 ? "غير نشط" : "نشط"),
@@ -797,6 +839,20 @@ export default function ProductManagement() {
             empty="لا توجد منتجات"
             emptyIcon="products"
           />
+          {!isSearchActive && !loading && products.length < productsTotal ? (
+            <div className="ui-load-more">
+              <span className="ui-load-more__count">
+                {products.length} من {productsTotal}
+              </span>
+              <SecondaryButton
+                type="button"
+                onClick={loadMoreProducts}
+                disabled={loadingMore}
+              >
+                {loadingMore ? "جاري التحميل…" : "تحميل المزيد"}
+              </SecondaryButton>
+            </div>
+          ) : null}
         </CardBody>
       </Card>
 

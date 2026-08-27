@@ -1,4 +1,4 @@
-/* أبو شلبك — office (admin) ERP theme: soft canvas + white cards + teal accent */
+﻿/* Ø£Ø¨Ùˆ Ø´Ù„Ø¨Ùƒ â€” office (admin) ERP theme: soft canvas + white cards + teal accent */
 :root {
   /* Neutral ramp */
   --slate-50: #f8fafc;
@@ -77,7 +77,7 @@
   --office-focus-ring: 0 0 0 3px rgba(var(--office-accent-rgb), 0.28);
 
   --office-navbar-height: 70px;
-  --office-font: "Cairo", "Tajawal", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+  --office-font: "Cairo", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
 }
 
 .office-shell {
@@ -311,7 +311,7 @@
 }
 
 .dashboard-top-products-qty::after {
-  content: " قطعة";
+  content: " Ù‚Ø·Ø¹Ø©";
 }
 
 .dashboard-top-products-revenue {

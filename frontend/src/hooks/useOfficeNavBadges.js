@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import { useVisiblePoll } from "./useVisiblePoll";
 
 function unwrapData(body) {
   return body?.data ?? body;
@@ -40,10 +41,9 @@ export default function useOfficeNavBadges(enabled = true) {
 
   useEffect(() => {
     refresh();
-    if (!enabled) return undefined;
-    const timer = window.setInterval(refresh, 60_000);
-    return () => window.clearInterval(timer);
-  }, [refresh, enabled]);
+  }, [refresh]);
+
+  useVisiblePoll(refresh, 60_000, { enabled });
 
   return { badgesByPath, total, loading, refresh };
 }

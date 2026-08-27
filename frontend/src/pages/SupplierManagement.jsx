@@ -65,7 +65,18 @@ export default function SupplierManagement() {
     } catch { toast.error("تعذّر تحميل الأرصدة"); }
   }, [toast]);
 
-  useEffect(() => { load(); }, [load]);
+  // Debounced so typing a name costs one request instead of one per keystroke;
+  // an empty box loads immediately so the first paint is not delayed.
+  useEffect(() => {
+    const term = search.trim();
+    if (!term) {
+      load("");
+      return undefined;
+    }
+    const timer = window.setTimeout(() => load(term), 300);
+    return () => window.clearTimeout(timer);
+  }, [search, load]);
+
   useEffect(() => { if (tab === "balances") loadBalances(); }, [tab, loadBalances]);
 
   function startNew() { setEditing(null); setForm(emptyForm); setShowForm(true); }
@@ -121,10 +132,10 @@ export default function SupplierManagement() {
   const evLabel = { opening: "رصيد افتتاحي", purchase: "فاتورة شراء", purchase_return: "مرتجع شراء", payment: "دفعة" };
 
   const columns = [
-    { key: "supplier_code", header: "الرقم", className: "num", value: (s) => displayEntityCode(s.supplier_code), render: (s, i) => displayListRowNumber(0, 0, i) },
+    { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => displayEntityCode(s.supplier_code), render: (s, i) => displayListRowNumber(0, 0, i) },
     { key: "name", header: "الاسم", value: (s) => s.name, render: (s) => <strong>{s.name}</strong> },
     { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "—", render: (s) => s.contact_phone || "—" },
-    { key: "payment_terms", header: "شروط الدفع", value: (s) => s.payment_terms || "—", render: (s) => s.payment_terms || "—" },
+    { key: "payment_terms", header: "شروط الدفع", hideOnMobile: true, value: (s) => s.payment_terms || "—", render: (s) => s.payment_terms || "—" },
     { key: "balance", header: "الرصيد (مستحق)", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
     {
       key: "actions", header: "إجراءات",
@@ -143,7 +154,7 @@ export default function SupplierManagement() {
   ];
 
   const balanceColumns = [
-    { key: "supplier_code", header: "الرقم", className: "num", value: (s) => displayEntityCode(s.supplier_code), render: (s, i) => displayListRowNumber(0, 0, i) },
+    { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => displayEntityCode(s.supplier_code), render: (s, i) => displayListRowNumber(0, 0, i) },
     { key: "name", header: "الاسم" },
     { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "—", render: (s) => s.contact_phone || "—" },
     { key: "balance", header: "الرصيد", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
@@ -214,10 +225,7 @@ export default function SupplierManagement() {
             <SearchInput
               placeholder="بحث بالاسم أو الهاتف أو الرقم…"
               value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                load(e.target.value);
-              }}
+              onChange={(e) => setSearch(e.target.value)}
             />
           </div>
           <DataTable columns={columns} rows={suppliers} loading={loading} emptyIcon="suppliers" empty="لا يوجد موردون" />
@@ -294,6 +302,12 @@ export default function SupplierManagement() {
               rowKey={(e, i) => i}
               empty="لا توجد حركات"
             />
+            {ledger.truncated ? (
+              <p className="muted" style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
+                يُعرض آخر {ledger.events.length} حركة من {ledger.total_events}. الرصيد
+                محسوب على كامل الحركات — لعرض فترة أقدم استخدم كشف الحساب.
+              </p>
+            ) : null}
           </>
         )}
       </Modal>

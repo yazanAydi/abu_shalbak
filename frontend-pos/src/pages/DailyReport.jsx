@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { todayISO } from "../utils/format";
 import api from "../apiClient";
 import { Link } from "react-router-dom";
@@ -10,7 +10,6 @@ import {
 import ShiftStatusCard, { ShiftStatusEmpty } from "../components/ShiftStatusCard";
 import TodaysSummary from "../components/TodaysSummary";
 import CashAlerts from "../components/CashAlerts";
-import DashboardChart from "../components/DashboardChart";
 import {
   PageHeader,
   PrimaryButton,
@@ -31,9 +30,32 @@ const TOP_PRODUCT_COLUMNS = [
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
+// recharts is ~385 KB minified and only this one widget needs it, so it loads
+// alongside the chart data rather than blocking the rest of the dashboard.
+const DashboardChart = lazy(() => import("../components/DashboardChart"));
+
+const chartLoadingMessage = (
+  <p style={{ color: "var(--office-text-muted)", textAlign: "center", padding: "3rem" }}>
+    جاري تحميل الرسم…
+  </p>
+);
+
 const LOW_STOCK_THRESHOLD = 5;
 const LOW_STOCK_WIDGET_LIMIT = 12;
 const NEAR_EXPIRY_WIDGET_LIMIT = 12;
+
+// Kept in its own component so the once-a-second tick re-renders this line
+// rather than the whole dashboard.
+function UpdatedAgo({ lastUpdated, refreshing }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const i = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(i);
+  }, []);
+  if (lastUpdated == null) return null;
+  const secondsAgo = Math.max(0, Math.floor((Date.now() - lastUpdated.getTime()) / 1000));
+  return <>{`آخر تحديث: منذ ${secondsAgo} ثانية${refreshing ? " (جاري التحديث…)" : ""}`}</>;
+}
 
 function formatDaysUntilExpiry(days) {
   const d = Number(days);
@@ -49,7 +71,6 @@ export default function DailyReport() {
   const [chartLoading, setChartLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
-  const [tick, setTick] = useState(0);
 
   const [today, setToday] = useState(null);
   const [topProducts, setTopProducts] = useState([]);
@@ -59,7 +80,6 @@ export default function DailyReport() {
   const [chartSeries, setChartSeries] = useState([]);
   const [chartIsDemo, setChartIsDemo] = useState(false);
   const [openShifts, setOpenShifts] = useState([]);
-  const [shiftDetailsById, setShiftDetailsById] = useState({});
   const [lastClosedShift, setLastClosedShift] = useState(null);
   const [recon, setRecon] = useState(null);
   const [lowStockTotal, setLowStockTotal] = useState(0);
@@ -123,19 +143,6 @@ export default function DailyReport() {
         const open = Array.isArray(openShiftsRes.data) ? openShiftsRes.data : [];
         setOpenShifts(open);
 
-        const details = {};
-        await Promise.all(
-          open.map(async (s) => {
-            try {
-              const d = await api.get(`/api/shifts/${s.id}`, { headers });
-              details[s.id] = d.data;
-            } catch {
-              details[s.id] = null;
-            }
-          })
-        );
-        setShiftDetailsById(details);
-
         const closed = Array.isArray(closedShiftsRes.data) ? closedShiftsRes.data : [];
         setLastClosedShift(closed[0] || null);
 
@@ -196,19 +203,12 @@ export default function DailyReport() {
   }, [loadDashboard]);
 
   useEffect(() => {
-    const t = setInterval(() => loadDashboard({ initial: false }), 30_000);
+    const t = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      loadDashboard({ initial: false });
+    }, 30_000);
     return () => clearInterval(t);
   }, [loadDashboard]);
-
-  useEffect(() => {
-    const i = setInterval(() => setTick((x) => x + 1), 1000);
-    return () => clearInterval(i);
-  }, []);
-
-  const secondsAgo = useMemo(() => {
-    if (lastUpdated == null) return null;
-    return Math.max(0, Math.floor((Date.now() - lastUpdated.getTime()) / 1000));
-  }, [lastUpdated, tick]);
 
   const lowStockDisplayTotal = lowStockTotal;
 
@@ -266,11 +266,7 @@ export default function DailyReport() {
     <div className="office-page dashboard-page" dir="rtl" lang="ar">
       <PageHeader
         title="لوحة التحكم"
-        subtitle={
-          secondsAgo != null
-            ? `آخر تحديث: منذ ${secondsAgo} ثانية${refreshing ? " (جاري التحديث…)" : ""}`
-            : undefined
-        }
+        subtitle={<UpdatedAgo lastUpdated={lastUpdated} refreshing={refreshing} />}
         icon="dashboard"
         actions={
           <>
@@ -378,16 +374,16 @@ export default function DailyReport() {
               اتجاه الإيراد
             </h2>
             {chartLoading ? (
-              <p style={{ color: "var(--office-text-muted)", textAlign: "center", padding: "3rem" }}>
-                جاري تحميل الرسم…
-              </p>
+              chartLoadingMessage
             ) : (
-              <DashboardChart
-                data={chartSeries}
-                isDemo={chartIsDemo}
-                period={chartPeriod}
-                onPeriodChange={onChartPeriodChange}
-              />
+              <Suspense fallback={chartLoadingMessage}>
+                <DashboardChart
+                  data={chartSeries}
+                  isDemo={chartIsDemo}
+                  period={chartPeriod}
+                  onPeriodChange={onChartPeriodChange}
+                />
+              </Suspense>
             )}
           </CardBody>
         </Card>
@@ -437,7 +433,7 @@ export default function DailyReport() {
           ) : (
             <div className="shift-status-grid">
               {openShifts.map((s) => (
-                <ShiftStatusCard key={s.id} listRow={s} detail={shiftDetailsById[s.id]} />
+                <ShiftStatusCard key={s.id} listRow={s} />
               ))}
             </div>
           )}

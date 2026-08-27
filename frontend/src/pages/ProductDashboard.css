@@ -225,6 +225,18 @@
 @media (max-width: 720px) {
   .pd-header {
     flex-direction: column;
+    position: static;
+    box-shadow: none;
+  }
+  .pd-summary,
+  .pd-tabs-wrap {
+    position: static;
+  }
+  .pd-sticky-table {
+    max-height: none;
+  }
+  .pd-sticky-table thead th {
+    position: static;
   }
   .pd-actions {
     width: 100%;

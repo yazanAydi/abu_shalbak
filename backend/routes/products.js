@@ -64,6 +64,9 @@ function parsePositiveInt(value) {
   return n;
 }
 
+const DEFAULT_PRODUCT_PAGE_SIZE = 200;
+const MAX_PRODUCT_PAGE_SIZE = 500;
+
 function parsePagination(query, defLimit = 100, maxLimit = 500) {
   const unlimited = query.limit === "all" || query.limit === "0" || Number(query.limit) === 0;
   const limit = unlimited
@@ -269,35 +272,32 @@ export function createProductsRouter(db) {
       return res.json(rows);
     }
 
-    const paginate = req.query.limit != null || req.query.offset != null || req.query.needs_review != null;
-    if (paginate) {
-      const { limit, offset } = parsePagination(req.query, 50, 100);
-      let whereSql = `WHERE 1=1${scopeSql}`;
-      const params = [...scopeParams];
-      if (req.query.needs_review === "1" || req.query.needs_review === "true") {
-        whereSql += " AND COALESCE(needs_review, 0) = 1";
-      }
-      const countRow = await db.get(`SELECT COUNT(*) AS total FROM products ${whereSql}`, params);
-      const rows = await db.all(
-        `SELECT ${PRODUCT_LIST_SELECT} FROM products ${whereSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC LIMIT ? OFFSET ?`,
-        [...params, limit, offset]
-      );
-      await attachDisplayBarcodes(db, rows);
-      return res.json({
-        items: rows,
-        total: Number(countRow?.total) || 0,
-        limit,
-        offset,
-      });
+    // Always paginate. This used to return the entire table when the client sent
+    // no limit, which is megabytes of JSON at a few thousand SKUs and the single
+    // largest payload in the app. Clients that genuinely need everything — the
+    // CSV export — still pass limit=all.
+    const { limit, offset } = parsePagination(
+      req.query,
+      DEFAULT_PRODUCT_PAGE_SIZE,
+      MAX_PRODUCT_PAGE_SIZE
+    );
+    let whereSql = `WHERE 1=1${scopeSql}`;
+    const params = [...scopeParams];
+    if (req.query.needs_review === "1" || req.query.needs_review === "true") {
+      whereSql += " AND COALESCE(needs_review, 0) = 1";
     }
-
+    const countRow = await db.get(`SELECT COUNT(*) AS total FROM products ${whereSql}`, params);
     const rows = await db.all(
-      `SELECT ${PRODUCT_LIST_SELECT}
-       FROM products WHERE 1=1${scopeSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC`,
-      scopeParams
+      `SELECT ${PRODUCT_LIST_SELECT} FROM products ${whereSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
     );
     await attachDisplayBarcodes(db, rows);
-    return res.json(rows);
+    return res.json({
+      items: rows,
+      total: Number(countRow?.total) || 0,
+      limit,
+      offset,
+    });
   });
 
   router.get("/by-barcode/:barcode", requireAuth, async (req, res) => {

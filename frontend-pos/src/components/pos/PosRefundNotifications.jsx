@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
+import { useVisiblePoll } from "../../hooks/useVisiblePoll";
 import "../ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -39,9 +40,12 @@ export default function PosRefundNotifications() {
 
   useEffect(() => {
     poll();
-    const timer = setInterval(poll, 3000);
-    return () => clearInterval(timer);
   }, [poll]);
+
+  // Mounted for the whole cashier session, so at 3s this was the busiest poller
+  // in the app. Pausing it while the till is in the background costs nothing:
+  // the hook refetches the moment the window is focused again.
+  useVisiblePoll(poll, 3000);
 
   const current = unread[0] ?? null;
 

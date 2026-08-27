@@ -11,8 +11,10 @@ import {
   loadSalePayments,
   computeExpectedCash,
   computeExpectedDrawer,
+  computeExpectedDrawers,
   resolveCountedCash,
 } from "../utils/salePayments.js";
+import { listLimitSql } from "../utils/listQuery.js";
 import { round2 } from "../utils/money.js";
 import { buildReceiptPayload } from "../utils/receipt.js";
 import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
@@ -55,14 +57,27 @@ function parseCountedCashJson(raw) {
   }
 }
 
-async function attachDrawer(db, row) {
-  const drawer = await computeExpectedDrawer(db, row.id, row.opening_cash);
+function applyDrawer(row, drawer) {
   if (row.status === "open" || row.status === "pending_count") {
     row.expected_cash = drawer.expected_cash;
   }
   row.expected_by_currency = drawer.by_currency;
   row.counted_cash = parseCountedCashJson(row.counted_cash_json);
   return row;
+}
+
+async function attachDrawer(db, row) {
+  return applyDrawer(row, await computeExpectedDrawer(db, row.id, row.opening_cash));
+}
+
+// Batched so a list of N shifts costs four queries rather than four per shift.
+async function attachDrawers(db, rows) {
+  const drawers = await computeExpectedDrawers(db, rows);
+  for (const row of rows) {
+    const drawer = drawers.get(Number(row.id));
+    if (drawer) applyDrawer(row, drawer);
+  }
+  return rows;
 }
 
 async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_notes, counted_cash) {
@@ -203,16 +218,32 @@ export function createShiftsRouter(db) {
     if (!shift) {
       return res.json({ shift_id: null, sales: [] });
     }
+    // buildSaleSummary queries per row, so an unbounded list turned a busy
+    // shift into hundreds of round-trips to SQLite for a panel that only shows
+    // recent sales; anything older is reachable by receipt number.
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const countRow = await db.get(
+      "SELECT COUNT(*) AS total FROM transactions WHERE shift_id = ?",
+      [shift.id]
+    );
     const rows = await db.all(
       `SELECT id, receipt_number, total, payment_method, created_at, items_json
-       FROM transactions WHERE shift_id = ? ORDER BY created_at DESC, id DESC`,
-      [shift.id]
+       FROM transactions WHERE shift_id = ? ORDER BY created_at DESC, id DESC
+       LIMIT ? OFFSET ?`,
+      [shift.id, limit, offset]
     );
     const sales = [];
     for (const tx of rows) {
       sales.push(await buildSaleSummary(db, tx));
     }
-    res.json({ shift_id: shift.id, sales });
+    res.json({
+      shift_id: shift.id,
+      sales,
+      total: Number(countRow?.total) || 0,
+      limit,
+      offset,
+    });
   });
 
   router.get("/pending", requireAuth, requireShiftAudit, async (req, res) => {
@@ -224,9 +255,7 @@ export function createShiftsRouter(db) {
        WHERE s.status = 'pending_count'
        ORDER BY datetime(s.end_time) ASC, s.id ASC`
     );
-    for (const row of rows) {
-      await attachDrawer(db, row);
-    }
+    await attachDrawers(db, rows);
     res.json(rows);
   });
 
@@ -268,11 +297,12 @@ export function createShiftsRouter(db) {
       params.push(dateTo);
     }
     sql += " ORDER BY datetime(COALESCE(s.end_time, s.start_time)) DESC, s.id DESC";
+    sql += listLimitSql(req.query, 100).sql;
     const rows = await db.all(sql, params);
     for (const row of rows) {
       row.sale_count = Number(row.sale_count) || 0;
-      await attachDrawer(db, row);
     }
+    await attachDrawers(db, rows);
     res.json(rows);
   });
 
@@ -286,7 +316,7 @@ export function createShiftsRouter(db) {
     }
     const rows = await db.all(
       `SELECT id, movement_type, amount, description, created_at, transaction_id, refund_id
-       FROM shift_cash_movements WHERE shift_id = ? ORDER BY created_at ASC, id ASC`,
+       FROM shift_cash_movements WHERE shift_id = ? ORDER BY created_at ASC, id ASC${listLimitSql(req.query, 500).sql}`,
       [shiftId]
     );
     res.json(rows);
@@ -611,20 +641,30 @@ export function createShiftsRouter(db) {
       return res.status(403).json({ error: "ممنوع" });
     }
 
+    // Every row carries its items_json, so an unbounded shift detail is the
+    // biggest single response in the app. 500 covers any realistic shift; the
+    // counts below let the client say so when it does not.
+    const detailLimit = listLimitSql(req.query, 500);
     const transactions = await db.all(
       `SELECT id, cashier_id, items_json, subtotal, tax, total, payment_method, receipt_number, created_at, shift_id
-       FROM transactions WHERE shift_id = ? ORDER BY created_at ASC, id ASC`,
+       FROM transactions WHERE shift_id = ? ORDER BY created_at ASC, id ASC${detailLimit.sql}`,
       [shiftId]
     );
     const refunds = await db.all(
       `SELECT id, original_transaction_id, items_json, subtotal, tax, total, payment_method, reason, cashier_id, created_at, shift_id
-       FROM refunds WHERE shift_id = ? ORDER BY created_at ASC, id ASC`,
+       FROM refunds WHERE shift_id = ? ORDER BY created_at ASC, id ASC${detailLimit.sql}`,
       [shiftId]
     );
     const cash_movements = await db.all(
       `SELECT id, movement_type, amount, description, created_at, transaction_id, refund_id
-       FROM shift_cash_movements WHERE shift_id = ? ORDER BY created_at ASC, id ASC`,
+       FROM shift_cash_movements WHERE shift_id = ? ORDER BY created_at ASC, id ASC${detailLimit.sql}`,
       [shiftId]
+    );
+    const counts = await db.get(
+      `SELECT (SELECT COUNT(*) FROM transactions WHERE shift_id = ?) AS transactions,
+              (SELECT COUNT(*) FROM refunds WHERE shift_id = ?) AS refunds,
+              (SELECT COUNT(*) FROM shift_cash_movements WHERE shift_id = ?) AS cash_movements`,
+      [shiftId, shiftId, shiftId]
     );
 
     await attachDrawer(db, shift);
@@ -653,6 +693,11 @@ export function createShiftsRouter(db) {
       transactions,
       refunds,
       cash_movements,
+      totals: {
+        transactions: Number(counts?.transactions) || 0,
+        refunds: Number(counts?.refunds) || 0,
+        cash_movements: Number(counts?.cash_movements) || 0,
+      },
       summary,
       suspended_summary,
     });

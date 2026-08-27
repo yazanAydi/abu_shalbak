@@ -1,23 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import api from "../apiClient";
-import { getAuthHeaders } from "../utils/auth";
 import { lookupProductByBarcode } from "../utils/barcode";
 import { searchProductsApi } from "../utils/productSearch";
 import CameraBarcodeButton from "./barcode/CameraBarcodeButton";
 import { Icon } from "./ui";
 import "./barcode/barcode-scanner.css";
-
-let cache = null;
-let cacheTime = 0;
-
-async function loadProducts() {
-  const now = Date.now();
-  if (cache && now - cacheTime < 60000) return cache;
-  const { data } = await api.get("/api/products", { headers: getAuthHeaders() });
-  cache = data;
-  cacheTime = now;
-  return data;
-}
 
 /** Autocomplete product picker. onPick(product) called on selection. */
 export default function ProductPicker({
@@ -140,7 +126,5 @@ export default function ProductPicker({
 }
 
 export function invalidateProductCache() {
-  cache = null;
+  /* search-only picker — no catalog cache */
 }
-
-export { loadProducts };

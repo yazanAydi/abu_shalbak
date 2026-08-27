@@ -115,8 +115,15 @@ function applySupplierRunning(events, start) {
  * @param {object} supplier
  * @param {string} [from]
  * @param {string} [to]
+ * @param {{ limit?: number|null }} [options] limit keeps only the most recent
+ *   events in the response; the running balance is still computed over every
+ *   event, so the numbers are identical either way.
  */
-export async function buildSupplierLedger(db, supplier, from, to) {
+export async function buildSupplierLedger(db, supplier, from, to, options = {}) {
+  const limit =
+    Number.isFinite(Number(options.limit)) && Number(options.limit) > 0
+      ? Number(options.limit)
+      : null;
   const openingEntry = await fetchSupplierOpeningEntry(db, supplier.id);
   let excelOpening = resolveSupplierExcelOpening(supplier);
   let openingBalance = round2(Number(supplier.opening_balance) || 0);
@@ -144,11 +151,17 @@ export async function buildSupplierLedger(db, supplier, from, to) {
     opening_source: supplier.opening_balance_source || null,
   };
 
+  // excel_events used to ship here too: the same rows again with a different
+  // running-balance field, and nothing ever read it. Only the excel totals are
+  // consumed, so the array is gone and the payload is half the size.
+  const windowed = limit != null && rows.length > limit ? rows.slice(rows.length - limit) : rows;
+
   return {
     opening,
     opening_entry: openingEntry,
-    events: rows,
-    excel_events: excelApplied.rows,
+    events: windowed,
+    total_events: rows.length,
+    truncated: windowed.length < rows.length,
     closing_balance: closing,
     excel_closing_balance: excelApplied.closing,
     opening_balance: openingBalance,

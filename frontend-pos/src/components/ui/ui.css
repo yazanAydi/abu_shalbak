@@ -478,7 +478,6 @@ a,
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(2px);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -553,6 +552,19 @@ a,
 .ui-empty__title { font-weight: 700; color: var(--office-panel-text); margin-bottom: 0.25rem; }
 .ui-empty__hint { font-size: 0.88rem; }
 
+/* ── Load more ── */
+.ui-load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+}
+.ui-load-more__count {
+  font-size: 0.85rem;
+  color: var(--office-panel-muted);
+}
+
 /* ── Skeleton ── */
 .ui-skel {
   background: linear-gradient(90deg, var(--slate-100) 25%, var(--slate-200) 37%, var(--slate-100) 63%);
@@ -561,6 +573,13 @@ a,
   animation: ui-shimmer 1.3s ease infinite;
 }
 @keyframes ui-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (max-width: 640px), (prefers-reduced-motion: reduce) {
+  .ui-skel {
+    animation: none;
+    background: var(--slate-100, #f1f5f9);
+    background-size: auto;
+  }
+}
 
 /* ── Toast ── */
 .ui-toast-stack {
@@ -731,6 +750,14 @@ a,
     display: none;
   }
 
+  .ui-table thead th {
+    position: static;
+  }
+
+  .ui-table__col--hide-mobile {
+    display: none !important;
+  }
+
   .ui-table tbody tr {
     display: block;
     margin-bottom: var(--space-3);
@@ -738,7 +765,7 @@ a,
     border: 1px solid var(--office-panel-border);
     border-radius: var(--office-radius);
     background: var(--office-panel);
-    box-shadow: var(--office-shadow-sm);
+    box-shadow: none;
   }
 
   .ui-table tbody tr:last-child {

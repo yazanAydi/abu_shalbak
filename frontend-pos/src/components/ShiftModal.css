@@ -1,4 +1,4 @@
-.shift-modal-overlay {
+﻿.shift-modal-overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -7,14 +7,13 @@
   justify-content: center;
   padding: 1rem;
   box-sizing: border-box;
-  font-family: var(--pos-font, "Cairo", "Tajawal", sans-serif);
+  font-family: var(--pos-font, "Cairo", sans-serif);
 }
 
 .shift-modal-backdrop {
   position: absolute;
   inset: 0;
   background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(3px);
 }
 
 .shift-modal-panel,
@@ -194,7 +193,6 @@
   position: absolute;
   inset: 0;
   background: rgba(15, 23, 42, 0.5);
-  backdrop-filter: blur(4px);
 }
 
 .shift-gate-card-wrap {

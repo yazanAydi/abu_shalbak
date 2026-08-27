@@ -1,0 +1,11 @@
+{
+  "name": "أبو شلبك — الإدارة",
+  "short_name": "الإدارة",
+  "start_url": "/admin/",
+  "scope": "/admin/",
+  "display": "standalone",
+  "dir": "rtl",
+  "lang": "ar",
+  "background_color": "#0f1419",
+  "theme_color": "#0f1419"
+}

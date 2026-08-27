@@ -5,6 +5,7 @@ import { round2 } from "../utils/tax.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { listLimitSql } from "../utils/listQuery.js";
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
 // Maps adjustment type -> ledger movement_type and sign of stock change.
 const ADJ_MOVEMENT = {
@@ -167,7 +168,7 @@ export function createInventoryRouter(db) {
        FROM products
        WHERE expiry_date IS NOT NULL AND expiry_date != ''
          AND julianday(expiry_date) <= julianday('now', '+' || ? || ' days')
-       ORDER BY expiry_date ASC`,
+       ORDER BY expiry_date ASC${listLimitSql(req.query, 500).sql}`,
       [d]
     );
     res.json(rows);
@@ -409,6 +410,7 @@ export function createInventoryRouter(db) {
       params.push(scope);
     }
     sql += " ORDER BY stock ASC, name";
+    sql += listLimitSql(req.query, 500).sql;
     const rows = await db.all(sql, params);
     res.json(rows);
   });
@@ -417,12 +419,16 @@ export function createInventoryRouter(db) {
   // Negative stock is allowed by design (selling below zero is permitted).
   // This report lets managers see which products were oversold so they can
   // reconcile/restock. It does NOT block or clamp anything.
-  router.get("/negative-stock", requireAuth, requireReports, async (_req, res) => {
+  router.get("/negative-stock", requireAuth, requireReports, async (req, res) => {
     const rows = await db.all(
       `SELECT id, barcode, name, unit, stock, category
-       FROM products WHERE COALESCE(stock, 0) < 0 ORDER BY stock ASC, name`
+       FROM products WHERE COALESCE(stock, 0) < 0 ORDER BY stock ASC, name${listLimitSql(req.query, 500).sql}`
     );
-    res.json({ count: rows.length, products: rows });
+    // count stays the true total even when the row list is capped.
+    const totalRow = await db.get(
+      "SELECT COUNT(*) AS c FROM products WHERE COALESCE(stock, 0) < 0"
+    );
+    res.json({ count: Number(totalRow?.c) || 0, products: rows });
   });
 
   return router;

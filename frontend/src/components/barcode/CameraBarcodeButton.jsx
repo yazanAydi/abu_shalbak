@@ -1,8 +1,22 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Icon } from "../ui";
 import { supportsCamera } from "../../utils/barcode";
-import BarcodeScannerModal from "./BarcodeScannerModal";
 import "./barcode-scanner.css";
+
+// @zxing/browser is ~430 KB minified. Loading the modal lazily keeps it out of
+// every page chunk that merely renders a camera button, so it is fetched only
+// once someone actually opens the camera.
+const BarcodeScannerModal = lazy(() => import("./BarcodeScannerModal"));
+
+const loadingFallback = (
+  <div className="barcode-scanner-backdrop" dir="rtl" lang="ar">
+    <div className="barcode-scanner-modal">
+      <div className="barcode-scanner-viewport">
+        <div className="barcode-scanner-loading">جاري تشغيل الكاميرا…</div>
+      </div>
+    </div>
+  </div>
+);
 
 export default function CameraBarcodeButton({
   onScan,
@@ -26,15 +40,19 @@ export default function CameraBarcodeButton({
       >
         <Icon name="camera" size={20} />
       </button>
-      <BarcodeScannerModal
-        open={open}
-        onClose={() => setOpen(false)}
-        onScan={(code) => {
-          setOpen(false);
-          onScan?.(code);
-        }}
-        title={title}
-      />
+      {open ? (
+        <Suspense fallback={loadingFallback}>
+          <BarcodeScannerModal
+            open
+            onClose={() => setOpen(false)}
+            onScan={(code) => {
+              setOpen(false);
+              onScan?.(code);
+            }}
+            title={title}
+          />
+        </Suspense>
+      ) : null}
     </>
   );
 }

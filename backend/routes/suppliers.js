@@ -160,7 +160,8 @@ export function createSuppliersRouter(db) {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const { from, to } = req.query;
-    const led = await buildSupplierLedger(db, supplier, from, to);
+    const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
+    const led = await buildSupplierLedger(db, supplier, from, to, { limit });
     res.json({ supplier, ...led });
   });
 

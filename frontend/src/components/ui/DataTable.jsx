@@ -11,9 +11,24 @@ function columnLabel(column) {
   return "";
 }
 
+function hideOnMobile(column, mobileColumns) {
+  if (Array.isArray(mobileColumns) && mobileColumns.length > 0) {
+    return !mobileColumns.includes(column.key);
+  }
+  return Boolean(column.hideOnMobile);
+}
+
+function columnClassName(column, mobileColumns) {
+  const parts = [];
+  if (column.className) parts.push(column.className);
+  if (hideOnMobile(column, mobileColumns)) parts.push("ui-table__col--hide-mobile");
+  return parts.length ? parts.join(" ") : undefined;
+}
+
 /**
  * Lightweight declarative table.
- * columns: [{ key, header, label?, render?(row), className?, align? }]
+ * columns: [{ key, header, label?, render?(row), className?, align?, hideOnMobile? }]
+ * mobileColumns: optional list of keys to keep on phones (overrides hideOnMobile).
  */
 export default function DataTable({
   columns,
@@ -25,6 +40,7 @@ export default function DataTable({
   emptyHint,
   rowClassName,
   onRowClick,
+  mobileColumns,
 }) {
   if (loading) {
     return (
@@ -48,7 +64,11 @@ export default function DataTable({
         <thead>
           <tr>
             {columns.map((c) => (
-              <th key={c.key} style={c.align ? { textAlign: c.align } : undefined}>
+              <th
+                key={c.key}
+                className={columnClassName(c, mobileColumns)}
+                style={c.align ? { textAlign: c.align } : undefined}
+              >
                 {c.header}
               </th>
             ))}
@@ -64,7 +84,7 @@ export default function DataTable({
               {columns.map((c) => (
                 <td
                   key={c.key}
-                  className={c.className}
+                  className={columnClassName(c, mobileColumns)}
                   data-label={columnLabel(c)}
                   style={c.align ? { textAlign: c.align } : undefined}
                 >

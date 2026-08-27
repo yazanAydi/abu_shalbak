@@ -316,21 +316,32 @@ function emptyBucket(meta, code) {
   };
 }
 
+const DEFAULT_BASE_CURRENCY = {
+  id: null,
+  code: "NIS",
+  name: "شيكل",
+  symbol: "\u20AA",
+  exchange_rate_to_nis: 1,
+  is_base: true,
+};
+
+const DRAWER_PAY_SELECT = `sp.original_amount, sp.nis_equivalent, sp.amount, sp.currency_id, sp.exchange_rate_used,
+            t.change_amount, t.change_original_amount, t.change_currency_id,
+            c.code AS currency_code, c.symbol, c.name, c.is_base, c.exchange_rate_to_nis,
+            cc.code AS change_currency_code, cc.symbol AS change_symbol, cc.name AS change_name,
+            cc.exchange_rate_to_nis AS change_rate, cc.is_base AS change_is_base`;
+
+const DRAWER_PAY_FROM = `FROM sale_payments sp
+     INNER JOIN transactions t ON t.id = sp.transaction_id
+     LEFT JOIN currencies c ON c.id = sp.currency_id
+     LEFT JOIN currencies cc ON cc.id = t.change_currency_id`;
+
 /**
- * Physical drawer by currency: opening shekels + cash notes received,
- * minus change in the change currency (default shekels).
+ * Pure bucketing step, shared by the single-shift and batch paths so both
+ * produce byte-identical drawers.
  */
-export async function computeExpectedDrawer(db, shiftId, openingCash) {
-  const sid = Number(shiftId);
+function drawerFromRows({ base, openingCash, payRows, refundsTotal, adjTotal, advanceTotal }) {
   const open = round2(Number(openingCash) || 0);
-  const base = (await getBaseCurrency(db)) || {
-    id: null,
-    code: "NIS",
-    name: "شيكل",
-    symbol: "\u20AA",
-    exchange_rate_to_nis: 1,
-    is_base: true,
-  };
   const baseCode = normalizeCurrencyCode(base.code);
   const buckets = new Map();
 
@@ -360,20 +371,6 @@ export async function computeExpectedDrawer(db, shiftId, openingCash) {
   }
 
   add(baseCode, open, open, base);
-
-  const payRows = await db.all(
-    `SELECT t.id AS tx_id, t.change_amount, t.change_original_amount, t.change_currency_id,
-            sp.original_amount, sp.nis_equivalent, sp.amount, sp.currency_id, sp.exchange_rate_used,
-            c.code AS currency_code, c.symbol, c.name, c.is_base, c.exchange_rate_to_nis,
-            cc.code AS change_currency_code, cc.symbol AS change_symbol, cc.name AS change_name,
-            cc.exchange_rate_to_nis AS change_rate, cc.is_base AS change_is_base
-     FROM sale_payments sp
-     INNER JOIN transactions t ON t.id = sp.transaction_id
-     LEFT JOIN currencies c ON c.id = sp.currency_id
-     LEFT JOIN currencies cc ON cc.id = t.change_currency_id
-     WHERE t.shift_id = ? AND sp.payment_method = 'cash'`,
-    [sid]
-  );
 
   const txMap = new Map();
   let salesCashNis = 0;
@@ -420,23 +417,11 @@ export async function computeExpectedDrawer(db, shiftId, openingCash) {
     }
   }
 
-  const cashRefundsRow = await db.get(
-    `SELECT COALESCE(SUM(total), 0) AS s FROM refunds WHERE shift_id = ? AND payment_method = 'cash' AND status = 'approved'`,
-    [sid]
-  );
-  const refunds = round2(Number(cashRefundsRow?.s) || 0);
+  const refunds = round2(Number(refundsTotal) || 0);
   if (refunds) add(baseCode, -refunds, -refunds, base);
 
-  const adjRow = await db.get(
-    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'adjustment'`,
-    [sid]
-  );
-  const advancesRow = await db.get(
-    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'advance'`,
-    [sid]
-  );
-  const adj = round2(Number(adjRow?.s) || 0);
-  const advances = round2(Number(advancesRow?.s) || 0);
+  const adj = round2(Number(adjTotal) || 0);
+  const advances = round2(Number(advanceTotal) || 0);
   if (adj) add(baseCode, adj, adj, base);
   if (advances) add(baseCode, advances, advances, base);
 
@@ -462,6 +447,114 @@ export async function computeExpectedDrawer(db, shiftId, openingCash) {
     sales_cash_nis: salesCashNis,
     by_currency,
   };
+}
+
+/**
+ * Physical drawer by currency: opening shekels + cash notes received,
+ * minus change in the change currency (default shekels).
+ */
+export async function computeExpectedDrawer(db, shiftId, openingCash) {
+  const sid = Number(shiftId);
+  const base = (await getBaseCurrency(db)) || DEFAULT_BASE_CURRENCY;
+
+  const payRows = await db.all(
+    `SELECT t.id AS tx_id, ${DRAWER_PAY_SELECT}
+     ${DRAWER_PAY_FROM}
+     WHERE t.shift_id = ? AND sp.payment_method = 'cash'`,
+    [sid]
+  );
+  const cashRefundsRow = await db.get(
+    `SELECT COALESCE(SUM(total), 0) AS s FROM refunds WHERE shift_id = ? AND payment_method = 'cash' AND status = 'approved'`,
+    [sid]
+  );
+  const adjRow = await db.get(
+    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'adjustment'`,
+    [sid]
+  );
+  const advancesRow = await db.get(
+    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'advance'`,
+    [sid]
+  );
+
+  return drawerFromRows({
+    base,
+    openingCash,
+    payRows,
+    refundsTotal: cashRefundsRow?.s,
+    adjTotal: adjRow?.s,
+    advanceTotal: advancesRow?.s,
+  });
+}
+
+/**
+ * Same result as calling computeExpectedDrawer per shift, but in four queries
+ * for the whole set instead of four per shift. The shift-audit list used to pay
+ * that per-row cost for every shift it displayed.
+ * @param {object} db
+ * @param {{ id: number, opening_cash?: number }[]} shifts
+ * @returns {Promise<Map<number, object>>} keyed by shift id
+ */
+export async function computeExpectedDrawers(db, shifts) {
+  const out = new Map();
+  const list = (Array.isArray(shifts) ? shifts : []).filter((s) =>
+    Number.isFinite(Number(s?.id))
+  );
+  if (list.length === 0) return out;
+
+  const ids = [...new Set(list.map((s) => Number(s.id)))];
+  const placeholders = ids.map(() => "?").join(",");
+  const base = (await getBaseCurrency(db)) || DEFAULT_BASE_CURRENCY;
+
+  const payRows = await db.all(
+    `SELECT t.shift_id AS shift_id, t.id AS tx_id, ${DRAWER_PAY_SELECT}
+     ${DRAWER_PAY_FROM}
+     WHERE t.shift_id IN (${placeholders}) AND sp.payment_method = 'cash'`,
+    ids
+  );
+  const refundRows = await db.all(
+    `SELECT shift_id, COALESCE(SUM(total), 0) AS s FROM refunds
+     WHERE shift_id IN (${placeholders}) AND payment_method = 'cash' AND status = 'approved'
+     GROUP BY shift_id`,
+    ids
+  );
+  const movementRows = await db.all(
+    `SELECT shift_id, movement_type, COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements
+     WHERE shift_id IN (${placeholders}) AND movement_type IN ('adjustment', 'advance')
+     GROUP BY shift_id, movement_type`,
+    ids
+  );
+
+  const payByShift = new Map();
+  for (const row of payRows) {
+    const key = Number(row.shift_id);
+    if (!payByShift.has(key)) payByShift.set(key, []);
+    payByShift.get(key).push(row);
+  }
+  const refundByShift = new Map(
+    refundRows.map((r) => [Number(r.shift_id), Number(r.s) || 0])
+  );
+  const adjByShift = new Map();
+  const advanceByShift = new Map();
+  for (const row of movementRows) {
+    const target = row.movement_type === "adjustment" ? adjByShift : advanceByShift;
+    target.set(Number(row.shift_id), Number(row.s) || 0);
+  }
+
+  for (const shift of list) {
+    const id = Number(shift.id);
+    out.set(
+      id,
+      drawerFromRows({
+        base,
+        openingCash: shift.opening_cash,
+        payRows: payByShift.get(id) || [],
+        refundsTotal: refundByShift.get(id) || 0,
+        adjTotal: adjByShift.get(id) || 0,
+        advanceTotal: advanceByShift.get(id) || 0,
+      })
+    );
+  }
+  return out;
 }
 
 /** Sum cash that stays in the drawer from sales, in NIS. Foreign notes count in full. */

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import { useVisiblePoll } from "../hooks/useVisiblePoll";
 import { ils, dateTime } from "../utils/format";
 import {
   PageHeader,
@@ -23,10 +24,10 @@ function formatDt(v) {
 }
 
 function statusLabel(status) {
-  if (status === "approved") return "موافَق";
-  if (status === "rejected") return "مرفوض";
-  if (status === "pending") return "قيد المراجعة";
-  return status || "—";
+  if (status === "approved") return "Ù…ÙˆØ§ÙÙŽÙ‚";
+  if (status === "rejected") return "Ù…Ø±ÙÙˆØ¶";
+  if (status === "pending") return "Ù‚ÙŠØ¯ Ø§Ù„Ù…Ø±Ø§Ø¬Ø¹Ø©";
+  return status || "â€”";
 }
 
 export default function AdvanceApprovals() {
@@ -53,7 +54,7 @@ export default function AdvanceApprovals() {
       const payload = data?.data ?? data;
       setRows(Array.isArray(payload) ? payload : []);
     } catch (e) {
-      if (!silent) toast.error(e.response?.data?.error || e.message || "تعذّر التحميل");
+      if (!silent) toast.error(e.response?.data?.error || e.message || "ØªØ¹Ø°Ù‘Ø± Ø§Ù„ØªØ­Ù…ÙŠÙ„");
       if (!silent) setRows([]);
     } finally {
       pollBusy.current = false;
@@ -65,11 +66,12 @@ export default function AdvanceApprovals() {
     load();
   }, [load]);
 
-  useEffect(() => {
-    if (tab !== "pending") return undefined;
-    const timer = setInterval(() => load(true), 7000);
-    return () => clearInterval(timer);
-  }, [tab, load]);
+  // Polls only while the tab is visible, backing off rather than stopping when
+  // hidden so a manager watching in a background tab still sees new requests.
+  useVisiblePoll(() => load(true), 7000, {
+    enabled: tab === "pending",
+    hiddenIntervalMs: 20_000,
+  });
 
   async function openReview(row, action) {
     setStaleMessage(null);
@@ -80,14 +82,14 @@ export default function AdvanceApprovals() {
       const fresh = data?.data ?? data;
       if (fresh.status !== "pending") {
         setReviewTarget({ ...row, ...fresh, readOnly: true });
-        setStaleMessage("هذا الطلب لم يعد قيد المراجعة — العرض للقراءة فقط.");
+        setStaleMessage("Ù‡Ø°Ø§ Ø§Ù„Ø·Ù„Ø¨ Ù„Ù… ÙŠØ¹Ø¯ Ù‚ÙŠØ¯ Ø§Ù„Ù…Ø±Ø§Ø¬Ø¹Ø© â€” Ø§Ù„Ø¹Ø±Ø¶ Ù„Ù„Ù‚Ø±Ø§Ø¡Ø© ÙÙ‚Ø·.");
         setReviewNotes(fresh.review_notes || "");
         return;
       }
       setReviewTarget({ ...row, ...fresh, action, readOnly: false });
       setReviewNotes("");
     } catch (e) {
-      toast.error(e.response?.data?.error || "تعذّر فتح الطلب");
+      toast.error(e.response?.data?.error || "ØªØ¹Ø°Ù‘Ø± ÙØªØ­ Ø§Ù„Ø·Ù„Ø¨");
     }
   }
 
@@ -107,17 +109,17 @@ export default function AdvanceApprovals() {
         { status: reviewTarget.action, review_notes: reviewNotes.trim() || null },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
-      toast.success(reviewTarget.action === "approved" ? "تمت الموافقة" : "تم الرفض");
+      toast.success(reviewTarget.action === "approved" ? "ØªÙ…Øª Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø©" : "ØªÙ… Ø§Ù„Ø±ÙØ¶");
       closeReview();
       load();
     } catch (e2) {
       const code = e2.response?.data?.code;
       if (code === "NOT_PENDING") {
-        setStaleMessage("تمت معالجة هذا الطلب من قناة أخرى — العرض للقراءة فقط.");
+        setStaleMessage("ØªÙ…Øª Ù…Ø¹Ø§Ù„Ø¬Ø© Ù‡Ø°Ø§ Ø§Ù„Ø·Ù„Ø¨ Ù…Ù† Ù‚Ù†Ø§Ø© Ø£Ø®Ø±Ù‰ â€” Ø§Ù„Ø¹Ø±Ø¶ Ù„Ù„Ù‚Ø±Ø§Ø¡Ø© ÙÙ‚Ø·.");
         setReviewTarget((prev) => (prev ? { ...prev, readOnly: true } : prev));
         load(true);
       } else {
-        toast.error(e2.response?.data?.error || e2.message || "فشل");
+        toast.error(e2.response?.data?.error || e2.message || "ÙØ´Ù„");
       }
     } finally {
       setReviewLoading(false);
@@ -128,34 +130,34 @@ export default function AdvanceApprovals() {
     { key: "id", header: "#", value: (r) => r.id, render: (r) => r.id },
     {
       key: "cashier",
-      header: "الكاشير",
+      header: "Ø§Ù„ÙƒØ§Ø´ÙŠØ±",
       value: (r) => r.cashier_username || r.cashier_id,
       render: (r) => r.cashier_username || r.cashier_id,
     },
     {
       key: "employee",
-      header: "الموظف",
-      value: (r) => r.employee_name || "—",
-      render: (r) => r.employee_name || "—",
+      header: "Ø§Ù„Ù…ÙˆØ¸Ù",
+      value: (r) => r.employee_name || "â€”",
+      render: (r) => r.employee_name || "â€”",
     },
     {
       key: "amount",
-      header: "المبلغ",
+      header: "Ø§Ù„Ù…Ø¨Ù„Øº",
       className: "num",
       value: (r) => ils(r.amount ?? 0),
       render: (r) => ils(r.amount ?? 0),
     },
     {
       key: "created",
-      header: "التاريخ",
+      header: "Ø§Ù„ØªØ§Ø±ÙŠØ®",
       value: (r) => formatDt(r.created_at),
       render: (r) => formatDt(r.created_at),
     },
     {
       key: "notes",
-      header: "ملاحظات",
-      value: (r) => r.notes || "—",
-      render: (r) => r.notes || "—",
+      header: "Ù…Ù„Ø§Ø­Ø¸Ø§Øª",
+      value: (r) => r.notes || "â€”",
+      render: (r) => r.notes || "â€”",
     },
   ];
 
@@ -174,10 +176,10 @@ export default function AdvanceApprovals() {
                   onClick={() => openReview(r, "approved")}
                   style={{ marginLeft: "0.35rem" }}
                 >
-                  موافقة
+                  Ù…ÙˆØ§ÙÙ‚Ø©
                 </PrimaryButton>
                 <SecondaryButton size="sm" type="button" onClick={() => openReview(r, "rejected")}>
-                  رفض
+                  Ø±ÙØ¶
                 </SecondaryButton>
               </>
             ),
@@ -187,43 +189,43 @@ export default function AdvanceApprovals() {
           ...baseColumns,
           {
             key: "status",
-            header: "الحالة",
+            header: "Ø§Ù„Ø­Ø§Ù„Ø©",
             value: (r) => statusLabel(r.status),
             render: (r) => statusLabel(r.status),
           },
           {
             key: "source",
-            header: "المصدر",
+            header: "Ø§Ù„Ù…ØµØ¯Ø±",
             value: (r) =>
               r.decision_source === "telegram"
-                ? "تيليجرام"
+                ? "ØªÙŠÙ„ÙŠØ¬Ø±Ø§Ù…"
                 : r.decision_source === "admin"
-                  ? "لوحة الإدارة"
-                  : "—",
+                  ? "Ù„ÙˆØ­Ø© Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©"
+                  : "â€”",
             render: (r) =>
               r.decision_source === "telegram"
-                ? "تيليجرام"
+                ? "ØªÙŠÙ„ÙŠØ¬Ø±Ø§Ù…"
                 : r.decision_source === "admin"
-                  ? "لوحة الإدارة"
-                  : "—",
+                  ? "Ù„ÙˆØ­Ø© Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©"
+                  : "â€”",
           },
           {
             key: "manager",
-            header: "المعتمد",
-            value: (r) => r.manager_username || "—",
-            render: (r) => r.manager_username || "—",
+            header: "Ø§Ù„Ù…Ø¹ØªÙ…Ø¯",
+            value: (r) => r.manager_username || "â€”",
+            render: (r) => r.manager_username || "â€”",
           },
         ];
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
-        title="موافقات السلف"
-        subtitle="طلبات سلف الموظفين — تتحدّث تلقائياً كل 7 ثوانٍ"
+        title="Ù…ÙˆØ§ÙÙ‚Ø§Øª Ø§Ù„Ø³Ù„Ù"
+        subtitle="Ø·Ù„Ø¨Ø§Øª Ø³Ù„Ù Ø§Ù„Ù…ÙˆØ¸ÙÙŠÙ† â€” ØªØªØ­Ø¯Ù‘Ø« ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹ ÙƒÙ„ 7 Ø«ÙˆØ§Ù†Ù"
         icon="vouchers"
         actions={
           <ReportToolbar
-            title="موافقات السلف"
+            title="Ù…ÙˆØ§ÙÙ‚Ø§Øª Ø§Ù„Ø³Ù„Ù"
             columns={pickExportColumns(columns)}
             rows={rows}
             filename={`advance-approvals-${tab}`}
@@ -236,10 +238,10 @@ export default function AdvanceApprovals() {
         active={tab}
         onChange={setTab}
         tabs={[
-          { id: "pending", label: "قيد المراجعة", icon: "vouchers" },
-          { id: "approved", label: "موافَق", icon: "check" },
-          { id: "rejected", label: "مرفوض", icon: "close" },
-          { id: "all", label: "الكل", icon: "list" },
+          { id: "pending", label: "Ù‚ÙŠØ¯ Ø§Ù„Ù…Ø±Ø§Ø¬Ø¹Ø©", icon: "vouchers" },
+          { id: "approved", label: "Ù…ÙˆØ§ÙÙŽÙ‚", icon: "check" },
+          { id: "rejected", label: "Ù…Ø±ÙÙˆØ¶", icon: "close" },
+          { id: "all", label: "Ø§Ù„ÙƒÙ„", icon: "list" },
         ]}
       />
 
@@ -251,8 +253,8 @@ export default function AdvanceApprovals() {
             loading={loading}
             empty={
               tab === "pending"
-                ? "لا توجد طلبات سلف بانتظار الموافقة"
-                : "لا توجد طلبات في هذا السجل"
+                ? "Ù„Ø§ ØªÙˆØ¬Ø¯ Ø·Ù„Ø¨Ø§Øª Ø³Ù„Ù Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø©"
+                : "Ù„Ø§ ØªÙˆØ¬Ø¯ Ø·Ù„Ø¨Ø§Øª ÙÙŠ Ù‡Ø°Ø§ Ø§Ù„Ø³Ø¬Ù„"
             }
             emptyIcon="vouchers"
           />
@@ -265,24 +267,24 @@ export default function AdvanceApprovals() {
         title={
           reviewTarget
             ? reviewTarget.readOnly
-              ? `طلب سلف #${reviewTarget.id} — للقراءة فقط`
+              ? `Ø·Ù„Ø¨ Ø³Ù„Ù #${reviewTarget.id} â€” Ù„Ù„Ù‚Ø±Ø§Ø¡Ø© ÙÙ‚Ø·`
               : reviewTarget.action === "approved"
-                ? `موافقة على سلف #${reviewTarget.id}`
-                : `رفض سلف #${reviewTarget.id}`
+                ? `Ù…ÙˆØ§ÙÙ‚Ø© Ø¹Ù„Ù‰ Ø³Ù„Ù #${reviewTarget.id}`
+                : `Ø±ÙØ¶ Ø³Ù„Ù #${reviewTarget.id}`
             : ""
         }
         footer={
           reviewTarget?.readOnly ? (
             <SecondaryButton type="button" onClick={closeReview}>
-              إغلاق
+              Ø¥ØºÙ„Ø§Ù‚
             </SecondaryButton>
           ) : (
             <>
               <PrimaryButton type="submit" form="advance-review-form" disabled={reviewLoading}>
-                {reviewLoading ? "جاري الحفظ…" : "تأكيد"}
+                {reviewLoading ? "Ø¬Ø§Ø±ÙŠ Ø§Ù„Ø­ÙØ¸â€¦" : "ØªØ£ÙƒÙŠØ¯"}
               </PrimaryButton>
               <SecondaryButton type="button" onClick={closeReview}>
-                إلغاء
+                Ø¥Ù„ØºØ§Ø¡
               </SecondaryButton>
             </>
           )
@@ -297,17 +299,17 @@ export default function AdvanceApprovals() {
             ) : null}
             <form id="advance-review-form" onSubmit={submitReview}>
               <p style={{ color: "var(--office-text-muted)", lineHeight: 1.6 }}>
-                {reviewTarget.cashier_username} — {reviewTarget.employee_name} —{" "}
+                {reviewTarget.cashier_username} â€” {reviewTarget.employee_name} â€”{" "}
                 {ils(reviewTarget.amount ?? 0)}
-                {reviewTarget.readOnly ? ` — ${statusLabel(reviewTarget.status)}` : null}
+                {reviewTarget.readOnly ? ` â€” ${statusLabel(reviewTarget.status)}` : null}
               </p>
               {!reviewTarget.readOnly ? (
-                <FormField label="ملاحظات (اختياري)">
+                <FormField label="Ù…Ù„Ø§Ø­Ø¸Ø§Øª (Ø§Ø®ØªÙŠØ§Ø±ÙŠ)">
                   <Input value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} />
                 </FormField>
               ) : reviewTarget.review_notes ? (
                 <p style={{ marginTop: "0.75rem" }}>
-                  <strong>ملاحظات:</strong> {reviewTarget.review_notes}
+                  <strong>Ù…Ù„Ø§Ø­Ø¸Ø§Øª:</strong> {reviewTarget.review_notes}
                 </p>
               ) : null}
             </form>

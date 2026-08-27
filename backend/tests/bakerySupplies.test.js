@@ -12,7 +12,9 @@ function unwrapData(body) {
 
 function unwrapList(body) {
   const data = unwrapData(body);
-  return Array.isArray(data) ? data : [];
+  if (Array.isArray(data)) return data;
+  // Paginated list endpoints answer with { items, total, limit, offset }.
+  return Array.isArray(data?.items) ? data.items : [];
 }
 
 describe("bakery supplies inventory", () => {

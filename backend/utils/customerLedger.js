@@ -56,8 +56,15 @@ export async function fetchCustomerLedgerEvents(db, customerId, from, to) {
  * @param {object} customer
  * @param {string} [from]
  * @param {string} [to]
+ * @param {{ limit?: number|null }} [options] limit keeps only the most recent
+ *   events in the response; the running balance is still computed over every
+ *   event, so the numbers are identical either way.
  */
-export async function buildCustomerLedger(db, customer, from, to) {
+export async function buildCustomerLedger(db, customer, from, to, options = {}) {
+  const limit =
+    Number.isFinite(Number(options.limit)) && Number(options.limit) > 0
+      ? Number(options.limit)
+      : null;
   let openingBalance = round2(Number(customer.opening_balance) || 0);
   if (from) {
     const priorEvents = await fetchCustomerLedgerEvents(db, customer.id, null, dayBefore(from));
@@ -76,7 +83,16 @@ export async function buildCustomerLedger(db, customer, from, to) {
     running_balance: openingBalance,
   };
 
-  return { opening, events: rows, closing_balance: closing, opening_balance: openingBalance };
+  const windowed = limit != null && rows.length > limit ? rows.slice(rows.length - limit) : rows;
+
+  return {
+    opening,
+    events: windowed,
+    total_events: rows.length,
+    truncated: windowed.length < rows.length,
+    closing_balance: closing,
+    opening_balance: openingBalance,
+  };
 }
 
 /**

@@ -226,7 +226,29 @@ export function createPurchasesRouter(db) {
     if (supplier_id) { sql += " AND pi.supplier_id = ?"; params.push(Number(supplier_id)); }
     if (status) { sql += " AND pi.status = ?"; params.push(status); }
     sql += ` ORDER BY pi.created_at DESC${listLimitSql(req.query).sql}`;
-    res.json(await db.all(sql, params));
+    const rows = await db.all(sql, params);
+    const includeItems =
+      req.query.include_items === "1" || req.query.include_items === "true";
+    if (includeItems && rows.length > 0) {
+      const ids = rows.map((r) => r.id);
+      const placeholders = ids.map(() => "?").join(",");
+      const items = await db.all(
+        `SELECT pii.*, p.name, p.barcode
+         FROM purchase_invoice_items pii
+         JOIN products p ON p.id = pii.product_id
+         WHERE pii.invoice_id IN (${placeholders})`,
+        ids
+      );
+      const byInvoice = new Map();
+      for (const item of items) {
+        if (!byInvoice.has(item.invoice_id)) byInvoice.set(item.invoice_id, []);
+        byInvoice.get(item.invoice_id).push(item);
+      }
+      for (const row of rows) {
+        row.items = byInvoice.get(row.id) || [];
+      }
+    }
+    res.json(rows);
   });
 
   router.get("/invoices/:id", requireAuth, requireReports, async (req, res) => {

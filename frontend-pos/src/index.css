@@ -1,5 +1,7 @@
+@import "./fonts/cairo.css";
+
 :root {
-  --pos-font: "Cairo", "Tajawal", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+  --pos-font: "Cairo", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
 }
 
 body {

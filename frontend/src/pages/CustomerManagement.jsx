@@ -249,9 +249,22 @@ export default function CustomerManagement() {
 
   useEffect(() => {
 
-    if (!activeGroup) return;
+    if (!activeGroup) return undefined;
 
-    load(search, activeGroup.id);
+    // Debounced so typing a name costs one request instead of one per keystroke;
+    // an empty box loads immediately so the first paint is not delayed.
+
+    if (!search.trim()) {
+
+      load(search, activeGroup.id);
+
+      return undefined;
+
+    }
+
+    const timer = window.setTimeout(() => load(search, activeGroup.id), 300);
+
+    return () => window.clearTimeout(timer);
 
   }, [load, search, activeGroup]);
 
@@ -485,7 +498,7 @@ export default function CustomerManagement() {
 
   const columns = [
 
-    { key: "customer_code", header: "الرقم", className: "num", value: (c) => displayEntityCode(c.customer_code), render: (c, i) => displayListRowNumber(0, 0, i) },
+    { key: "customer_code", header: "الرقم", className: "num", hideOnMobile: true, value: (c) => displayEntityCode(c.customer_code), render: (c, i) => displayListRowNumber(0, 0, i) },
 
     { key: "name", header: "الاسم", value: (c) => c.name, render: (c) => <strong>{c.name}</strong> },
 
@@ -493,7 +506,7 @@ export default function CustomerManagement() {
 
     {
 
-      key: "price_category", header: "الفئة",
+      key: "price_category", header: "الفئة", hideOnMobile: true,
 
       value: (c) => CATEGORY_LABELS[c.price_category] || c.price_category,
 
@@ -521,7 +534,7 @@ export default function CustomerManagement() {
 
     },
 
-    { key: "credit_limit", header: "حد الائتمان", align: "left", className: "num", value: (c) => (c.credit_limit > 0 ? ils(c.credit_limit) : "—"), render: (c) => (c.credit_limit > 0 ? ils(c.credit_limit) : "—") },
+    { key: "credit_limit", header: "حد الائتمان", align: "left", className: "num", hideOnMobile: true, value: (c) => (c.credit_limit > 0 ? ils(c.credit_limit) : "—"), render: (c) => (c.credit_limit > 0 ? ils(c.credit_limit) : "—") },
 
     {
 
@@ -551,7 +564,7 @@ export default function CustomerManagement() {
 
   const balanceColumns = [
 
-    { key: "customer_code", header: "الرقم", className: "num", value: (c) => displayEntityCode(c.customer_code), render: (c, i) => displayListRowNumber(0, 0, i) },
+    { key: "customer_code", header: "الرقم", className: "num", hideOnMobile: true, value: (c) => displayEntityCode(c.customer_code), render: (c, i) => displayListRowNumber(0, 0, i) },
 
     { key: "name", header: "الاسم" },
 
@@ -559,7 +572,7 @@ export default function CustomerManagement() {
 
     { key: "balance", header: "الرصيد", align: "left", className: "num", value: (c) => ils(c.balance), render: (c) => <span className={c.balance > 0 ? "negative" : "positive"}>{ils(c.balance)}</span> },
 
-    { key: "credit_limit", header: "حد الائتمان", align: "left", className: "num", value: (c) => (c.credit_limit > 0 ? ils(c.credit_limit) : "—"), render: (c) => (c.credit_limit > 0 ? ils(c.credit_limit) : "—") },
+    { key: "credit_limit", header: "حد الائتمان", align: "left", className: "num", hideOnMobile: true, value: (c) => (c.credit_limit > 0 ? ils(c.credit_limit) : "—"), render: (c) => (c.credit_limit > 0 ? ils(c.credit_limit) : "—") },
 
   ];
 
@@ -1046,6 +1059,16 @@ export default function CustomerManagement() {
               empty="لا توجد حركات"
 
             />
+
+            {ledger.truncated ? (
+
+              <p className="muted" style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
+
+                يُعرض آخر {ledger.events.length} حركة من {ledger.total_events}. الرصيد محسوب على كامل الحركات.
+
+              </p>
+
+            ) : null}
 
             <h3 style={{ margin: "1.5rem 0 0.5rem", fontSize: "1rem" }}>سجل الدفعات</h3>
 

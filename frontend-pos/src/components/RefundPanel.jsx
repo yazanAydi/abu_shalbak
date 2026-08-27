@@ -10,6 +10,8 @@ const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 const PM_AR = { cash: "نقد", visa: "بطاقة" };
 
+const SALES_PAGE_SIZE = 50;
+
 function formatSaleTime(createdAt) {
   if (!createdAt) return "";
   const s = String(createdAt).replace("T", " ");
@@ -65,6 +67,7 @@ function SaleResultsList({ sales, loading, onSelect, loadingLookup }) {
 export default function RefundPanel({ shiftReady = true, shiftId = null, onRefundSuccess }) {
   const [view, setView] = useState("list");
   const [sales, setSales] = useState([]);
+  const [salesTotal, setSalesTotal] = useState(0);
   const [salesLoading, setSalesLoading] = useState(false);
   const [tid, setTid] = useState("");
   const [lookup, setLookup] = useState(null);
@@ -91,11 +94,14 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
     setErr("");
     try {
       const { data } = await api.get("/api/shifts/current/sales", {
+        params: { limit: SALES_PAGE_SIZE },
         headers: getAuthHeaders(),
       });
       setSales(Array.isArray(data?.sales) ? data.sales : []);
+      setSalesTotal(Number(data?.total) || 0);
     } catch (e) {
       setSales([]);
+      setSalesTotal(0);
       setErr(e.response?.data?.error || e.message || "تعذّر تحميل المبيعات");
     } finally {
       setSalesLoading(false);
@@ -243,12 +249,20 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
             ) : sales.length === 0 ? (
               <p className="rf-muted">لا توجد مبيعات في هذه الوردية</p>
             ) : (
-              <SaleResultsList
-                sales={sales}
-                loading={salesLoading}
-                onSelect={loadLookup}
-                loadingLookup={loading}
-              />
+              <>
+                <SaleResultsList
+                  sales={sales}
+                  loading={salesLoading}
+                  onSelect={loadLookup}
+                  loadingLookup={loading}
+                />
+                {salesTotal > sales.length ? (
+                  <p className="rf-muted">
+                    آخر {sales.length} من {salesTotal} إيصالاً — للأقدم استخدم
+                    رقم الإيصال.
+                  </p>
+                ) : null}
+              </>
             )}
             <button
               type="button"

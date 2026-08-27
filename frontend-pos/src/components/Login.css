@@ -1,6 +1,6 @@
-/* POS login — light retail theme */
+﻿/* POS login â€” light retail theme */
 :root {
-  --office-font: "Cairo", "Tajawal", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+  --office-font: "Cairo", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
   --office-bg: #f4f6f9;
   --office-surface: #ffffff;
   --office-border: #e2e8f0;

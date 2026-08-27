@@ -619,7 +619,9 @@ export function createCustomersRouter(db) {
 
     if (!customer) return res.status(404).json({ error: "العميل غير موجود", code: "NOT_FOUND" });
 
-    const ledger = await buildCustomerLedger(db, customer, from, to);
+    const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
+
+    const ledger = await buildCustomerLedger(db, customer, from, to, { limit });
 
     res.json({ customer, ...ledger });
 
@@ -690,9 +692,9 @@ export function createCustomersRouter(db) {
 
        WHERE vl.customer_id = ? AND v.voucher_type = 'receipt'
 
-       ORDER BY v.voucher_date DESC, v.id DESC`,
+       ORDER BY v.voucher_date DESC, v.id DESC LIMIT ?`,
 
-      [req.params.id]
+      [req.params.id, Math.min(1000, Math.max(1, Number(req.query.limit) || 200))]
 
     );
 

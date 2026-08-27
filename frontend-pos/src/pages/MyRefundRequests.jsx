@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import { useVisiblePoll } from "../hooks/useVisiblePoll";
 import {
   PageHeader,
   DataTable,
@@ -46,9 +47,9 @@ export default function MyRefundRequests() {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 7000);
-    return () => clearInterval(timer);
   }, [load]);
+
+  useVisiblePoll(load, 7000, { hiddenIntervalMs: 20_000 });
 
   async function acknowledge(id) {
     try {

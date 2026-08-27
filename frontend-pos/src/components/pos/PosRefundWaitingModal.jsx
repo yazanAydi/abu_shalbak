@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
 import "../ShiftModal.css";
@@ -6,10 +6,10 @@ import "../ShiftModal.css";
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 const STATUS_LABEL = {
-  pending: "بانتظار موافقة المدير…",
-  approved: "تمت الموافقة على الاسترجاع",
-  rejected: "تم رفض طلب الاسترجاع",
-  expired: "انتهت صلاحية الطلب",
+  pending: "Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ù…ÙˆØ§ÙÙ‚Ø© Ø§Ù„Ù…Ø¯ÙŠØ±â€¦",
+  approved: "ØªÙ…Øª Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø© Ø¹Ù„Ù‰ Ø§Ù„Ø§Ø³ØªØ±Ø¬Ø§Ø¹",
+  rejected: "ØªÙ… Ø±ÙØ¶ Ø·Ù„Ø¨ Ø§Ù„Ø§Ø³ØªØ±Ø¬Ø§Ø¹",
+  expired: "Ø§Ù†ØªÙ‡Øª ØµÙ„Ø§Ø­ÙŠØ© Ø§Ù„Ø·Ù„Ø¨",
 };
 
 /**
@@ -54,13 +54,18 @@ export default function PosRefundWaitingModal({ open, requestId, onClose, onTerm
         }
       } catch (e) {
         if (!cancelled) {
-          setErr(e.response?.data?.error || e.message || "تعذّر التحقق من الحالة");
+          setErr(e.response?.data?.error || e.message || "ØªØ¹Ø°Ù‘Ø± Ø§Ù„ØªØ­Ù‚Ù‚ Ù…Ù† Ø§Ù„Ø­Ø§Ù„Ø©");
         }
       }
     }
 
     poll();
-    const t = setInterval(poll, 3000);
+    // Skip the request while the till is in the background. The next tick is only
+    // 3s away, so a returning cashier is never left looking at stale status.
+    const t = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      poll();
+    }, 3000);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -75,24 +80,24 @@ export default function PosRefundWaitingModal({ open, requestId, onClose, onTerm
     <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
       <div className="shift-modal-backdrop" onClick={isTerminal ? onClose : undefined} aria-hidden />
       <div className="shift-modal-panel">
-        <h2 className="shift-modal-title">طلب استرجاع #{requestId}</h2>
+        <h2 className="shift-modal-title">Ø·Ù„Ø¨ Ø§Ø³ØªØ±Ø¬Ø§Ø¹ #{requestId}</h2>
         <p className={`shift-modal-meta ${status === "approved" ? "shift-modal-success" : ""}`}>
           {STATUS_LABEL[status] || status}
         </p>
         {detail?.total_amount != null ? (
-          <p className="shift-modal-meta">المبلغ: {ils(detail.total_amount)}</p>
+          <p className="shift-modal-meta">Ø§Ù„Ù…Ø¨Ù„Øº: {ils(detail.total_amount)}</p>
         ) : null}
         {status === "pending" ? (
-          <p className="shift-modal-hint">جاري انتظار موافقة المدير عبر التيليجرام أو لوحة الإدارة…</p>
+          <p className="shift-modal-hint">Ø¬Ø§Ø±ÙŠ Ø§Ù†ØªØ¸Ø§Ø± Ù…ÙˆØ§ÙÙ‚Ø© Ø§Ù„Ù…Ø¯ÙŠØ± Ø¹Ø¨Ø± Ø§Ù„ØªÙŠÙ„ÙŠØ¬Ø±Ø§Ù… Ø£Ùˆ Ù„ÙˆØ­Ø© Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©â€¦</p>
         ) : null}
         {err ? <div className="shift-modal-err">{err}</div> : null}
         <div className="shift-modal-actions">
           <button type="button" className="shift-modal-primary" onClick={onClose} disabled={!isTerminal && !err}>
-            {isTerminal ? "إغلاق" : "—"}
+            {isTerminal ? "Ø¥ØºÙ„Ø§Ù‚" : "â€”"}
           </button>
           {!isTerminal ? (
             <button type="button" className="shift-modal-secondary" onClick={onClose}>
-              إخفاء (يستمر بالخلفية)
+              Ø¥Ø®ÙØ§Ø¡ (ÙŠØ³ØªÙ…Ø± Ø¨Ø§Ù„Ø®Ù„ÙÙŠØ©)
             </button>
           ) : null}
         </div>

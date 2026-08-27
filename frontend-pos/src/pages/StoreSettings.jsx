@@ -46,7 +46,6 @@ export default function StoreSettings() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [productSearch, setProductSearch] = useState("");
   const [searchResults, setSearchResults] = useState([]);
-  const [allProducts, setAllProducts] = useState([]);
   const [pendingProduct, setPendingProduct] = useState(null);
   const [pendingCategory, setPendingCategory] = useState("");
   const [saving, setSaving] = useState(false);
@@ -55,11 +54,9 @@ export default function StoreSettings() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    Promise.all([
-      api.get("/api/settings", { headers: getAuthHeaders() }),
-      api.get("/api/products", { headers: getAuthHeaders() }),
-    ])
-      .then(([settingsRes, productsRes]) => {
+    api
+      .get("/api/settings", { headers: getAuthHeaders() })
+      .then(async (settingsRes) => {
         const data = settingsRes.data;
         setSettings(data);
         setForm({
@@ -81,10 +78,20 @@ export default function StoreSettings() {
         const buttons = Array.isArray(data.pos_quick_buttons) ? data.pos_quick_buttons : [];
         setQuickCategories(categories);
         setQuickButtons(buttons);
-        const products = productsRes.data || [];
-        setAllProducts(products);
+        // Only the products actually pinned as quick buttons need a label, so
+        // fetch those by id instead of downloading the whole catalogue.
+        const ids = buttons.map((b) => b.product_id).filter((id) => Number(id) > 0);
+        if (ids.length === 0) {
+          setFavoriteLabels({});
+          return;
+        }
+        const { data: products } = await api.get("/api/products", {
+          params: { ids: ids.join(",") },
+          headers: getAuthHeaders(),
+        });
+        const rows = Array.isArray(products) ? products : products?.items || [];
         const labels = {};
-        for (const p of products) {
+        for (const p of rows) {
           labels[p.id] = p.name;
         }
         setFavoriteLabels(labels);

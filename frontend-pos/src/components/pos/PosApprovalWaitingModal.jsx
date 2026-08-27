@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
 import "../ShiftModal.css";
@@ -9,7 +9,7 @@ const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
  * @param {object} props
  * @param {boolean} props.open
  * @param {number|null} props.requestId
- * @param {string} props.apiPath — e.g. /api/on-account-requests or /api/advance-requests
+ * @param {string} props.apiPath â€” e.g. /api/on-account-requests or /api/advance-requests
  * @param {string} props.titlePrefix
  * @param {Record<string, string>} props.statusLabels
  * @param {(detail: object) => string|null} [props.detailLine]
@@ -60,13 +60,18 @@ export default function PosApprovalWaitingModal({
         }
       } catch (e) {
         if (!cancelled) {
-          setErr(e.response?.data?.error || e.message || "تعذّر التحقق من الحالة");
+          setErr(e.response?.data?.error || e.message || "ØªØ¹Ø°Ù‘Ø± Ø§Ù„ØªØ­Ù‚Ù‚ Ù…Ù† Ø§Ù„Ø­Ø§Ù„Ø©");
         }
       }
     }
 
     poll();
-    const t = setInterval(poll, 3000);
+    // Skip the request while the till is in the background. The next tick is only
+    // 3s away, so a returning cashier is never left looking at stale status.
+    const t = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      poll();
+    }, 3000);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -90,16 +95,16 @@ export default function PosApprovalWaitingModal({
         </p>
         {extra ? <p className="shift-modal-meta">{extra}</p> : null}
         {status === "pending" ? (
-          <p className="shift-modal-hint">جاري انتظار موافقة المدير عبر التيليجرام أو لوحة الإدارة…</p>
+          <p className="shift-modal-hint">Ø¬Ø§Ø±ÙŠ Ø§Ù†ØªØ¸Ø§Ø± Ù…ÙˆØ§ÙÙ‚Ø© Ø§Ù„Ù…Ø¯ÙŠØ± Ø¹Ø¨Ø± Ø§Ù„ØªÙŠÙ„ÙŠØ¬Ø±Ø§Ù… Ø£Ùˆ Ù„ÙˆØ­Ø© Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©â€¦</p>
         ) : null}
         {err ? <div className="shift-modal-err">{err}</div> : null}
         <div className="shift-modal-actions">
           <button type="button" className="shift-modal-primary" onClick={onClose} disabled={!isTerminal && !err}>
-            {isTerminal ? "إغلاق" : "—"}
+            {isTerminal ? "Ø¥ØºÙ„Ø§Ù‚" : "â€”"}
           </button>
           {!isTerminal ? (
             <button type="button" className="shift-modal-secondary" onClick={onClose}>
-              إخفاء (يستمر بالخلفية)
+              Ø¥Ø®ÙØ§Ø¡ (ÙŠØ³ØªÙ…Ø± Ø¨Ø§Ù„Ø®Ù„ÙÙŠØ©)
             </button>
           ) : null}
         </div>

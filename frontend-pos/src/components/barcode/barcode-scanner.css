@@ -148,7 +148,6 @@
   font-size: 0.9rem;
   font-weight: 700;
   pointer-events: none;
-  backdrop-filter: blur(4px);
 }
 
 /* Viewfinder overlay */
@@ -160,6 +159,7 @@
   align-items: center;
   justify-content: center;
   pointer-events: none;
+  background: rgba(0, 0, 0, 0.45);
 }
 
 .barcode-scanner-frame {
@@ -168,7 +168,7 @@
   height: min(30vw, 140px);
   min-height: 100px;
   border-radius: 2px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  outline: 1px solid rgba(255, 255, 255, 0.35);
 }
 
 /* L-shaped corner brackets */

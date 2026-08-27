@@ -213,7 +213,8 @@ export function createApp(db, dbPath, options = {}) {
       maxAge: "1y",
       immutable: true,
       setHeaders(res, filePath) {
-        if (filePath.endsWith("index.html")) {
+        const name = path.basename(filePath);
+        if (name === "index.html" || name === "sw.js" || name === "manifest.json") {
           res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
         }
       },

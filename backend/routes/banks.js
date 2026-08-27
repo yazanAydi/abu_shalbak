@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { listLimitSql } from "../utils/listQuery.js";
 
 export function createBanksRouter(db) {
   const router = Router();
@@ -142,7 +143,7 @@ export function createBanksRouter(db) {
        LEFT JOIN suppliers su ON c.supplier_id = su.id
        WHERE c.status = 'pending' AND c.due_date IS NOT NULL
          AND julianday(c.due_date) <= julianday('now', '+' || ? || ' days')
-       ORDER BY c.due_date ASC`,
+       ORDER BY c.due_date ASC${listLimitSql(req.query, 500).sql}`,
       [d]
     );
     res.json(rows);

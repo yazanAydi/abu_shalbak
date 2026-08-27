@@ -19,6 +19,7 @@ import { shopTodayYmd } from "../utils/shopTime.js";
 import { round2 } from "../utils/money.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { HttpError } from "../utils/httpError.js";
+import { listLimitSql } from "../utils/listQuery.js";
 
 function requirePosOrReports(req, res, next) {
   const r = req.user?.role;
@@ -418,6 +419,7 @@ export function createRefundsRouter(db) {
       }
     }
     sql += " ORDER BY r.created_at DESC, r.id DESC";
+    sql += listLimitSql(req.query).sql;
     const rows = await db.all(sql, params);
     res.json(rows);
   });

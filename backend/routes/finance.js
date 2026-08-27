@@ -11,6 +11,7 @@ import {
   fetchTransactionsForShopDate,
 } from "../utils/businessDay.js";
 import { shopDateRange } from "../utils/shopTime.js";
+import { listLimitSql } from "../utils/listQuery.js";
 
 function parseDateParam(s) {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return null;
@@ -243,6 +244,7 @@ export function createFinanceRouter(db) {
       params.push(supplierId);
     }
     sql += " ORDER BY p.paid_on DESC, p.id DESC";
+    sql += listLimitSql(req.query).sql;
     const rows = await db.all(sql, params);
     res.json(rows);
   });
@@ -348,6 +350,7 @@ export function createFinanceRouter(db) {
       params.push(to);
     }
     sql += " ORDER BY o.paid_on DESC, o.id DESC";
+    sql += listLimitSql(req.query).sql;
     const rows = await db.all(sql, params);
     res.json(rows);
   });
@@ -433,12 +436,12 @@ export function createFinanceRouter(db) {
     res.json(row);
   });
 
-  router.get("/invoices", async (_req, res) => {
+  router.get("/invoices", async (req, res) => {
     const rows = await db.all(
       `SELECT i.*, s.name AS supplier_name
        FROM supplier_invoices i
        JOIN suppliers s ON s.id = i.supplier_id
-       ORDER BY i.due_on IS NULL, i.due_on, i.id DESC`
+       ORDER BY i.due_on IS NULL, i.due_on, i.id DESC${listLimitSql(req.query).sql}`
     );
     res.json(rows);
   });

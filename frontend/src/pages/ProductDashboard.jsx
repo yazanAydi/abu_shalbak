@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import {
@@ -16,16 +16,20 @@ import { ils, num } from "../utils/format";
 import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
 import ChangePriceModal from "./productDashboard/ChangePriceModal";
 import EditProductModal from "./productDashboard/EditProductModal";
-import OverviewTab from "./productDashboard/OverviewTab";
-import SuppliersTab from "./productDashboard/SuppliersTab";
-import PriceHistoryTab from "./productDashboard/PriceHistoryTab";
-import SalesByPriceTab from "./productDashboard/SalesByPriceTab";
-import PurchaseHistoryTab from "./productDashboard/PurchaseHistoryTab";
-import InventoryHistoryTab from "./productDashboard/InventoryHistoryTab";
-import ProfitAnalysisTab from "./productDashboard/ProfitAnalysisTab";
-import BatchesTab from "./productDashboard/BatchesTab";
-import AuditLogTab from "./productDashboard/AuditLogTab";
 import "./ProductDashboard.css";
+
+// Tabs are only mounted once visited (see the `visited` set below), so loading
+// them lazily costs nothing and keeps recharts — pulled in by price-history,
+// sales and profit — out of this page's initial chunk.
+const OverviewTab = lazy(() => import("./productDashboard/OverviewTab"));
+const SuppliersTab = lazy(() => import("./productDashboard/SuppliersTab"));
+const PriceHistoryTab = lazy(() => import("./productDashboard/PriceHistoryTab"));
+const SalesByPriceTab = lazy(() => import("./productDashboard/SalesByPriceTab"));
+const PurchaseHistoryTab = lazy(() => import("./productDashboard/PurchaseHistoryTab"));
+const InventoryHistoryTab = lazy(() => import("./productDashboard/InventoryHistoryTab"));
+const ProfitAnalysisTab = lazy(() => import("./productDashboard/ProfitAnalysisTab"));
+const BatchesTab = lazy(() => import("./productDashboard/BatchesTab"));
+const AuditLogTab = lazy(() => import("./productDashboard/AuditLogTab"));
 
 const TABS = [
   { id: "overview", label: "نظرة عامة", icon: "dashboard" },
@@ -230,7 +234,9 @@ export default function ProductDashboard() {
       <div className="pd-tab-content">
         {TABS.filter((t) => visited.has(t.id)).map((t) => (
           <div key={t.id} hidden={active !== t.id}>
-            {renderTab(t.id)}
+            <Suspense fallback={<SkeletonRows rows={6} cols={3} />}>
+              {renderTab(t.id)}
+            </Suspense>
           </div>
         ))}
       </div>

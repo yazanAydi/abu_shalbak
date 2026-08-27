@@ -3,11 +3,18 @@ import { Link, NavLink } from "react-router-dom";
 import api from "../../apiClient";
 import { getAuthHeaders, getUser } from "../../utils/auth";
 import { isAdminRole } from "../../utils/roles";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useVisiblePoll } from "../../hooks/useVisiblePoll";
 import { OFFICE_NAV } from "./officeNavConfig";
 import Icon from "../icons/Icon";
 
 const LOW_STOCK_THRESHOLD = 5;
 const LOW_STOCK_RAIL_LIMIT = 10;
+
+// OfficeLayout.css hides the rail below 1100px. OfficeLayout still mounts it, so
+// without this the phone would render the whole subtree and poll low-stock every
+// minute for something nobody can see.
+const RAIL_VISIBLE_MEDIA = "(min-width: 1101px)";
 
 const QUICK_PATHS = [
   "/reports",
@@ -20,6 +27,7 @@ const QUICK_PATHS = [
 ];
 
 export default function OfficeSideRail() {
+  const railVisible = useMediaQuery(RAIL_VISIBLE_MEDIA);
   const user = getUser();
   const role = user?.role || "";
   const permissions = user?.permissions ?? null;
@@ -58,12 +66,15 @@ export default function OfficeSideRail() {
   }, []);
 
   useEffect(() => {
+    if (!railVisible) return;
     loadLowStock();
-    const t = setInterval(loadLowStock, 60_000);
-    return () => clearInterval(t);
-  }, [loadLowStock]);
+  }, [railVisible, loadLowStock]);
+
+  useVisiblePoll(loadLowStock, 60_000, { enabled: railVisible });
 
   const displayTotal = Math.max(lowStockTotal, lowStock.length);
+
+  if (!railVisible) return null;
 
   return (
     <aside className="office-side-rail" aria-label="لوحة جانبية">

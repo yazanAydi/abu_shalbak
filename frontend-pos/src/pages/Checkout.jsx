@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import PosHeader from "../components/pos/PosHeader";
@@ -6,18 +15,10 @@ import PosCartTable from "../components/pos/PosCartTable";
 import PosQuickGrid from "../components/pos/PosQuickGrid";
 import PosPaymentPanel from "../components/pos/PosPaymentPanel";
 import PosPaymentModal from "../components/pos/PosPaymentModal";
-import PosClearCartModal from "../components/pos/PosClearCartModal";
-import PosSuspendedSalesModal from "../components/pos/PosSuspendedSalesModal";
-import PosSuspendedDetailModal from "../components/pos/PosSuspendedDetailModal";
-import PosRestoreConflictModal from "../components/pos/PosRestoreConflictModal";
-import PosRefundModal from "../components/pos/PosRefundModal";
 import PosRefundNotifications from "../components/pos/PosRefundNotifications";
-import PosApprovalWaitingModal, { approvalIls } from "../components/pos/PosApprovalWaitingModal";
-import PosAdvanceRequestModal from "../components/pos/PosAdvanceRequestModal";
 import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
 import { requiresShiftForPos } from "../utils/roles";
 import ShiftStart from "../components/ShiftStart";
-import ShiftEnd from "../components/ShiftEnd";
 import { printReceipt } from "../utils/printReceipt";
 import { estimateCartTotals, buildCartLineDiscounts } from "../utils/posTotals";
 import { checkoutReducer, checkoutInitialState } from "../utils/checkoutCartReducer";
@@ -37,6 +38,19 @@ import "./pos-theme.css";
 import "./Checkout.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
+
+// Modals that are only opened occasionally, so their code (and in PosRefundModal's
+// case the whole RefundPanel) stays out of the chunk the till loads to start
+// scanning. Each one already renders nothing while closed, so mounting them only
+// when open is behaviour-neutral.
+const PosClearCartModal = lazy(() => import("../components/pos/PosClearCartModal"));
+const PosSuspendedSalesModal = lazy(() => import("../components/pos/PosSuspendedSalesModal"));
+const PosSuspendedDetailModal = lazy(() => import("../components/pos/PosSuspendedDetailModal"));
+const PosRestoreConflictModal = lazy(() => import("../components/pos/PosRestoreConflictModal"));
+const PosRefundModal = lazy(() => import("../components/pos/PosRefundModal"));
+const PosAdvanceRequestModal = lazy(() => import("../components/pos/PosAdvanceRequestModal"));
+const PosApprovalWaitingModal = lazy(() => import("../components/pos/PosApprovalWaitingModal"));
+const ShiftEnd = lazy(() => import("../components/ShiftEnd"));
 
 function newIdempotencyKey() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -135,10 +149,6 @@ export default function Checkout() {
       .catch(() => setAppSettings(null));
     loadActivePromos();
   }, [loadActivePromos]);
-
-  useEffect(() => {
-    loadActivePromos();
-  }, [cartItems, loadActivePromos]);
 
   useEffect(() => {
     const onVisibility = () => {
@@ -702,92 +712,122 @@ export default function Checkout() {
         />
       </footer>
 
-      <PosClearCartModal
-        open={clearCartOpen}
-        onClose={() => {
-          setClearCartOpen(false);
-          focusBarcodeInput();
-        }}
-        onConfirm={() => {
-          setClearCartOpen(false);
-          resetInvoiceState();
-        }}
-      />
+      <Suspense fallback={null}>
+        {clearCartOpen ? (
+          <PosClearCartModal
+            open
+            onClose={() => {
+              setClearCartOpen(false);
+              focusBarcodeInput();
+            }}
+            onConfirm={() => {
+              setClearCartOpen(false);
+              resetInvoiceState();
+            }}
+          />
+        ) : null}
 
-      <PosSuspendedSalesModal
-        open={suspendedModalOpen}
-        sales={suspendedSales}
-        onClose={() => {
-          setSuspendedModalOpen(false);
-          setDeleteConfirmId(null);
-          focusBarcodeInput();
-        }}
-        onRestore={requestRestore}
-        onDelete={(id) => setDeleteConfirmId(id)}
-        onViewDetails={viewSuspendedDetails}
-        deleteConfirmId={deleteConfirmId}
-        onConfirmDelete={confirmDeleteSuspended}
-        onCancelDelete={() => setDeleteConfirmId(null)}
-      />
+        {suspendedModalOpen ? (
+          <PosSuspendedSalesModal
+            open
+            sales={suspendedSales}
+            onClose={() => {
+              setSuspendedModalOpen(false);
+              setDeleteConfirmId(null);
+              focusBarcodeInput();
+            }}
+            onRestore={requestRestore}
+            onDelete={(id) => setDeleteConfirmId(id)}
+            onViewDetails={viewSuspendedDetails}
+            deleteConfirmId={deleteConfirmId}
+            onConfirmDelete={confirmDeleteSuspended}
+            onCancelDelete={() => setDeleteConfirmId(null)}
+          />
+        ) : null}
 
-      <PosSuspendedDetailModal
-        open={detailModalOpen}
-        detail={suspendedDetail}
-        onClose={() => {
-          setDetailModalOpen(false);
-          focusBarcodeInput();
-        }}
-      />
+        {detailModalOpen ? (
+          <PosSuspendedDetailModal
+            open
+            detail={suspendedDetail}
+            onClose={() => {
+              setDetailModalOpen(false);
+              focusBarcodeInput();
+            }}
+          />
+        ) : null}
 
-      <PosRestoreConflictModal
-        open={restoreConflictOpen}
-        onHoldAndRestore={handleHoldAndRestore}
-        onMerge={handleMergeRestore}
-        onCancel={() => {
-          setRestoreConflictOpen(false);
-          setPendingRestoreId(null);
-          focusBarcodeInput();
-        }}
-      />
+        {restoreConflictOpen ? (
+          <PosRestoreConflictModal
+            open
+            onHoldAndRestore={handleHoldAndRestore}
+            onMerge={handleMergeRestore}
+            onCancel={() => {
+              setRestoreConflictOpen(false);
+              setPendingRestoreId(null);
+              focusBarcodeInput();
+            }}
+          />
+        ) : null}
 
-      <PosAdvanceRequestModal open={advanceOpen} onClose={() => setAdvanceOpen(false)} />
+        {advanceOpen ? (
+          <PosAdvanceRequestModal open onClose={() => setAdvanceOpen(false)} />
+        ) : null}
 
-      <PosApprovalWaitingModal
-        open={!!onAccountWaitingId}
-        requestId={onAccountWaitingId}
-        apiPath="/api/on-account-requests"
-        titlePrefix="طلب ذمة"
-        statusLabels={{
-          pending: "بانتظار موافقة المدير على البيع بالذمة…",
-          approved: "تمت الموافقة — اكتمل البيع",
-          rejected: "تم رفض البيع على الذمة",
-          expired: "انتهت صلاحية الطلب",
-        }}
-        detailLine={(d) => {
-          if (!d) return null;
-          const parts = [];
-          if (d.customer_name) parts.push(`العميل: ${d.customer_name}`);
-          if (d.on_account_amount != null) parts.push(`الذمة: ${approvalIls(d.on_account_amount)}`);
-          return parts.length ? parts.join(" — ") : null;
-        }}
-        onClose={handleOnAccountWaitingClose}
-        onTerminal={(detail) => {
-          if (detail.status === "approved") {
-            finalizeApprovedOnAccountSale(detail);
-          }
-        }}
-      />
+        {onAccountWaitingId ? (
+          <PosApprovalWaitingModal
+            open
+            requestId={onAccountWaitingId}
+            apiPath="/api/on-account-requests"
+            titlePrefix="طلب ذمة"
+            statusLabels={{
+              pending: "بانتظار موافقة المدير على البيع بالذمة…",
+              approved: "تمت الموافقة — اكتمل البيع",
+              rejected: "تم رفض البيع على الذمة",
+              expired: "انتهت صلاحية الطلب",
+            }}
+            detailLine={(d) => {
+              if (!d) return null;
+              const parts = [];
+              if (d.customer_name) parts.push(`العميل: ${d.customer_name}`);
+              if (d.on_account_amount != null) parts.push(`الذمة: ${ils(d.on_account_amount)}`);
+              return parts.length ? parts.join(" — ") : null;
+            }}
+            onClose={handleOnAccountWaitingClose}
+            onTerminal={(detail) => {
+              if (detail.status === "approved") {
+                finalizeApprovedOnAccountSale(detail);
+              }
+            }}
+          />
+        ) : null}
 
-      <PosRefundModal
-        open={refundOpen}
-        onClose={() => setRefundOpen(false)}
-        shiftReady={shiftReady}
-        shiftId={activeShift?.id ?? null}
-        onRefundSuccess={() => {
-          setRefundOpen(false);
-          loadShift();
-        }}
-      />
+        {refundOpen ? (
+          <PosRefundModal
+            open
+            onClose={() => setRefundOpen(false)}
+            shiftReady={shiftReady}
+            shiftId={activeShift?.id ?? null}
+            onRefundSuccess={() => {
+              setRefundOpen(false);
+              loadShift();
+            }}
+          />
+        ) : null}
+
+        {endShiftOpen && activeShift?.id ? (
+          <ShiftEnd
+            shiftId={activeShift.id}
+            txCount={shiftTxCount}
+            suspendedCount={suspendedCount}
+            open={endShiftOpen}
+            onClose={() => setEndShiftOpen(false)}
+            onSuccess={() => {
+              removeToken();
+              navigate("/login", { replace: true });
+            }}
+          />
+        ) : null}
+      </Suspense>
 
       <PosPaymentModal
         open={payModalOpen}
@@ -801,20 +841,6 @@ export default function Checkout() {
         onTarhil={completeSale}
         onClose={handlePayModalClose}
       />
-
-      {endShiftOpen && activeShift?.id ? (
-        <ShiftEnd
-          shiftId={activeShift.id}
-          txCount={shiftTxCount}
-          suspendedCount={suspendedCount}
-          open={endShiftOpen}
-          onClose={() => setEndShiftOpen(false)}
-          onSuccess={() => {
-            removeToken();
-            navigate("/login", { replace: true });
-          }}
-        />
-      ) : null}
 
       {posNeedsShift && !shiftLoading && !activeShift ? (
         <div className="shift-gate-overlay" aria-live="polite">

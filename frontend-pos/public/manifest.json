@@ -1,0 +1,11 @@
+{
+  "name": "أبو شلبك — نقطة البيع",
+  "short_name": "نقطة البيع",
+  "start_url": "/pos/",
+  "scope": "/pos/",
+  "display": "standalone",
+  "dir": "rtl",
+  "lang": "ar",
+  "background_color": "#0f1419",
+  "theme_color": "#0f1419"
+}

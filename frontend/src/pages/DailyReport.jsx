@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { Link, useNavigate } from "react-router-dom";
 import { getAuthHeaders } from "../utils/auth";
@@ -18,7 +18,6 @@ import { exportToCsv } from "../utils/reportExport";
 import ShiftStatusCard, { ShiftStatusEmpty } from "../components/ShiftStatusCard";
 import TodaysSummary from "../components/TodaysSummary";
 import CashAlerts from "../components/CashAlerts";
-import DashboardChart from "../components/DashboardChart";
 import {
   PageHeader,
   PrimaryButton,
@@ -29,6 +28,16 @@ import {
   Skeleton,
   SecondaryButton,
 } from "../components/ui";
+
+// recharts is ~385 KB minified and only this one widget needs it, so it loads
+// alongside the chart data rather than blocking the rest of the dashboard.
+const DashboardChart = lazy(() => import("../components/DashboardChart"));
+
+const chartLoadingMessage = (
+  <p style={{ color: "var(--office-text-muted)", textAlign: "center", padding: "3rem" }}>
+    جاري تحميل الرسم…
+  </p>
+);
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -161,37 +170,58 @@ export default function DailyReport() {
 
       const headers = getAuthHeaders();
       const todayStr = todayYmd();
+      // The summary now paints before the chart data arrives, so keep the chart
+      // in its loading state instead of briefly drawing an empty axis.
+      setChartLoading(true);
 
       try {
+        // Every request starts now so they still travel in parallel, but the
+        // first paint waits only on the daily summary instead of on the slowest
+        // of eight calls. The remaining panels fill in behind it.
+        const dailyPromise = api.get(`/api/reports/daily?date=${todayStr}`, { headers });
+        const openShiftsPromise = api
+          .get("/api/shifts?status=open", { headers })
+          .catch(() => ({ data: [] }));
+        const closedShiftsPromise = api
+          .get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers })
+          .catch(() => ({ data: [] }));
+        const lowStockPromise = api
+          .get(
+            `/api/reports/low-stock?threshold=${LOW_STOCK_THRESHOLD}&limit=${LOW_STOCK_WIDGET_LIMIT}`,
+            { headers }
+          )
+          .catch(() => ({ data: { products: [], total_count: 0, out_of_stock_count: 0 } }));
+        const nearExpiryPromise = api
+          .get(`/api/reports/near-expiry?limit=${NEAR_EXPIRY_WIDGET_LIMIT}`, { headers })
+          .catch(() => ({ data: { items: [], total_count: 0, days_threshold: 7 } }));
         const reconPromise = api
           .get(`/api/finance/cash/reconciliation?date=${todayStr}`, { headers })
           .then((r) => r.data)
           .catch(() => null);
+        const chartPromise = fetchChartData(chartPeriodRef.current).catch(() => ({
+          series: [],
+          isDemo: false,
+        }));
 
-        const [dailyRes, openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData, chartResult] =
-          await Promise.all([
-            api.get(`/api/reports/daily?date=${todayStr}`, { headers }),
-            api.get("/api/shifts?status=open", { headers }),
-            api.get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers }),
-            api
-              .get(
-                `/api/reports/low-stock?threshold=${LOW_STOCK_THRESHOLD}&limit=${LOW_STOCK_WIDGET_LIMIT}`,
-                { headers }
-              )
-              .catch(() => ({ data: { products: [], total_count: 0, out_of_stock_count: 0 } })),
-            api
-              .get(`/api/reports/near-expiry?limit=${NEAR_EXPIRY_WIDGET_LIMIT}`, { headers })
-              .catch(() => ({ data: { items: [], total_count: 0, days_threshold: 7 } })),
-            reconPromise,
-            fetchChartData(chartPeriodRef.current).catch(() => ({ series: [], isDemo: false })),
-          ]);
-
-        applyChart(chartResult);
-
-        const dailyPayload = dailyRes.data;
+        const dailyPayload = (await dailyPromise).data;
         setDailyDetail(dailyPayload);
         setToday(mapDailyToTodaySummary(dailyPayload));
         setTopProducts(mapDailyTopProducts(dailyPayload));
+        setErr(null);
+        if (initial) setLoading(false);
+
+        const [openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData, chartResult] =
+          await Promise.all([
+            openShiftsPromise,
+            closedShiftsPromise,
+            lowStockPromise,
+            nearExpiryPromise,
+            reconPromise,
+            chartPromise,
+          ]);
+
+        applyChart(chartResult);
+        setChartLoading(false);
 
         const open = Array.isArray(openShiftsRes.data) ? openShiftsRes.data : [];
         setOpenShifts(open);
@@ -232,6 +262,7 @@ export default function DailyReport() {
         }
       } finally {
         if (initial) setLoading(false);
+        setChartLoading(false);
         setRefreshing(false);
       }
     },
@@ -447,17 +478,17 @@ export default function DailyReport() {
               اتجاه الإيراد
             </h2>
             {chartLoading ? (
-              <p style={{ color: "var(--office-text-muted)", textAlign: "center", padding: "3rem" }}>
-                جاري تحميل الرسم…
-              </p>
+              chartLoadingMessage
             ) : (
-              <DashboardChart
-                data={chartSeries}
-                isDemo={chartIsDemo}
-                period={chartPeriod}
-                onPeriodChange={onChartPeriodChange}
-                onDayClick={onChartDayClick}
-              />
+              <Suspense fallback={chartLoadingMessage}>
+                <DashboardChart
+                  data={chartSeries}
+                  isDemo={chartIsDemo}
+                  period={chartPeriod}
+                  onPeriodChange={onChartPeriodChange}
+                  onDayClick={onChartDayClick}
+                />
+              </Suspense>
             )}
           </CardBody>
         </Card>

@@ -286,21 +286,19 @@ function BakeryPurchases() {
     setLoading(true);
     try {
       const [{ data: invData }, { data: prodData }] = await Promise.all([
-        api.get("/api/purchases/invoices", { headers: getAuthHeaders() }),
+        api.get("/api/purchases/invoices", {
+          params: { include_items: 1 },
+          headers: getAuthHeaders(),
+        }),
         api.get("/api/products", { params: { scope: BAKERY_SCOPE, fields: "id" }, headers: getAuthHeaders() }),
       ]);
       const invoices = unwrapList(invData);
       const bakeryIds = new Set(unwrapList(prodData).map((p) => p.id));
       const filtered = [];
       for (const inv of invoices) {
-        let full = inv;
-        if (!inv.items) {
-          const { data: d } = await api.get(`/api/purchases/invoices/${inv.id}`, { headers: getAuthHeaders() });
-          full = d?.data ?? d;
-        }
-        const invItems = full.items || [];
+        const invItems = inv.items || [];
         if (invItems.length > 0 && invItems.every((it) => bakeryIds.has(it.product_id))) {
-          filtered.push({ ...full, supplier_name: full.supplier_name ?? inv.supplier_name });
+          filtered.push(inv);
         }
       }
       setList(filtered);

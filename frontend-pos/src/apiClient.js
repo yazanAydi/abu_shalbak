@@ -37,10 +37,16 @@ function unwrapResponse(data) {
 api.interceptors.response.use(
   (r) => {
     r.data = unwrapResponse(r.data);
+    // A write may have changed settings, currencies, categories or unit names,
+    // so drop the GET cache rather than try to guess which entry is affected.
+    if (r.config?.method && r.config.method.toLowerCase() !== "get") {
+      clearApiCache();
+    }
     return r;
   },
   (e) => {
     if (e?.response?.status === 401) {
+      clearApiCache();
       const url = String(e.config?.url || "");
       if (!url.includes("/auth/login")) {
         removeToken();
@@ -63,5 +69,84 @@ api.interceptors.response.use(
     return Promise.reject(e);
   }
 );
+
+/**
+ * Small in-memory GET cache for the handful of endpoints that are re-fetched on
+ * almost every page mount but effectively never change mid-session.
+ *
+ * Any successful write clears the cache, so an edit made in this tab is visible
+ * immediately; the TTL only bounds staleness from edits made elsewhere.
+ */
+const CACHEABLE_PATHS = new Set([
+  "/api/settings",
+  "/api/currencies",
+  "/api/products/categories",
+  "/api/products/unit-names",
+]);
+
+const CACHE_TTL_MS = 60_000;
+
+const cachedResponses = new Map();
+const inFlightRequests = new Map();
+
+export function clearApiCache() {
+  cachedResponses.clear();
+  inFlightRequests.clear();
+}
+
+function serializeParams(params) {
+  if (!params || typeof params !== "object") return "";
+  const entries = Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return entries.map(([key, value]) => `${key}=${String(value)}`).join("&");
+}
+
+// Callers routinely pass the response body straight into state and components may
+// mutate it, so hand out a copy rather than letting one screen corrupt another's.
+function copyResponse(response) {
+  let data = response.data;
+  try {
+    data = typeof structuredClone === "function"
+      ? structuredClone(data)
+      : JSON.parse(JSON.stringify(data));
+  } catch {
+    /* non-cloneable payload: fall through and share the reference */
+  }
+  return { ...response, data };
+}
+
+const passthroughGet = api.get.bind(api);
+
+api.get = function cachingGet(url, config) {
+  const path = String(url ?? "").split("?")[0];
+  if (!CACHEABLE_PATHS.has(path)) return passthroughGet(url, config);
+
+  const key = `${url}|${serializeParams(config?.params)}`;
+
+  const cached = cachedResponses.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return Promise.resolve(copyResponse(cached.response));
+  }
+
+  // Several components mounting at once should share one request, not race.
+  const pending = inFlightRequests.get(key);
+  if (pending) return pending.then(copyResponse);
+
+  const request = passthroughGet(url, config)
+    .then((response) => {
+      cachedResponses.set(key, {
+        expiresAt: Date.now() + CACHE_TTL_MS,
+        response,
+      });
+      return response;
+    })
+    .finally(() => {
+      inFlightRequests.delete(key);
+    });
+
+  inFlightRequests.set(key, request);
+  return request.then(copyResponse);
+};
 
 export default api;
