@@ -5,10 +5,9 @@ import {
   shopYmdInRange,
   shopYmdRangeToUtcBounds,
 } from "../utils/shopTime.js";
+import { round2 } from "../utils/money.js";
 
-export function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
-}
+export { round2 };
 
 /**
  * Parse a timestamp to epoch ms. Timestamps in this app come from two sources:
@@ -113,9 +112,8 @@ export async function updateCashierHourlyRate(db, userId, hourlyRate) {
  */
 export async function listCashiersOnly(db) {
   return db.all(
-    `SELECT id, username, hourly_rate
+    `SELECT id, username, hourly_rate, role
      FROM users
-     WHERE role = 'cashier'
      ORDER BY username COLLATE NOCASE`
   );
 }
@@ -141,12 +139,12 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
   const endSql = endIso.replace("T", " ").slice(0, 19);
 
   let sql = `
-    SELECT s.id AS shift_id, s.cashier_id, u.username, u.hourly_rate,
+    SELECT s.id AS shift_id, s.cashier_id, u.username,
+           COALESCE(s.hourly_rate_snapshot, u.hourly_rate) AS hourly_rate,
            s.start_time, s.end_time, s.status
     FROM cashier_shifts s
     JOIN users u ON u.id = s.cashier_id
-    WHERE u.role = 'cashier'
-      AND s.end_time IS NOT NULL
+    WHERE s.end_time IS NOT NULL
       AND datetime(s.start_time) >= datetime(?)
       AND datetime(s.start_time) <= datetime(?)`;
   const params = [startSql, endSql];

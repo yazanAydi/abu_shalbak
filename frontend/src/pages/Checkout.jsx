@@ -79,7 +79,7 @@ function checkoutReducer(state, action) {
       };
     case "CHANGE_QTY": {
       const { id, newQty } = action;
-      if (newQty < 1) return state;
+      if (!(Number(newQty) > 0)) return state;
       const idx = state.cartItems.findIndex((x) => sameId(x.id, id));
       if (idx < 0) return state;
       const prev = state.cartItems;
@@ -213,7 +213,7 @@ export default function Checkout() {
   }, []);
 
   const changeQuantity = useCallback((itemId, newQty) => {
-    if (newQty < 1) return;
+    if (!(Number(newQty) > 0)) return;
     dispatch({ type: "CHANGE_QTY", id: itemId, newQty });
   }, []);
 

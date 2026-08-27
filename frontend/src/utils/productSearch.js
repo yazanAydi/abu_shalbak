@@ -13,7 +13,7 @@ export async function searchProductsApi(query, opts = {}) {
 
   const limit = opts.limit ?? 20;
   const exclude = new Set((opts.excludeIds ?? []).map(Number));
-  const params = { search: q };
+  const params = { search: q, limit };
   if (opts.scope) params.scope = opts.scope;
 
   const { data } = await api.get("/api/products", {

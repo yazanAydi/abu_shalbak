@@ -17,6 +17,86 @@ export function padSuggestedBarcode(n) {
 }
 
 /**
+ * Keep a product رقم as 11-digit zero-padded text when it is numeric.
+ * @param {unknown} code
+ * @returns {string | null}
+ */
+export function formatProductSku(code) {
+  if (code == null) return null;
+  const s = String(code).trim();
+  if (!s) return null;
+  const n = parseNumericCode(s);
+  return n != null ? padSuggestedBarcode(n) : s;
+}
+
+/**
+ * True when barcode is only the product رقم (same numeric value, often 11-digit padded).
+ * @param {unknown} barcode
+ * @param {unknown} sku
+ */
+export function isSkuShapedBarcode(barcode, sku) {
+  const b = formatProductSku(barcode);
+  const s = formatProductSku(sku);
+  return Boolean(b && s && b === s);
+}
+
+/**
+ * Prefer a real scanned barcode over a generated رقم stored in products.barcode.
+ * @param {unknown} primary
+ * @param {unknown} sku
+ * @param {unknown[]} [extras]
+ * @returns {string}
+ */
+export function pickDisplayBarcode(primary, sku, extras = []) {
+  for (const raw of [primary, ...extras]) {
+    const code = raw != null ? String(raw).trim() : "";
+    if (!code) continue;
+    if (!isSkuShapedBarcode(code, sku)) return code;
+  }
+  return "";
+}
+
+/**
+ * Set barcode_display on each product row from primary + unit/alias barcodes.
+ * @param {object} db
+ * @param {object[]} rows
+ */
+export async function attachDisplayBarcodes(db, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length === 0) return list;
+  const ids = [...new Set(list.map((r) => Number(r.id)).filter((n) => n > 0))];
+  /** @type {Map<number, string[]>} */
+  const extrasById = new Map();
+  if (ids.length > 0) {
+    const placeholders = ids.map(() => "?").join(",");
+    const [fromBarcodes, fromUnits] = await Promise.all([
+      db.all(
+        `SELECT product_id, barcode FROM product_barcodes WHERE product_id IN (${placeholders})`,
+        ids
+      ),
+      db.all(
+        `SELECT product_id, barcode FROM product_units
+         WHERE product_id IN (${placeholders}) AND barcode IS NOT NULL AND TRIM(barcode) != ''`,
+        ids
+      ),
+    ]);
+    for (const row of [...fromBarcodes, ...fromUnits]) {
+      const id = Number(row.product_id);
+      if (!extrasById.has(id)) extrasById.set(id, []);
+      extrasById.get(id).push(row.barcode);
+    }
+  }
+  for (const row of list) {
+    row.barcode_display = pickDisplayBarcode(
+      row.barcode,
+      row.sku,
+      extrasById.get(Number(row.id)) || []
+    );
+  }
+  return list;
+}
+
+/**
  * Parse a barcode as a short numeric candidate (1–11 digits).
  * @param {unknown} raw
  * @returns {number | null}

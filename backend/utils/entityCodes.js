@@ -1,5 +1,7 @@
 /** @typedef {'product' | 'customer' | 'supplier'} EntityType */
 
+import { withTransaction } from "./dbTx.js";
+
 export const ENTITY_TYPES = {
   product: { table: "products", column: "sku" },
   customer: { table: "customers", column: "customer_code" },
@@ -154,8 +156,7 @@ export async function renumberAllEntityCodes(db, entityType) {
 
   const rows = await db.all(`SELECT id FROM ${meta.table} ORDER BY id`);
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  return withTransaction(db, async () => {
     let seq = 0;
     for (const row of rows) {
       seq += 1;
@@ -170,14 +171,8 @@ export async function renumberAllEntityCodes(db, entityType) {
        ON CONFLICT(entity_type) DO UPDATE SET last_seq = excluded.last_seq`,
       [entityType, seq]
     );
-    await db.run("COMMIT");
     return seq;
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+  });
 }
 
 /**

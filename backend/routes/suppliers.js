@@ -9,6 +9,7 @@ import { ensureEntityCode } from "../utils/entityCodes.js";
 import { buildSupplierLedger } from "../utils/supplierLedger.js";
 import { buildSupplierStatementLedger } from "../utils/supplierStatementLedger.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { withTransaction } from "../utils/dbTx.js";
 import {
   createStatementHistoryPreviewHandler,
   createStatementHistoryConfirmHandler,
@@ -36,7 +37,7 @@ export function createSuppliersRouter(db) {
   const requireAccountStatement = requireReportsPermission(db, "account_statement");
   const router = Router();
 
-  router.get("/", requireAuth, async (req, res) => {
+  router.get("/", requireAuth, requireFinance, async (req, res) => {
     const { q } = req.query;
     let rows;
     if (q) {
@@ -91,7 +92,7 @@ export function createSuppliersRouter(db) {
     createStatementHistoryConfirmHandler(db, "supplier")
   );
 
-  router.get("/:id", requireAuth, async (req, res) => {
+  router.get("/:id", requireAuth, requireFinance, async (req, res) => {
     const row = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!row) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     res.json(row);
@@ -397,21 +398,21 @@ export function createSuppliersRouter(db) {
     const credit = direction === "credit" ? amount : 0;
     const debit = direction === "debit" ? amount : 0;
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      const ins = await db.run(
-        `INSERT INTO supplier_adjustments (supplier_id, entry_date, debit, credit, notes, created_by)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [supplier.id, entryDate, debit, credit, notes, req.user.id]
-      );
-      await db.run(
-        "UPDATE suppliers SET balance = balance + ? - ? WHERE id = ?",
-        [credit, debit, supplier.id]
-      );
-      await db.run("COMMIT");
-      res.status(201).json(await db.get("SELECT * FROM supplier_adjustments WHERE id = ?", [ins.lastID]));
+      const row = await withTransaction(db, async () => {
+        const ins = await db.run(
+          `INSERT INTO supplier_adjustments (supplier_id, entry_date, debit, credit, notes, created_by)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [supplier.id, entryDate, debit, credit, notes, req.user.id]
+        );
+        await db.run(
+          "UPDATE suppliers SET balance = balance + ? - ? WHERE id = ?",
+          [credit, debit, supplier.id]
+        );
+        return db.get("SELECT * FROM supplier_adjustments WHERE id = ?", [ins.lastID]);
+      });
+      res.status(201).json(row);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });
     }
   });

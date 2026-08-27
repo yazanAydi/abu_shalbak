@@ -5,7 +5,6 @@ import {
   formatCostInput,
   formatDiscountPercent,
   formatTaxRatePercent,
-  resolvePurchaseTaxRate,
 } from "./purchaseTotals";
 
 function round2(n) {
@@ -14,21 +13,16 @@ function round2(n) {
 
 export { deriveUnitCost as deriveUnitPrice, deriveTotalCost as deriveTotalPrice, formatCostInput as formatPriceInput };
 
-/** Tax-inclusive sale line (shelf price includes VAT). */
-export function computeSaleLineTotals(listGross, discountPct, defaultTaxRate, taxInclusive = true) {
-  const rate = resolvePurchaseTaxRate(defaultTaxRate);
+/** Sale line: shelf price is the full amount (no VAT split). */
+export function computeSaleLineTotals(listGross, discountPct, _defaultTaxRate, _taxInclusive = true) {
+  const rate = 0;
   const listTotal = round2(Number(listGross) || 0);
   const lineGross = applyPurchaseDiscount(listTotal, discountPct);
-  if (!taxInclusive || rate <= 0) {
-    return { listTotal, lineGross, lineNet: lineGross, lineTax: 0, lineTotal: lineGross, rate };
-  }
-  const lineNet = round2(lineGross / (1 + rate));
-  const lineTax = round2(lineGross - lineNet);
-  return { listTotal, lineGross, lineNet, lineTax, lineTotal: lineGross, rate };
+  return { listTotal, lineGross, lineNet: lineGross, lineTax: 0, lineTotal: lineGross, rate };
 }
 
-export function computeSaleEditorTotals(items, defaultTaxRate, taxInclusive = true) {
-  const rate = resolvePurchaseTaxRate(defaultTaxRate);
+export function computeSaleEditorTotals(items, _defaultTaxRate, _taxInclusive = true) {
+  const rate = 0;
   let listGrossTotal = 0;
   let grossTotal = 0;
   let subtotal = 0;
@@ -37,9 +31,7 @@ export function computeSaleEditorTotals(items, defaultTaxRate, taxInclusive = tr
   for (const it of items) {
     const { listTotal, lineGross, lineNet, lineTax } = computeSaleLineTotals(
       it.total_price,
-      it.discount_pct,
-      defaultTaxRate,
-      taxInclusive
+      it.discount_pct
     );
     listGrossTotal = round2(listGrossTotal + listTotal);
     grossTotal = round2(grossTotal + lineGross);

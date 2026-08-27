@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import CashCountFields, {
+  buildCountCurrencyRows,
+  countedCurrenciesPayload,
+  countedNisTotal,
+  expectedBreakdownText,
+} from "./CashCountFields";
 import "./ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -14,9 +20,11 @@ export const SHIFT_VARIANCE_WARNING = 100;
  * @param {() => void} props.onSuccess
  */
 export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
-  const [closingCash, setClosingCash] = useState("");
+  const [countedAmounts, setCountedAmounts] = useState({});
+  const [countCurrencies, setCountCurrencies] = useState([]);
   const [notes, setNotes] = useState("");
   const [expected, setExpected] = useState(null);
+  const [expectedByCurrency, setExpectedByCurrency] = useState([]);
   const [opening, setOpening] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -26,12 +34,15 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
     if (!shiftId || !open) return;
     setLoadErr("");
     try {
-      const { data } = await api.get(`/api/shifts/${shiftId}`, {
-        headers: getAuthHeaders(),
-      });
-      const exp = data.summary?.expected;
+      const [{ data: shiftData }, { data: curData }] = await Promise.all([
+        api.get(`/api/shifts/${shiftId}`, { headers: getAuthHeaders() }),
+        api.get("/api/currencies", { headers: getAuthHeaders() }),
+      ]);
+      const exp = shiftData.summary?.expected;
       setExpected(exp != null ? Number(exp) : null);
-      setOpening(data.shift?.opening_cash != null ? Number(data.shift.opening_cash) : null);
+      setExpectedByCurrency(shiftData.summary?.expected_by_currency || shiftData.shift?.expected_by_currency || []);
+      setOpening(shiftData.shift?.opening_cash != null ? Number(shiftData.shift.opening_cash) : null);
+      setCountCurrencies(Array.isArray(curData?.currencies) ? curData.currencies : []);
     } catch (e) {
       setLoadErr(e.response?.data?.error || e.message || "تعذّر تحميل ملخص الوردية");
     }
@@ -41,26 +52,29 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
     loadPreview();
   }, [loadPreview]);
 
+  const countRows = useMemo(
+    () => buildCountCurrencyRows(countCurrencies, expectedByCurrency),
+    [countCurrencies, expectedByCurrency]
+  );
+
   async function submitEnd(e) {
     e.preventDefault();
-    const v = Number(String(closingCash).replace(",", "."));
-    if (Number.isNaN(v) || v < 0) {
-      setErr("أدخل مبلغ إغلاق صالح");
-      return;
-    }
     setErr("");
     setLoading(true);
     try {
       const { data } = await api.post(
         `/api/shifts/${shiftId}/end`,
-        { closing_cash: v, notes: notes.trim() || null },
+        {
+          counted_currencies: countedCurrenciesPayload(countRows, countedAmounts),
+          notes: notes.trim() || null,
+        },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       const var_ = Number(data.variance);
       if (Math.abs(var_) > SHIFT_VARIANCE_WARNING) {
         // still success; user already warned in form if they typed preview
       }
-      setClosingCash("");
+      setCountedAmounts({});
       setNotes("");
       onSuccess();
       onClose();
@@ -73,11 +87,11 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
 
   if (!open) return null;
 
-  const closingNum = Number(String(closingCash).replace(",", "."));
+  const countedTotal = countedNisTotal(countRows, countedAmounts);
+  const hasCountedInput = Object.values(countedAmounts).some((v) => String(v || "").trim() !== "");
   const previewVariance =
-    !Number.isNaN(closingNum) && expected != null && !Number.isNaN(expected)
-      ? round2(closingNum - expected)
-      : null;
+    hasCountedInput && expected != null && !Number.isNaN(expected) ? round2(countedTotal - expected) : null;
+  const breakdown = expectedBreakdownText(expectedByCurrency);
 
   return (
     <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
@@ -85,11 +99,12 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
       <form className="shift-modal-panel" onSubmit={submitEnd}>
         <h2 className="shift-modal-title">إغلاق الوردية</h2>
         {loadErr ? <div className="shift-modal-err">{loadErr}</div> : null}
-        {opening != null ? (
-          <p className="shift-modal-meta">افتتاح: {ils(opening)}</p>
-        ) : null}
+        {opening != null ? <p className="shift-modal-meta">افتتاح: {ils(opening)}</p> : null}
         {expected != null ? (
-          <p className="shift-modal-meta">النقد المتوقع حالياً: {ils(expected)}</p>
+          <p className="shift-modal-meta">
+            النقد المتوقع حالياً: {ils(expected)}
+            {breakdown ? ` (${breakdown})` : ""}
+          </p>
         ) : null}
         {previewVariance != null && Math.abs(previewVariance) > SHIFT_VARIANCE_WARNING ? (
           <div className="shift-modal-warn">
@@ -98,18 +113,14 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
             {ils(previewVariance)}).
           </div>
         ) : null}
-        <label className="shift-modal-label">
-          النقد عند الإغلاق
-          <input
-            className="shift-modal-input"
-            type="number"
-            min="0"
-            step="0.01"
-            value={closingCash}
-            onChange={(e) => setClosingCash(e.target.value)}
-            required
-          />
-        </label>
+        <CashCountFields
+          countRows={countRows}
+          values={countedAmounts}
+          onChange={(code, value) => setCountedAmounts((prev) => ({ ...prev, [code]: value }))}
+        />
+        {hasCountedInput ? (
+          <p className="shift-modal-meta">المجموع بالشيكل: {ils(countedTotal)}</p>
+        ) : null}
         <label className="shift-modal-label">
           ملاحظات (اختياري)
           <textarea

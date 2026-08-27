@@ -22,8 +22,26 @@ import {
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import { printReceipt } from "../utils/printReceipt";
+import CashCountFields, {
+  buildCountCurrencyRows,
+  countedCurrenciesPayload,
+  countedNisTotal,
+  expectedBreakdownText,
+} from "../components/CashCountFields";
 
 const PM = { cash: "نقد", visa: "بطاقة" };
+
+function ExpectedCashCell({ row }) {
+  const breakdown = expectedBreakdownText(row.expected_by_currency);
+  return (
+    <span>
+      {row.expected_cash != null ? ils(row.expected_cash) : "—"}
+      {breakdown ? (
+        <span style={{ display: "block", fontSize: "0.8em", color: "var(--office-text-muted)" }}>{breakdown}</span>
+      ) : null}
+    </span>
+  );
+}
 
 function parseItems(itemsJson) {
   try {
@@ -200,6 +218,14 @@ function ShiftDetailSummary({ shift, summary, varianceWarn }) {
             <span className="shift-detail-chip-k">متوقع</span>
             <span className="shift-detail-chip-v num">{ils(shift.expected_cash ?? 0)}</span>
           </div>
+          {expectedBreakdownText(shift.expected_by_currency || summary?.expected_by_currency) ? (
+            <div className="shift-detail-chip">
+              <span className="shift-detail-chip-k">حسب العملة</span>
+              <span className="shift-detail-chip-v num">
+                {expectedBreakdownText(shift.expected_by_currency || summary?.expected_by_currency)}
+              </span>
+            </div>
+          ) : null}
           <div className="shift-detail-chip">
             <span className="shift-detail-chip-k">الفرق</span>
             <span className={`shift-detail-chip-v num ${varianceWarn(shift.variance) ? "negative" : ""}`}>
@@ -208,12 +234,22 @@ function ShiftDetailSummary({ shift, summary, varianceWarn }) {
           </div>
         </>
       ) : (
-        <div className="shift-detail-chip">
-          <span className="shift-detail-chip-k">{status === "pending_count" ? "متوقع" : "متوقع حالياً"}</span>
-          <span className="shift-detail-chip-v num">
-            {summary?.expected != null ? ils(summary.expected) : "—"}
-          </span>
-        </div>
+        <>
+          <div className="shift-detail-chip">
+            <span className="shift-detail-chip-k">{status === "pending_count" ? "متوقع" : "متوقع حالياً"}</span>
+            <span className="shift-detail-chip-v num">
+              {summary?.expected != null ? ils(summary.expected) : "—"}
+            </span>
+          </div>
+          {expectedBreakdownText(shift.expected_by_currency || summary?.expected_by_currency) ? (
+            <div className="shift-detail-chip">
+              <span className="shift-detail-chip-k">حسب العملة</span>
+              <span className="shift-detail-chip-v num">
+                {expectedBreakdownText(shift.expected_by_currency || summary?.expected_by_currency)}
+              </span>
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );
@@ -261,7 +297,8 @@ export default function ShiftAudit() {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [reconcileTarget, setReconcileTarget] = useState(null);
-  const [closingCash, setClosingCash] = useState("");
+  const [countedAmounts, setCountedAmounts] = useState({});
+  const [countCurrencies, setCountCurrencies] = useState([]);
   const [reconcileNotes, setReconcileNotes] = useState("");
   const [reconcileLoading, setReconcileLoading] = useState(false);
   const [expandedSaleId, setExpandedSaleId] = useState(null);
@@ -308,6 +345,30 @@ export default function ShiftAudit() {
     loadPending();
     load();
   }, [loadPending, load]);
+
+  useEffect(() => {
+    if (!reconcileTarget) {
+      setCountCurrencies([]);
+      return undefined;
+    }
+    let cancelled = false;
+    api
+      .get("/api/currencies", { headers: getAuthHeaders() })
+      .then(({ data }) => {
+        if (!cancelled) setCountCurrencies(Array.isArray(data?.currencies) ? data.currencies : []);
+      })
+      .catch(() => {
+        if (!cancelled) setCountCurrencies([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reconcileTarget]);
+
+  const countRows = useMemo(
+    () => buildCountCurrencyRows(countCurrencies, reconcileTarget?.expected_by_currency),
+    [countCurrencies, reconcileTarget]
+  );
 
   async function openDetail(id) {
     setDetail(null);
@@ -375,31 +436,32 @@ export default function ShiftAudit() {
   }
 
   function openReconcile(row) {
-    setReconcileTarget(row);
-    setClosingCash("");
+    setReconcileTarget({
+      ...row,
+      expected_cash: row.expected_cash ?? detail?.summary?.expected ?? row.expected_cash,
+      expected_by_currency:
+        row.expected_by_currency || detail?.summary?.expected_by_currency || [],
+    });
+    setCountedAmounts({});
     setReconcileNotes("");
   }
 
   function closeReconcile() {
     setReconcileTarget(null);
-    setClosingCash("");
+    setCountedAmounts({});
     setReconcileNotes("");
   }
 
   async function submitReconcile(e) {
     e.preventDefault();
     if (!reconcileTarget?.id) return;
-    const v = Number(String(closingCash).replace(",", "."));
-    if (Number.isNaN(v) || v < 0) {
-      toast.error("أدخل مبلغاً صالحاً");
-      return;
-    }
+    const payload = countedCurrenciesPayload(countRows, countedAmounts);
     setReconcileLoading(true);
     const shiftId = reconcileTarget.id;
     try {
       const { data } = await api.post(
         `/api/shifts/${shiftId}/reconcile`,
-        { closing_cash: v, notes: reconcileNotes.trim() || null },
+        { counted_currencies: payload, notes: reconcileNotes.trim() || null },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       if (data.requires_approval) {
@@ -494,7 +556,7 @@ export default function ShiftAudit() {
       header: "النقد المتوقع",
       className: "num",
       value: (r) => (r.expected_cash != null ? ils(r.expected_cash) : "—"),
-      render: (r) => (r.expected_cash != null ? ils(r.expected_cash) : "—"),
+      render: (r) => <ExpectedCashCell row={r} />,
     },
     {
       key: "actions",
@@ -535,7 +597,7 @@ export default function ShiftAudit() {
       header: "متوقع",
       className: "num",
       value: (r) => (r.expected_cash != null ? ils(r.expected_cash) : "—"),
-      render: (r) => (r.expected_cash != null ? ils(r.expected_cash) : "—"),
+      render: (r) => <ExpectedCashCell row={r} />,
     },
     {
       key: "variance",
@@ -574,9 +636,11 @@ export default function ShiftAudit() {
     },
   ];
 
+  const countedTotal = countedNisTotal(countRows, countedAmounts);
+  const hasCountedInput = Object.values(countedAmounts).some((v) => String(v || "").trim() !== "");
   const reconcilePreview =
-    reconcileTarget?.expected_cash != null && closingCash !== ""
-      ? Number(closingCash) - Number(reconcileTarget.expected_cash)
+    reconcileTarget?.expected_cash != null && hasCountedInput
+      ? countedTotal - Number(reconcileTarget.expected_cash)
       : null;
 
   return (
@@ -663,7 +727,7 @@ export default function ShiftAudit() {
         title={reconcileTarget ? `عد النقد — وردية #${reconcileTarget.id}` : ""}
         footer={
           <>
-            <PrimaryButton type="submit" form="reconcile-form" disabled={reconcileLoading}>
+            <PrimaryButton type="submit" form="reconcile-form" disabled={reconcileLoading || countRows.length === 0}>
               {reconcileLoading ? "جاري الحفظ…" : "تأكيد وإغلاق"}
             </PrimaryButton>
             <SecondaryButton type="button" onClick={closeReconcile}>
@@ -677,18 +741,22 @@ export default function ShiftAudit() {
             <p style={{ color: "var(--office-text-muted)", lineHeight: 1.6 }}>
               {reconcileTarget.cashier_name} — النقد المتوقع:{" "}
               {reconcileTarget.expected_cash != null ? ils(reconcileTarget.expected_cash) : "—"}
+              {expectedBreakdownText(reconcileTarget.expected_by_currency)
+                ? ` (${expectedBreakdownText(reconcileTarget.expected_by_currency)})`
+                : ""}
             </p>
-            <FormField label="النقد الفعلي في الدرج">
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                value={closingCash}
-                onChange={(e) => setClosingCash(e.target.value)}
-                required
-                autoFocus
-              />
-            </FormField>
+            <CashCountFields
+              countRows={countRows}
+              values={countedAmounts}
+              onChange={(code, value) =>
+                setCountedAmounts((prev) => ({ ...prev, [code]: value }))
+              }
+            />
+            {hasCountedInput ? (
+              <p style={{ marginBottom: "0.75rem" }}>
+                المجموع بالشيكل: <span className="num">{ils(countedTotal)}</span>
+              </p>
+            ) : null}
             {reconcilePreview != null && !Number.isNaN(reconcilePreview) ? (
               <p style={{ marginBottom: "0.75rem" }}>
                 الفارق (معاينة):{" "}

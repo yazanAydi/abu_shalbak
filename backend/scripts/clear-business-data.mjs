@@ -1,6 +1,7 @@
 /**
  * Wipe business/transactional data for a fresh Hesabati re-import.
- * Keeps: users, app_settings, customer_balance_groups (system), stores, bank_accounts.
+ * Keeps: users, app_settings, customer_balance_groups, stores, bank_accounts,
+ * warehouses, currencies, expense_categories, unit_names, schema_migrations.
  *
  * Usage:
  *   node backend/scripts/clear-business-data.mjs          # preview
@@ -17,50 +18,18 @@ import { resolveDatabasePath } from "../utils/dbPath.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(__dirname, "..", "..");
 
-const TABLES_IN_DELETE_ORDER = [
-  "voucher_lines",
-  "vouchers",
-  "supplier_payments",
-  "purchase_return_lines",
-  "purchase_returns",
-  "purchase_invoice_lines",
-  "purchase_invoices",
-  "purchase_order_lines",
-  "purchase_orders",
-  "supplier_invoices",
-  "refund_request_lines",
-  "refund_requests",
-  "refunds",
-  "transaction_items",
-  "transactions",
-  "inventory_ledger",
-  "inventory_movements",
-  "product_price_history",
-  "product_barcodes",
-  "product_batches",
-  "stock_count_lines",
-  "stock_count_sessions",
-  "stock_adjustment_lines",
-  "stock_adjustments",
-  "warehouse_transfer_lines",
-  "warehouse_transfers",
-  "sales_deliveries",
-  "purchase_receivings",
-  "promotion_products",
-  "promotions",
-  "campaigns",
-  "cash_reconciliations",
-  "cashier_shift_reconciliation",
-  "cashier_shifts",
-  "operating_expenses",
-  "audit_logs",
-  "daily_reports",
-  "products",
-  "customers",
-  "suppliers",
-  "entity_code_sequences",
-  "receipt_sequences",
-];
+const KEEP_TABLES = new Set([
+  "users",
+  "app_settings",
+  "customer_balance_groups",
+  "stores",
+  "bank_accounts",
+  "warehouses",
+  "currencies",
+  "schema_migrations",
+  "expense_categories",
+  "unit_names",
+]);
 
 const confirm = process.argv.includes("--yes");
 
@@ -102,7 +71,21 @@ function discoverDbPaths() {
   } catch (_) {}
   paths.add(path.resolve(repoRoot, "data", "supermarket.db"));
   paths.add(path.resolve(repoRoot, "backend", "data", "supermarket.db"));
+  paths.add(path.resolve(repoRoot, "backend", "data", "supermarket-dev.db"));
   return [...paths].filter((p) => fs.existsSync(p));
+}
+
+/** @param {import('sqlite3').Database} db */
+async function listUserTables(db) {
+  const rows = await new Promise((resolve, reject) => {
+    db.all(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+       ORDER BY name`,
+      (err, result) => (err ? reject(err) : resolve(result || []))
+    );
+  });
+  return rows.map((r) => r.name);
 }
 
 /**
@@ -114,21 +97,26 @@ async function clearDatabase(dbPath) {
   console.log(`  backup: ${backup.path}`);
 
   const db = await openDb(dbPath);
+  await run(db, "PRAGMA busy_timeout = 15000");
   await run(db, "PRAGMA foreign_keys = OFF");
   await run(db, "BEGIN IMMEDIATE");
   try {
-    for (const table of TABLES_IN_DELETE_ORDER) {
-      const exists = await get(
-        db,
-        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-        [table]
-      );
-      if (!exists) continue;
-      const before = await get(db, `SELECT COUNT(*) AS n FROM ${table}`);
-      await run(db, `DELETE FROM ${table}`);
+    const tables = await listUserTables(db);
+    for (const table of tables) {
+      if (KEEP_TABLES.has(table)) continue;
+      const before = await get(db, `SELECT COUNT(*) AS n FROM "${table}"`);
+      await run(db, `DELETE FROM "${table}"`);
       if (Number(before?.n) > 0) {
         console.log(`  cleared ${table}: ${before.n} rows`);
       }
+    }
+    if (tables.includes("bank_accounts")) {
+      await run(db, "UPDATE bank_accounts SET balance = 0 WHERE balance != 0");
+    }
+    const seq = await get(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'");
+    if (seq) {
+      const keepList = [...KEEP_TABLES].map((t) => `'${t}'`).join(", ");
+      await run(db, `DELETE FROM sqlite_sequence WHERE name NOT IN (${keepList})`);
     }
     await run(db, "COMMIT");
     await run(db, "PRAGMA wal_checkpoint(TRUNCATE)");

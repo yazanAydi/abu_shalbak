@@ -27,24 +27,14 @@ describe("Money precision", () => {
     expect(r.total).toBe(0.3);
   });
 
-  test("tax-exclusive 16% adds tax on top of net", () => {
+  test("sales do not split VAT — shelf price is the full total", () => {
     const r = computeSaleTotals(
       [{ quantity: 1, unitPrice: 100, taxRate: 0.16 }],
-      { tax_inclusive: false, default_tax_rate: 0.16 }
-    );
-    expect(r.subtotal).toBe(100);
-    expect(r.tax).toBe(16);
-    expect(r.total).toBe(116);
-  });
-
-  test("tax-inclusive price decomposes into net + tax", () => {
-    const r = computeSaleTotals(
-      [{ quantity: 1, unitPrice: 116, taxRate: 0.16 }],
       { tax_inclusive: true, default_tax_rate: 0.16 }
     );
     expect(r.subtotal).toBe(100);
-    expect(r.tax).toBe(16);
-    expect(r.total).toBe(116);
+    expect(r.tax).toBe(0);
+    expect(r.total).toBe(100);
   });
 
   test("line subtotal for qty × fractional price is 2-dp exact", () => {

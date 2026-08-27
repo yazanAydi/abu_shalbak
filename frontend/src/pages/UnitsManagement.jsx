@@ -8,11 +8,13 @@ import {
   Card,
   CardBody,
   CardHeader,
-  EmptyState,
   DataTable,
   SecondaryButton,
+  Button,
   Input,
   FormField,
+  StatusPill,
+  useToast,
 } from "../components/ui";
 
 // Normalize both ProductPicker shapes (search row vs. barcode-lookup response)
@@ -38,6 +40,7 @@ function formatUnitsSummary(units) {
 }
 
 export default function UnitsManagement() {
+  const toast = useToast();
   const [selected, setSelected] = useState(null);
   const editorRef = useRef(null);
   const [catalog, setCatalog] = useState([]);
@@ -45,6 +48,10 @@ export default function UnitsManagement() {
   const [catalogSearch, setCatalogSearch] = useState("");
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [catalogErr, setCatalogErr] = useState(null);
+  const [unitNames, setUnitNames] = useState([]);
+  const [loadingNames, setLoadingNames] = useState(true);
+  const [newUnitName, setNewUnitName] = useState("");
+  const [savingName, setSavingName] = useState(false);
 
   const loadCatalog = useCallback(async () => {
     setLoadingCatalog(true);
@@ -72,6 +79,56 @@ export default function UnitsManagement() {
       setLoadingCatalog(false);
     }
   }, [catalogSearch]);
+
+  const loadUnitNames = useCallback(async () => {
+    setLoadingNames(true);
+    try {
+      const { data } = await api.get("/api/products/unit-names", {
+        headers: getAuthHeaders(),
+      });
+      setUnitNames(Array.isArray(data) ? data : []);
+    } catch (e) {
+      toast.error(e.response?.data?.error || "تعذّر تحميل أسماء الوحدات");
+    } finally {
+      setLoadingNames(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    loadUnitNames();
+  }, [loadUnitNames]);
+
+  async function addUnitName() {
+    const name = newUnitName.trim();
+    if (!name) {
+      toast.error("اسم الوحدة مطلوب");
+      return;
+    }
+    setSavingName(true);
+    try {
+      await api.post("/api/products/unit-names", { name }, { headers: getAuthHeaders() });
+      toast.success("تمت إضافة الاسم");
+      setNewUnitName("");
+      loadUnitNames();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "فشل الإضافة");
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  async function removeUnitName(row) {
+    if (!window.confirm(`حذف اسم الوحدة «${row.name}»؟`)) return;
+    try {
+      const { data } = await api.delete(`/api/products/unit-names/${row.id}`, {
+        headers: getAuthHeaders(),
+      });
+      toast.success(data?.deactivated ? "الاسم مستخدم — تم تعطيله" : "تم الحذف");
+      loadUnitNames();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "فشل الحذف");
+    }
+  }
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -148,10 +205,74 @@ export default function UnitsManagement() {
       <PageHeader
         icon="products"
         title="الوحدات"
-        subtitle="عرّف وحدات التعبئة لكل منتج: كم حبة في الصندوق، الربطة، الكرتونة…"
+        subtitle="أضف أسماء الوحدات هنا، ثم اربطها بالمنتجات مع الباركود ومعامل التحويل"
       />
 
-      <Card style={{ overflow: "visible", position: "relative", zIndex: 5 }}>
+      <Card>
+        <CardHeader
+          title="أسماء الوحدات"
+          subtitle="هذه الأسماء تظهر في قائمة «وحدة جديدة» عند إضافة وحدة لمنتج"
+        />
+        <CardBody>
+          <div
+            style={{
+              display: "flex",
+              gap: "0.5rem",
+              flexWrap: "wrap",
+              alignItems: "flex-end",
+              marginBottom: "1rem",
+            }}
+          >
+            <FormField label="اسم جديد" style={{ flex: "1 1 16rem", marginBottom: 0 }}>
+              <Input
+                value={newUnitName}
+                onChange={(e) => setNewUnitName(e.target.value)}
+                placeholder="صندوق، قنينة…"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addUnitName();
+                  }
+                }}
+              />
+            </FormField>
+            <Button icon="plus" onClick={addUnitName} disabled={savingName}>
+              {savingName ? "جاري الإضافة…" : "إضافة"}
+            </Button>
+          </div>
+          <DataTable
+            loading={loadingNames}
+            columns={[
+              { key: "name", header: "الاسم" },
+              {
+                key: "active",
+                header: "الحالة",
+                value: (c) => (c.active ? "مفعّل" : "معطّل"),
+                render: (c) => (
+                  <StatusPill tone={c.active ? "green" : "neutral"}>
+                    {c.active ? "مفعّل" : "معطّل"}
+                  </StatusPill>
+                ),
+              },
+              {
+                key: "actions",
+                header: "",
+                align: "left",
+                render: (c) => (
+                  <Button variant="ghost" size="sm" icon="trash" onClick={() => removeUnitName(c)}>
+                    حذف
+                  </Button>
+                ),
+              },
+            ]}
+            rows={unitNames}
+            emptyIcon="products"
+            empty="لا توجد أسماء — أضف اسماً أعلاه ليظهر في قائمة الوحدة"
+          />
+        </CardBody>
+      </Card>
+
+      <Card style={{ overflow: "visible", position: "relative", zIndex: 5, marginTop: "1rem" }}>
         <CardBody>
           <p style={{ marginTop: 0, color: "var(--office-panel-muted)" }}>
             امسح باركود المنتج (الحبة) أو ابحث بالاسم، ثم أضف وحداته الأكبر مثل

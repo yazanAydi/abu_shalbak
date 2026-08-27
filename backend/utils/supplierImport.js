@@ -11,6 +11,7 @@ import {
 } from "./balanceSheetImport.js";
 import { assignEntityCodeIfMissing, ensureEntityCode } from "./entityCodes.js";
 import { shopTodayYmd } from "./shopTime.js";
+import { withTransaction } from "./dbTx.js";
 
 export const HESABATI_OPENING_SOURCE = "hesabati_import";
 export const OPENING_ENTRY_SOURCE_TYPE = "opening_balance_import";
@@ -376,8 +377,7 @@ export async function applySupplierBalanceImport(db, rows, options = {}) {
   let skipped = 0;
   const errors = [...plan.errors];
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  await withTransaction(db, async () => {
     for (const planRow of plan.allRows) {
       if (planRow.action === "invalid" || planRow.action === "skip") {
         skipped++;
@@ -435,13 +435,7 @@ export async function applySupplierBalanceImport(db, rows, options = {}) {
         updated++;
       }
     }
-    await db.run("COMMIT");
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+  });
 
   return {
     type: "hesabati_supplier_balances",

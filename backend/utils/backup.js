@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import sqlite3 from "sqlite3";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,8 +22,56 @@ function timestampName() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
+function openSqlite(dbPath, mode = sqlite3.OPEN_READONLY) {
+  return new Promise((resolve, reject) => {
+    const d = new sqlite3.Database(dbPath, mode, (err) => {
+      if (err) reject(err);
+      else resolve(d);
+    });
+  });
+}
+
+function closeSqlite(db) {
+  return new Promise((resolve) => {
+    try {
+      db.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function vacuumInto(source, destPath) {
+  const escaped = String(destPath).replace(/'/g, "''");
+  return new Promise((resolve, reject) => {
+    source.exec(`VACUUM INTO '${escaped}'`, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+async function verifyBackup(destPath) {
+  const verify = await openSqlite(destPath, sqlite3.OPEN_READONLY);
+  try {
+    const row = await new Promise((resolve, reject) => {
+      verify.get("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'", (err, r) => {
+        if (err) reject(err);
+        else resolve(r);
+      });
+    });
+    if (!row || Number(row.n) < 1) {
+      throw new Error("Backup verification failed: no tables in snapshot");
+    }
+  } finally {
+    await closeSqlite(verify);
+  }
+}
+
 /**
- * Copy SQLite database to timestamped backup file.
+ * Create a consistent standalone SQLite snapshot (includes WAL contents).
+ * Uses VACUUM INTO so restore is a single file, not a raw .db copy that
+ * silently drops the WAL.
  * @param {string} dbPath Absolute path to live DB
  * @returns {{ filename: string, path: string, size: number, created_at: string }}
  */
@@ -36,9 +85,16 @@ export async function createBackup(dbPath) {
   const filename = `supermarket_${timestampName()}.db`;
   const dest = path.join(backupDir, filename);
 
-  await fs.promises.copyFile(resolved, dest);
-  const stat = await fs.promises.stat(dest);
+  const source = await openSqlite(resolved, sqlite3.OPEN_READONLY);
+  try {
+    await vacuumInto(source, dest);
+  } finally {
+    await closeSqlite(source);
+  }
 
+  await verifyBackup(dest);
+
+  const stat = await fs.promises.stat(dest);
   return {
     filename,
     path: dest,

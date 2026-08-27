@@ -167,7 +167,7 @@ export function buildReceiptHtml(opts) {
 
   const logoSrc = getStoreLogoDataUri();
   const logoHtml = logoSrc
-    ? `<div class="logo-wrap"><img src="${logoSrc}" alt="" /></div>`
+    ? `<div class="logo-wrap"><img src="${escapeHtml(logoSrc)}" alt="" /></div>`
     : "";
 
   const itemRows = (opts.lines || [])

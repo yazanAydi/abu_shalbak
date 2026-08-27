@@ -29,7 +29,6 @@ export default function OverviewTab({ productId }) {
                   <div><dt>الرقم</dt><dd>{data.basic.sku || "—"}</dd></div>
                   <div><dt>التصنيف</dt><dd>{data.basic.category || "—"}</dd></div>
                   <div><dt>الوحدة</dt><dd>{data.basic.unit || "—"}</dd></div>
-                  <div><dt>نسبة الضريبة</dt><dd>{data.basic.tax_rate != null ? `${num(Number(data.basic.tax_rate) * 100)}%` : "—"}</dd></div>
                 </dl>
               </CardBody>
             </Card>

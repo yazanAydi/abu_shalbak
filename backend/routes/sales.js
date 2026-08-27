@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { listLimitSql } from "../utils/listQuery.js";
 import {
   createSalesInvoiceDraft,
   updateSalesInvoiceDraft,
@@ -24,7 +25,7 @@ export function createSalesRouter(db) {
       sql += " AND si.status = ?";
       params.push(status);
     }
-    sql += " ORDER BY si.created_at DESC LIMIT 300";
+    sql += ` ORDER BY si.created_at DESC${listLimitSql(req.query).sql}`;
     res.json(await db.all(sql, params));
   });
 

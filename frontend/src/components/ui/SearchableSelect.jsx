@@ -1,4 +1,7 @@
-import { Children, useEffect, useMemo, useRef, useState } from "react";
+import { Children, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+
+const LIST_MAX_HEIGHT = 240;
 
 function optionText(node) {
   if (node == null || node === false) return "";
@@ -42,8 +45,28 @@ export default function SearchableSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(-1);
+  const [menuStyle, setMenuStyle] = useState(null);
   const rootRef = useRef(null);
   const listRef = useRef(null);
+
+  const placeMenu = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const gap = 4;
+    const spaceBelow = window.innerHeight - rect.bottom - gap;
+    const spaceAbove = rect.top - gap;
+    const openUp = spaceBelow < 140 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(120, Math.min(LIST_MAX_HEIGHT, openUp ? spaceAbove : spaceBelow));
+    setMenuStyle({
+      position: "fixed",
+      left: rect.left,
+      width: rect.width,
+      top: openUp ? rect.top - maxHeight - gap : rect.bottom + gap,
+      maxHeight,
+      zIndex: 2000,
+    });
+  }, []);
 
   const options = useMemo(() => parseOptions(children), [children]);
 
@@ -64,14 +87,26 @@ export default function SearchableSelect({
 
   useEffect(() => {
     const onDoc = (e) => {
-      if (rootRef.current && !rootRef.current.contains(e.target)) {
-        setOpen(false);
-        setQuery("");
-      }
+      const t = e.target;
+      if (rootRef.current?.contains(t) || listRef.current?.contains(t)) return;
+      setOpen(false);
+      setQuery("");
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    placeMenu();
+    const onReposition = () => placeMenu();
+    window.addEventListener("resize", onReposition);
+    window.addEventListener("scroll", onReposition, true);
+    return () => {
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
+    };
+  }, [open, filtered.length, placeMenu]);
 
   function commit(opt) {
     if (!opt || opt.disabled) return;
@@ -87,6 +122,7 @@ export default function SearchableSelect({
     setQuery("");
     const idx = filtered.findIndex((o) => String(o.value) === String(value ?? ""));
     setHighlight(idx);
+    placeMenu();
   }
 
   function onKeyDown(e) {
@@ -141,33 +177,37 @@ export default function SearchableSelect({
         onKeyDown={onKeyDown}
       />
       {name ? <input type="hidden" name={name} value={value ?? ""} /> : null}
-      {open && (
-        <ul
-          className="ui-combobox__list"
-          ref={listRef}
-          onWheel={(e) => e.stopPropagation()}
-        >
-          {filtered.length === 0 ? (
-            <li className="ui-combobox__empty">لا توجد نتائج</li>
-          ) : (
-            filtered.map((o, i) => (
-              <li
-                key={`${o.value}-${i}`}
-                className={`ui-combobox__option${i === highlight ? " is-active" : ""}${
-                  String(o.value) === String(value ?? "") ? " is-selected" : ""
-                }${o.disabled ? " is-disabled" : ""}`}
-                onMouseEnter={() => setHighlight(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  commit(o);
-                }}
-              >
-                {o.label || "\u00A0"}
-              </li>
-            ))
-          )}
-        </ul>
-      )}
+      {open &&
+        menuStyle &&
+        createPortal(
+          <ul
+            className="ui-combobox__list"
+            ref={listRef}
+            style={menuStyle}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            {filtered.length === 0 ? (
+              <li className="ui-combobox__empty">لا توجد نتائج</li>
+            ) : (
+              filtered.map((o, i) => (
+                <li
+                  key={`${o.value}-${i}`}
+                  className={`ui-combobox__option${i === highlight ? " is-active" : ""}${
+                    String(o.value) === String(value ?? "") ? " is-selected" : ""
+                  }${o.disabled ? " is-disabled" : ""}`}
+                  onMouseEnter={() => setHighlight(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commit(o);
+                  }}
+                >
+                  {o.label || "\u00A0"}
+                </li>
+              ))
+            )}
+          </ul>,
+          document.body
+        )}
     </div>
   );
 }

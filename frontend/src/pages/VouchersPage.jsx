@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSubmitGuard } from "../hooks/useSubmitGuard";
 import { todayISO } from "../utils/format";
 import { useParams, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
@@ -47,6 +48,7 @@ function resetForm(setLines, setNotes, setParty) {
 }
 
 export default function VouchersPage() {
+  const guardSubmit = useSubmitGuard();
   const toast = useToast();
   const { type: typeParam } = useParams();
   const lockedType = VALID_VOUCHER_TYPES.has(typeParam) ? typeParam : null;
@@ -156,6 +158,7 @@ export default function VouchersPage() {
 
   async function postVoucher(v) {
     if (!window.confirm(`ترحيل السند #${v.id}؟ لا يمكن التراجع.`)) return;
+    await guardSubmit(async () => {
     try {
       await api.post(`/api/vouchers/${v.id}/post`, {}, { headers: getAuthHeaders() });
       toast.success("تم الترحيل");
@@ -163,10 +166,12 @@ export default function VouchersPage() {
     } catch (e) {
       toast.error(e.response?.data?.error || "فشل الترحيل");
     }
+    });
   }
 
   async function deleteVoucher(v) {
     if (!window.confirm(`حذف السند #${v.id}؟`)) return;
+    await guardSubmit(async () => {
     try {
       await api.delete(`/api/vouchers/${v.id}`, { headers: getAuthHeaders() });
       toast.success("تم الحذف");
@@ -174,6 +179,7 @@ export default function VouchersPage() {
     } catch (e) {
       toast.error(e.response?.data?.error || "فشل الحذف");
     }
+    });
   }
 
   async function loadDetail(v) {

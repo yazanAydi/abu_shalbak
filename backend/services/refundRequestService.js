@@ -2,6 +2,7 @@ import { parseItemsJson } from "../utils/cogs.js";
 import { requireOpenShiftForCashier, getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { computeSaleTotals } from "../utils/tax.js";
+import { round2 } from "../utils/money.js";
 import { recordMovement } from "../utils/inventory.js";
 import { logAuditUser, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import {
@@ -10,9 +11,25 @@ import {
   editRefundRequestMessage,
   sendRefundDecisionStatusMessage,
 } from "../utils/telegram.js";
+import { withTransaction } from "../utils/dbTx.js";
+import { computeExpectedBaseCash } from "../utils/salePayments.js";
 
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
+function refundedUnitPrice(orig, tx, origItems) {
+  const qty = Number(orig.quantity) || 0;
+  if (qty <= 0) return orig.price;
+  const lineDiscount = Number(orig.discount_at_sale ?? orig.discount ?? 0);
+  if (lineDiscount > 0) {
+    return round2((orig.price * qty - lineDiscount) / qty);
+  }
+  const orderDiscount = round2(Number(tx.discount) || 0);
+  if (orderDiscount <= 0) return orig.price;
+  const gross = (origItems || []).reduce(
+    (s, it) => s + (Number(it.quantity) || 0) * (Number(it.price) || 0),
+    0
+  );
+  if (gross <= 0) return orig.price;
+  const share = (qty * orig.price) / gross;
+  return round2(orig.price - (orderDiscount * share) / qty);
 }
 
 function lineKey(it) {
@@ -34,7 +51,7 @@ function mergeItemsIntoMap(map, itemsJson) {
 }
 
 /** Sum returned quantities per product from requests + legacy refunds */
-export async function refundedQtyByProduct(db, transactionId) {
+export async function refundedQtyByProduct(db, transactionId, excludeRequestId = null) {
   const map = new Map();
   const refundRows = await db.all(
     "SELECT items_json FROM refunds WHERE original_transaction_id = ? AND status != 'rejected'",
@@ -43,11 +60,14 @@ export async function refundedQtyByProduct(db, transactionId) {
   for (const row of refundRows) mergeItemsIntoMap(map, row.items_json);
 
   const requestRows = await db.all(
-    `SELECT items_json FROM refund_requests
+    `SELECT id, items_json FROM refund_requests
      WHERE transaction_id = ? AND status IN ('pending', 'approved')`,
     [transactionId]
   );
-  for (const row of requestRows) mergeItemsIntoMap(map, row.items_json);
+  for (const row of requestRows) {
+    if (excludeRequestId && Number(row.id) === Number(excludeRequestId)) continue;
+    mergeItemsIntoMap(map, row.items_json);
+  }
 
   return map;
 }
@@ -75,6 +95,18 @@ export async function applyApprovedRefundEffects(db, refund) {
   }
   if (refund.payment_method === "cash" && refund.shift_id) {
     const total = round2(Number(refund.total));
+    const shift = await db.get("SELECT opening_cash FROM cashier_shifts WHERE id = ?", [refund.shift_id]);
+    if (shift) {
+      const available = await computeExpectedBaseCash(db, refund.shift_id, shift.opening_cash);
+      if (available + 0.005 < total) {
+        const err = new Error(
+          `النقد بالشيكل في الدرج غير كافٍ للاسترجاع (المتاح: ₪${available.toFixed(2)})`
+        );
+        err.status = 400;
+        err.code = "INSUFFICIENT_CASH";
+        throw err;
+      }
+    }
     await db.run(
       `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description, refund_id)
        VALUES (?, 'refund', ?, ?, ?)`,
@@ -83,7 +115,7 @@ export async function applyApprovedRefundEffects(db, refund) {
   }
 }
 
-async function buildRefundLines(db, transactionId, lines) {
+async function buildRefundLines(db, transactionId, lines, excludeRequestId = null) {
   const tx = await db.get("SELECT * FROM transactions WHERE id = ?", [transactionId]);
   if (!tx) {
     const err = new Error("البيع الأصلي غير موجود");
@@ -110,20 +142,26 @@ async function buildRefundLines(db, transactionId, lines) {
       conversion_to_base: Math.max(0.0001, Number(it.conversion_to_base) || 1),
     });
   }
-  const refundedSoFar = await refundedQtyByProduct(db, transactionId);
+  const refundedSoFar = await refundedQtyByProduct(db, transactionId, excludeRequestId);
   const refundLines = [];
   for (const L of lines) {
     const pid = Number(L.product_id);
     const unitId = Number(L.unit_id ?? L.product_unit_id ?? 0);
     const want = Math.max(0, Number(L.quantity) || 0);
-    if (!pid || want <= 0) continue;
+    if (!pid || want <= 0) {
+      const err = new Error("سطر إرجاع غير صالح");
+      err.status = 400;
+      throw err;
+    }
     const key = `${pid}:${unitId}`;
     const orig = origMap.get(key) || (unitId === 0 ? origMap.get(`${pid}:0`) : null);
     if (!orig && unitId === 0) {
+      let added = false;
       for (const [k, v] of origMap.entries()) {
         if (k.startsWith(`${pid}:`)) {
           const cap = v.quantity - (refundedSoFar.get(k) || 0);
           if (want <= cap) {
+            const unitPrice = refundedUnitPrice(v, tx, origItems);
             refundLines.push({
               product_id: pid,
               unit_id: Number(k.split(":")[1]) || null,
@@ -131,15 +169,21 @@ async function buildRefundLines(db, transactionId, lines) {
               name: v.name,
               unit_name: v.unit_name,
               quantity: want,
-              price: v.price,
+              price: unitPrice,
               tax_rate: v.tax_rate,
               conversion_to_base: v.conversion_to_base,
-              lineTotal: round2(want * v.price),
+              lineTotal: round2(want * unitPrice),
             });
             refundedSoFar.set(k, (refundedSoFar.get(k) || 0) + want);
+            added = true;
             break;
           }
         }
+      }
+      if (!added) {
+        const err = new Error(`المنتج ${pid} ليس في البيع الأصلي`);
+        err.status = 400;
+        throw err;
       }
       continue;
     }
@@ -155,6 +199,7 @@ async function buildRefundLines(db, transactionId, lines) {
       err.max_returnable = cap;
       throw err;
     }
+    const unitPrice = refundedUnitPrice(orig, tx, origItems);
     refundLines.push({
       product_id: pid,
       unit_id: unitId || null,
@@ -162,10 +207,10 @@ async function buildRefundLines(db, transactionId, lines) {
       name: orig.name,
       unit_name: orig.unit_name,
       quantity: want,
-      price: orig.price,
+      price: unitPrice,
       tax_rate: orig.tax_rate,
       conversion_to_base: orig.conversion_to_base,
-      lineTotal: round2(want * orig.price),
+      lineTotal: round2(want * unitPrice),
     });
     refundedSoFar.set(key, (refundedSoFar.get(key) || 0) + want);
   }
@@ -232,7 +277,6 @@ export async function resolveRefundTargetShift(db, { cashierId, paymentMethod, f
 
 export async function createRefundRequest(db, params) {
   const { cashierId, transactionId, lines, paymentMethod, reason, req } = params;
-  const { subtotal, tax, total, itemsJson } = await buildRefundLines(db, transactionId, lines);
 
   const { shift, error: shiftErr } = await requireOpenShiftForCashier(db, cashierId);
   if (shiftErr || !shift) {
@@ -241,8 +285,8 @@ export async function createRefundRequest(db, params) {
     throw err;
   }
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const created = await withTransaction(db, async () => {
+    const { subtotal, tax, total, itemsJson } = await buildRefundLines(db, transactionId, lines);
     const ins = await db.run(
       `INSERT INTO refund_requests (
         transaction_id, cashier_id, shift_id, items_json, subtotal, tax, total_amount,
@@ -271,40 +315,43 @@ export async function createRefundRequest(db, params) {
       });
     }
 
-    let telegramMessageId = null;
-    if (isRefundTelegramConfigured()) {
-      try {
-        telegramMessageId = await sendRefundApprovalMessage({
-          requestId,
-          cashierName: cashier?.username || String(cashierId),
-          transactionId,
-          total,
-          reason: reason || "",
-        });
-        await db.run("UPDATE refund_requests SET telegram_message_id = ? WHERE id = ?", [
-          telegramMessageId,
-          requestId,
-        ]);
-        row.telegram_message_id = telegramMessageId;
-      } catch (e) {
-        console.error("Telegram send failed:", e.message);
-      }
-    }
-
-    await db.run("COMMIT");
     return {
       request: row,
       request_id: requestId,
-      telegram: isRefundTelegramConfigured() && !!telegramMessageId,
-      message:
-        "سُجّل طلب الاسترجاع قيد المراجعة. لن يُحدَّث المخزون أو النقد حتى موافقة المسؤول.",
+      total,
+      cashier,
+      transactionId,
+      reason,
     };
-  } catch (e) {
+  });
+
+  let telegramMessageId = null;
+  if (isRefundTelegramConfigured()) {
     try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
+      telegramMessageId = await sendRefundApprovalMessage({
+        requestId: created.request_id,
+        cashierName: created.cashier?.username || String(cashierId),
+        transactionId: created.transactionId,
+        total: created.total,
+        reason: created.reason || "",
+      });
+      await db.run("UPDATE refund_requests SET telegram_message_id = ? WHERE id = ?", [
+        telegramMessageId,
+        created.request_id,
+      ]);
+      created.request.telegram_message_id = telegramMessageId;
+    } catch (e) {
+      console.error("Telegram send failed:", e.message);
+    }
   }
+
+  return {
+    request: created.request,
+    request_id: created.request_id,
+    telegram: isRefundTelegramConfigured() && !!telegramMessageId,
+    message:
+      "سُجّل طلب الاسترجاع قيد المراجعة. لن يُحدَّث المخزون أو النقد حتى موافقة المسؤول.",
+  };
 }
 
 export async function getRefundRequestById(db, id) {
@@ -436,8 +483,7 @@ export async function approveRefundRequest(
   req = null,
   decisionSource = "admin"
 ) {
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const { refund } = await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM refund_requests WHERE id = ?", [requestId]);
     if (!request) {
       const err = new Error("طلب الاسترجاع غير موجود");
@@ -450,6 +496,9 @@ export async function approveRefundRequest(
       err.code = "NOT_PENDING";
       throw err;
     }
+
+    const pendingLines = parseItemsJson(request.items_json) || [];
+    await buildRefundLines(db, request.transaction_id, pendingLines, requestId);
 
     const targetShiftId = await resolveRefundTargetShift(db, {
       cashierId: request.cashier_id,
@@ -497,18 +546,12 @@ export async function approveRefundRequest(
       manager_id: managerUser.id,
     });
 
-    await db.run("COMMIT");
+    return { refund };
+  });
 
-    const updated = await getRefundRequestById(db, requestId);
-    await notifyTelegramAfterDecision(updated, managerUser, "approved", decisionSource);
-
-    return { request: updated, refund };
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+  const updated = await getRefundRequestById(db, requestId);
+  await notifyTelegramAfterDecision(updated, managerUser, "approved", decisionSource);
+  return { request: updated, refund };
 }
 
 export async function rejectRefundRequest(
@@ -519,8 +562,7 @@ export async function rejectRefundRequest(
   req = null,
   decisionSource = "admin"
 ) {
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM refund_requests WHERE id = ?", [requestId]);
     if (!request) {
       const err = new Error("طلب الاسترجاع غير موجود");
@@ -548,17 +590,9 @@ export async function rejectRefundRequest(
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.REFUND_REQUEST_REJECT, "refund_requests", requestId, { status: "pending" }, {
       manager_id: managerUser.id,
     });
+  });
 
-    await db.run("COMMIT");
-
-    const updated = await getRefundRequestById(db, requestId);
-    await notifyTelegramAfterDecision(updated, managerUser, "rejected", decisionSource);
-
-    return { request: updated };
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+  const updated = await getRefundRequestById(db, requestId);
+  await notifyTelegramAfterDecision(updated, managerUser, "rejected", decisionSource);
+  return { request: updated };
 }

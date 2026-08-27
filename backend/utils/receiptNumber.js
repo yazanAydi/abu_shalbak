@@ -33,3 +33,23 @@ export async function nextReceiptNumber(db, storeId = 1) {
 
   return formatReceiptNumber(year, row?.last_seq || 1);
 }
+
+const DOC_SEQ_STORE = { delivery: 91001, receiving: 91002 };
+
+/** Atomic integer document number (deliveries, receivings). */
+export async function nextNumericDoc(db, kind, currentMax = 0) {
+  const storeId = DOC_SEQ_STORE[kind];
+  if (!storeId) throw new Error(`Unknown doc sequence: ${kind}`);
+  const initial = Math.max(1, Number(currentMax) + 1);
+  await db.run(
+    `INSERT INTO receipt_sequences (store_id, year, last_seq)
+     VALUES (?, 0, ?)
+     ON CONFLICT(store_id, year) DO UPDATE SET last_seq = last_seq + 1`,
+    [storeId, initial]
+  );
+  const row = await db.get(
+    "SELECT last_seq FROM receipt_sequences WHERE store_id = ? AND year = 0",
+    [storeId]
+  );
+  return Number(row?.last_seq) || initial;
+}

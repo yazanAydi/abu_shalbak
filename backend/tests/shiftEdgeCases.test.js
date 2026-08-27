@@ -28,13 +28,15 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
     await destroyTestContext(ctx);
   });
 
-  async function startShift() {
+  async function startShift(opening = 100) {
     const res = await request(ctx.app)
       .post("/api/v1/shifts/start")
       .set(authHeader(cashierToken))
-      .send({ opening_cash: 100 });
+      .send({ opening_cash: opening });
     expect(res.status).toBe(201);
-    return res.body.data?.shift_id ?? res.body.shift_id;
+    const id = res.body.data?.shift_id ?? res.body.shift_id;
+    await ctx.db.run("UPDATE cashier_shifts SET opening_cash = ? WHERE id = ?", [opening, id]);
+    return id;
   }
 
   async function closeShiftAsCashier(shiftId) {
@@ -205,5 +207,53 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
 
     await closeShiftAsCashier(shiftId);
     await reconcileShift(shiftId, 110);
+  });
+
+  test("cash count matches physical ILS + USD after giving shekel change", async () => {
+    await ctx.db.run("UPDATE currencies SET exchange_rate_to_nis = 3.6 WHERE code = 'USD'");
+    await ctx.db.run("UPDATE products SET price = 5, tax_rate = 0 WHERE id = ?", [ctx.productId]);
+    await ctx.db.run("UPDATE product_units SET price = 5 WHERE product_id = ? AND is_default = 1", [
+      ctx.productId,
+    ]);
+    const usd = await ctx.db.get("SELECT * FROM currencies WHERE code = 'USD'");
+    const shiftId = await startShift();
+    await ctx.db.run("UPDATE cashier_shifts SET opening_cash = 50 WHERE id = ?", [shiftId]);
+
+    const sale = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 1, price: 5 }],
+        payment_method: "cash",
+        payments: [{ method: "cash", currency_id: usd.id, original_amount: 10 }],
+      });
+    expect(sale.status).toBe(201);
+
+    await closeShiftAsCashier(shiftId);
+
+    const pending = await request(ctx.app)
+      .get("/api/v1/shifts/pending")
+      .set(authHeader(adminToken));
+    expect(pending.status).toBe(200);
+    const pendingRows = pending.body.data ?? pending.body;
+    const row = (Array.isArray(pendingRows) ? pendingRows : []).find((r) => Number(r.id) === Number(shiftId));
+    expect(row).toBeTruthy();
+    expect(Number(row.expected_cash)).toBeCloseTo(55, 2);
+    const usdExpected = (row.expected_by_currency || []).find((c) => c.code === "USD");
+    expect(Number(usdExpected?.original)).toBe(10);
+
+    const recon = await request(ctx.app)
+      .post(`/api/v1/shifts/${shiftId}/reconcile`)
+      .set(authHeader(adminToken))
+      .send({
+        counted_currencies: [
+          { currency_code: "NIS", amount: 19 },
+          { currency_code: "USD", amount: 10 },
+        ],
+      });
+    expect([200, 202]).toContain(recon.status);
+    const reconBody = recon.body.data ?? recon.body;
+    expect(Number(reconBody.closing_cash)).toBeCloseTo(55, 2);
+    expect(Math.abs(Number(reconBody.variance))).toBeLessThan(0.02);
   });
 });

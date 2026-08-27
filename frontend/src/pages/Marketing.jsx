@@ -8,6 +8,7 @@ import {
   FormField, FormGrid, Input, Select, Textarea, ReportToolbar, useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import CategorySelect from "../components/CategorySelect";
 
 const OFFER_LABELS = {
   multi_price: "عرض: كمية بسعر",
@@ -450,7 +451,11 @@ export default function Marketing() {
           </FormField>
         )}
         <FormField label="أو فئة المنتجات">
-          <Input value={promoForm.category} disabled={!!promoForm.product_id} onChange={(e) => setPromoForm((f) => ({ ...f, category: e.target.value }))} />
+          <CategorySelect
+            value={promoForm.category}
+            disabled={!!promoForm.product_id}
+            onChange={(e) => setPromoForm((f) => ({ ...f, category: e.target.value }))}
+          />
         </FormField>
 
         <FormGrid>

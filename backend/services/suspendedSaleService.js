@@ -12,7 +12,10 @@ function normalizeNote(note) {
 
 async function normalizeSuspendLine(db, line, settings) {
   const productId = Number(line.product_id);
-  const qty = Math.max(1, Number(line.quantity) || 1);
+  const qty = Number(line.quantity);
+  if (!Number.isFinite(qty) || qty <= 0) {
+    throw { status: 400, message: "الكمية يجب أن تكون رقماً موجباً" };
+  }
   const price = round2(Number(line.price));
 
   if (!Number.isFinite(price) || price < 0) {
@@ -63,6 +66,17 @@ async function normalizeSuspendLine(db, line, settings) {
   }
 
   const conversionToBase = Math.max(0.0001, Number(unit.conversion_to_base) || 1);
+  const dbPrice = round2(Number(unit.price) || Number(p.price) || 0);
+  if (Math.abs(dbPrice - price) > 0.009) {
+    throw {
+      status: 409,
+      message: "عدم تطابق السعر مع أحدث سعر في النظام",
+      code: "PRICE_MISMATCH",
+      product_id: productId,
+      expected: dbPrice,
+      received: price,
+    };
+  }
   const scannedBarcode =
     line.scanned_barcode != null ? String(line.scanned_barcode).trim() || null : null;
   const taxRate = productTaxRate(p, settings);
@@ -74,8 +88,8 @@ async function normalizeSuspendLine(db, line, settings) {
     unit_name_snapshot: unit.unit_name,
     barcode_snapshot: unit.barcode || p.barcode || null,
     quantity: qty,
-    unit_price_snapshot: price,
-    total_price: round2(qty * price),
+    unit_price_snapshot: dbPrice,
+    total_price: round2(qty * dbPrice),
     conversion_to_base: conversionToBase,
     tax_rate_snapshot: taxRate,
     scanned_barcode_snapshot: scannedBarcode,

@@ -11,6 +11,7 @@ import { invalidateProductCache } from "../components/ProductPicker";
 import ProductUnitsModal from "./productDashboard/ProductUnitsModal";
 import EditProductModal from "./productDashboard/EditProductModal";
 import { fetchProductUnits, pickDefaultPurchaseUnit, ItemEditor } from "./Purchases";
+import UnitNameSelect from "../components/UnitNameSelect";
 import { deriveUnitCost } from "../utils/purchaseTotals";
 import {
   PageHeader,
@@ -52,7 +53,18 @@ const emptyForm = {
 
 function unwrapList(data) {
   const rows = data?.data ?? data;
-  return Array.isArray(rows) ? rows : [];
+  if (Array.isArray(rows)) return rows;
+  if (Array.isArray(rows?.items)) return rows.items;
+  return [];
+}
+
+function unwrapPage(data) {
+  const body = data?.data ?? data;
+  if (Array.isArray(body?.items)) {
+    return { items: body.items, total: Number(body.total) || body.items.length };
+  }
+  const rows = Array.isArray(body) ? body : [];
+  return { items: rows, total: rows.length };
 }
 
 function SuppliesCatalog() {
@@ -72,10 +84,11 @@ function SuppliesCatalog() {
     setLoading(true);
     try {
       const { data } = await api.get("/api/products", {
-        params: { scope: BAKERY_SCOPE },
+        params: { scope: BAKERY_SCOPE, limit: 50, offset: 0 },
         headers: getAuthHeaders(),
       });
-      setProducts(unwrapList(data));
+      const page = unwrapPage(data);
+      setProducts(page.items);
       setSearchResults(null);
     } catch (e) {
       toast.error(e.response?.data?.error || "تعذّر التحميل");
@@ -96,7 +109,7 @@ function SuppliesCatalog() {
     setSearchLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchProductsApi(q, { limit: 500, scope: BAKERY_SCOPE });
+        const rows = await searchProductsApi(q, { limit: 50, scope: BAKERY_SCOPE });
         setSearchResults(rows);
       } catch {
         setSearchResults([]);
@@ -197,7 +210,10 @@ function SuppliesCatalog() {
                 <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
               </FormField>
               <FormField label="الوحدة">
-                <Input value={form.unit} onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} placeholder="كغم، كيس…" />
+                <UnitNameSelect
+                  value={form.unit}
+                  onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))}
+                />
               </FormField>
               <FormField label="الكلفة">
                 <Input type="number" step="0.01" min="0" value={form.cost} onChange={(e) => setForm((f) => ({ ...f, cost: e.target.value }))} />
@@ -271,7 +287,7 @@ function BakeryPurchases() {
     try {
       const [{ data: invData }, { data: prodData }] = await Promise.all([
         api.get("/api/purchases/invoices", { headers: getAuthHeaders() }),
-        api.get("/api/products", { params: { scope: BAKERY_SCOPE }, headers: getAuthHeaders() }),
+        api.get("/api/products", { params: { scope: BAKERY_SCOPE, fields: "id" }, headers: getAuthHeaders() }),
       ]);
       const invoices = unwrapList(invData);
       const bakeryIds = new Set(unwrapList(prodData).map((p) => p.id));

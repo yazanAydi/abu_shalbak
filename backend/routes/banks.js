@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
+import { withTransaction } from "../utils/dbTx.js";
 
 export function createBanksRouter(db) {
   const router = Router();
@@ -8,7 +9,7 @@ export function createBanksRouter(db) {
 
   // ───── Bank Accounts ─────
 
-  router.get("/accounts", requireAuth, async (_req, res) => {
+  router.get("/accounts", requireAuth, requireBanks, async (_req, res) => {
     res.json(await db.all("SELECT * FROM bank_accounts ORDER BY name"));
   });
 
@@ -58,7 +59,7 @@ export function createBanksRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.get("/checks/:id", requireAuth, async (req, res) => {
+  router.get("/checks/:id", requireAuth, requireBanks, async (req, res) => {
     const row = await db.get("SELECT * FROM bank_checks WHERE id = ?", [req.params.id]);
     if (!row) return res.status(404).json({ error: "الشيك غير موجود", code: "NOT_FOUND" });
     res.json(row);
@@ -103,29 +104,27 @@ export function createBanksRouter(db) {
       return res.status(400).json({ error: `الحالة يجب أن تكون: ${allowed.join(" أو ")}`, code: "VALIDATION_ERROR" });
     }
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      await db.run("UPDATE bank_checks SET status = ? WHERE id = ?", [status, check.id]);
+      await withTransaction(db, async () => {
+        await db.run("UPDATE bank_checks SET status = ? WHERE id = ?", [status, check.id]);
 
-      if (check.bank_account_id && status === "cleared") {
-        const sign = check.check_type === "received" ? 1 : -1;
-        await db.run(
-          "UPDATE bank_accounts SET balance = balance + ? WHERE id = ?",
-          [round2(sign * check.amount), check.bank_account_id]
-        );
-      }
+        if (check.bank_account_id && status === "cleared") {
+          const sign = check.check_type === "received" ? 1 : -1;
+          await db.run(
+            "UPDATE bank_accounts SET balance = balance + ? WHERE id = ?",
+            [round2(sign * check.amount), check.bank_account_id]
+          );
+        }
 
-      if (check.bank_account_id && check.status === "cleared" && status !== "cleared") {
-        const sign = check.check_type === "received" ? -1 : 1;
-        await db.run(
-          "UPDATE bank_accounts SET balance = balance + ? WHERE id = ?",
-          [round2(sign * check.amount), check.bank_account_id]
-        );
-      }
-
-      await db.run("COMMIT");
+        if (check.bank_account_id && check.status === "cleared" && status !== "cleared") {
+          const sign = check.check_type === "received" ? -1 : 1;
+          await db.run(
+            "UPDATE bank_accounts SET balance = balance + ? WHERE id = ?",
+            [round2(sign * check.amount), check.bank_account_id]
+          );
+        }
+      });
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       return res.status(500).json({ error: e.message, code: "DB_ERROR" });
     }
     res.json(await db.get("SELECT * FROM bank_checks WHERE id = ?", [check.id]));

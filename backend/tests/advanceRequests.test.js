@@ -61,6 +61,7 @@ describe("Telegram sulaf callback", () => {
         id: "test-cq-sulaf",
         data: `sulaf:approve:${requestId}`,
         message: { chat: { id: Number(managerChatId) } },
+        from: { id: Number(managerChatId) },
       },
     });
 
@@ -92,6 +93,7 @@ describe("Telegram sulaf callback", () => {
         id: "test-cq-sulaf-reject",
         data: `sulaf:reject:${requestId}`,
         message: { chat: { id: Number(managerChatId) } },
+        from: { id: Number(managerChatId) },
       },
     });
 

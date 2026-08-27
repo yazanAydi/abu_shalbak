@@ -13,6 +13,7 @@ import {
   upsertProductUnit,
 } from "./productUnits.js";
 import { looksLikePackOnlyProduct, normalizeUnitName } from "./unitNames.js";
+import { ensureProductCategory } from "./productCategories.js";
 
 /**
  * @param {object} db
@@ -179,6 +180,8 @@ export async function persistProductImportRows(db, validRows) {
 
       let productId = await resolveImportProductId(db, primaryBc, barcodes);
 
+      if (category) await ensureProductCategory(db, category);
+
       const productFields = [
         name,
         name_en ?? null,
@@ -194,11 +197,31 @@ export async function persistProductImportRows(db, validRows) {
       ];
 
       if (productId) {
+        const existing = await db.get("SELECT stock, category FROM products WHERE id = ?", [productId]);
+        const nextCategory =
+          category != null && String(category).trim() !== ""
+            ? String(category).trim()
+            : existing?.category ?? null;
+        const stockProvided = stock != null && stock !== "" && Number(stock) !== 0;
+        const nextStock = stockProvided ? Number(stock) : existing?.stock ?? 0;
+        const updateFields = [
+          name,
+          name_en ?? null,
+          currentRowPrice,
+          Number(cost) || 0,
+          nextCategory,
+          nextStock,
+          tax_rate ?? null,
+          unit ?? null,
+          expiry_date ?? null,
+          min_price ?? null,
+          max_price ?? null,
+        ];
         await db.run(
           `UPDATE products SET name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
               tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ?, updated_at = datetime('now')
            WHERE id = ?`,
-          [...productFields, productId]
+          [...updateFields, productId]
         );
         await assignEntityCodeIfMissing(db, "product", productId);
         products_updated++;
@@ -318,7 +341,7 @@ export async function persistProductImportRows(db, validRows) {
             barcode: primaryUnitBc,
             price: unitDef.price,
             cost: Number(cost) || 0,
-            conversion_to_base: 1,
+            conversion_to_base: Number(row.conversion_to_base) > 0 ? Number(row.conversion_to_base) : undefined,
             is_default: unitDef.isDefault,
             needs_review: unitDef.needsReview,
             source_row_id: rowNum,

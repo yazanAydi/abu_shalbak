@@ -49,3 +49,14 @@ export function round2Rate(n) {
 export function toNis(originalAmount, rate) {
   return round2(Number(originalAmount) * Number(rate));
 }
+
+/** ILS and NIS are the same base unit in this store. */
+export function normalizeCurrencyCode(code) {
+  const c = String(code || "").toUpperCase();
+  if (!c) return "NIS";
+  return c === "ILS" ? "NIS" : c;
+}
+
+export function isBaseCurrencyCode(code, baseCode = "NIS") {
+  return normalizeCurrencyCode(code || baseCode) === normalizeCurrencyCode(baseCode);
+}

@@ -1,12 +1,11 @@
 import { round2 } from "./money.js";
 import {
   TX_BUSINESS_DAY_JOIN,
-  TX_BUSINESS_DAY_EXPR,
   REFUND_BUSINESS_DAY_JOIN,
-  REFUND_BUSINESS_DAY_EXPR,
-  txBusinessDayBetween,
-  refundBusinessDayBetween,
+  toSqlUtc,
+  rowMatchesShopDateRange,
 } from "./businessDay.js";
+import { shopYmdRangeToUtcBounds } from "./shopTime.js";
 
 /**
  * Live (current-cost) COGS. ONLY valid for future estimates / unsold-inventory
@@ -45,64 +44,68 @@ export async function cogsForItemsJsonString(db, itemsJson) {
   return cogsForItemsArray(db, arr);
 }
 
+function rangeUtcParams(from, to) {
+  const { startIso, endIso } = shopYmdRangeToUtcBounds(from, to);
+  const startSql = toSqlUtc(startIso);
+  const endSql = toSqlUtc(endIso);
+  return [startSql, endSql, startSql, endSql];
+}
+
 /**
  * Historical COGS of COMPLETED sales in a date range, computed from the
  * cost snapshot stored on each sale item (`transaction_items.unit_cost_at_sale`).
- * Changing a product/supplier cost later never affects this value.
- *
- * Legacy fallback: transactions that have NO snapshot line items (older data)
- * fall back to current product cost via cogsForItemsJsonString.
- *
- * @param {object} db
- * @param {string} from YYYY-MM-DD (inclusive)
- * @param {string} to   YYYY-MM-DD (inclusive)
- * @returns {Promise<number>}
  */
 export async function snapshotSalesCogsForRange(db, from, to) {
-  const snap = await db.get(
-    `SELECT COALESCE(SUM(ti.unit_cost_at_sale * ti.quantity), 0) AS cogs
-     FROM transaction_items ti
-     JOIN transactions t ON t.id = ti.transaction_id
+  const rows = await db.all(
+    `SELECT t.id, t.items_json, t.created_at, cs.start_time AS start_time
+     FROM transactions t
      ${TX_BUSINESS_DAY_JOIN}
-     WHERE ${txBusinessDayBetween("?", "?")}
-       AND COALESCE(t.status, 'completed') = 'completed'`,
-    [from, to]
+     WHERE COALESCE(t.status, 'completed') = 'completed'
+       AND (
+         (datetime(t.created_at) >= datetime(?) AND datetime(t.created_at) <= datetime(?))
+         OR (cs.start_time IS NOT NULL
+             AND datetime(cs.start_time) >= datetime(?)
+             AND datetime(cs.start_time) <= datetime(?))
+       )`,
+    rangeUtcParams(from, to)
   );
-  let cogs = Number(snap?.cogs) || 0;
-
-  const legacy = await db.all(
-    `SELECT t.items_json FROM transactions t
-     ${TX_BUSINESS_DAY_JOIN}
-     WHERE ${txBusinessDayBetween("?", "?")}
-       AND COALESCE(t.status, 'completed') = 'completed'
-       AND NOT EXISTS (SELECT 1 FROM transaction_items ti WHERE ti.transaction_id = t.id)`,
-    [from, to]
-  );
-  for (const row of legacy) {
-    cogs += await cogsForItemsJsonString(db, row.items_json);
+  const matched = rows.filter((r) => rowMatchesShopDateRange(r, from, to));
+  let cogs = 0;
+  for (const row of matched) {
+    const snap = await db.get(
+      `SELECT COALESCE(SUM(unit_cost_at_sale * quantity), 0) AS cogs
+       FROM transaction_items WHERE transaction_id = ?`,
+      [row.id]
+    );
+    const snapCogs = Number(snap?.cogs) || 0;
+    if (snapCogs > 0) {
+      cogs += snapCogs;
+    } else {
+      cogs += await cogsForItemsJsonString(db, row.items_json);
+    }
   }
   return round2(cogs);
 }
 
 /**
- * Historical COGS to REVERSE for refunds in a date range. Each refunded unit's
- * cost is taken from the ORIGINAL sale-item snapshot (matched by transaction +
- * product + sold unit price), never from the current product cost.
- *
- * @param {object} db
- * @param {string} from YYYY-MM-DD (inclusive)
- * @param {string} to   YYYY-MM-DD (inclusive)
- * @returns {Promise<number>}
+ * Historical COGS to REVERSE for approved refunds in a date range.
  */
 export async function snapshotRefundCogsForRange(db, from, to) {
   const refunds = await db.all(
-    `SELECT r.items_json, r.original_transaction_id FROM refunds r
+    `SELECT r.items_json, r.original_transaction_id, r.created_at, cs.start_time AS start_time
+     FROM refunds r
      ${REFUND_BUSINESS_DAY_JOIN}
-     WHERE ${refundBusinessDayBetween("?", "?")}`,
-    [from, to]
+     WHERE r.status = 'approved'
+       AND (
+         (datetime(r.created_at) >= datetime(?) AND datetime(r.created_at) <= datetime(?))
+         OR (cs.start_time IS NOT NULL
+             AND datetime(cs.start_time) >= datetime(?)
+             AND datetime(cs.start_time) <= datetime(?))
+       )`,
+    rangeUtcParams(from, to)
   );
   let total = 0;
-  for (const r of refunds) {
+  for (const r of refunds.filter((row) => rowMatchesShopDateRange(row, from, to))) {
     const items = parseItemsJson(r.items_json);
     if (!Array.isArray(items)) continue;
     for (const it of items) {

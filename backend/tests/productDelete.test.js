@@ -46,7 +46,7 @@ describe("Product delete barcode reuse", () => {
 
     const del = await request(ctx.app)
       .delete(`/api/v1/admin/products/${productId}`)
-      .set(authHeader(adminToken));
+      .set({ ...authHeader(adminToken), "X-Confirm-Password": "adminpass123" });
     expect(del.status).toBe(204);
 
     const productGone = await ctx.db.get("SELECT id FROM products WHERE id = ?", [productId]);
@@ -97,7 +97,7 @@ describe("Product delete barcode reuse", () => {
 
     const bulkDel = await request(ctx.app)
       .post("/api/v1/admin/products/bulk-delete")
-      .set(authHeader(adminToken))
+      .set({ ...authHeader(adminToken), "X-Confirm-Password": "adminpass123" })
       .send({ ids: [idA, idB] });
     expect(bulkDel.status).toBe(200);
     expect(bulkDel.body.data?.deleted ?? bulkDel.body.deleted).toBe(2);

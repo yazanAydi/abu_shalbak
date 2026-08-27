@@ -46,10 +46,36 @@ function parsePositiveInt(value) {
   return n;
 }
 
+async function loadItemsByTransaction(db, transactionIds) {
+  const itemsByTx = new Map();
+  if (!transactionIds.length) return itemsByTx;
+  const CHUNK = 400;
+  for (let i = 0; i < transactionIds.length; i += CHUNK) {
+    const chunk = transactionIds.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => "?").join(",");
+    const itemRows = await db.all(
+      `SELECT transaction_id, name, product_id, quantity, line_gross
+       FROM transaction_items
+       WHERE transaction_id IN (${placeholders})`,
+      chunk
+    );
+    for (const it of itemRows) {
+      const list = itemsByTx.get(it.transaction_id) || [];
+      list.push(it);
+      itemsByTx.set(it.transaction_id, list);
+    }
+  }
+  return itemsByTx;
+}
+
 async function aggregateDay(db, dateStr) {
   const rows = await fetchTransactionsForShopDate(db, dateStr);
 
   const paymentAgg = await aggregatePaymentLinesForDate(db, dateStr);
+  const itemsByTx = await loadItemsByTransaction(
+    db,
+    rows.map((r) => r.id)
+  );
 
   let total_sales = 0;
   let total_tax = 0;
@@ -64,10 +90,7 @@ async function aggregateDay(db, dateStr) {
     total_tax = round2(total_tax + Number(r.tax || 0));
     total_net = round2(total_net + Number(r.subtotal || r.total));
 
-    const txItems = await db.all(
-      "SELECT * FROM transaction_items WHERE transaction_id = ?",
-      [r.id]
-    );
+    const txItems = itemsByTx.get(r.id) || [];
     if (txItems.length > 0) {
       for (const it of txItems) {
         const name = it.name || `Product ${it.product_id}`;

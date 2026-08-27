@@ -7,10 +7,17 @@ export default function DuplicateBarcodeConflict({
   onReplace,
   onDelete,
   onEditBarcode,
+  onEditUnits,
 }) {
   if (!existingProduct) return null;
 
   const isActive = Number(existingProduct.is_active) !== 0;
+  const matchIsPrimary = existingProduct.matchIsPrimary !== false;
+  const productBarcode = existingProduct.productBarcode ?? existingProduct.barcode;
+  const productPrice = existingProduct.productPrice ?? existingProduct.price;
+  const unitPrice = existingProduct.unitPrice ?? existingProduct.price;
+  const matchedBarcode = existingProduct.matchedBarcode ?? productBarcode;
+  const matchedUnitName = existingProduct.matchedUnitName;
 
   return (
     <div
@@ -30,7 +37,9 @@ export default function DuplicateBarcodeConflict({
           color: "var(--office-warning-text, #b45309)",
         }}
       >
-        الباركود مستخدم لمنتج موجود
+        {matchIsPrimary
+          ? "الباركود مستخدم لمنتج موجود"
+          : "الباركود مستخدم لوحدة في منتج موجود"}
       </p>
       <dl
         style={{
@@ -46,12 +55,26 @@ export default function DuplicateBarcodeConflict({
           <dd style={{ margin: 0, fontWeight: 600 }}>{existingProduct.name}</dd>
         </div>
         <div>
-          <dt style={{ color: "var(--office-text-muted)", marginBottom: "0.15rem" }}>الباركود</dt>
-          <dd style={{ margin: 0 }}>{existingProduct.barcode}</dd>
+          <dt style={{ color: "var(--office-text-muted)", marginBottom: "0.15rem" }}>باركود المنتج</dt>
+          <dd style={{ margin: 0 }}>{productBarcode || "—"}</dd>
         </div>
+        {!matchIsPrimary ? (
+          <>
+            <div>
+              <dt style={{ color: "var(--office-text-muted)", marginBottom: "0.15rem" }}>الباركود المطابق</dt>
+              <dd style={{ margin: 0 }}>{matchedBarcode || "—"}</dd>
+            </div>
+            <div>
+              <dt style={{ color: "var(--office-text-muted)", marginBottom: "0.15rem" }}>الوحدة</dt>
+              <dd style={{ margin: 0 }}>{matchedUnitName || "—"}</dd>
+            </div>
+          </>
+        ) : null}
         <div>
-          <dt style={{ color: "var(--office-text-muted)", marginBottom: "0.15rem" }}>السعر</dt>
-          <dd style={{ margin: 0 }}>{ils(existingProduct.price)}</dd>
+          <dt style={{ color: "var(--office-text-muted)", marginBottom: "0.15rem" }}>
+            {matchIsPrimary ? "سعر المنتج" : "سعر الوحدة"}
+          </dt>
+          <dd style={{ margin: 0 }}>{ils(matchIsPrimary ? productPrice : unitPrice)}</dd>
         </div>
         <div>
           <dt style={{ color: "var(--office-text-muted)", marginBottom: "0.15rem" }}>المخزون</dt>
@@ -69,15 +92,23 @@ export default function DuplicateBarcodeConflict({
         </div>
       </dl>
       <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--office-text-muted)" }}>
-        اختر إجراءً: استبدال المنتج ببيانات النموذج، حذف المنتج القديم، أو تغيير باركود المنتج القديم.
+        {matchIsPrimary
+          ? "اختر إجراءً: استبدال المنتج ببيانات النموذج، حذف المنتج القديم، أو تغيير باركود المنتج القديم."
+          : "اختر إجراءً: استبدال المنتج ببيانات النموذج، حذف المنتج القديم، أو تعديل وحدات المنتج القديم لتحرير هذا الباركود."}
       </p>
       <div className="ui-table__actions" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
         <PrimaryButton type="button" onClick={onReplace} disabled={busy}>
           {busy ? "جاري المعالجة…" : "استبدال المنتج"}
         </PrimaryButton>
-        <SecondaryButton type="button" onClick={onEditBarcode} disabled={busy}>
-          تعديل باركود المنتج القديم
-        </SecondaryButton>
+        {matchIsPrimary ? (
+          <SecondaryButton type="button" onClick={onEditBarcode} disabled={busy}>
+            تعديل باركود المنتج القديم
+          </SecondaryButton>
+        ) : (
+          <SecondaryButton type="button" onClick={onEditUnits} disabled={busy}>
+            تعديل وحدات المنتج القديم
+          </SecondaryButton>
+        )}
         <DangerButton type="button" onClick={onDelete} disabled={busy}>
           حذف المنتج القديم
         </DangerButton>

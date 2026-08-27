@@ -8,31 +8,6 @@ import { shopYmdFromTimestamp, shopYmdToUtcBounds } from "./shopTime.js";
 export const TX_BUSINESS_DAY_JOIN = "LEFT JOIN cashier_shifts cs ON cs.id = t.shift_id";
 export const REFUND_BUSINESS_DAY_JOIN = "LEFT JOIN cashier_shifts cs ON cs.id = r.shift_id";
 
-/** @deprecated Use shopBusinessDayYmd + JS filter instead of SQL date() */
-export const TX_BUSINESS_DAY_EXPR = "COALESCE(date(cs.start_time), date(t.created_at))";
-/** @deprecated Use shopBusinessDayYmd + JS filter instead of SQL date() */
-export const REFUND_BUSINESS_DAY_EXPR = "COALESCE(date(cs.start_time), date(r.created_at))";
-
-/** @deprecated Prefer shopBusinessDayYmd with JS filtering */
-export function txBusinessDayEquals(paramPlaceholder = "?") {
-  return `${TX_BUSINESS_DAY_EXPR} = ${paramPlaceholder}`;
-}
-
-/** @deprecated Prefer shopBusinessDayYmd with JS filtering */
-export function txBusinessDayBetween(fromPlaceholder = "?", toPlaceholder = "?") {
-  return `${TX_BUSINESS_DAY_EXPR} >= ${fromPlaceholder} AND ${TX_BUSINESS_DAY_EXPR} <= ${toPlaceholder}`;
-}
-
-/** @deprecated Prefer shopBusinessDayYmd with JS filtering */
-export function refundBusinessDayEquals(paramPlaceholder = "?") {
-  return `${REFUND_BUSINESS_DAY_EXPR} = ${paramPlaceholder}`;
-}
-
-/** @deprecated Prefer shopBusinessDayYmd with JS filtering */
-export function refundBusinessDayBetween(fromPlaceholder = "?", toPlaceholder = "?") {
-  return `${REFUND_BUSINESS_DAY_EXPR} >= ${fromPlaceholder} AND ${REFUND_BUSINESS_DAY_EXPR} <= ${toPlaceholder}`;
-}
-
 /**
  * Shop calendar date for a transaction or refund row.
  * @param {{ start_time?: string|null, created_at?: string|null }} row
@@ -50,6 +25,12 @@ export function shopBusinessDayYmd(row) {
  */
 export function txMatchesShopDate(row, dateStr) {
   return shopBusinessDayYmd(row) === dateStr;
+}
+
+export function rowMatchesShopDateRange(row, fromYmd, toYmd) {
+  const ymd = shopBusinessDayYmd(row);
+  if (!ymd) return false;
+  return ymd >= fromYmd && ymd <= toYmd;
 }
 
 export function shopDateUtcPrefilter(dateStr) {
@@ -97,11 +78,14 @@ export async function fetchRefundsForShopDate(db, dateStr) {
     `SELECT r.id, r.total, r.payment_method, r.created_at, cs.start_time AS shift_start_time
      FROM refunds r
      ${REFUND_BUSINESS_DAY_JOIN}
-     WHERE (datetime(r.created_at) >= datetime(?)
-       AND datetime(r.created_at) <= datetime(?))
-        OR (cs.start_time IS NOT NULL
-            AND datetime(cs.start_time) >= datetime(?)
-            AND datetime(cs.start_time) <= datetime(?))`,
+     WHERE r.status = 'approved'
+       AND (
+         (datetime(r.created_at) >= datetime(?)
+          AND datetime(r.created_at) <= datetime(?))
+         OR (cs.start_time IS NOT NULL
+             AND datetime(cs.start_time) >= datetime(?)
+             AND datetime(cs.start_time) <= datetime(?))
+       )`,
     [startSql, endSql, startSql, endSql]
   );
   return rows.filter((r) =>

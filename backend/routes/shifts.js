@@ -6,39 +6,21 @@ import { getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { buildSaleSummary } from "../utils/saleSummary.js";
-import { sumShiftCashPayments, sumShiftCardPayments, loadSalePayments } from "../utils/salePayments.js";
+import {
+  sumShiftCardPayments,
+  loadSalePayments,
+  computeExpectedCash,
+  computeExpectedDrawer,
+  resolveCountedCash,
+} from "../utils/salePayments.js";
+import { round2 } from "../utils/money.js";
 import { buildReceiptPayload } from "../utils/receipt.js";
 import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
-
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
-}
+import { withTransaction } from "../utils/dbTx.js";
 
 function parseDate(s) {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return null;
   return s.trim();
-}
-
-async function computeExpectedCash(db, shiftId, openingCash) {
-  const sid = Number(shiftId);
-  const open = round2(Number(openingCash) || 0);
-  const cashSales = await sumShiftCashPayments(db, sid);
-  const cashRefundsRow = await db.get(
-    `SELECT COALESCE(SUM(total), 0) AS s FROM refunds WHERE shift_id = ? AND payment_method = 'cash' AND status = 'approved'`,
-    [sid]
-  );
-  const adjRow = await db.get(
-    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'adjustment'`,
-    [sid]
-  );
-  const advanceRow = await db.get(
-    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'advance'`,
-    [sid]
-  );
-  const cashRefunds = round2(Number(cashRefundsRow?.s) || 0);
-  const adjustments = round2(Number(adjRow?.s) || 0);
-  const advances = round2(Number(advanceRow?.s) || 0);
-  return round2(open + cashSales - cashRefunds + adjustments + advances);
 }
 
 async function computeShiftTotals(db, shiftId) {
@@ -63,7 +45,27 @@ async function canViewShiftDetail(db, user, shift) {
   return Number(shift.cashier_id) === Number(user.id);
 }
 
-async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_notes) {
+function parseCountedCashJson(raw) {
+  if (raw == null || raw === "") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function attachDrawer(db, row) {
+  const drawer = await computeExpectedDrawer(db, row.id, row.opening_cash);
+  if (row.status === "open" || row.status === "pending_count") {
+    row.expected_cash = drawer.expected_cash;
+  }
+  row.expected_by_currency = drawer.by_currency;
+  row.counted_cash = parseCountedCashJson(row.counted_cash_json);
+  return row;
+}
+
+async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_notes, counted_cash) {
   const shiftId = shift.id;
   const settings = await getAppSettings(db);
   const varianceThreshold = round2(Number(settings.shift_variance_threshold) || 50);
@@ -72,35 +74,37 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
   const { card_total, refund_total } = await computeShiftTotals(db, shiftId);
   const needsApproval = Math.abs(variance) > varianceThreshold;
   const endTime = shift.end_time || new Date().toISOString();
+  const countedJson = counted_cash ? JSON.stringify(counted_cash) : null;
 
-  await db.run("BEGIN IMMEDIATE");
-  await db.run(
-    `UPDATE cashier_shifts SET
-      end_time = ?, closing_cash = ?, actual_cash = ?, expected_cash = ?, variance = ?,
-      notes = COALESCE(?, notes), closing_notes = ?, card_total = ?, refund_total = ?,
-      variance_threshold = ?, requires_approval = ?, status = 'closed'
-     WHERE id = ? AND status IN ('open', 'pending_count')`,
-    [
-      endTime,
-      closing_cash,
-      closing_cash,
-      expected_cash,
-      variance,
-      notes,
-      closing_notes,
-      card_total,
-      refund_total,
-      varianceThreshold,
-      needsApproval ? 1 : 0,
-      shiftId,
-    ]
-  );
-  await db.run(
-    `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description)
-     VALUES (?, 'closing', ?, ?)`,
-    [shiftId, closing_cash, closing_notes ? `إغلاق الوردية — ${closing_notes}` : "إغلاق الوردية"]
-  );
-  await db.run("COMMIT");
+  await withTransaction(db, async () => {
+    await db.run(
+      `UPDATE cashier_shifts SET
+        end_time = ?, closing_cash = ?, actual_cash = ?, expected_cash = ?, variance = ?,
+        notes = COALESCE(?, notes), closing_notes = ?, card_total = ?, refund_total = ?,
+        variance_threshold = ?, requires_approval = ?, counted_cash_json = ?, status = 'closed'
+       WHERE id = ? AND status IN ('open', 'pending_count')`,
+      [
+        endTime,
+        closing_cash,
+        closing_cash,
+        expected_cash,
+        variance,
+        notes,
+        closing_notes,
+        card_total,
+        refund_total,
+        varianceThreshold,
+        needsApproval ? 1 : 0,
+        countedJson,
+        shiftId,
+      ]
+    );
+    await db.run(
+      `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description)
+       VALUES (?, 'closing', ?, ?)`,
+      [shiftId, closing_cash, closing_notes ? `إغلاق الوردية — ${closing_notes}` : "إغلاق الوردية"]
+    );
+  });
 
   const auditAction =
     shift.status === "pending_count" ? AUDIT_ACTIONS.SHIFT_RECONCILE : AUDIT_ACTIONS.SHIFT_CLOSE;
@@ -124,6 +128,7 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
     refund_total,
     variance_threshold: varianceThreshold,
     requires_approval: needsApproval,
+    counted_cash: counted_cash || null,
     status: "closed",
   };
 }
@@ -143,20 +148,22 @@ export function createShiftsRouter(db) {
       return res.status(409).json({ error: "لديك وردية مفتوحة بالفعل" });
     }
     try {
-      await db.run("BEGIN IMMEDIATE");
-      const ins = await db.run(
-        `INSERT INTO cashier_shifts (cashier_id, opening_cash, status) VALUES (?, ?, 'open')`,
-        [req.user.id, opening_cash]
-      );
-      const shiftId = ins.lastID;
-      await db.run(
-        `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description)
-         VALUES (?, 'opening', ?, ?)`,
-        [shiftId, opening_cash, "افتتاح الوردية"]
-      );
-      await db.run("COMMIT");
+      const { shiftId, row } = await withTransaction(db, async () => {
+        const ins = await db.run(
+          `INSERT INTO cashier_shifts (cashier_id, opening_cash, status, hourly_rate_snapshot)
+           VALUES (?, ?, 'open', (SELECT hourly_rate FROM users WHERE id = ?))`,
+          [req.user.id, opening_cash, req.user.id]
+        );
+        const shiftId = ins.lastID;
+        await db.run(
+          `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description)
+           VALUES (?, 'opening', ?, ?)`,
+          [shiftId, opening_cash, "افتتاح الوردية"]
+        );
+        const row = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
+        return { shiftId, row };
+      });
       await logAudit(db, req, AUDIT_ACTIONS.SHIFT_OPEN, "cashier_shifts", shiftId, null, { opening_cash });
-      const row = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
       res.status(201).json({
         shift_id: shiftId,
         status: row.status,
@@ -164,9 +171,6 @@ export function createShiftsRouter(db) {
         opening_cash,
       });
     } catch (e) {
-      try {
-        await db.run("ROLLBACK");
-      } catch (_) {}
       next(e);
     }
   });
@@ -220,6 +224,9 @@ export function createShiftsRouter(db) {
        WHERE s.status = 'pending_count'
        ORDER BY datetime(s.end_time) ASC, s.id ASC`
     );
+    for (const row of rows) {
+      await attachDrawer(db, row);
+    }
     res.json(rows);
   });
 
@@ -238,7 +245,8 @@ export function createShiftsRouter(db) {
 
     let sql = `
       SELECT s.id, s.cashier_id, u.username AS cashier_name, s.start_time, s.end_time,
-             s.opening_cash, s.closing_cash, s.expected_cash, s.variance, s.status
+             s.opening_cash, s.closing_cash, s.expected_cash, s.variance, s.status,
+             (SELECT COUNT(*) FROM transactions t WHERE t.shift_id = s.id) AS sale_count
       FROM cashier_shifts s
       JOIN users u ON u.id = s.cashier_id
       WHERE 1=1`;
@@ -261,6 +269,10 @@ export function createShiftsRouter(db) {
     }
     sql += " ORDER BY datetime(COALESCE(s.end_time, s.start_time)) DESC, s.id DESC";
     const rows = await db.all(sql, params);
+    for (const row of rows) {
+      row.sale_count = Number(row.sale_count) || 0;
+      await attachDrawer(db, row);
+    }
     res.json(rows);
   });
 
@@ -398,9 +410,10 @@ export function createShiftsRouter(db) {
     if (shift.status !== "pending_count") {
       return res.status(400).json({ error: "الوردية ليست بانتظار العد", code: "NOT_PENDING" });
     }
-    const closing_cash = round2(Number((req.body || {}).closing_cash ?? (req.body || {}).actual_cash));
-    if (Number.isNaN(closing_cash) || closing_cash < 0) {
-      return res.status(400).json({ error: "مبلغ النقد الفعلي غير صالح" });
+    const drawer = await computeExpectedDrawer(db, shiftId, shift.opening_cash);
+    const counted = await resolveCountedCash(db, req.body || {}, drawer);
+    if (counted.error) {
+      return res.status(400).json({ error: counted.error });
     }
     const closing_notes =
       (req.body || {}).closing_notes != null
@@ -410,7 +423,15 @@ export function createShiftsRouter(db) {
           : null;
 
     try {
-      const payload = await closeShiftWithCash(db, req, shift, closing_cash, null, closing_notes);
+      const payload = await closeShiftWithCash(
+        db,
+        req,
+        shift,
+        counted.closing_cash,
+        null,
+        closing_notes,
+        counted.counted_cash
+      );
       if (payload.requires_approval) {
         return res.status(202).json({
           ...payload,
@@ -444,9 +465,13 @@ export function createShiftsRouter(db) {
     const notes = (req.body || {}).notes != null ? String((req.body || {}).notes).trim() : null;
     const closing_notes =
       (req.body || {}).closing_notes != null ? String((req.body || {}).closing_notes).trim() : notes;
+    const countedInput = Array.isArray((req.body || {}).counted_currencies)
+      ? (req.body || {}).counted_currencies
+      : null;
     const closingRaw = (req.body || {}).closing_cash ?? (req.body || {}).actual_cash;
     const hasClosingCash =
-      closingRaw !== undefined && closingRaw !== null && String(closingRaw).trim() !== "";
+      (countedInput && countedInput.length > 0) ||
+      (closingRaw !== undefined && closingRaw !== null && String(closingRaw).trim() !== "");
 
     if (isOwner && !isAdminUser) {
       const expected_cash = await computeExpectedCash(db, shiftId, shift.opening_cash);
@@ -454,15 +479,15 @@ export function createShiftsRouter(db) {
       const endTime = new Date().toISOString();
 
       try {
-        await db.run("BEGIN IMMEDIATE");
-        await db.run(
-          `UPDATE cashier_shifts SET
-            end_time = ?, expected_cash = ?, notes = ?, closing_notes = ?,
-            card_total = ?, refund_total = ?, status = 'pending_count'
-           WHERE id = ? AND status = 'open'`,
-          [endTime, expected_cash, notes, closing_notes, card_total, refund_total, shiftId]
-        );
-        await db.run("COMMIT");
+        await withTransaction(db, async () => {
+          await db.run(
+            `UPDATE cashier_shifts SET
+              end_time = ?, expected_cash = ?, notes = ?, closing_notes = ?,
+              card_total = ?, refund_total = ?, status = 'pending_count'
+             WHERE id = ? AND status = 'open'`,
+            [endTime, expected_cash, notes, closing_notes, card_total, refund_total, shiftId]
+          );
+        });
         await logAudit(db, req, AUDIT_ACTIONS.SHIFT_CLOSE, "cashier_shifts", shiftId, { status: "open" }, {
           expected_cash,
           card_total,
@@ -470,9 +495,6 @@ export function createShiftsRouter(db) {
           pending_count: true,
         });
       } catch (e) {
-        try {
-          await db.run("ROLLBACK");
-        } catch (_) {}
         return next(e);
       }
 
@@ -490,13 +512,22 @@ export function createShiftsRouter(db) {
       return res.status(400).json({ error: "مبلغ إغلاق الوردية مطلوب" });
     }
 
-    const closing_cash = round2(Number(closingRaw));
-    if (Number.isNaN(closing_cash) || closing_cash < 0) {
-      return res.status(400).json({ error: "مبلغ إغلاق الوردية غير صالح" });
+    const drawer = await computeExpectedDrawer(db, shiftId, shift.opening_cash);
+    const counted = await resolveCountedCash(db, req.body || {}, drawer);
+    if (counted.error) {
+      return res.status(400).json({ error: counted.error });
     }
 
     try {
-      const payload = await closeShiftWithCash(db, req, shift, closing_cash, notes, closing_notes);
+      const payload = await closeShiftWithCash(
+        db,
+        req,
+        shift,
+        counted.closing_cash,
+        notes,
+        closing_notes,
+        counted.counted_cash
+      );
       if (payload.requires_approval) {
         return res.status(202).json({
           ...payload,
@@ -596,29 +627,24 @@ export function createShiftsRouter(db) {
       [shiftId]
     );
 
-    let expected_live = null;
-    if (shift.status === "open") {
-      expected_live = await computeExpectedCash(db, shiftId, shift.opening_cash);
-    }
+    await attachDrawer(db, shift);
 
     const summary =
       shift.status === "closed"
         ? {
             expected: round2(Number(shift.expected_cash)),
+            expected_by_currency: shift.expected_by_currency,
             actual: round2(Number(shift.closing_cash)),
+            counted_cash: shift.counted_cash,
             variance: round2(Number(shift.variance)),
           }
-        : shift.status === "pending_count"
-          ? {
-              expected: round2(Number(shift.expected_cash)),
-              actual: null,
-              variance: null,
-            }
-          : {
-              expected: expected_live,
-              actual: null,
-              variance: null,
-            };
+        : {
+            expected: round2(Number(shift.expected_cash)),
+            expected_by_currency: shift.expected_by_currency,
+            actual: null,
+            counted_cash: null,
+            variance: null,
+          };
 
     const suspended_summary = await getSuspendedSalesSummary(db, shiftId);
 

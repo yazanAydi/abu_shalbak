@@ -1,6 +1,6 @@
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
-import { formatDiscountPercent, formatTaxRatePercent } from "./saleInvoiceTotals";
+import { formatDiscountPercent } from "./saleInvoiceTotals";
 
 const STATUS_LABEL = { draft: "مسودة", posted: "مرحّلة" };
 
@@ -40,8 +40,6 @@ export function printSalesInvoiceDoc(doc, store = {}) {
   const docNo = doc.invoice_no ?? doc.id;
   const docDate = doc.invoice_date ? String(doc.invoice_date).slice(0, 10) : "—";
   const total = Number(doc.total) || 0;
-  const vat = doc.tax != null ? Number(doc.tax) : null;
-  const vatPercent = formatTaxRatePercent(store.default_tax_rate);
   const storeName = store.store_name_ar || store.store_name || STORE_NAME_AR;
 
   const listGrossTotal = items.reduce((s, it) => s + (Number(it.total_price) || 0), 0);
@@ -75,14 +73,13 @@ export function printSalesInvoiceDoc(doc, store = {}) {
     .join("");
 
   const totalsRows = [
-    `<tr><td>المجموع (يشمل ض.ق.م)</td><td class="num">${money(listGrossTotal)}</td></tr>`,
+    `<tr><td>المجموع</td><td class="num">${money(listGrossTotal)}</td></tr>`,
     ...(hasDiscount
       ? [
           `<tr><td>الخصم ${formatDiscountPercent(effectiveDiscountPct)}%</td><td class="num">${money(discountSaved)}</td></tr>`,
           `<tr><td>بعد الخصم</td><td class="num">${money(afterDiscount)}</td></tr>`,
         ]
       : []),
-    ...(vat != null ? [`<tr><td>ضريبة ${vatPercent}%</td><td class="num">${money(vat)}</td></tr>`] : []),
     `<tr class="grand"><td>الصافي</td><td class="num">${money(afterDiscount)}</td></tr>`,
   ].join("");
 

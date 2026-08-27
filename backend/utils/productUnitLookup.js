@@ -99,6 +99,8 @@ export async function buildBarcodeLookupResponse(db, rawCode) {
     return { inactive: true, product };
   }
 
+  const matchedUnitName = selectedUnit?.unit_name ?? null;
+
   const saleUnits = availableUnits.filter((u) => u.sale_enabled !== false);
   const posUnits = saleUnits.length ? saleUnits : availableUnits;
   let effectiveUnit = selectedUnit;
@@ -118,6 +120,7 @@ export async function buildBarcodeLookupResponse(db, rawCode) {
       category: product.category,
       tax_rate: product.tax_rate ?? null,
       barcode: product.barcode,
+      price: product.price,
       cost: product.cost,
       needs_review: Number(product.needs_review) === 1,
       is_weighed: Number(product.is_weighed) === 1,
@@ -127,6 +130,7 @@ export async function buildBarcodeLookupResponse(db, rawCode) {
     availableUnits: posUnits,
     scanned_barcode: scannedBarcode,
     matched_barcode: matchedBarcode,
+    matched_unit_name: matchedUnitName,
     product_unit_id: effectiveUnit.id,
     product_barcode_id: effectiveUnit.id,
     // Legacy flat fields for existing clients

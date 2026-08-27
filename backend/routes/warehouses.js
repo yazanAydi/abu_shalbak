@@ -3,6 +3,8 @@ import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { recordMovement } from "../utils/inventory.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { listLimitSql } from "../utils/listQuery.js";
+import { withTransaction } from "../utils/dbTx.js";
 
 const requireReports = requireRoles("admin", "accountant");
 const WH_TYPES = ["main", "store", "returns", "damaged"];
@@ -104,14 +106,14 @@ export function createWarehousesRouter(db) {
 
   // ════════════ Transfers ════════════
 
-  router.get("/transfers", requireAuth, requireReports, async (_req, res) => {
+  router.get("/transfers", requireAuth, requireReports, async (req, res) => {
     const rows = await db.all(
       `SELECT t.*, wf.name AS from_name, wt.name AS to_name,
               (SELECT COUNT(*) FROM warehouse_transfer_items i WHERE i.transfer_id = t.id) AS item_count
        FROM warehouse_transfers t
        JOIN warehouses wf ON wf.id = t.from_warehouse_id
        JOIN warehouses wt ON wt.id = t.to_warehouse_id
-       ORDER BY t.created_at DESC LIMIT 300`
+       ORDER BY t.created_at DESC${listLimitSql(req.query).sql}`
     );
     res.json(rows);
   });
@@ -147,25 +149,25 @@ export function createWarehousesRouter(db) {
       if (!pid || !Number.isFinite(q) || q <= 0) return res.status(400).json({ error: "كمية غير صالحة", code: "VALIDATION_ERROR" });
       norm.push({ product_id: pid, quantity: q });
     }
-    await db.run("BEGIN IMMEDIATE");
     try {
-      const noRow = await db.get("SELECT MAX(transfer_no) AS mx FROM warehouse_transfers");
-      const no = (Number(noRow?.mx) || 0) + 1;
-      const ins = await db.run(
-        `INSERT INTO warehouse_transfers (transfer_no, from_warehouse_id, to_warehouse_id, transfer_date, status, notes, created_by)
-         VALUES (?, ?, ?, ?, 'draft', ?, ?)`,
-        [no, from, to, transfer_date || shopTodayYmd(), notes || null, req.user.id]
-      );
-      for (const it of norm) {
-        await db.run(
-          "INSERT INTO warehouse_transfer_items (transfer_id, product_id, quantity) VALUES (?, ?, ?)",
-          [ins.lastID, it.product_id, it.quantity]
+      const row = await withTransaction(db, async () => {
+        const noRow = await db.get("SELECT MAX(transfer_no) AS mx FROM warehouse_transfers");
+        const no = (Number(noRow?.mx) || 0) + 1;
+        const ins = await db.run(
+          `INSERT INTO warehouse_transfers (transfer_no, from_warehouse_id, to_warehouse_id, transfer_date, status, notes, created_by)
+           VALUES (?, ?, ?, ?, 'draft', ?, ?)`,
+          [no, from, to, transfer_date || shopTodayYmd(), notes || null, req.user.id]
         );
-      }
-      await db.run("COMMIT");
-      res.status(201).json(await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [ins.lastID]));
+        for (const it of norm) {
+          await db.run(
+            "INSERT INTO warehouse_transfer_items (transfer_id, product_id, quantity) VALUES (?, ?, ?)",
+            [ins.lastID, it.product_id, it.quantity]
+          );
+        }
+        return db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [ins.lastID]);
+      });
+      res.status(201).json(row);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });
     }
   });
@@ -177,28 +179,28 @@ export function createWarehousesRouter(db) {
     const items = await db.all("SELECT * FROM warehouse_transfer_items WHERE transfer_id = ?", [t.id]);
     if (items.length === 0) return res.status(400).json({ error: "لا توجد أصناف", code: "EMPTY" });
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      for (const it of items) {
-        await upsertWarehouseStock(db, t.from_warehouse_id, it.product_id, -Number(it.quantity));
-        await upsertWarehouseStock(db, t.to_warehouse_id, it.product_id, Number(it.quantity));
-        // Per-warehouse movement (global products.stock unchanged: an internal transfer)
-        await recordMovement(db, {
-          productId: it.product_id, movementType: "transfer_out", quantity: -Number(it.quantity),
-          warehouseId: t.from_warehouse_id, refType: "warehouse_transfer", refId: t.id,
-          notes: `تحويل #${t.transfer_no ?? t.id}`, userId: req.user.id,
-        });
-        await recordMovement(db, {
-          productId: it.product_id, movementType: "transfer_in", quantity: Number(it.quantity),
-          warehouseId: t.to_warehouse_id, refType: "warehouse_transfer", refId: t.id,
-          notes: `تحويل #${t.transfer_no ?? t.id}`, userId: req.user.id,
-        });
-      }
-      await db.run("UPDATE warehouse_transfers SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [t.id]);
-      await db.run("COMMIT");
-      res.json(await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [t.id]));
+      const row = await withTransaction(db, async () => {
+        for (const it of items) {
+          await upsertWarehouseStock(db, t.from_warehouse_id, it.product_id, -Number(it.quantity));
+          await upsertWarehouseStock(db, t.to_warehouse_id, it.product_id, Number(it.quantity));
+          // Per-warehouse movement (global products.stock unchanged: an internal transfer)
+          await recordMovement(db, {
+            productId: it.product_id, movementType: "transfer_out", quantity: -Number(it.quantity),
+            warehouseId: t.from_warehouse_id, refType: "warehouse_transfer", refId: t.id,
+            notes: `تحويل #${t.transfer_no ?? t.id}`, userId: req.user.id,
+          });
+          await recordMovement(db, {
+            productId: it.product_id, movementType: "transfer_in", quantity: Number(it.quantity),
+            warehouseId: t.to_warehouse_id, refType: "warehouse_transfer", refId: t.id,
+            notes: `تحويل #${t.transfer_no ?? t.id}`, userId: req.user.id,
+          });
+        }
+        await db.run("UPDATE warehouse_transfers SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [t.id]);
+        return db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [t.id]);
+      });
+      res.json(row);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });
     }
   });
@@ -220,23 +222,23 @@ export function createWarehousesRouter(db) {
       if (!pid || !Number.isFinite(q) || q <= 0) return res.status(400).json({ error: "كمية غير صالحة", code: "VALIDATION_ERROR" });
       norm.push({ product_id: pid, quantity: q });
     }
-    await db.run("BEGIN IMMEDIATE");
     try {
-      await db.run(
-        `UPDATE warehouse_transfers SET from_warehouse_id = ?, to_warehouse_id = ?, transfer_date = ?, notes = ? WHERE id = ?`,
-        [from, to, transfer_date || t.transfer_date, notes || null, t.id]
-      );
-      await db.run("DELETE FROM warehouse_transfer_items WHERE transfer_id = ?", [t.id]);
-      for (const it of norm) {
+      const row = await withTransaction(db, async () => {
         await db.run(
-          "INSERT INTO warehouse_transfer_items (transfer_id, product_id, quantity) VALUES (?, ?, ?)",
-          [t.id, it.product_id, it.quantity]
+          `UPDATE warehouse_transfers SET from_warehouse_id = ?, to_warehouse_id = ?, transfer_date = ?, notes = ? WHERE id = ?`,
+          [from, to, transfer_date || t.transfer_date, notes || null, t.id]
         );
-      }
-      await db.run("COMMIT");
-      res.json(await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [t.id]));
+        await db.run("DELETE FROM warehouse_transfer_items WHERE transfer_id = ?", [t.id]);
+        for (const it of norm) {
+          await db.run(
+            "INSERT INTO warehouse_transfer_items (transfer_id, product_id, quantity) VALUES (?, ?, ?)",
+            [t.id, it.product_id, it.quantity]
+          );
+        }
+        return db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [t.id]);
+      });
+      res.json(row);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });
     }
   });

@@ -4,6 +4,7 @@ import { recordMovement, applyStockDelta } from "../utils/inventory.js";
 import { round2 } from "../utils/tax.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { withTransaction } from "../utils/dbTx.js";
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
 // Maps adjustment type -> ledger movement_type and sign of stock change.
 const ADJ_MOVEMENT = {
@@ -117,28 +118,27 @@ export function createInventoryRouter(db) {
       return res.status(400).json({ error: "لا توجد أسطر جرد", code: "EMPTY_SESSION" });
     }
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      for (const L of lines) {
-        const variance = Number(L.variance) || 0;
-        if (variance !== 0) {
-          await applyStockDelta(db, L.product_id, variance, {
-            movementType: "count",
-            referenceType: "stock_count_session",
-            referenceId: session.id,
-            userId: req.user.id,
-            notes: `جرد #${session.id}`,
-          });
+      await withTransaction(db, async () => {
+        for (const L of lines) {
+          const variance = Number(L.variance) || 0;
+          if (variance !== 0) {
+            await applyStockDelta(db, L.product_id, variance, {
+              movementType: "count",
+              referenceType: "stock_count_session",
+              referenceId: session.id,
+              userId: req.user.id,
+              notes: `جرد #${session.id}`,
+            });
+          }
         }
-      }
-      await db.run(
-        "UPDATE stock_count_sessions SET status = 'posted', posted_at = datetime('now') WHERE id = ?",
-        [session.id]
-      );
-      await db.run("COMMIT");
+        await db.run(
+          "UPDATE stock_count_sessions SET status = 'posted', posted_at = datetime('now') WHERE id = ?",
+          [session.id]
+        );
+      });
       await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_COUNT, "stock_count_sessions", session.id, { status: "open" }, { status: "posted", lines: lines.length });
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       return next(e);
     }
 
@@ -214,44 +214,43 @@ export function createInventoryRouter(db) {
       norm.push({ product_id: pid, quantity: q, unit_cost: it.unit_cost != null ? round2(Number(it.unit_cost)) : null, notes: it.notes || null });
     }
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      const noRow = await db.get("SELECT MAX(adjustment_no) AS mx FROM stock_adjustments");
-      const no = (Number(noRow?.mx) || 0) + 1;
-      const ins = await db.run(
-        `INSERT INTO stock_adjustments (adjustment_no, adjustment_date, adjustment_type, status, notes, created_by)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [no, adjustment_date || shopTodayYmd(), adjustment_type, post ? "posted" : "draft", notes || null, req.user.id]
-      );
-      const adjId = ins.lastID;
-      const map = ADJ_MOVEMENT[adjustment_type];
-      for (const it of norm) {
-        await db.run(
-          `INSERT INTO stock_adjustment_items (adjustment_id, product_id, quantity, unit_cost, notes)
-           VALUES (?, ?, ?, ?, ?)`,
-          [adjId, it.product_id, it.quantity, it.unit_cost, it.notes]
+      const row = await withTransaction(db, async () => {
+        const noRow = await db.get("SELECT MAX(adjustment_no) AS mx FROM stock_adjustments");
+        const no = (Number(noRow?.mx) || 0) + 1;
+        const ins = await db.run(
+          `INSERT INTO stock_adjustments (adjustment_no, adjustment_date, adjustment_type, status, notes, created_by)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [no, adjustment_date || shopTodayYmd(), adjustment_type, post ? "posted" : "draft", notes || null, req.user.id]
         );
-        if (post) {
-          const delta = adjustment_type === "correction" ? it.quantity : map.sign * Math.abs(it.quantity);
-          await recordMovement(db, {
-            productId: it.product_id,
-            movementType: map.type,
-            quantity: delta,
-            unitCost: it.unit_cost,
-            refType: "stock_adjustment",
-            refId: adjId,
-            notes: `تسوية #${no} (${adjustment_type})`,
-            userId: req.user.id,
-            applyStock: true,
-          });
+        const adjId = ins.lastID;
+        const map = ADJ_MOVEMENT[adjustment_type];
+        for (const it of norm) {
+          await db.run(
+            `INSERT INTO stock_adjustment_items (adjustment_id, product_id, quantity, unit_cost, notes)
+             VALUES (?, ?, ?, ?, ?)`,
+            [adjId, it.product_id, it.quantity, it.unit_cost, it.notes]
+          );
+          if (post) {
+            const delta = adjustment_type === "correction" ? it.quantity : map.sign * Math.abs(it.quantity);
+            await recordMovement(db, {
+              productId: it.product_id,
+              movementType: map.type,
+              quantity: delta,
+              unitCost: it.unit_cost,
+              refType: "stock_adjustment",
+              refId: adjId,
+              notes: `تسوية #${no} (${adjustment_type})`,
+              userId: req.user.id,
+              applyStock: true,
+            });
+          }
         }
-      }
-      if (post) await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_ADJUST, "stock_adjustments", adjId, null, { adjustment_no: no, type: adjustment_type });
-      await db.run("COMMIT");
-      const row = await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [adjId]);
+        if (post) await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_ADJUST, "stock_adjustments", adjId, null, { adjustment_no: no, type: adjustment_type });
+        return db.get("SELECT * FROM stock_adjustments WHERE id = ?", [adjId]);
+      });
       res.status(201).json(row);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       next(e);
     }
   });
@@ -262,22 +261,22 @@ export function createInventoryRouter(db) {
     if (adj.status === "posted") return res.status(400).json({ error: "مرحّلة بالفعل", code: "ALREADY_POSTED" });
     const items = await db.all("SELECT * FROM stock_adjustment_items WHERE adjustment_id = ?", [adj.id]);
     const map = ADJ_MOVEMENT[adj.adjustment_type];
-    await db.run("BEGIN IMMEDIATE");
     try {
-      for (const it of items) {
-        const delta = adj.adjustment_type === "correction" ? it.quantity : map.sign * Math.abs(it.quantity);
-        await recordMovement(db, {
-          productId: it.product_id, movementType: map.type, quantity: delta, unitCost: it.unit_cost,
-          refType: "stock_adjustment", refId: adj.id, notes: `تسوية #${adj.adjustment_no ?? adj.id}`, userId: req.user.id,
-          applyStock: true,
-        });
-      }
-      await db.run("UPDATE stock_adjustments SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [adj.id]);
-      await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_ADJUST, "stock_adjustments", adj.id, { status: "draft" }, { status: "posted" });
-      await db.run("COMMIT");
-      res.json(await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [adj.id]));
+      const row = await withTransaction(db, async () => {
+        for (const it of items) {
+          const delta = adj.adjustment_type === "correction" ? it.quantity : map.sign * Math.abs(it.quantity);
+          await recordMovement(db, {
+            productId: it.product_id, movementType: map.type, quantity: delta, unitCost: it.unit_cost,
+            refType: "stock_adjustment", refId: adj.id, notes: `تسوية #${adj.adjustment_no ?? adj.id}`, userId: req.user.id,
+            applyStock: true,
+          });
+        }
+        await db.run("UPDATE stock_adjustments SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [adj.id]);
+        await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_ADJUST, "stock_adjustments", adj.id, { status: "draft" }, { status: "posted" });
+        return db.get("SELECT * FROM stock_adjustments WHERE id = ?", [adj.id]);
+      });
+      res.json(row);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       next(e);
     }
   });
@@ -303,24 +302,24 @@ export function createInventoryRouter(db) {
       norm.push({ product_id: pid, quantity: q, unit_cost: it.unit_cost != null ? round2(Number(it.unit_cost)) : null, notes: it.notes || null });
     }
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      await db.run(
-        `UPDATE stock_adjustments SET adjustment_type = ?, adjustment_date = ?, notes = ? WHERE id = ?`,
-        [adjustment_type, adjustment_date || adj.adjustment_date, notes || null, adj.id]
-      );
-      await db.run("DELETE FROM stock_adjustment_items WHERE adjustment_id = ?", [adj.id]);
-      for (const it of norm) {
+      const row = await withTransaction(db, async () => {
         await db.run(
-          `INSERT INTO stock_adjustment_items (adjustment_id, product_id, quantity, unit_cost, notes)
-           VALUES (?, ?, ?, ?, ?)`,
-          [adj.id, it.product_id, it.quantity, it.unit_cost, it.notes]
+          `UPDATE stock_adjustments SET adjustment_type = ?, adjustment_date = ?, notes = ? WHERE id = ?`,
+          [adjustment_type, adjustment_date || adj.adjustment_date, notes || null, adj.id]
         );
-      }
-      await db.run("COMMIT");
-      res.json(await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [adj.id]));
+        await db.run("DELETE FROM stock_adjustment_items WHERE adjustment_id = ?", [adj.id]);
+        for (const it of norm) {
+          await db.run(
+            `INSERT INTO stock_adjustment_items (adjustment_id, product_id, quantity, unit_cost, notes)
+             VALUES (?, ?, ?, ?, ?)`,
+            [adj.id, it.product_id, it.quantity, it.unit_cost, it.notes]
+          );
+        }
+        return db.get("SELECT * FROM stock_adjustments WHERE id = ?", [adj.id]);
+      });
+      res.json(row);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       next(e);
     }
   });

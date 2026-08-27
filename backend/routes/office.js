@@ -1,10 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireOfficeRole } from "../middleware/auth.js";
 import { getAppSettings } from "../utils/settings.js";
-import {
-  fetchNearExpiryItems,
-  resolveExpiryAlertDays,
-} from "../services/expiryAlertService.js";
+import { resolveExpiryAlertDays } from "../services/expiryAlertService.js";
 import {
   hasAccountantPermission,
   NAV_PATH_PERMISSION_KEYS,
@@ -36,34 +33,44 @@ async function countNegativeStockRetail(db) {
   return Number(row?.total) || 0;
 }
 
-async function countNearExpiry(db) {
+async function loadExpiryCounts(db) {
   const days = await resolveExpiryAlertDays(db);
-  const { products, batches } = await fetchNearExpiryItems(db, days);
-  return products.length + batches.length;
-}
-
-async function countExpiryPageAlerts(db) {
-  const days = await resolveExpiryAlertDays(db);
-  const { products, batches } = await fetchNearExpiryItems(db, days);
-  const nearExpiry = products.length + batches.length;
-
   const t = Math.max(0, Number(LOW_STOCK_THRESHOLD) || LOW_STOCK_THRESHOLD);
-  const row = await db.get(
-    `SELECT COUNT(*) AS total FROM products
-     WHERE (
-       (min_stock IS NOT NULL AND stock <= min_stock)
-       OR (min_stock IS NULL AND stock <= ?)
-     )
-     AND COALESCE(inventory_scope, 'retail') = 'retail'
-     AND NOT (
-       expiry_date IS NOT NULL AND expiry_date != ''
-       AND stock > 0
-       AND julianday(expiry_date) <= julianday('now', '+' || ? || ' days')
-     )`,
-    [t, days]
-  );
-  const lowStockOnly = Number(row?.total) || 0;
-  return nearExpiry + lowStockOnly;
+  const [productRow, batchRow, lowStockOnlyRow] = await Promise.all([
+    db.get(
+      `SELECT COUNT(*) AS total FROM products
+       WHERE expiry_date IS NOT NULL AND expiry_date != ''
+         AND stock > 0
+         AND julianday(expiry_date) <= julianday('now', '+' || ? || ' days')`,
+      [days]
+    ),
+    db.get(
+      `SELECT COUNT(*) AS total FROM product_batches
+       WHERE expiry_date IS NOT NULL AND expiry_date != ''
+         AND quantity > 0
+         AND julianday(expiry_date) <= julianday('now', '+' || ? || ' days')`,
+      [days]
+    ),
+    db.get(
+      `SELECT COUNT(*) AS total FROM products
+       WHERE (
+         (min_stock IS NOT NULL AND stock <= min_stock)
+         OR (min_stock IS NULL AND stock <= ?)
+       )
+       AND COALESCE(inventory_scope, 'retail') = 'retail'
+       AND NOT (
+         expiry_date IS NOT NULL AND expiry_date != ''
+         AND stock > 0
+         AND julianday(expiry_date) <= julianday('now', '+' || ? || ' days')
+       )`,
+      [t, days]
+    ),
+  ]);
+  const nearExpiry = (Number(productRow?.total) || 0) + (Number(batchRow?.total) || 0);
+  return {
+    nearExpiry,
+    expiryPageAlerts: nearExpiry + (Number(lowStockOnlyRow?.total) || 0),
+  };
 }
 
 async function countPendingRefunds(db) {
@@ -116,8 +123,7 @@ export function createOfficeRouter(db) {
     const [
       retailLowStock,
       bakeryLowStock,
-      nearExpiry,
-      expiryPageAlerts,
+      expiryCounts,
       negativeStock,
       pendingRefunds,
       pendingOnAccount,
@@ -126,14 +132,15 @@ export function createOfficeRouter(db) {
     ] = await Promise.all([
       countLowStockByScope(db, "retail"),
       countLowStockByScope(db, "bakery"),
-      countNearExpiry(db),
-      countExpiryPageAlerts(db),
+      loadExpiryCounts(db),
       countNegativeStockRetail(db),
       countPendingRefunds(db),
       countPendingOnAccountRequests(db),
       countPendingAdvanceRequests(db),
       countPendingShiftCount(db),
     ]);
+    const nearExpiry = expiryCounts.nearExpiry;
+    const expiryPageAlerts = expiryCounts.expiryPageAlerts;
 
     const rawByPath = {
       "/expiry": expiryPageAlerts,

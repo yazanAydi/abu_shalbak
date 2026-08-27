@@ -13,6 +13,7 @@ import {
   CardBody,
 } from "../components/ui";
 import { ils, num } from "../utils/format";
+import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
 import ChangePriceModal from "./productDashboard/ChangePriceModal";
 import EditProductModal from "./productDashboard/EditProductModal";
 import OverviewTab from "./productDashboard/OverviewTab";
@@ -175,10 +176,10 @@ export default function ProductDashboard() {
             </div>
             <div className="pd-chips">
               <span className="pd-chip">
-                باركود: {product?.barcode}
+                باركود: {displayProductBarcode(product)}
                 {product?.barcode_count > 1 ? ` (+${product.barcode_count - 1})` : ""}
               </span>
-              <span className="pd-chip">الرقم: {product?.sku || "—"}</span>
+              <span className="pd-chip">الرقم: {displayProductSku(product?.sku)}</span>
               {product?.category ? <span className="pd-chip">التصنيف: {product.category}</span> : null}
               {product?.unit ? <span className="pd-chip">الوحدة: {product.unit}</span> : null}
             </div>

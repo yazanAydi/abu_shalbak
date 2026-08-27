@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { round2 } from "./tax.js";
 import { HESABATI_HISTORY_SOURCE, verifyStatementRunningBalances } from "./statementHistoryImport.js";
+import { withTransaction } from "./dbTx.js";
 
 /**
  * @param {object} db
@@ -119,8 +120,7 @@ export async function applyStatementHistoryImport(db, partyType, partyId, rows, 
   const sourceFileName = options.sourceFileName || null;
   const overwriteExisting = Boolean(options.overwriteExisting);
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  await withTransaction(db, async () => {
     if (overwriteExisting) {
       await db.run(
         `DELETE FROM account_statement_entries
@@ -164,11 +164,7 @@ export async function applyStatementHistoryImport(db, partyType, partyId, rows, 
       await db.run(`UPDATE customers SET balance = ? WHERE id = ?`, [finalBalance, partyId]);
     }
 
-    await db.run("COMMIT");
-  } catch (e) {
-    await db.run("ROLLBACK");
-    throw e;
-  }
+  });
 
   return {
     importBatchId,

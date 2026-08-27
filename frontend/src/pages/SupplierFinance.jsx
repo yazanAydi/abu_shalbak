@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSubmitGuard } from "../hooks/useSubmitGuard";
 import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
@@ -29,6 +30,7 @@ function firstOfMonth() {
 }
 
 export default function SupplierFinance() {
+  const guardSubmit = useSubmitGuard();
   const u = getUser();
   const [err, setErr] = useState("");
   const [from, setFrom] = useState(firstOfMonth);
@@ -249,6 +251,7 @@ export default function SupplierFinance() {
       return;
     }
     setErr("");
+    await guardSubmit(async () => {
     try {
       await api.post(
         "/api/finance/payments",
@@ -276,6 +279,7 @@ export default function SupplierFinance() {
     } catch (e) {
       setErr(e.response?.data?.error || e.message);
     }
+    });
   }
 
   async function delPayment(id) {
@@ -297,6 +301,7 @@ export default function SupplierFinance() {
       return;
     }
     setErr("");
+    await guardSubmit(async () => {
     try {
       await api.post(
         "/api/finance/operating-expenses",
@@ -314,6 +319,7 @@ export default function SupplierFinance() {
     } catch (e) {
       setErr(e.response?.data?.error || e.message);
     }
+    });
   }
 
   async function delOpex(id) {
@@ -334,6 +340,7 @@ export default function SupplierFinance() {
       return;
     }
     setErr("");
+    await guardSubmit(async () => {
     try {
       const { data } = await api.post(
         "/api/finance/cash/reconciliation",
@@ -348,11 +355,13 @@ export default function SupplierFinance() {
     } catch (e) {
       setErr(e.response?.data?.error || e.message);
     }
+    });
   }
 
   async function addInvoice() {
     if (!invForm.supplier_id || !invForm.amount_total) return;
     setErr("");
+    await guardSubmit(async () => {
     try {
       await api.post(
         "/api/finance/invoices",
@@ -371,6 +380,7 @@ export default function SupplierFinance() {
     } catch (e) {
       setErr(e.response?.data?.error || e.message);
     }
+    });
   }
 
   const payMethodAr = useMemo(

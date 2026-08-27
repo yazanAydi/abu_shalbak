@@ -6,9 +6,12 @@ import {
   authHeader,
 } from "./helpers.js";
 import {
+  formatProductSku,
   getNextSuggestedBarcode,
+  isSkuShapedBarcode,
   padSuggestedBarcode,
   parseShortNumericBarcode,
+  pickDisplayBarcode,
 } from "../utils/suggestedBarcode.js";
 
 describe("suggestedBarcode", () => {
@@ -27,6 +30,22 @@ describe("suggestedBarcode", () => {
     expect(padSuggestedBarcode(1)).toBe("00000000001");
     expect(padSuggestedBarcode(50)).toBe("00000000050");
     expect(padSuggestedBarcode(999)).toBe("00000000999");
+  });
+
+  test("pickDisplayBarcode hides الرقم when it was stored as barcode", () => {
+    expect(isSkuShapedBarcode("00000000001", "00000000001")).toBe(true);
+    expect(isSkuShapedBarcode("00000000001", "1")).toBe(true);
+    expect(isSkuShapedBarcode("7290013586773", "00000000001")).toBe(false);
+    expect(pickDisplayBarcode("00000000001", "00000000001", [])).toBe("");
+    expect(pickDisplayBarcode("00000000001", "00000000001", ["1234567890"])).toBe("1234567890");
+    expect(pickDisplayBarcode("7290013586773", "00000000001", [])).toBe("7290013586773");
+  });
+
+  test("formatProductSku keeps leading zeros for numeric رقم", () => {
+    expect(formatProductSku("2")).toBe("00000000002");
+    expect(formatProductSku("00000000002")).toBe("00000000002");
+    expect(formatProductSku("ABC-9")).toBe("ABC-9");
+    expect(formatProductSku("")).toBeNull();
   });
 
   test("parseShortNumericBarcode accepts 1–11 digit codes only", () => {
@@ -162,10 +181,31 @@ describe("suggestedBarcode", () => {
       .set(authHeader(token));
 
     expect(res.status).toBe(200);
-    expect(res.body.barcode).toBe("00000000001");
+    const body = res.body.data ?? res.body;
+    expect(body.sku).toBe("00000000001");
+    expect(body.barcode).toBe("00000000001");
   });
 
-  test("POST /api/products assigns suggested barcode when omitted", async () => {
+  test("POST /api/products rejects missing barcode", async () => {
+    const loginRes = await login(ctx.app, "testadmin", "adminpass123");
+    const token = loginRes.body.token;
+
+    const res = await request(ctx.app)
+      .post("/api/products")
+      .set(authHeader(token))
+      .send({
+        name: "Missing Barcode Product",
+        price: 12,
+        stock: 5,
+        sku: "00000000002",
+      });
+
+    expect(res.status).toBe(400);
+    const body = res.body.data ?? res.body;
+    expect(body.error).toMatch(/باركود/);
+  });
+
+  test("POST /api/products keeps scanned barcode and pads الرقم", async () => {
     await ctx.db.run("DELETE FROM product_unit_barcodes");
     await ctx.db.run("DELETE FROM product_units");
     await ctx.db.run("DELETE FROM product_barcodes");
@@ -178,12 +218,42 @@ describe("suggestedBarcode", () => {
       .post("/api/products")
       .set(authHeader(token))
       .send({
-        name: "Auto Barcode Product",
+        barcode: "7290013586773",
+        name: "Number And Barcode Product",
+        price: 12,
+        stock: 5,
+        sku: "00000000002",
+      });
+
+    expect(res.status).toBe(201);
+    const row = res.body.data ?? res.body;
+    expect(row.barcode).toBe("7290013586773");
+    expect(row.sku).toBe("00000000002");
+  });
+
+  test("POST /api/products assigns padded الرقم when sku omitted", async () => {
+    await ctx.db.run("DELETE FROM product_unit_barcodes");
+    await ctx.db.run("DELETE FROM product_units");
+    await ctx.db.run("DELETE FROM product_barcodes");
+    await ctx.db.run("DELETE FROM products");
+    await ctx.db.run("DELETE FROM entity_code_sequences WHERE entity_type = 'product'");
+
+    const loginRes = await login(ctx.app, "testadmin", "adminpass123");
+    const token = loginRes.body.token;
+
+    const res = await request(ctx.app)
+      .post("/api/products")
+      .set(authHeader(token))
+      .send({
+        barcode: "7290013586773",
+        name: "Auto Number Product",
         price: 12,
         stock: 5,
       });
 
     expect(res.status).toBe(201);
-    expect(res.body.barcode).toBe("00000000001");
+    const row = res.body.data ?? res.body;
+    expect(row.barcode).toBe("7290013586773");
+    expect(row.sku).toBe("00000000001");
   });
 });

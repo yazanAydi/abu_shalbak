@@ -49,7 +49,7 @@ export function buildCollectionSummaryItems(report) {
     ? report.collections_by_currency
     : [];
   if (collections.length === 0) return [];
-  const items = collections.map((c) => ({
+  return collections.map((c) => ({
     label: c.name || c.code,
     value: `${c.symbol || "₪"}${Number(c.original_total || 0).toFixed(2)}${
       String(c.code).toUpperCase() !== "NIS"
@@ -57,13 +57,6 @@ export function buildCollectionSummaryItems(report) {
         : ""
     }`,
   }));
-  if (report?.collections_grand_total_nis != null) {
-    items.push({
-      label: "القيمة المحاسبية (₪)",
-      value: ils(report.collections_grand_total_nis),
-    });
-  }
-  return items;
 }
 
 /**

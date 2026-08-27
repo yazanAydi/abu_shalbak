@@ -10,6 +10,8 @@ import {
   useToast,
 } from "../../components/ui";
 import ProductUnitsSection from "./ProductUnitsSection";
+import CategorySelect from "../../components/CategorySelect";
+import UnitNameSelect from "../../components/UnitNameSelect";
 import "./productBarcodes.css";
 
 const emptyForm = {
@@ -161,7 +163,7 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
           />
         </FormField>
         <FormField label="التصنيف">
-          <Input
+          <CategorySelect
             value={form.category}
             onChange={(e) => setForm({ ...form, category: e.target.value })}
           />
@@ -173,19 +175,10 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
             onChange={(e) => setForm({ ...form, stock: e.target.value })}
           />
         </FormField>
-        <FormField label="نسبة الضريبة (0–1)">
-          <Input
-            type="number"
-            step="0.01"
-            min="0"
-            max="1"
-            value={form.tax_rate}
-            onChange={(e) => setForm({ ...form, tax_rate: e.target.value })}
-          />
-        </FormField>
         <FormField label="الوحدة">
-          <Input
-            value={form.unit}
+          <UnitNameSelect
+            value={form.is_weighed ? "كغم" : form.unit}
+            disabled={form.is_weighed}
             onChange={(e) => setForm({ ...form, unit: e.target.value })}
           />
         </FormField>

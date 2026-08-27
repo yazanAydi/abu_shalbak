@@ -57,6 +57,7 @@ export async function fetchSupplierLedgerEvents(db, supplierId, from, to) {
   const pret = dateClause("return_date");
   const vpay = dateClause("v.voucher_date");
   const lpay = dateClause("paid_on");
+  const adj = dateClause("entry_date");
 
   return db.all(
     `SELECT 'purchase' AS ev_type, invoice_date AS ev_date, total AS credit, 0 AS debit, id AS ref_id, NULL AS notes, id AS sort_id
@@ -71,8 +72,11 @@ export async function fetchSupplierLedgerEvents(db, supplierId, from, to) {
      UNION ALL
      SELECT 'payment' AS ev_type, paid_on AS ev_date, 0 AS credit, amount AS debit, id AS ref_id, NULL AS notes, id AS sort_id
        FROM supplier_payments WHERE supplier_id = ? ${lpay.c}
+     UNION ALL
+     SELECT 'adjustment' AS ev_type, entry_date AS ev_date, credit, debit, id AS ref_id, notes, id AS sort_id
+       FROM supplier_adjustments WHERE supplier_id = ? ${adj.c}
      ORDER BY ev_date ASC, sort_id ASC`,
-    [supplierId, ...pinv.p, supplierId, ...pret.p, supplierId, ...vpay.p, supplierId, ...lpay.p]
+    [supplierId, ...pinv.p, supplierId, ...pret.p, supplierId, ...vpay.p, supplierId, ...lpay.p, supplierId, ...adj.p]
   );
 }
 

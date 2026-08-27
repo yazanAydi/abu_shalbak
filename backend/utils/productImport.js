@@ -360,7 +360,7 @@ export function parseArabicRetailMatrix(rows, headerRowIndex = 0, sheet = null) 
     }
 
     const stockRaw = stockCol != null ? parseMoneyCell(row[stockCol]) : NaN;
-    const stock = Number.isNaN(stockRaw) ? 0 : Math.max(0, Math.floor(stockRaw));
+    const stock = Number.isNaN(stockRaw) ? 0 : Math.max(0, stockRaw);
     const costRaw = costCol != null ? parseMoneyCell(row[costCol]) : NaN;
     const cost = Number.isNaN(costRaw) ? 0 : costRaw;
     const category =
@@ -648,13 +648,25 @@ export function csvBufferToRecords(buffer) {
   return records.map((rec) => enrichCsvRecord(rec, headers));
 }
 
-function parseMoneyCell(val) {
+export function parseMoneyCell(val) {
   if (val === undefined || val === null || val === "") return NaN;
   if (typeof val === "number" && Number.isFinite(val)) return val;
-  const s = String(val).trim().replace(/,/g, ".");
-  const m = s.match(/-?\d+(?:[.,]\d+)?/);
-  if (!m) return NaN;
-  return Number(m[0].replace(",", "."));
+  let s = String(val).trim().replace(/[^\d,.\-]/g, "");
+  if (!s || s === "-" || s === "." || s === ",") return NaN;
+  const lastComma = s.lastIndexOf(",");
+  const lastDot = s.lastIndexOf(".");
+  if (lastComma >= 0 && lastDot >= 0) {
+    if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
+  } else if (lastComma >= 0) {
+    const frac = s.length - lastComma - 1;
+    if (frac === 3) s = s.replace(/,/g, "");
+    else s = s.replace(",", ".");
+  } else if ((s.match(/\./g) || []).length > 1) {
+    s = s.replace(/\./g, "");
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
 }
 
 /**

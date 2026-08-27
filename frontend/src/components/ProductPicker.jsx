@@ -1,25 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import api from "../apiClient";
-import { getAuthHeaders } from "../utils/auth";
 import { lookupProductByBarcode } from "../utils/barcode";
 import { searchProductsApi } from "../utils/productSearch";
 import CameraBarcodeButton from "./barcode/CameraBarcodeButton";
 import { Icon } from "./ui";
 import "./barcode/barcode-scanner.css";
-
-const cacheByScope = new Map();
-
-async function loadProducts(scope = "retail") {
-  const cacheKey = scope || "all";
-  const now = Date.now();
-  const cached = cacheByScope.get(cacheKey);
-  if (cached && now - cached.time < 60000) return cached.data;
-  const params = scope ? { scope } : {};
-  const { data } = await api.get("/api/products", { params, headers: getAuthHeaders() });
-  const rows = Array.isArray(data?.data ?? data) ? (data?.data ?? data) : [];
-  cacheByScope.set(cacheKey, { data: rows, time: now });
-  return rows;
-}
 
 /** Autocomplete product picker. onPick(product) called on selection. */
 export default function ProductPicker({
@@ -156,12 +140,6 @@ export default function ProductPicker({
   );
 }
 
-export function invalidateProductCache(scope) {
-  if (scope) {
-    cacheByScope.delete(scope);
-    return;
-  }
-  cacheByScope.clear();
+export function invalidateProductCache() {
+  /* search-only picker — no catalog cache */
 }
-
-export { loadProducts };

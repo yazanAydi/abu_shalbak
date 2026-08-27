@@ -11,6 +11,7 @@ import {
   shiftPay,
   parseTimestampMs,
 } from "./cashierPayrollService.js";
+import { withTransaction } from "../utils/dbTx.js";
 const ROLE_LABELS_AR = {
   cashier: "كاشير",
   bakery_employee: "موظف مخبز",
@@ -313,8 +314,7 @@ export async function saveFaceDescriptors(db, userId, descriptors) {
     }
   }
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  await withTransaction(db, async () => {
     await db.run("DELETE FROM face_descriptors WHERE user_id = ?", [id]);
     for (const desc of descriptors) {
       await db.run(
@@ -322,13 +322,7 @@ export async function saveFaceDescriptors(db, userId, descriptors) {
         [id, JSON.stringify(desc)]
       );
     }
-    await db.run("COMMIT");
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+  });
 
   return {
     user_id: id,

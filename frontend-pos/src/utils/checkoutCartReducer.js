@@ -1,10 +1,10 @@
-import { cartKeyFor, mapLookupToCartProduct } from "./cartProduct";
+import { cartKeyFor, mapLookupToCartProduct } from "./cartProduct.js";
 import {
   createScanHistoryEntry,
   pushScanHistory,
   popScanHistory,
   applyUndoScan,
-} from "./scanHistory";
+} from "./scanHistory.js";
 
 const sameId = (a, b) => Number(a) === Number(b);
 
@@ -110,7 +110,7 @@ export function checkoutReducer(state, action) {
       };
     case "CHANGE_QTY": {
       const { cartKey, newQty } = action;
-      if (newQty < 1) return state;
+      if (!(Number(newQty) > 0)) return state;
       const idx = state.cartItems.findIndex((x) => cartKeyFor(x) === cartKey);
       if (idx < 0) return state;
       const prev = state.cartItems;

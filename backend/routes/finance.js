@@ -19,6 +19,11 @@ function parseDateParam(s) {
 
 async function shopDayCashCardTotals(db, day) {
   const paymentAgg = await aggregatePaymentLinesForDate(db, day);
+  const txRows = await fetchTransactionsForShopDate(db, day);
+  let cashChange = 0;
+  for (const r of txRows) {
+    cashChange = round2(cashChange + Number(r.change_amount || 0));
+  }
   const refundRows = await fetchRefundsForShopDate(db, day);
   let refund_cash = 0;
   let refund_card = 0;
@@ -27,7 +32,7 @@ async function shopDayCashCardTotals(db, day) {
     else refund_card = round2(refund_card + Number(r.total));
   }
   return {
-    sales_cash: paymentAgg.cash_total,
+    sales_cash: round2(paymentAgg.cash_total - cashChange),
     sales_card: paymentAgg.card_total,
     refund_cash,
     refund_card,

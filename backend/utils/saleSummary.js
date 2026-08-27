@@ -1,8 +1,5 @@
 import { refundedQtyByProduct } from "../services/refundRequestService.js";
-
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
-}
+import { round2 } from "./money.js";
 
 export function parseTransactionItems(itemsJson) {
   try {

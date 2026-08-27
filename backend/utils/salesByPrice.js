@@ -1,13 +1,16 @@
 import { parseItemsJson } from "./cogs.js";
 import {
   TX_BUSINESS_DAY_JOIN,
-  TX_BUSINESS_DAY_EXPR,
   REFUND_BUSINESS_DAY_JOIN,
-  REFUND_BUSINESS_DAY_EXPR,
+  toSqlUtc,
+  rowMatchesShopDateRange,
 } from "./businessDay.js";
+import { shopYmdRangeToUtcBounds } from "./shopTime.js";
+import { round2 } from "./money.js";
 
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
+function rangeUtcParams(from, to) {
+  const { startIso, endIso } = shopYmdRangeToUtcBounds(from, to);
+  return [toSqlUtc(startIso), toSqlUtc(endIso), toSqlUtc(startIso), toSqlUtc(endIso)];
 }
 
 /**
@@ -20,13 +23,12 @@ export async function aggregateSalesByPrice(db, productId, filters = {}) {
   const params = [productId];
   let where = "ti.product_id = ? AND t.status = 'completed'";
 
-  if (dateFrom) {
-    where += ` AND ${TX_BUSINESS_DAY_EXPR} >= ?`;
-    params.push(dateFrom);
-  }
-  if (dateTo) {
-    where += ` AND ${TX_BUSINESS_DAY_EXPR} <= ?`;
-    params.push(dateTo);
+  if (dateFrom && dateTo) {
+    where += ` AND (
+      (datetime(t.created_at) >= datetime(?) AND datetime(t.created_at) <= datetime(?))
+      OR (cs.start_time IS NOT NULL AND datetime(cs.start_time) >= datetime(?) AND datetime(cs.start_time) <= datetime(?))
+    )`;
+    params.push(...rangeUtcParams(dateFrom, dateTo));
   }
   if (cashierId) {
     where += " AND t.cashier_id = ?";
@@ -37,25 +39,57 @@ export async function aggregateSalesByPrice(db, productId, filters = {}) {
     params.push(storeId);
   }
 
-  return db.all(
+  const rows = await db.all(
     `SELECT
        ti.product_id,
-       MAX(ti.name) AS product_name,
+       ti.name AS product_name,
        ti.unit_price AS unit_price_at_sale,
-       SUM(ti.quantity) AS sold_quantity,
-       COUNT(DISTINCT ti.transaction_id) AS number_of_transactions,
-       ROUND(SUM(ti.line_gross), 2) AS total_revenue,
-       ROUND(SUM(COALESCE(ti.gross_profit, 0)), 2) AS total_profit,
-       MIN(t.created_at) AS first_sale_date,
-       MAX(t.created_at) AS last_sale_date
+       ti.quantity AS sold_quantity,
+       ti.transaction_id,
+       ti.line_gross AS total_revenue,
+       COALESCE(ti.gross_profit, 0) AS total_profit,
+       t.created_at AS first_sale_date,
+       t.created_at AS last_sale_date,
+       cs.start_time AS start_time
      FROM transaction_items ti
      JOIN transactions t ON t.id = ti.transaction_id
      ${TX_BUSINESS_DAY_JOIN}
-     WHERE ${where}
-     GROUP BY ti.unit_price
-     ORDER BY ti.unit_price ASC`,
+     WHERE ${where}`,
     params
   );
+  const matched = dateFrom && dateTo
+    ? rows.filter((r) => rowMatchesShopDateRange(r, dateFrom, dateTo))
+    : rows;
+
+  const byPrice = new Map();
+  for (const row of matched) {
+    const price = round2(Number(row.unit_price_at_sale));
+    const prev = byPrice.get(price) || {
+      product_id: row.product_id,
+      product_name: row.product_name,
+      unit_price_at_sale: price,
+      sold_quantity: 0,
+      number_of_transactions: new Set(),
+      total_revenue: 0,
+      total_profit: 0,
+      first_sale_date: row.first_sale_date,
+      last_sale_date: row.last_sale_date,
+    };
+    prev.sold_quantity = round2(prev.sold_quantity + (Number(row.sold_quantity) || 0));
+    prev.number_of_transactions.add(row.transaction_id);
+    prev.total_revenue = round2(prev.total_revenue + (Number(row.total_revenue) || 0));
+    prev.total_profit = round2(prev.total_profit + (Number(row.total_profit) || 0));
+    if (row.first_sale_date < prev.first_sale_date) prev.first_sale_date = row.first_sale_date;
+    if (row.last_sale_date > prev.last_sale_date) prev.last_sale_date = row.last_sale_date;
+    byPrice.set(price, prev);
+  }
+
+  return [...byPrice.values()]
+    .map((r) => ({
+      ...r,
+      number_of_transactions: r.number_of_transactions.size,
+    }))
+    .sort((a, b) => a.unit_price_at_sale - b.unit_price_at_sale);
 }
 
 /**
@@ -65,19 +99,18 @@ export async function aggregateSalesByPrice(db, productId, filters = {}) {
 export async function aggregateRefundsByPrice(db, productId, filters = {}) {
   const { dateFrom, dateTo, cashierId, storeId } = filters;
   const params = [productId];
-  let where = `r.status != 'rejected'
+  let where = `r.status = 'approved'
      AND EXISTS (
        SELECT 1 FROM transaction_items ti
        WHERE ti.transaction_id = r.original_transaction_id AND ti.product_id = ?
      )`;
 
-  if (dateFrom) {
-    where += ` AND ${REFUND_BUSINESS_DAY_EXPR} >= ?`;
-    params.push(dateFrom);
-  }
-  if (dateTo) {
-    where += ` AND ${REFUND_BUSINESS_DAY_EXPR} <= ?`;
-    params.push(dateTo);
+  if (dateFrom && dateTo) {
+    where += ` AND (
+      (datetime(r.created_at) >= datetime(?) AND datetime(r.created_at) <= datetime(?))
+      OR (cs.start_time IS NOT NULL AND datetime(cs.start_time) >= datetime(?) AND datetime(cs.start_time) <= datetime(?))
+    )`;
+    params.push(...rangeUtcParams(dateFrom, dateTo));
   }
   if (cashierId) {
     where += " AND r.cashier_id = ?";
@@ -89,17 +122,20 @@ export async function aggregateRefundsByPrice(db, productId, filters = {}) {
   }
 
   const refundRows = await db.all(
-    `SELECT r.items_json, r.original_transaction_id
+    `SELECT r.items_json, r.original_transaction_id, r.created_at, cs.start_time AS start_time
      FROM refunds r
      JOIN transactions t ON t.id = r.original_transaction_id
      ${REFUND_BUSINESS_DAY_JOIN}
      WHERE ${where}`,
     params
   );
+  const matchedRefunds = dateFrom && dateTo
+    ? refundRows.filter((r) => rowMatchesShopDateRange(r, dateFrom, dateTo))
+    : refundRows;
 
   const byPrice = new Map();
 
-  for (const row of refundRows) {
+  for (const row of matchedRefunds) {
     const items = parseItemsJson(row.items_json);
     if (!Array.isArray(items)) continue;
 

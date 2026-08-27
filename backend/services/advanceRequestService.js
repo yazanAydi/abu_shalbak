@@ -1,48 +1,20 @@
 import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { logAuditUser, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { getTelegramManagerUser } from "./refundRequestService.js";
+import { computeExpectedBaseCash } from "../utils/salePayments.js";
+import { round2 } from "../utils/money.js";
 import {
   isSulafTelegramConfigured,
   sendAdvanceApprovalMessage,
   editAdvanceRequestMessage,
   sendAdvanceDecisionStatusMessage,
 } from "../utils/telegram.js";
-
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
-}
+import { withTransaction } from "../utils/dbTx.js";
 
 export { getTelegramManagerUser };
 
 async function computeShiftExpectedCash(db, shiftId, openingCash) {
-  const sid = Number(shiftId);
-  const open = round2(Number(openingCash) || 0);
-  const cashSalesRow = await db.get(
-    `SELECT COALESCE(SUM(sp.nis_equivalent), 0) AS s
-     FROM sale_payments sp
-     JOIN transactions t ON t.id = sp.transaction_id
-     WHERE t.shift_id = ? AND sp.payment_method = 'cash'`,
-    [sid]
-  );
-  const cashRefundsRow = await db.get(
-    `SELECT COALESCE(SUM(total), 0) AS s FROM refunds WHERE shift_id = ? AND payment_method = 'cash' AND status = 'approved'`,
-    [sid]
-  );
-  const adjRow = await db.get(
-    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'adjustment'`,
-    [sid]
-  );
-  const advanceRow = await db.get(
-    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'advance'`,
-    [sid]
-  );
-  return round2(
-    open +
-      round2(Number(cashSalesRow?.s) || 0) -
-      round2(Number(cashRefundsRow?.s) || 0) +
-      round2(Number(adjRow?.s) || 0) +
-      round2(Number(advanceRow?.s) || 0)
-  );
+  return computeExpectedBaseCash(db, shiftId, openingCash);
 }
 
 export async function createAdvanceRequest(db, params) {
@@ -67,8 +39,7 @@ export async function createAdvanceRequest(db, params) {
     throw err;
   }
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const created = await withTransaction(db, async () => {
     const ins = await db.run(
       `INSERT INTO advance_requests (cashier_id, shift_id, employee_name, amount, notes, status)
        VALUES (?, ?, ?, ?, ?, 'pending')`,
@@ -85,39 +56,35 @@ export async function createAdvanceRequest(db, params) {
       });
     }
 
-    let telegramMessageId = null;
-    if (isSulafTelegramConfigured()) {
-      try {
-        telegramMessageId = await sendAdvanceApprovalMessage({
-          requestId,
-          cashierName: cashier?.username || String(cashierId),
-          employeeName: trimmedName,
-          amount: amt,
-          notes: notes || "",
-        });
-        await db.run("UPDATE advance_requests SET telegram_message_id = ? WHERE id = ?", [
-          telegramMessageId,
-          requestId,
-        ]);
-        row.telegram_message_id = telegramMessageId;
-      } catch (e) {
-        console.error("Telegram sulaf send failed:", e.message);
-      }
-    }
+    return { request: row, request_id: requestId, cashier };
+  });
 
-    await db.run("COMMIT");
-    return {
-      request: row,
-      request_id: requestId,
-      telegram: isSulafTelegramConfigured() && !!telegramMessageId,
-      message: "سُجّل طلب السلف قيد المراجعة. لن يُصرف النقد حتى موافقة المسؤول.",
-    };
-  } catch (e) {
+  let telegramMessageId = null;
+  if (isSulafTelegramConfigured()) {
     try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
+      telegramMessageId = await sendAdvanceApprovalMessage({
+        requestId: created.request_id,
+        cashierName: created.cashier?.username || String(cashierId),
+        employeeName: trimmedName,
+        amount: amt,
+        notes: notes || "",
+      });
+      await db.run("UPDATE advance_requests SET telegram_message_id = ? WHERE id = ?", [
+        telegramMessageId,
+        created.request_id,
+      ]);
+      created.request.telegram_message_id = telegramMessageId;
+    } catch (e) {
+      console.error("Telegram sulaf send failed:", e.message);
+    }
   }
+
+  return {
+    request: created.request,
+    request_id: created.request_id,
+    telegram: isSulafTelegramConfigured() && !!telegramMessageId,
+    message: "سُجّل طلب السلف قيد المراجعة. لن يُصرف النقد حتى موافقة المسؤول.",
+  };
 }
 
 export async function getAdvanceRequestById(db, id) {
@@ -249,8 +216,7 @@ export async function approveAdvanceRequest(
   req = null,
   decisionSource = "admin"
 ) {
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const updated = await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM advance_requests WHERE id = ?", [requestId]);
     if (!request) {
       const err = new Error("طلب السلف غير موجود");
@@ -303,17 +269,10 @@ export async function approveAdvanceRequest(
       amount,
     });
 
-    await db.run("COMMIT");
-
-    const updated = await getAdvanceRequestById(db, requestId);
-    await notifyTelegramAfterDecision(updated, managerUser, "approved", decisionSource);
-    return { request: updated };
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+    return getAdvanceRequestById(db, requestId);
+  });
+  await notifyTelegramAfterDecision(updated, managerUser, "approved", decisionSource);
+  return { request: updated };
 }
 
 export async function rejectAdvanceRequest(
@@ -324,8 +283,7 @@ export async function rejectAdvanceRequest(
   req = null,
   decisionSource = "admin"
 ) {
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const updated = await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM advance_requests WHERE id = ?", [requestId]);
     if (!request) {
       const err = new Error("طلب السلف غير موجود");
@@ -354,15 +312,8 @@ export async function rejectAdvanceRequest(
       manager_id: managerUser.id,
     });
 
-    await db.run("COMMIT");
-
-    const updated = await getAdvanceRequestById(db, requestId);
-    await notifyTelegramAfterDecision(updated, managerUser, "rejected", decisionSource);
-    return { request: updated };
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+    return getAdvanceRequestById(db, requestId);
+  });
+  await notifyTelegramAfterDecision(updated, managerUser, "rejected", decisionSource);
+  return { request: updated };
 }

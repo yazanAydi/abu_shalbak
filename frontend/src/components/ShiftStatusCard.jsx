@@ -16,9 +16,18 @@ export default function ShiftStatusCard({ listRow, detail }) {
   const start = listRow.start_time;
   const ms = shiftOpenDurationMs(start);
   const expected =
-    detail?.summary?.expected != null ? Number(detail.summary.expected) : null;
+    listRow.expected_cash != null
+      ? Number(listRow.expected_cash)
+      : detail?.summary?.expected != null
+        ? Number(detail.summary.expected)
+        : null;
   const opening = listRow.opening_cash != null ? Number(listRow.opening_cash) : null;
-  const txCount = Array.isArray(detail?.transactions) ? detail.transactions.length : "—";
+  const txCount =
+    listRow.sale_count != null
+      ? Number(listRow.sale_count)
+      : Array.isArray(detail?.transactions)
+        ? detail.transactions.length
+        : "—";
 
   return (
     <div className="shift-status-card" dir="rtl" lang="ar">

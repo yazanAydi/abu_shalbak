@@ -69,6 +69,7 @@ export default function PosPaymentModal({
 }) {
   const [currencies, setCurrencies] = useState([]);
   const [cashCurrencyId, setCashCurrencyId] = useState(null);
+  const [changeCurrencyId, setChangeCurrencyId] = useState(null);
   const [amountTendered, setAmountTendered] = useState("");
   const [mixedLines, setMixedLines] = useState([]);
   const [cashErr, setCashErr] = useState("");
@@ -98,6 +99,7 @@ export default function PosPaymentModal({
         setCurrencies(list);
         const base = list.find((c) => c.is_base) || list[0] || null;
         setCashCurrencyId(base ? base.id : null);
+        setChangeCurrencyId(base ? base.id : null);
         setMixedLines([
           { method: "cash", currencyId: base ? base.id : null, amount: "" },
         ]);
@@ -155,6 +157,14 @@ export default function PosPaymentModal({
   const cashEquivalentNis = receivedNum != null ? round2(receivedNum * cashRate) : null;
   const cashChangeDue =
     cashEquivalentNis != null ? Math.max(0, round2(cashEquivalentNis - total)) : null;
+  const changeCurrency = getCurrency(changeCurrencyId) || baseCurrency;
+  const changeRate = changeCurrency ? Number(changeCurrency.exchange_rate_to_nis) || 1 : 1;
+  const cashChangeOriginal =
+    cashChangeDue != null && cashChangeDue > 0
+      ? changeCurrency && !changeCurrency.is_base && changeRate > 0
+        ? round2(cashChangeDue / changeRate)
+        : cashChangeDue
+      : null;
   const cashValid =
     selectedPayment !== "cash" ||
     (cashEquivalentNis != null && cashEquivalentNis >= total - TOLERANCE);
@@ -182,6 +192,13 @@ export default function PosPaymentModal({
       paidNis >= total - TOLERANCE && changeValid && nonCashNis <= total + TOLERANCE;
     return { paidNis, cashNis, nonCashNis, remaining, change, valid };
   }, [mixedLines, getCurrency, total]);
+
+  const mixedChangeOriginal =
+    mixedComputed.change > 0
+      ? changeCurrency && !changeCurrency.is_base && changeRate > 0
+        ? round2(mixedComputed.change / changeRate)
+        : mixedComputed.change
+      : null;
 
   const mixedValid = selectedPayment !== "mixed" || mixedComputed.valid;
 
@@ -252,16 +269,28 @@ export default function PosPaymentModal({
           original_amount: parseAmount(l.amount),
         }))
         .filter((p) => p.original_amount != null && p.original_amount > 0);
-      onTarhil({ payments, payment_method: "mixed" });
+      onTarhil({
+        payments,
+        payment_method: "mixed",
+        ...(mixedComputed.change > 0 && changeCurrencyId
+          ? { change_currency_id: changeCurrencyId }
+          : {}),
+      });
       return;
     }
 
     if (selectedPayment === "cash") {
       onTarhil({
         payments: [
-          { method: "cash", currency_id: cashCurrencyId, original_amount: receivedNum },
+          {
+            method: "cash",
+            currency_id: cashCurrencyId,
+            original_amount: receivedNum,
+          },
         ],
         payment_method: "cash",
+        cash_tendered: cashEquivalentNis,
+        ...(cashChangeDue > 0 && changeCurrencyId ? { change_currency_id: changeCurrencyId } : {}),
       });
       return;
     }
@@ -271,12 +300,17 @@ export default function PosPaymentModal({
   }, [
     canTarhil,
     cashCurrencyId,
+    cashEquivalentNis,
+    cashChangeDue,
+    changeCurrencyId,
+    receivedNum,
     cashValid,
+    mixedComputed.change,
     mixedLines,
     mixedValid,
     onTarhil,
-    receivedNum,
     selectedPayment,
+    total,
   ]);
 
   const handleTarhilRef = useRef(handleTarhil);
@@ -375,8 +409,27 @@ export default function PosPaymentModal({
                 </span>
               ) : null}
               <span>الفاتورة: {ils(total)}</span>
-              <span>الباقي: {cashChangeDue != null ? ils(cashChangeDue) : "—"}</span>
+              <span>
+                الباقي:{" "}
+                {cashChangeOriginal != null
+                  ? fmtCurrency(changeCurrency?.symbol, cashChangeOriginal)
+                  : "—"}
+                {cashChangeDue != null && changeCurrency && !changeCurrency.is_base
+                  ? ` (${ils(cashChangeDue)})`
+                  : ""}
+              </span>
             </div>
+            {cashChangeDue > 0 ? (
+              <label>
+                عملة الباقي
+                <select
+                  value={changeCurrencyId ?? ""}
+                  onChange={(e) => setChangeCurrencyId(Number(e.target.value))}
+                >
+                  {currencyOptions}
+                </select>
+              </label>
+            ) : null}
           </div>
         ) : null}
 
@@ -447,9 +500,26 @@ export default function PosPaymentModal({
               <span>المدفوع: {ils(mixedComputed.paidNis)}</span>
               <span>المتبقي: {ils(mixedComputed.remaining)}</span>
               {mixedComputed.change > 0 ? (
-                <span>الباقي: {ils(mixedComputed.change)}</span>
+                <span>
+                  الباقي:{" "}
+                  {mixedChangeOriginal != null
+                    ? fmtCurrency(changeCurrency?.symbol, mixedChangeOriginal)
+                    : ils(mixedComputed.change)}
+                  {changeCurrency && !changeCurrency.is_base ? ` (${ils(mixedComputed.change)})` : ""}
+                </span>
               ) : null}
             </div>
+            {mixedComputed.change > 0 ? (
+              <label>
+                عملة الباقي
+                <select
+                  value={changeCurrencyId ?? ""}
+                  onChange={(e) => setChangeCurrencyId(Number(e.target.value))}
+                >
+                  {currencyOptions}
+                </select>
+              </label>
+            ) : null}
           </div>
         ) : null}
 

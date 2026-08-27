@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSubmitGuard } from "../hooks/useSubmitGuard";
 import { todayISO } from "../utils/format";
 import { useSearchParams } from "react-router-dom";
 import api from "../apiClient";
@@ -354,6 +355,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
 }
 
 export default function Purchases() {
+  const guardSubmit = useSubmitGuard();
   const toast = useToast();
   const [tab, setTab] = useState("invoices");
   const [suppliers, setSuppliers] = useState([]);
@@ -514,6 +516,7 @@ export default function Purchases() {
 
   async function saveAndPost() {
     if (!window.confirm("سيتم حفظ التعديلات ثم ترحيل المستند وتحديث المخزون وأرصدة المورد. متابعة؟")) return;
+    await guardSubmit(async () => {
     const id = await persist();
     if (id == null) return;
     try {
@@ -524,6 +527,7 @@ export default function Purchases() {
       setEditId(null);
       loadList(tab);
     } catch (e) { toast.error(e.response?.data?.error || "فشل الترحيل"); }
+    });
   }
 
   async function saveAndPrint() {
@@ -534,12 +538,14 @@ export default function Purchases() {
 
   async function postDoc(which, id) {
     if (!window.confirm("ترحيل هذا المستند سيحدّث المخزون وأرصدة المورد. متابعة؟")) return;
+    await guardSubmit(async () => {
     try {
       const path = which === "returns" ? `/api/purchases/returns/${id}/post` : `/api/purchases/invoices/${id}/post`;
       await api.post(path, {}, { headers: getAuthHeaders() });
       toast.success("تم الترحيل");
       loadList(tab);
     } catch (e) { toast.error(e.response?.data?.error || "فشل الترحيل"); }
+    });
   }
 
   async function removeDoc(which, id) {

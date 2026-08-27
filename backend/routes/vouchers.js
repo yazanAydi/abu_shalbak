@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { withTransaction } from "../utils/dbTx.js";
 
 export function createVouchersRouter(db) {
   const router = Router();
@@ -23,7 +24,7 @@ export function createVouchersRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.get("/:id", requireAuth, async (req, res) => {
+  router.get("/:id", requireAuth, requireVouchers, async (req, res) => {
     const voucher = await db.get(
       `SELECT v.*, u.username as recorded_by_name
        FROM vouchers v LEFT JOIN users u ON v.recorded_by_id = u.id
@@ -73,51 +74,51 @@ export function createVouchersRouter(db) {
 
     const total = round2(lines.reduce((s, L) => s + Number(L.amount), 0));
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      const ins = await db.run(
-        `INSERT INTO vouchers (voucher_type, voucher_date, notes, total_amount, recorded_by_id)
-         VALUES (?, ?, ?, ?, ?)`,
-        [voucher_type, voucher_date || shopTodayYmd(), notes || null, total, req.user.id]
-      );
-      const voucherId = ins.lastID;
-
-      // Set sequential voucher_no per type
-      const maxNo = await db.get(
-        "SELECT MAX(voucher_no) AS mx FROM vouchers WHERE voucher_type = ?",
-        [voucher_type]
-      );
-      const nextNo = ((maxNo?.mx) || 0) + 1;
-      await db.run("UPDATE vouchers SET voucher_no = ? WHERE id = ?", [nextNo, voucherId]);
-
-      for (const L of lines) {
-        const amt = Number(L.amount);
-        const rate = Number(L.exchange_rate) || 1;
-        const amtNis = round2(amt * rate);
-        await db.run(
-          `INSERT INTO voucher_lines
-             (voucher_id, line_type, amount, currency, exchange_rate, amount_nis,
-              customer_id, supplier_id, check_id, bank_account_id, account_category, bank_name, description)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [
-            voucherId, L.line_type, amt, L.currency || "NIS", rate, amtNis,
-            L.customer_id ? Number(L.customer_id) : null,
-            L.supplier_id ? Number(L.supplier_id) : null,
-            L.check_id ? Number(L.check_id) : null,
-            L.bank_account_id ? Number(L.bank_account_id) : null,
-            L.account_category || null,
-            L.line_type === "check" && L.bank_name ? String(L.bank_name).trim() : null,
-            L.description || null,
-          ]
+      const created = await withTransaction(db, async () => {
+        const ins = await db.run(
+          `INSERT INTO vouchers (voucher_type, voucher_date, notes, total_amount, recorded_by_id)
+           VALUES (?, ?, ?, ?, ?)`,
+          [voucher_type, voucher_date || shopTodayYmd(), notes || null, total, req.user.id]
         );
-      }
+        const voucherId = ins.lastID;
 
-      await db.run("COMMIT");
-      const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [voucherId]);
-      const savedLines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucherId]);
-      res.status(201).json({ ...voucher, lines: savedLines });
+        // Set sequential voucher_no per type
+        const maxNo = await db.get(
+          "SELECT MAX(voucher_no) AS mx FROM vouchers WHERE voucher_type = ?",
+          [voucher_type]
+        );
+        const nextNo = ((maxNo?.mx) || 0) + 1;
+        await db.run("UPDATE vouchers SET voucher_no = ? WHERE id = ?", [nextNo, voucherId]);
+
+        for (const L of lines) {
+          const amt = Number(L.amount);
+          const rate = Number(L.exchange_rate) || 1;
+          const amtNis = round2(amt * rate);
+          await db.run(
+            `INSERT INTO voucher_lines
+               (voucher_id, line_type, amount, currency, exchange_rate, amount_nis,
+                customer_id, supplier_id, check_id, bank_account_id, account_category, bank_name, description)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [
+              voucherId, L.line_type, amt, L.currency || "NIS", rate, amtNis,
+              L.customer_id ? Number(L.customer_id) : null,
+              L.supplier_id ? Number(L.supplier_id) : null,
+              L.check_id ? Number(L.check_id) : null,
+              L.bank_account_id ? Number(L.bank_account_id) : null,
+              L.account_category || null,
+              L.line_type === "check" && L.bank_name ? String(L.bank_name).trim() : null,
+              L.description || null,
+            ]
+          );
+        }
+
+        const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [voucherId]);
+        const savedLines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucherId]);
+        return { ...voucher, lines: savedLines };
+      });
+      res.status(201).json(created);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });
     }
   });
@@ -159,40 +160,40 @@ export function createVouchersRouter(db) {
 
     const total = round2(lines.reduce((s, L) => s + Number(L.amount), 0));
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      await db.run(
-        `UPDATE vouchers SET voucher_type = ?, voucher_date = ?, notes = ?, total_amount = ? WHERE id = ?`,
-        [voucher_type, voucher_date || voucher.voucher_date, notes || null, total, voucher.id]
-      );
-      await db.run("DELETE FROM voucher_lines WHERE voucher_id = ?", [voucher.id]);
-      for (const L of lines) {
-        const amt = Number(L.amount);
-        const rate = Number(L.exchange_rate) || 1;
-        const amtNis = round2(amt * rate);
+      const updated = await withTransaction(db, async () => {
         await db.run(
-          `INSERT INTO voucher_lines
-             (voucher_id, line_type, amount, currency, exchange_rate, amount_nis,
-              customer_id, supplier_id, check_id, bank_account_id, account_category, bank_name, description)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [
-            voucher.id, L.line_type, amt, L.currency || "NIS", rate, amtNis,
-            L.customer_id ? Number(L.customer_id) : null,
-            L.supplier_id ? Number(L.supplier_id) : null,
-            L.check_id ? Number(L.check_id) : null,
-            L.bank_account_id ? Number(L.bank_account_id) : null,
-            L.account_category || null,
-            L.line_type === "check" && L.bank_name ? String(L.bank_name).trim() : null,
-            L.description || null,
-          ]
+          `UPDATE vouchers SET voucher_type = ?, voucher_date = ?, notes = ?, total_amount = ? WHERE id = ?`,
+          [voucher_type, voucher_date || voucher.voucher_date, notes || null, total, voucher.id]
         );
-      }
-      await db.run("COMMIT");
-      const updated = await db.get("SELECT * FROM vouchers WHERE id = ?", [voucher.id]);
-      const savedLines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucher.id]);
-      res.json({ ...updated, lines: savedLines });
+        await db.run("DELETE FROM voucher_lines WHERE voucher_id = ?", [voucher.id]);
+        for (const L of lines) {
+          const amt = Number(L.amount);
+          const rate = Number(L.exchange_rate) || 1;
+          const amtNis = round2(amt * rate);
+          await db.run(
+            `INSERT INTO voucher_lines
+               (voucher_id, line_type, amount, currency, exchange_rate, amount_nis,
+                customer_id, supplier_id, check_id, bank_account_id, account_category, bank_name, description)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [
+              voucher.id, L.line_type, amt, L.currency || "NIS", rate, amtNis,
+              L.customer_id ? Number(L.customer_id) : null,
+              L.supplier_id ? Number(L.supplier_id) : null,
+              L.check_id ? Number(L.check_id) : null,
+              L.bank_account_id ? Number(L.bank_account_id) : null,
+              L.account_category || null,
+              L.line_type === "check" && L.bank_name ? String(L.bank_name).trim() : null,
+              L.description || null,
+            ]
+          );
+        }
+        const row = await db.get("SELECT * FROM vouchers WHERE id = ?", [voucher.id]);
+        const savedLines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucher.id]);
+        return { ...row, lines: savedLines };
+      });
+      res.json(updated);
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       res.status(500).json({ error: e.message, code: "DB_ERROR" });
     }
   });
@@ -207,31 +208,30 @@ export function createVouchersRouter(db) {
     }
     const lines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucher.id]);
 
-    await db.run("BEGIN IMMEDIATE");
     try {
-      for (const L of lines) {
-        if (L.customer_id) {
-          const delta = voucher.voucher_type === "receipt" ? -L.amount_nis : L.amount_nis;
-          await db.run("UPDATE customers SET balance = balance + ? WHERE id = ?", [delta, L.customer_id]);
+      await withTransaction(db, async () => {
+        for (const L of lines) {
+          if (L.customer_id) {
+            const delta = voucher.voucher_type === "receipt" ? -L.amount_nis : L.amount_nis;
+            await db.run("UPDATE customers SET balance = balance + ? WHERE id = ?", [delta, L.customer_id]);
+          }
+          if (L.supplier_id && voucher.voucher_type === "payment") {
+            await db.run(
+              "UPDATE suppliers SET balance = balance - ? WHERE id = ?",
+              [L.amount_nis, L.supplier_id]
+            );
+          }
+          if (L.bank_account_id) {
+            const delta = voucher.voucher_type === "receipt" ? L.amount_nis : -L.amount_nis;
+            await db.run("UPDATE bank_accounts SET balance = balance + ? WHERE id = ?", [delta, L.bank_account_id]);
+          }
         }
-        if (L.supplier_id && voucher.voucher_type === "payment") {
-          await db.run(
-            "UPDATE suppliers SET balance = balance - ? WHERE id = ?",
-            [L.amount_nis, L.supplier_id]
-          );
-        }
-        if (L.bank_account_id) {
-          const delta = voucher.voucher_type === "receipt" ? L.amount_nis : -L.amount_nis;
-          await db.run("UPDATE bank_accounts SET balance = balance + ? WHERE id = ?", [delta, L.bank_account_id]);
-        }
-      }
-      await db.run(
-        "UPDATE vouchers SET status = 'posted', posted_at = datetime('now') WHERE id = ?",
-        [voucher.id]
-      );
-      await db.run("COMMIT");
+        await db.run(
+          "UPDATE vouchers SET status = 'posted', posted_at = datetime('now') WHERE id = ?",
+          [voucher.id]
+        );
+      });
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       return res.status(500).json({ error: e.message, code: "DB_ERROR" });
     }
     res.json(await db.get("SELECT * FROM vouchers WHERE id = ?", [voucher.id]));

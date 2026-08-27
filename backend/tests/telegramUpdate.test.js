@@ -73,6 +73,7 @@ describe("Telegram refund callback", () => {
         id: "test-cq-1",
         data: `refund:approve:${requestId}`,
         message: { chat: { id: Number(managerChatId) } },
+        from: { id: Number(managerChatId) },
       },
     });
 
@@ -117,6 +118,7 @@ describe("Telegram refund callback", () => {
           id: "test-cq-2",
           data: `refund:approve:${requestId}`,
           message: { chat: { id: Number(managerChatId) } },
+          from: { id: Number(managerChatId) },
         },
       });
 

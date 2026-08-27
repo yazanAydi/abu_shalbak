@@ -48,6 +48,13 @@ export const OFFICE_NAV = [
     visible: (role) => isAdminRole(role),
   },
   {
+    path: "/categories",
+    label: "التصنيفات",
+    icon: "products",
+    section: "catalog",
+    visible: (role) => isAdminRole(role),
+  },
+  {
     path: "/inventory",
     label: "جرد المخزون",
     icon: "inventory",
@@ -276,6 +283,7 @@ export const ROUTE_TITLES = {
   "/purchases": "فتورة مشتريات",
   "/sales-invoices": "فتورة مبيعات",
   "/units": "الوحدات",
+  "/categories": "التصنيفات",
   "/expenses": "المصروفات",
   "/banks": "البنوك والشيكات",
   "/vouchers/receipt": "سند قبض",

@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { listLimitSql } from "../utils/listQuery.js";
+import { nextNumericDoc } from "../utils/receiptNumber.js";
 
 const SALES_STATUS = ["pending", "out", "delivered", "cancelled"];
 const RECV_STATUS = ["pending", "received", "cancelled"];
@@ -19,14 +21,14 @@ export function createDeliveriesRouter(db) {
                LEFT JOIN users u ON u.id = d.created_by WHERE 1=1`;
     const params = [];
     if (status) { sql += " AND d.status = ?"; params.push(status); }
-    sql += " ORDER BY d.created_at DESC LIMIT 300";
+    sql += ` ORDER BY d.created_at DESC${listLimitSql(req.query).sql}`;
     res.json(await db.all(sql, params));
   });
 
   router.post("/sales", requireAuth, requireAdmin, async (req, res) => {
     const { transaction_id, customer_id, driver, vehicle, address, delivery_date, notes } = req.body || {};
     const noRow = await db.get("SELECT MAX(delivery_no) AS mx FROM sales_deliveries");
-    const no = (Number(noRow?.mx) || 0) + 1;
+    const no = await nextNumericDoc(db, "delivery", Number(noRow?.mx) || 0);
     const ins = await db.run(
       `INSERT INTO sales_deliveries (delivery_no, transaction_id, customer_id, driver, vehicle, address, delivery_date, notes, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -66,14 +68,14 @@ export function createDeliveriesRouter(db) {
                LEFT JOIN users u ON u.id = r.created_by WHERE 1=1`;
     const params = [];
     if (status) { sql += " AND r.status = ?"; params.push(status); }
-    sql += " ORDER BY r.created_at DESC LIMIT 300";
+    sql += ` ORDER BY r.created_at DESC${listLimitSql(req.query).sql}`;
     res.json(await db.all(sql, params));
   });
 
   router.post("/receivings", requireAuth, requireAdmin, async (req, res) => {
     const { purchase_invoice_id, supplier_id, driver, vehicle, received_date, notes } = req.body || {};
     const noRow = await db.get("SELECT MAX(receiving_no) AS mx FROM purchase_receivings");
-    const no = (Number(noRow?.mx) || 0) + 1;
+    const no = await nextNumericDoc(db, "receiving", Number(noRow?.mx) || 0);
     const ins = await db.run(
       `INSERT INTO purchase_receivings (receiving_no, purchase_invoice_id, supplier_id, driver, vehicle, received_date, notes, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

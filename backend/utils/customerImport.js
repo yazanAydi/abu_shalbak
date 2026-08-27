@@ -12,6 +12,7 @@ import {
   getBalanceGroupById,
 } from "./balanceGroups.js";
 import { assignEntityCodeIfMissing, ensureEntityCode } from "./entityCodes.js";
+import { withTransaction } from "./dbTx.js";
 
 const CUSTOMER_CATEGORIES = ["retail", "wholesale", "vip", "credit", "corporate"];
 
@@ -97,8 +98,7 @@ export async function applyCustomerBalanceImport(db, rows, options = {}) {
   /** @type {{ row: number, reason: string, name?: string }[]} */
   const errors = [];
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  await withTransaction(db, async () => {
     for (const row of rows) {
       if (!row.name) {
         errors.push({ row: row.rowNum, reason: "الاسم مفقود" });
@@ -180,13 +180,7 @@ export async function applyCustomerBalanceImport(db, rows, options = {}) {
       await assignEntityCodeIfMissing(db, "customer", existing.id);
       updated++;
     }
-    await db.run("COMMIT");
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+  });
 
   return {
     type: rows[0]?.importType || "hesabati_customer_balances",

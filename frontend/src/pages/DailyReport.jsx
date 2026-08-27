@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { Link, useNavigate } from "react-router-dom";
 import { getAuthHeaders } from "../utils/auth";
@@ -55,11 +55,9 @@ function mapDailyToTodaySummary(daily) {
     revenue: daily.net_sales,
     refund_count: daily.refund_count,
     refund_amount: daily.refunds_total,
-    total_tax: daily.total_tax,
     on_account_total: daily.on_account_total,
     items_sold: daily.items_sold,
     collections_by_currency: daily.collections_by_currency,
-    collections_grand_total_nis: daily.collections_grand_total_nis,
   };
 }
 
@@ -71,6 +69,30 @@ function formatDaysUntilExpiry(days) {
   return String(d);
 }
 
+function mapDailyTopProducts(daily) {
+  const fromHelper = getTopProductsFromDaily(daily);
+  if (fromHelper.length) {
+    return fromHelper.map((p) => ({
+      product_name: p.name,
+      quantity: p.quantity,
+      revenue: p.revenue,
+    }));
+  }
+  return [];
+}
+
+function UpdatedAgo({ lastUpdated, refreshing }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const i = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(i);
+  }, []);
+  if (lastUpdated == null) return null;
+  const secondsAgo = Math.max(0, Math.floor((Date.now() - lastUpdated.getTime()) / 1000));
+  void tick;
+  return `آخر تحديث: منذ ${secondsAgo} ثانية${refreshing ? " (جاري التحديث…)" : ""}`;
+}
+
 export default function DailyReport() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
@@ -78,7 +100,6 @@ export default function DailyReport() {
   const [chartLoading, setChartLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
-  const [tick, setTick] = useState(0);
 
   const [today, setToday] = useState(null);
   const [dailyDetail, setDailyDetail] = useState(null);
@@ -89,7 +110,6 @@ export default function DailyReport() {
   const [chartSeries, setChartSeries] = useState([]);
   const [chartIsDemo, setChartIsDemo] = useState(false);
   const [openShifts, setOpenShifts] = useState([]);
-  const [shiftDetailsById, setShiftDetailsById] = useState({});
   const [lastClosedShift, setLastClosedShift] = useState(null);
   const [recon, setRecon] = useState(null);
   const [lowStockTotal, setLowStockTotal] = useState(0);
@@ -97,7 +117,7 @@ export default function DailyReport() {
   const [nearExpiryTotal, setNearExpiryTotal] = useState(0);
   const [nearExpiryDays, setNearExpiryDays] = useState(7);
 
-  const fetchChart = useCallback(async (period) => {
+  const fetchChartData = useCallback(async (period) => {
     const headers = getAuthHeaders();
     let days = [];
     let pointCount = 7;
@@ -121,9 +141,12 @@ export default function DailyReport() {
       pointCount = 7;
     }
 
-    const { series, isDemo } = buildDemoChartSeries(days, { pointCount });
-    setChartSeries(series);
-    setChartIsDemo(isDemo);
+    return buildDemoChartSeries(days, { pointCount });
+  }, []);
+
+  const applyChart = useCallback((result) => {
+    setChartSeries(result.series);
+    setChartIsDemo(result.isDemo);
   }, []);
 
   const loadDashboard = useCallback(
@@ -145,10 +168,9 @@ export default function DailyReport() {
           .then((r) => r.data)
           .catch(() => null);
 
-        const [dailyRes, productsRes, openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData] =
+        const [dailyRes, openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData, chartResult] =
           await Promise.all([
             api.get(`/api/reports/daily?date=${todayStr}`, { headers }),
-            api.get(`/api/reports/top-products?date=${todayStr}`, { headers }),
             api.get("/api/shifts?status=open", { headers }),
             api.get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers }),
             api
@@ -161,30 +183,18 @@ export default function DailyReport() {
               .get(`/api/reports/near-expiry?limit=${NEAR_EXPIRY_WIDGET_LIMIT}`, { headers })
               .catch(() => ({ data: { items: [], total_count: 0, days_threshold: 7 } })),
             reconPromise,
+            fetchChartData(chartPeriodRef.current).catch(() => ({ series: [], isDemo: false })),
           ]);
 
-        await fetchChart(chartPeriod);
+        applyChart(chartResult);
 
         const dailyPayload = dailyRes.data;
         setDailyDetail(dailyPayload);
         setToday(mapDailyToTodaySummary(dailyPayload));
-        setTopProducts(productsRes.data?.products || []);
+        setTopProducts(mapDailyTopProducts(dailyPayload));
 
         const open = Array.isArray(openShiftsRes.data) ? openShiftsRes.data : [];
         setOpenShifts(open);
-
-        const details = {};
-        await Promise.all(
-          open.map(async (s) => {
-            try {
-              const d = await api.get(`/api/shifts/${s.id}`, { headers });
-              details[s.id] = d.data;
-            } catch {
-              details[s.id] = null;
-            }
-          })
-        );
-        setShiftDetailsById(details);
 
         const closed = Array.isArray(closedShiftsRes.data) ? closedShiftsRes.data : [];
         setLastClosedShift(closed[0] || null);
@@ -225,7 +235,7 @@ export default function DailyReport() {
         setRefreshing(false);
       }
     },
-    [fetchChart, chartPeriod]
+    [applyChart, fetchChartData]
   );
 
   async function onChartPeriodChange(period) {
@@ -238,7 +248,7 @@ export default function DailyReport() {
     }
     setChartLoading(true);
     try {
-      await fetchChart(period);
+      applyChart(await fetchChartData(period));
     } catch {
       /* keep previous series */
     } finally {
@@ -278,19 +288,12 @@ export default function DailyReport() {
   }, [loadDashboard]);
 
   useEffect(() => {
-    const t = setInterval(() => loadDashboard({ initial: false }), 30_000);
+    const t = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      loadDashboard({ initial: false });
+    }, 30_000);
     return () => clearInterval(t);
   }, [loadDashboard]);
-
-  useEffect(() => {
-    const i = setInterval(() => setTick((x) => x + 1), 1000);
-    return () => clearInterval(i);
-  }, []);
-
-  const secondsAgo = useMemo(() => {
-    if (lastUpdated == null) return null;
-    return Math.max(0, Math.floor((Date.now() - lastUpdated.getTime()) / 1000));
-  }, [lastUpdated, tick]);
 
   const lowStockDisplayTotal = lowStockTotal;
 
@@ -336,11 +339,7 @@ export default function DailyReport() {
     <div className="office-page dashboard-page" dir="rtl" lang="ar">
       <PageHeader
         title="لوحة التحكم"
-        subtitle={
-          secondsAgo != null
-            ? `آخر تحديث: منذ ${secondsAgo} ثانية${refreshing ? " (جاري التحديث…)" : ""}`
-            : undefined
-        }
+        subtitle={<UpdatedAgo lastUpdated={lastUpdated} refreshing={refreshing} />}
         icon="dashboard"
         actions={
           <>
@@ -508,7 +507,7 @@ export default function DailyReport() {
           ) : (
             <div className="shift-status-grid">
               {openShifts.map((s) => (
-                <ShiftStatusCard key={s.id} listRow={s} detail={shiftDetailsById[s.id]} />
+                <ShiftStatusCard key={s.id} listRow={s} />
               ))}
             </div>
           )}

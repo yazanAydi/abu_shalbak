@@ -31,6 +31,7 @@ const SupplierStatement = lazy(() => import("./pages/SupplierStatement"));
 const Purchases = lazy(() => import("./pages/Purchases"));
 const SalesInvoices = lazy(() => import("./pages/SalesInvoices"));
 const UnitsManagement = lazy(() => import("./pages/UnitsManagement"));
+const CategoriesManagement = lazy(() => import("./pages/CategoriesManagement"));
 const Expenses = lazy(() => import("./pages/Expenses"));
 const Deliveries = lazy(() => import("./pages/Deliveries"));
 const Marketing = lazy(() => import("./pages/Marketing"));
@@ -213,6 +214,15 @@ function App() {
               </OfficeRoute>
             }
           />
+          <Route
+            path="/categories"
+            element={
+              <OfficeRoute adminOnly>
+                <CategoriesManagement />
+              </OfficeRoute>
+            }
+          />
+          <Route path="/unit-names" element={<Navigate to="/units" replace />} />
           <Route
             path="/inventory"
             element={

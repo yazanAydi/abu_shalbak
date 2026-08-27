@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { setToken, setUser, removeToken } from "../utils/auth";
 import { canLoginPos, homePathForRole, wrongPortalLoginMessage } from "../utils/roles";
-import { getAdminLoginUrl } from "../utils/appLinks";
 import "./Login.css";
 
 export default function Login() {
@@ -102,12 +101,6 @@ export default function Login() {
           >
             {loading ? "جاري الدخول..." : "دخول"}
           </button>
-          <p className="login-hint">
-            محاسب أو مدير؟{" "}
-            <a href={getAdminLoginUrl()} className="login-pos-link">
-              افتح لوحة الإدارة
-            </a>
-          </p>
         </div>
       </section>
     </div>

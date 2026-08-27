@@ -16,10 +16,9 @@ import {
   STORE_PHONE,
 } from "../utils/storeBranding.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
-
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
-}
+import { round2 } from "../utils/money.js";
+import { withTransaction } from "../utils/dbTx.js";
+import { HttpError } from "../utils/httpError.js";
 
 function requirePosOrReports(req, res, next) {
   const r = req.user?.role;
@@ -306,41 +305,36 @@ export function createRefundsRouter(db) {
       const id = Number(rawId);
       if (!id) continue;
       try {
-        await db.run("BEGIN IMMEDIATE");
-        const refund = await db.get("SELECT * FROM refunds WHERE id = ?", [id]);
-        if (!refund || refund.status !== "pending") {
-          await db.run("ROLLBACK");
-          results.failed.push({ id, error: "غير قيد الانتظار" });
-          continue;
-        }
-        const now = new Date().toISOString();
-        if (status === "approved") {
-          const targetShiftId = await resolveRefundTargetShift(db, {
-            cashierId: refund.cashier_id,
-            paymentMethod: refund.payment_method,
-            fallbackShiftId: refund.shift_id,
-          });
-          await db.run("UPDATE refunds SET shift_id = ? WHERE id = ?", [targetShiftId, id]);
-          refund.shift_id = targetShiftId;
-          await applyApprovedRefundEffects(db, refund);
-          await db.run(
-            `UPDATE refunds SET status = 'approved', approved_at = ?, approved_by_id = ?, review_notes = COALESCE(?, review_notes),
-             rejected_at = NULL, rejected_by_id = NULL WHERE id = ?`,
-            [now, req.user.id, note, id]
-          );
-        } else {
-          await db.run(
-            `UPDATE refunds SET status = 'rejected', rejected_at = ?, rejected_by_id = ?, review_notes = COALESCE(?, review_notes),
-             approved_at = NULL, approved_by_id = NULL WHERE id = ?`,
-            [now, req.user.id, note, id]
-          );
-        }
-        await db.run("COMMIT");
+        await withTransaction(db, async () => {
+          const refund = await db.get("SELECT * FROM refunds WHERE id = ?", [id]);
+          if (!refund || refund.status !== "pending") {
+            throw new HttpError(400, "غير قيد الانتظار", "NOT_PENDING");
+          }
+          const now = new Date().toISOString();
+          if (status === "approved") {
+            const targetShiftId = await resolveRefundTargetShift(db, {
+              cashierId: refund.cashier_id,
+              paymentMethod: refund.payment_method,
+              fallbackShiftId: refund.shift_id,
+            });
+            await db.run("UPDATE refunds SET shift_id = ? WHERE id = ?", [targetShiftId, id]);
+            refund.shift_id = targetShiftId;
+            await applyApprovedRefundEffects(db, refund);
+            await db.run(
+              `UPDATE refunds SET status = 'approved', approved_at = ?, approved_by_id = ?, review_notes = COALESCE(?, review_notes),
+               rejected_at = NULL, rejected_by_id = NULL WHERE id = ?`,
+              [now, req.user.id, note, id]
+            );
+          } else {
+            await db.run(
+              `UPDATE refunds SET status = 'rejected', rejected_at = ?, rejected_by_id = ?, review_notes = COALESCE(?, review_notes),
+               approved_at = NULL, approved_by_id = NULL WHERE id = ?`,
+              [now, req.user.id, note, id]
+            );
+          }
+        });
         results.ok.push(id);
       } catch (e) {
-        try {
-          await db.run("ROLLBACK");
-        } catch (_) {}
         results.failed.push({ id, error: e.message || "فشل" });
       }
     }
@@ -500,48 +494,43 @@ export function createRefundsRouter(db) {
     }
     const note = review_notes != null ? String(review_notes).trim() : null;
     try {
-      await db.run("BEGIN IMMEDIATE");
-      const refund = await db.get("SELECT * FROM refunds WHERE id = ?", [id]);
-      if (!refund) {
-        await db.run("ROLLBACK");
-        return res.status(404).json({ error: "غير موجود" });
-      }
-      if (refund.status !== "pending") {
-        await db.run("ROLLBACK");
-        return res.status(400).json({ error: "الطلب ليس قيد المراجعة" });
-      }
-      const now = new Date().toISOString();
-      if (status === "approved") {
-        const targetShiftId = await resolveRefundTargetShift(db, {
-          cashierId: refund.cashier_id,
-          paymentMethod: refund.payment_method,
-          fallbackShiftId: refund.shift_id,
-        });
-        await db.run("UPDATE refunds SET shift_id = ? WHERE id = ?", [targetShiftId, id]);
-        refund.shift_id = targetShiftId;
-        await applyApprovedRefundEffects(db, refund);
-        await db.run(
-          `UPDATE refunds SET status = 'approved', approved_at = ?, approved_by_id = ?,
-           review_notes = COALESCE(?, review_notes), rejected_at = NULL, rejected_by_id = NULL WHERE id = ?`,
-          [now, req.user.id, note, id]
+      const row = await withTransaction(db, async () => {
+        const refund = await db.get("SELECT * FROM refunds WHERE id = ?", [id]);
+        if (!refund) {
+          throw new HttpError(404, "غير موجود", "NOT_FOUND");
+        }
+        if (refund.status !== "pending") {
+          throw new HttpError(400, "الطلب ليس قيد المراجعة", "NOT_PENDING");
+        }
+        const now = new Date().toISOString();
+        if (status === "approved") {
+          const targetShiftId = await resolveRefundTargetShift(db, {
+            cashierId: refund.cashier_id,
+            paymentMethod: refund.payment_method,
+            fallbackShiftId: refund.shift_id,
+          });
+          await db.run("UPDATE refunds SET shift_id = ? WHERE id = ?", [targetShiftId, id]);
+          refund.shift_id = targetShiftId;
+          await applyApprovedRefundEffects(db, refund);
+          await db.run(
+            `UPDATE refunds SET status = 'approved', approved_at = ?, approved_by_id = ?,
+             review_notes = COALESCE(?, review_notes), rejected_at = NULL, rejected_by_id = NULL WHERE id = ?`,
+            [now, req.user.id, note, id]
+          );
+        } else {
+          await db.run(
+            `UPDATE refunds SET status = 'rejected', rejected_at = ?, rejected_by_id = ?,
+             review_notes = COALESCE(?, review_notes), approved_at = NULL, approved_by_id = NULL WHERE id = ?`,
+            [now, req.user.id, note, id]
+          );
+        }
+        return db.get(
+          `SELECT r.*, u.username AS cashier_username FROM refunds r JOIN users u ON u.id = r.cashier_id WHERE r.id = ?`,
+          [id]
         );
-      } else {
-        await db.run(
-          `UPDATE refunds SET status = 'rejected', rejected_at = ?, rejected_by_id = ?,
-           review_notes = COALESCE(?, review_notes), approved_at = NULL, approved_by_id = NULL WHERE id = ?`,
-          [now, req.user.id, note, id]
-        );
-      }
-      await db.run("COMMIT");
-      const row = await db.get(
-        `SELECT r.*, u.username AS cashier_username FROM refunds r JOIN users u ON u.id = r.cashier_id WHERE r.id = ?`,
-        [id]
-      );
+      });
       res.json({ success: true, refund: row });
     } catch (e) {
-      try {
-        await db.run("ROLLBACK");
-      } catch (_) {}
       console.error(e);
       const statusCode = e.status || 500;
       res.status(statusCode).json({

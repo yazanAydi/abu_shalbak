@@ -10,6 +10,7 @@ import {
   normalizeHeaderCell,
   readXlsxMatrix,
 } from "./xlsxHelpers.js";
+import { withTransaction } from "./dbTx.js";
 
 const PRICE_LIST_PATTERNS = {
   sku: [/^الرقم$|^#$|^no\.?$/i],
@@ -133,8 +134,7 @@ export async function applyPriceListImport(db, rows, options = {}) {
   /** @type {{ row: number, reason: string, barcode?: string }[]} */
   const errors = [];
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  await withTransaction(db, async () => {
     for (const row of rows) {
       if (!row.barcode && !row.name) {
         errors.push({ row: row.rowNum, reason: "باركود واسم مفقودان" });
@@ -188,13 +188,7 @@ export async function applyPriceListImport(db, rows, options = {}) {
       );
       created++;
     }
-    await db.run("COMMIT");
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+  });
 
   return {
     type: "hesabati_price_list",

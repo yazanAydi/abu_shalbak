@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -29,15 +29,8 @@ import { pickExportColumns } from "../utils/reportExport";
 import "./productDashboard/productBarcodes.css";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import { normalizeBarcode } from "../utils/barcode";
-import { displayEntityCode, displayListRowNumber } from "../utils/entityCodeDisplay";
+import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
 import "../components/barcode/barcode-scanner.css";
-
-const PAGE = 50;
-
-// UI-only gate matching the requested admin password. The backend still
-// enforces a valid admin JWT on the delete endpoint, so this is not the
-// actual security boundary.
-const ADMIN_DELETE_PASSWORD = "admin123";
 
 const emptyForm = {
   barcode: "",
@@ -71,20 +64,20 @@ async function lookupProductByBarcodeApi(barcode) {
   }
 }
 
-async function fetchSuggestedBarcode() {
+async function fetchSuggestedSku() {
   try {
     const { data } = await api.get("/api/products/next-barcode", {
       headers: getAuthHeaders(),
     });
-    return data?.barcode ?? "";
+    return data?.sku ?? data?.barcode ?? "";
   } catch {
     return "";
   }
 }
 
 async function freshAddForm() {
-  const barcode = await fetchSuggestedBarcode();
-  return { ...emptyForm, barcode };
+  const sku = await fetchSuggestedSku();
+  return { ...emptyForm, sku };
 }
 
 function formToPayload(form) {
@@ -127,7 +120,6 @@ export default function ProductManagement() {
   const [loading, setLoading] = useState(true);
   const [searchLoading, setSearchLoading] = useState(false);
   const [search, setSearch] = useState("");
-  const [page, setPage] = useState(0);
   const [uploadFeedback, setUploadFeedback] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [importSummary, setImportSummary] = useState(null);
@@ -166,9 +158,9 @@ export default function ProductManagement() {
 
   useEffect(() => {
     let cancelled = false;
-    fetchSuggestedBarcode().then((barcode) => {
-      if (!cancelled && barcode) {
-        setForm((f) => (f.barcode ? f : { ...f, barcode }));
+    fetchSuggestedSku().then((sku) => {
+      if (!cancelled && sku) {
+        setForm((f) => (f.sku ? f : { ...f, sku }));
       }
     });
     return () => {
@@ -209,15 +201,9 @@ export default function ProductManagement() {
     ? searchLoading || searchResults === null
     : loading;
 
-  const pageSlice = useMemo(() => {
-    const start = page * PAGE;
-    return filtered.slice(start, start + PAGE);
-  }, [filtered, page]);
-
   useEffect(() => {
-    setPage(0);
     setSelectedIds(new Set());
-  }, [search]);
+  }, [search, showNeedsReviewOnly]);
 
   useEffect(() => {
     const code = form.barcode.trim();
@@ -384,10 +370,10 @@ export default function ProductManagement() {
     });
   }
 
-  function toggleSelectAllOnPage(checked) {
+  function toggleSelectAllVisible(checked) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      for (const p of pageSlice) {
+      for (const p of filtered) {
         if (checked) next.add(p.id);
         else next.delete(p.id);
       }
@@ -414,11 +400,11 @@ export default function ProductManagement() {
         await api.post(
           "/api/admin/products/bulk-delete",
           { ids },
-          { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+          { headers: { ...getAuthHeaders(), "Content-Type": "application/json", "X-Confirm-Password": pw } }
         );
       } else {
         await api.delete(`/api/admin/products/${ids[0]}`, {
-          headers: getAuthHeaders(),
+          headers: { ...getAuthHeaders(), "X-Confirm-Password": pw },
         });
       }
       toast.success(ids.length > 1 ? `تم حذف ${ids.length} منتجًا` : "تم الحذف");
@@ -431,8 +417,8 @@ export default function ProductManagement() {
 
   async function confirmDelete() {
     if (!pendingDelete) return;
-    if (pw !== ADMIN_DELETE_PASSWORD) {
-      setPwError("كلمة المرور غير صحيحة");
+    if (!pw) {
+      setPwError("كلمة المرور مطلوبة");
       return;
     }
     setDeleting(true);
@@ -443,8 +429,6 @@ export default function ProductManagement() {
       setDeleting(false);
     }
   }
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE));
 
   async function toggleActive(p) {
     const next = Number(p.is_active) === 0 ? 1 : 0;
@@ -461,8 +445,8 @@ export default function ProductManagement() {
     }
   }
 
-  const allOnPageSelected =
-    pageSlice.length > 0 && pageSlice.every((p) => selectedIds.has(p.id));
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every((p) => selectedIds.has(p.id));
 
   const columns = [
     {
@@ -470,9 +454,9 @@ export default function ProductManagement() {
       header: (
         <input
           type="checkbox"
-          aria-label="تحديد كل المنتجات في الصفحة"
-          checked={allOnPageSelected}
-          onChange={(e) => toggleSelectAllOnPage(e.target.checked)}
+          aria-label="تحديد كل المنتجات الظاهرة"
+          checked={allVisibleSelected}
+          onChange={(e) => toggleSelectAllVisible(e.target.checked)}
         />
       ),
       render: (p) => (
@@ -484,13 +468,18 @@ export default function ProductManagement() {
         />
       ),
     },
-    { key: "barcode", header: "الباركود" },
+    {
+      key: "barcode",
+      header: "الباركود",
+      value: (p) => displayProductBarcode(p),
+      render: (p) => displayProductBarcode(p),
+    },
     {
       key: "sku",
       header: "الرقم",
       className: "num",
-      value: (p) => displayEntityCode(p.sku),
-      render: (p, i) => displayListRowNumber(page, PAGE, i),
+      value: (p) => displayProductSku(p.sku),
+      render: (p) => displayProductSku(p.sku),
     },
     {
       key: "name",
@@ -570,6 +559,17 @@ export default function ProductManagement() {
             rows={filtered}
             filename="products"
             disabled={listLoading}
+            getExportRows={async () => {
+              const params = { scope: "retail", limit: "all", offset: 0 };
+              if (showNeedsReviewOnly) params.needs_review = 1;
+              if (search.trim()) params.q = search.trim();
+              const { data } = await api.get("/api/products", {
+                params,
+                headers: getAuthHeaders(),
+              });
+              if (Array.isArray(data?.items)) return data.items;
+              return Array.isArray(data?.data ?? data) ? (data?.data ?? data) : filtered;
+            }}
           />
         }
       />
@@ -605,13 +605,13 @@ export default function ProductManagement() {
               <FormField
                 label="الباركود"
                 required
-                hint="مقترح — يمكن تعديله أو مسح باركود آخر"
+                hint="امسح أو أدخل باركود المنتج"
               >
                 <div className="barcode-input-row">
                   <Input
                     value={form.barcode}
                     onChange={(e) => setForm({ ...form, barcode: e.target.value })}
-                    placeholder="00000000001"
+                    placeholder="امسح أو أدخل الباركود"
                     required
                   />
                   <CameraBarcodeButton
@@ -621,7 +621,10 @@ export default function ProductManagement() {
                   />
                 </div>
               </FormField>
-              <FormField label="الرقم">
+              <FormField
+                label="الرقم"
+                hint="مقترح — يمكن تعديله"
+              >
                 <Input
                   value={form.sku}
                   onChange={(e) => setForm({ ...form, sku: e.target.value })}
@@ -680,16 +683,6 @@ export default function ProductManagement() {
                   value={form.stock}
                   onChange={(e) => setForm({ ...form, stock: e.target.value })}
                   required
-                />
-              </FormField>
-              <FormField label="نسبة الضريبة (0–1)">
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="1"
-                  value={form.tax_rate}
-                  onChange={(e) => setForm({ ...form, tax_rate: e.target.value })}
                 />
               </FormField>
               <FormField label="الوحدة">
@@ -752,42 +745,14 @@ export default function ProductManagement() {
             >
               حذف المحدد ({selectedIds.size})
             </DangerButton>
-            <DangerButton
-              type="button"
-              disabled={products.length === 0}
-              onClick={() => requestDelete("all", products.map((p) => p.id))}
-            >
-              حذف كل المنتجات ({products.length})
-            </DangerButton>
           </div>
           <DataTable
             columns={columns}
-            rows={pageSlice}
+            rows={filtered}
             loading={listLoading}
             empty="لا توجد منتجات"
             emptyIcon="products"
           />
-          {!listLoading && filtered.length > 0 ? (
-            <div className="ui-toolbar" style={{ marginTop: "1rem", marginBottom: 0 }}>
-              <SecondaryButton
-                type="button"
-                disabled={page <= 0}
-                onClick={() => setPage((p) => p - 1)}
-              >
-                السابق
-              </SecondaryButton>
-              <span style={{ color: "var(--office-text-muted)" }}>
-                صفحة {page + 1} / {totalPages}
-              </span>
-              <SecondaryButton
-                type="button"
-                disabled={page >= totalPages - 1}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                التالي
-              </SecondaryButton>
-            </div>
-          ) : null}
         </CardBody>
       </Card>
 

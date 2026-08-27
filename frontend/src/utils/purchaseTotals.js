@@ -5,7 +5,7 @@ function round2(n) {
 /** Store default tax rate with backend fallback (0.16). */
 export function resolvePurchaseTaxRate(defaultTaxRate) {
   const n = Number(defaultTaxRate);
-  return Number.isFinite(n) && n > 0 ? n : 0.16;
+  return Number.isFinite(n) && n >= 0 ? n : 0.16;
 }
 
 /** Display rate as whole percent, e.g. 0.16 → "16". */

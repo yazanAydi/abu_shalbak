@@ -119,9 +119,6 @@ export default function Checkout() {
   );
 
   const idempotencyKeyRef = useRef(null);
-  useEffect(() => {
-    idempotencyKeyRef.current = null;
-  }, [cartItems]);
 
   const loadActivePromos = useCallback(() => {
     api
@@ -210,9 +207,10 @@ export default function Checkout() {
   const { subtotal, tax, discount, total } = estimated;
 
   const addToCart = useCallback((product) => {
+    if (isLoading) return;
     dispatch({ type: "ADD_PRODUCT", product });
     playScanSuccess();
-  }, []);
+  }, [isLoading]);
 
   const removeFromCart = useCallback((cartKey) => {
     dispatch({ type: "REMOVE_ITEM", cartKey });
@@ -220,7 +218,7 @@ export default function Checkout() {
   }, []);
 
   const changeQuantity = useCallback((cartKey, newQty) => {
-    if (newQty < 1) return;
+    if (!(Number(newQty) > 0)) return;
     dispatch({ type: "CHANGE_QTY", cartKey, newQty });
     focusBarcodeInput();
   }, []);
@@ -531,6 +529,7 @@ export default function Checkout() {
   openSuspendedListRef.current = openSuspendedList;
 
   const shortcutsBlocked =
+    isLoading ||
     payModalOpen ||
     endShiftOpen ||
     refundOpen ||

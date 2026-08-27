@@ -11,18 +11,14 @@ import {
   editOnAccountRequestMessage,
   sendOnAccountDecisionStatusMessage,
 } from "../utils/telegram.js";
-
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
-}
+import { round2 } from "../utils/money.js";
 
 export { getTelegramManagerUser };
 
 export async function createOnAccountRequest(db, params) {
   const { cashierId, shiftId, custId, saleSnapshot, totals, req } = params;
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const created = await withTransaction(db, async () => {
     const ins = await db.run(
       `INSERT INTO on_account_requests (
         cashier_id, shift_id, customer_id, sale_snapshot_json,
@@ -53,40 +49,42 @@ export async function createOnAccountRequest(db, params) {
       });
     }
 
-    let telegramMessageId = null;
-    if (isZimmaTelegramConfigured()) {
-      try {
-        telegramMessageId = await sendOnAccountApprovalMessage({
-          requestId,
-          cashierName: cashier?.username || String(cashierId),
-          customerName: customer?.name || String(custId),
-          onAccountAmount: totals.onAccountTotal,
-          total: totals.total,
-        });
-        await db.run("UPDATE on_account_requests SET telegram_message_id = ? WHERE id = ?", [
-          telegramMessageId,
-          requestId,
-        ]);
-        row.telegram_message_id = telegramMessageId;
-      } catch (e) {
-        console.error("Telegram zimma send failed:", e.message);
-      }
-    }
-
-    await db.run("COMMIT");
     return {
       request: row,
       request_id: requestId,
-      pending_approval: true,
-      telegram: isZimmaTelegramConfigured() && !!telegramMessageId,
-      message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
+      cashier,
+      customer,
+      totals,
     };
-  } catch (e) {
+  });
+
+  let telegramMessageId = null;
+  if (isZimmaTelegramConfigured()) {
     try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
+      telegramMessageId = await sendOnAccountApprovalMessage({
+        requestId: created.request_id,
+        cashierName: created.cashier?.username || String(cashierId),
+        customerName: created.customer?.name || String(custId),
+        onAccountAmount: created.totals.onAccountTotal,
+        total: created.totals.total,
+      });
+      await db.run("UPDATE on_account_requests SET telegram_message_id = ? WHERE id = ?", [
+        telegramMessageId,
+        created.request_id,
+      ]);
+      created.request.telegram_message_id = telegramMessageId;
+    } catch (e) {
+      console.error("Telegram zimma send failed:", e.message);
+    }
   }
+
+  return {
+    request: created.request,
+    request_id: created.request_id,
+    pending_approval: true,
+    telegram: isZimmaTelegramConfigured() && !!telegramMessageId,
+    message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
+  };
 }
 
 export async function getOnAccountRequestById(db, id) {
@@ -353,6 +351,8 @@ export async function approveOnAccountRequest(
         onAccountTotal: snapshot.onAccountTotal,
         cashTotal: snapshot.cashTotal,
         changeNis: snapshot.changeNis,
+        changeCurrencyId: snapshot.changeCurrencyId,
+        changeOriginalAmount: snapshot.changeOriginalAmount,
         idempotencyKey: snapshot.idempotencyKey,
         suspendedSaleId: snapshot.suspendedSaleId,
         promoBreakdown: snapshot.promoBreakdown || [],
@@ -393,8 +393,7 @@ export async function rejectOnAccountRequest(
   req = null,
   decisionSource = "admin"
 ) {
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const updated = await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM on_account_requests WHERE id = ?", [requestId]);
     if (!request) {
       const err = new Error("طلب الذمة غير موجود");
@@ -423,15 +422,8 @@ export async function rejectOnAccountRequest(
       manager_id: managerUser.id,
     });
 
-    await db.run("COMMIT");
-
-    const updated = await getOnAccountRequestById(db, requestId);
-    await notifyTelegramAfterDecision(updated, managerUser, "rejected", decisionSource);
-    return { request: updated };
-  } catch (e) {
-    try {
-      await db.run("ROLLBACK");
-    } catch (_) {}
-    throw e;
-  }
+    return getOnAccountRequestById(db, requestId);
+  });
+  await notifyTelegramAfterDecision(updated, managerUser, "rejected", decisionSource);
+  return { request: updated };
 }

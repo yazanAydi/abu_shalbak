@@ -5,18 +5,76 @@ import bcrypt from "bcrypt";
 import { seedDefaultSettings } from "../utils/settings.js";
 import { backfillMissingEntityCodes } from "../utils/entityCodes.js";
 import { migrateProductBarcodesToUnits } from "../utils/productUnits.js";
+import { seedProductCategoriesFromProducts } from "../utils/productCategories.js";
+import { seedUnitNamesCatalog } from "../utils/unitNameCatalog.js";
+
+function txKeyword(sql) {
+  const s = String(sql || "").trim();
+  if (/^BEGIN\b/i.test(s)) return "begin";
+  if (/^(COMMIT|ROLLBACK)\b/i.test(s)) return "end";
+  return null;
+}
 
 /** @param {import("sqlite3").Database} raw */
 function wrapDb(raw) {
+  let tail = Promise.resolve();
+  let releaseHold = null;
+
+  function acquireBegin() {
+    return new Promise((resolve) => {
+      const start = () => {
+        const hold = new Promise((r) => {
+          releaseHold = r;
+        });
+        tail = hold.catch(() => {});
+        resolve();
+      };
+      tail.then(start, start);
+    });
+  }
+
+  function releaseEnd() {
+    if (releaseHold) {
+      const r = releaseHold;
+      releaseHold = null;
+      r();
+    }
+  }
+
+  function runRaw(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      raw.run(sql, params, function onRun(err) {
+        if (err) reject(err);
+        else resolve({ lastID: this.lastID, changes: this.changes });
+      });
+    });
+  }
+
+  function execRaw(sql) {
+    return new Promise((resolve, reject) => {
+      raw.exec(sql, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
   return {
     raw,
     run(sql, params = []) {
-      return new Promise((resolve, reject) => {
-        raw.run(sql, params, function onRun(err) {
-          if (err) reject(err);
-          else resolve({ lastID: this.lastID, changes: this.changes });
-        });
-      });
+      const kind = txKeyword(sql);
+      if (kind === "begin") {
+        return acquireBegin().then(() =>
+          runRaw(sql, params).catch((err) => {
+            releaseEnd();
+            throw err;
+          })
+        );
+      }
+      if (kind === "end") {
+        return runRaw(sql, params).finally(releaseEnd);
+      }
+      return runRaw(sql, params);
     },
     get(sql, params = []) {
       return new Promise((resolve, reject) => {
@@ -35,12 +93,19 @@ function wrapDb(raw) {
       });
     },
     exec(sql) {
-      return new Promise((resolve, reject) => {
-        raw.exec(sql, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
+      const kind = txKeyword(sql);
+      if (kind === "begin") {
+        return acquireBegin().then(() =>
+          execRaw(sql).catch((err) => {
+            releaseEnd();
+            throw err;
+          })
+        );
+      }
+      if (kind === "end") {
+        return execRaw(sql).finally(releaseEnd);
+      }
+      return execRaw(sql);
     },
   };
 }
@@ -174,7 +239,7 @@ async function migrateProductUnitsTable(db) {
       id                 INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id         INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
       unit_name          TEXT NOT NULL,
-      barcode            TEXT NOT NULL UNIQUE,
+      barcode            TEXT UNIQUE,
       price              REAL NOT NULL DEFAULT 0,
       cost               REAL NOT NULL DEFAULT 0,
       conversion_to_base REAL NOT NULL DEFAULT 1,
@@ -235,6 +300,7 @@ async function migrateProductsInventoryScope(db) {
     }
   }
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_products_inventory_scope ON products(inventory_scope)`);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_products_scope_stock ON products(inventory_scope, stock)`);
 }
 
 async function migrateTransactionItemsProductUnit(db) {
@@ -762,6 +828,78 @@ async function migratePurchaseItemsProductUnit(db) {
   }
 }
 
+async function migrateProductsBarcodeNullable(db) {
+  const master = await db.get(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'products'`
+  );
+  if (!master?.sql || !/barcode\s+TEXT\s+NOT NULL/i.test(String(master.sql))) return;
+
+  const info = await db.all("PRAGMA table_info(products)");
+  if (!info.length) return;
+  const colDefs = info.map((c) => {
+    if (c.name === "id") return "id INTEGER PRIMARY KEY AUTOINCREMENT";
+    if (c.name === "barcode") return "barcode TEXT UNIQUE";
+    let def = `${c.name} ${c.type || "TEXT"}`;
+    if (Number(c.notnull) === 1) def += " NOT NULL";
+    if (c.dflt_value !== null && c.dflt_value !== undefined) {
+      const raw = String(c.dflt_value);
+      const wrapped = raw.includes("(") && !raw.trim().startsWith("(") ? `(${raw})` : raw;
+      def += ` DEFAULT ${wrapped}`;
+    }
+    return def;
+  });
+  const cols = info.map((c) => c.name).join(", ");
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE products_new (
+      ${colDefs.join(",\n      ")}
+    );
+    INSERT INTO products_new (${cols}) SELECT ${cols} FROM products;
+    DROP TABLE products;
+    ALTER TABLE products_new RENAME TO products;
+    CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
+    CREATE INDEX IF NOT EXISTS idx_products_inventory_scope ON products(inventory_scope);
+    CREATE INDEX IF NOT EXISTS idx_products_scope_stock ON products(inventory_scope, stock);
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+async function migrateProductUnitsBarcodeNullable(db) {
+  const info = await db.all("PRAGMA table_info(product_units)");
+  if (!info.length) return;
+  const barcodeCol = info.find((c) => c.name === "barcode");
+  if (!barcodeCol || Number(barcodeCol.notnull) === 0) return;
+
+  const cols = info.map((c) => c.name).join(", ");
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE product_units_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      unit_name TEXT NOT NULL,
+      barcode TEXT UNIQUE,
+      price REAL NOT NULL DEFAULT 0,
+      cost REAL NOT NULL DEFAULT 0,
+      conversion_to_base REAL NOT NULL DEFAULT 1,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      source_row_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      needs_review INTEGER NOT NULL DEFAULT 0,
+      purchase_enabled INTEGER NOT NULL DEFAULT 1,
+      is_default_purchase INTEGER NOT NULL DEFAULT 0,
+      sale_enabled INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(product_id, unit_name)
+    );
+    INSERT INTO product_units_new (${cols}) SELECT ${cols} FROM product_units;
+    DROP TABLE product_units;
+    ALTER TABLE product_units_new RENAME TO product_units;
+    CREATE INDEX IF NOT EXISTS idx_product_units_product ON product_units(product_id);
+    CREATE INDEX IF NOT EXISTS idx_product_units_barcode ON product_units(barcode);
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 /** Supplier discount % and free bonus units on purchase lines. */
 async function migratePurchaseItemsDiscountBonus(db) {
   for (const t of ["purchase_order_items", "purchase_invoice_items", "purchase_return_items"]) {
@@ -814,6 +952,30 @@ async function migrateProductBatchesTable(db) {
     CREATE INDEX IF NOT EXISTS idx_batches_product ON product_batches(product_id);
     CREATE INDEX IF NOT EXISTS idx_batches_expiry  ON product_batches(expiry_date);
   `);
+}
+
+async function migrateProductCategoriesTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS product_categories (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      name       TEXT NOT NULL UNIQUE,
+      active     INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await seedProductCategoriesFromProducts(db);
+}
+
+async function migrateUnitNamesTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS unit_names (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      name       TEXT NOT NULL UNIQUE,
+      active     INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await seedUnitNamesCatalog(db);
 }
 
 async function migrateExpenseCategoriesTables(db) {
@@ -1226,11 +1388,6 @@ async function migrateInventoryLedgerTable(db) {
   `);
 }
 
-/** Clamp legacy negative stock to zero (overselling no longer persists below 0). */
-async function migrateClampNegativeStock(db) {
-  await db.run("UPDATE products SET stock = 0 WHERE COALESCE(stock, 0) < 0");
-}
-
 async function migrateEntityCodeSequencesTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS entity_code_sequences (
@@ -1286,6 +1443,8 @@ async function migrateShiftReconciliationExtended(db) {
     ["variance_threshold", "REAL"],
     ["requires_approval", "INTEGER NOT NULL DEFAULT 0"],
     ["store_id", "INTEGER NOT NULL DEFAULT 1"],
+    ["hourly_rate_snapshot", "REAL"],
+    ["counted_cash_json", "TEXT"],
   ];
   for (const [col, type] of cols) {
     if (!(await tableHasColumn(db, "cashier_shifts", col))) {
@@ -1714,16 +1873,16 @@ async function migrateStoreIdColumns(db) {
 
 async function seedUsers(db) {
   const rows = [
-    { username: "admin", password: "admin123", role: "admin" },
-    { username: "cashier1", password: "cashier123", role: "cashier" },
+    { username: "admin", password: "admin123", role: "admin", mustChange: 0 },
+    { username: "cashier1", password: "cashier123", role: "cashier", mustChange: 1 },
   ];
   for (const r of rows) {
     const exists = await db.get("SELECT id FROM users WHERE username = ?", [r.username]);
     if (exists) continue;
     const hash = await bcrypt.hash(r.password, 10);
     await db.run(
-      "INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, ?, 1)",
-      [r.username, hash, r.role]
+      "INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, ?, ?)",
+      [r.username, hash, r.role, r.mustChange]
     );
   }
 }
@@ -1792,6 +1951,7 @@ export async function initDatabase(dbPath) {
   await db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
   `);
 
   await migrateLegacyIfNeeded(db);
@@ -1807,7 +1967,7 @@ export async function initDatabase(dbPath) {
 
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      barcode TEXT NOT NULL UNIQUE,
+      barcode TEXT UNIQUE,
       name TEXT NOT NULL,
       price REAL NOT NULL DEFAULT 0,
       cost REAL NOT NULL DEFAULT 0,
@@ -1958,13 +2118,13 @@ export async function initDatabase(dbPath) {
   await migrateExpenseCategoriesTables(db);
   await migrateDeliveriesTables(db);
   await migrateMarketingTables(db);
+  await migrateProductCategoriesTable(db);
   await migrateWarehousesTables(db);
 
   // Production hardening migrations
   await migrateAuditLogsTable(db);
   await migrateProductPriceHistoryTable(db);
   await migrateInventoryLedgerTable(db);
-  await migrateClampNegativeStock(db);
   await migrateReceiptSequencesTable(db);
   await migrateEntityCodeSequencesTable(db);
   await migrateShiftReconciliationExtended(db);
@@ -1985,9 +2145,12 @@ export async function initDatabase(dbPath) {
   await migrateProductBarcodesTable(db);
   await migrateProductUnitsTable(db);
   await migrateProductsUnitColumns(db);
+  await migrateUnitNamesTable(db);
   await migrateProductsInventoryScope(db);
   await migrateProductUnitPricingRepair(db);
   await migratePurchaseItemsProductUnit(db);
+  await migrateProductsBarcodeNullable(db);
+  await migrateProductUnitsBarcodeNullable(db);
   await migratePurchaseItemsDiscountBonus(db);
   await migrateTransactionItemsScannedBarcode(db);
   await migrateTransactionItemsProductUnit(db);
@@ -1998,17 +2161,21 @@ export async function initDatabase(dbPath) {
   await migrateTransactionsPaymentMethodExpanded(db);
   await migrateCurrenciesTable(db);
   await migrateTransactionsChangeAmount(db);
+  await migrateTransactionsChangeCurrency(db);
   await migrateSalePaymentsTable(db);
   await migrateSalePaymentsCheckMethod(db);
+  await migrateTransactionsChangeCurrency(db);
   await migrateSalesInvoicesTables(db);
   await migrateSuspendedSalesTables(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);
+  await seedProductCategoriesFromProducts(db);
   await migrateProductBarcodesDigitsOnly(db);
   await migrateProductBarcodesFromProducts(db);
   await migrateProductBarcodesToUnits(db);
   await migrateOrphanProductBarcodes(db);
+  await seedUnitNamesCatalog(db);
   await seedDefaultSettings(db);
   await backfillMissingEntityCodes(db);
 
@@ -2095,6 +2262,15 @@ async function migrateCurrenciesTable(db) {
 async function migrateTransactionsChangeAmount(db) {
   if (!(await tableHasColumn(db, "transactions", "change_amount"))) {
     await db.exec(`ALTER TABLE transactions ADD COLUMN change_amount REAL NOT NULL DEFAULT 0`);
+  }
+}
+
+async function migrateTransactionsChangeCurrency(db) {
+  if (!(await tableHasColumn(db, "transactions", "change_currency_id"))) {
+    await db.run("ALTER TABLE transactions ADD COLUMN change_currency_id INTEGER REFERENCES currencies(id)");
+  }
+  if (!(await tableHasColumn(db, "transactions", "change_original_amount"))) {
+    await db.run("ALTER TABLE transactions ADD COLUMN change_original_amount REAL");
   }
 }
 

@@ -4,13 +4,8 @@ export function round2(n) {
   return Math.round(Number(n) * 100) / 100;
 }
 
-export function productTaxRate(product, settings) {
-  const r = product?.tax_rate;
-  if (r !== undefined && r !== null) {
-    const n = Number(r);
-    if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
-  }
-  return settings?.default_tax_rate ?? 0;
+export function productTaxRate(_product, _settings) {
+  return 0;
 }
 
 function cartPromoKey(productId, unitId) {
@@ -75,35 +70,16 @@ export function estimateCartTotals(cartItems, settings, promos) {
   if (!settings || !cartItems.length) {
     return { subtotal: 0, tax: 0, discount: 0, total: 0 };
   }
-  const lines = cartItems.map((it) => ({
-    quantity: it.quantity,
-    unitPrice: it.price,
-    taxRate: productTaxRate(it, settings),
-  }));
-
   let subtotal = 0;
-  let tax = 0;
 
-  for (const line of lines) {
-    const qty = Math.max(0, Number(line.quantity) || 0);
-    const unitPrice = round2(Number(line.unitPrice) || 0);
-    const rate = Math.max(0, Number(line.taxRate) || 0);
-
-    if (settings.tax_inclusive && rate > 0) {
-      const lineGross = round2(qty * unitPrice);
-      const lineNet = round2(lineGross / (1 + rate));
-      const lineTax = round2(lineGross - lineNet);
-      subtotal = round2(subtotal + lineNet);
-      tax = round2(tax + lineTax);
-    } else {
-      const lineNet = round2(qty * unitPrice);
-      const lineTax = round2(lineNet * rate);
-      subtotal = round2(subtotal + lineNet);
-      tax = round2(tax + lineTax);
-    }
+  for (const it of cartItems) {
+    const qty = Math.max(0, Number(it.quantity) || 0);
+    const unitPrice = round2(Number(it.price) || 0);
+    subtotal = round2(subtotal + qty * unitPrice);
   }
 
-  const gross = round2(subtotal + tax);
+  const tax = 0;
+  const gross = subtotal;
   let discount = 0;
   if (Array.isArray(promos) && promos.length) {
     discount = Math.min(computeCartDiscount(promos, buildPromoLines(cartItems)).discount, gross);

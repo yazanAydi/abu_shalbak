@@ -51,15 +51,6 @@ export default function TodaysSummary({ today }) {
             </div>
           </div>
         </div>
-        {hasAny && Number(today?.total_tax) > 0 ? (
-          <div className="today-card today-card--tax">
-            <div className="today-card-icon" aria-hidden><Icon name="expenses" size={22} /></div>
-            <div className="today-card-body">
-              <div className="today-card-label">ضريبة القيمة المضافة</div>
-              <div className="today-card-value">{formatMoney(today?.total_tax, true)}</div>
-            </div>
-          </div>
-        ) : null}
         {hasAny && Number(today?.on_account_total) > 0 ? (
           <div className="today-card today-card--account">
             <div className="today-card-icon" aria-hidden><Icon name="vouchers" size={22} /></div>
@@ -101,12 +92,6 @@ export default function TodaysSummary({ today }) {
                 </div>
               );
             })}
-            <div className="today-collection-card today-collection-card--total">
-              <div className="today-collection-code">القيمة المحاسبية (₪)</div>
-              <div className="today-collection-value">
-                {formatMoney(today?.collections_grand_total_nis, true)}
-              </div>
-            </div>
           </div>
         </div>
       ) : null}

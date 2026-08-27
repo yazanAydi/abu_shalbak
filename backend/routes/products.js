@@ -7,19 +7,17 @@ import {
   findProductByBarcode,
   normalizeBarcodeInput,
 } from "../utils/barcode.js";
-import { getNextSuggestedBarcode } from "../utils/suggestedBarcode.js";
+import {
+  attachDisplayBarcodes,
+  formatProductSku,
+  getNextSuggestedBarcode,
+} from "../utils/suggestedBarcode.js";
 import {
   addProductBarcode,
   ensureProductBarcodeOnCreate,
   syncProductsPrimaryBarcode,
 } from "../utils/productBarcodes.js";
 import { buildBarcodeLookupResponse } from "../utils/productUnitLookup.js";
-
-function clampProductStock(raw) {
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.floor(n));
-}
 import {
   deleteProductUnit,
   formatProductUnit,
@@ -35,9 +33,29 @@ import { ensureEntityCode } from "../utils/entityCodes.js";
 import { recordPriceChange } from "../utils/priceHistory.js";
 import { getSalesByPrice } from "../utils/salesByPrice.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import {
+  BAKERY_CATEGORY_NAME,
+  createProductCategory,
+  deleteProductCategory,
+  ensureProductCategory,
+  listProductCategories,
+  normalizeCategoryName,
+  updateProductCategory,
+} from "../utils/productCategories.js";
+import {
+  createUnitName,
+  deleteUnitName,
+  ensureUnitName,
+  listUnitNames,
+  updateUnitName,
+} from "../utils/unitNameCatalog.js";
+import { round2 } from "../utils/money.js";
+import { withTransaction } from "../utils/dbTx.js";
 
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
+function clampProductStock(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.round(n * 1000) / 1000);
 }
 
 function parsePositiveInt(value) {
@@ -47,7 +65,10 @@ function parsePositiveInt(value) {
 }
 
 function parsePagination(query, defLimit = 100, maxLimit = 500) {
-  const limit = Math.min(maxLimit, Math.max(1, Number(query.limit) || defLimit));
+  const unlimited = query.limit === "all" || query.limit === "0" || Number(query.limit) === 0;
+  const limit = unlimited
+    ? 10000
+    : Math.min(maxLimit, Math.max(1, Number(query.limit) || defLimit));
   const offset = Math.max(0, Number(query.offset) || 0);
   return { limit, offset };
 }
@@ -93,6 +114,7 @@ export async function searchProducts(db, rawQuery, options = {}) {
   const { sql: scopeSql, params: scopeParams } = inventoryScopeClause(scope, "p");
   const scopeSqlPlain = scope ? " AND COALESCE(inventory_scope, 'retail') = ?" : "";
   const scopeParamsPlain = scope ? [scope] : [];
+  const limit = Math.min(100, Math.max(1, Number(options.limit) || 50));
 
   const like = `%${normalized}%`;
   const likeLower = `%${normalized.toLowerCase()}%`;
@@ -149,17 +171,20 @@ export async function searchProducts(db, rawQuery, options = {}) {
      WHERE (p.name LIKE ?
         OR CAST(p.barcode AS TEXT) LIKE ?
         OR pb.barcode LIKE ?)${scopeSql}
-     ORDER BY p.name ASC`,
-    [likeLower, like, like, ...scopeParams]
+     ORDER BY p.name ASC
+     LIMIT ?`,
+    [likeLower, like, like, ...scopeParams, limit]
   );
 
   for (const row of likeRows) {
     if (!byId.has(row.id)) byId.set(row.id, row);
   }
 
-  return [...byId.values()].sort((a, b) =>
-    String(a.name ?? "").localeCompare(String(b.name ?? ""), "ar")
-  );
+  const rows = [...byId.values()]
+    .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""), "ar"))
+    .slice(0, limit);
+  await attachDisplayBarcodes(db, rows);
+  return rows;
 }
 
 export function createProductsRouter(db) {
@@ -175,7 +200,11 @@ export function createProductsRouter(db) {
     const scope = req.query.scope ? parseInventoryScope(req.query.scope) : null;
     const searchTerm = String(req.query.search ?? req.query.q ?? "").trim();
     if (searchTerm) {
-      const rows = await searchProducts(db, searchTerm, { scope: scope || undefined });
+      const searchLimit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+      const rows = await searchProducts(db, searchTerm, {
+        scope: scope || undefined,
+        limit: searchLimit,
+      });
       return res.json(rows ?? []);
     }
 
@@ -184,11 +213,60 @@ export function createProductsRouter(db) {
     }
 
     const { sql: scopeSql, params: scopeParams } = inventoryScopeClause(scope);
+    const idsParam = String(req.query.ids ?? "").trim();
+    if (idsParam) {
+      const ids = idsParam
+        .split(",")
+        .map((v) => Number(v))
+        .filter((n) => Number.isInteger(n) && n > 0)
+        .slice(0, 100);
+      if (ids.length === 0) return res.json([]);
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = await db.all(
+        `SELECT ${PRODUCT_LIST_SELECT}
+         FROM products WHERE id IN (${placeholders})${scopeSql}`,
+        [...ids, ...scopeParams]
+      );
+      await attachDisplayBarcodes(db, rows);
+      return res.json(rows);
+    }
+
+    if (String(req.query.fields || "") === "id") {
+      const rows = await db.all(
+        `SELECT id FROM products WHERE 1=1${scopeSql} ORDER BY id ASC`,
+        scopeParams
+      );
+      return res.json(rows);
+    }
+
+    const paginate = req.query.limit != null || req.query.offset != null || req.query.needs_review != null;
+    if (paginate) {
+      const { limit, offset } = parsePagination(req.query, 50, 100);
+      let whereSql = `WHERE 1=1${scopeSql}`;
+      const params = [...scopeParams];
+      if (req.query.needs_review === "1" || req.query.needs_review === "true") {
+        whereSql += " AND COALESCE(needs_review, 0) = 1";
+      }
+      const countRow = await db.get(`SELECT COUNT(*) AS total FROM products ${whereSql}`, params);
+      const rows = await db.all(
+        `SELECT ${PRODUCT_LIST_SELECT} FROM products ${whereSql} ORDER BY id ASC LIMIT ? OFFSET ?`,
+        [...params, limit, offset]
+      );
+      await attachDisplayBarcodes(db, rows);
+      return res.json({
+        items: rows,
+        total: Number(countRow?.total) || 0,
+        limit,
+        offset,
+      });
+    }
+
     const rows = await db.all(
       `SELECT ${PRODUCT_LIST_SELECT}
        FROM products WHERE 1=1${scopeSql} ORDER BY id ASC`,
       scopeParams
     );
+    await attachDisplayBarcodes(db, rows);
     return res.json(rows);
   });
 
@@ -202,6 +280,88 @@ export function createProductsRouter(db) {
       return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
     }
     return res.json(payload);
+  });
+
+  function sendCategoryError(res, e) {
+    const status = Number(e?.status) || 500;
+    return res.status(status).json({
+      error: e?.message || "خطأ",
+      code: e?.code || "ERROR",
+    });
+  }
+
+  router.get("/categories", requireAuth, async (req, res) => {
+    const activeOnly =
+      req.query.active === "1" ||
+      req.query.active === "true" ||
+      String(req.query.active || "").toLowerCase() === "yes";
+    res.json(await listProductCategories(db, { activeOnly }));
+  });
+
+  router.post("/categories", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const row = await createProductCategory(db, req.body?.name);
+      res.status(201).json(row);
+    } catch (e) {
+      if (e?.status) return sendCategoryError(res, e);
+      throw e;
+    }
+  });
+
+  router.put("/categories/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const row = await updateProductCategory(db, req.params.id, req.body || {});
+      res.json(row);
+    } catch (e) {
+      if (e?.status) return sendCategoryError(res, e);
+      throw e;
+    }
+  });
+
+  router.delete("/categories/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      res.json(await deleteProductCategory(db, req.params.id));
+    } catch (e) {
+      if (e?.status) return sendCategoryError(res, e);
+      throw e;
+    }
+  });
+
+  router.get("/unit-names", requireAuth, async (req, res) => {
+    const activeOnly =
+      req.query.active === "1" ||
+      req.query.active === "true" ||
+      String(req.query.active || "").toLowerCase() === "yes";
+    res.json(await listUnitNames(db, { activeOnly }));
+  });
+
+  router.post("/unit-names", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const row = await createUnitName(db, req.body?.name);
+      res.status(201).json(row);
+    } catch (e) {
+      if (e?.status) return sendCategoryError(res, e);
+      throw e;
+    }
+  });
+
+  router.put("/unit-names/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const row = await updateUnitName(db, req.params.id, req.body || {});
+      res.json(row);
+    } catch (e) {
+      if (e?.status) return sendCategoryError(res, e);
+      throw e;
+    }
+  });
+
+  router.delete("/unit-names/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      res.json(await deleteUnitName(db, req.params.id));
+    } catch (e) {
+      if (e?.status) return sendCategoryError(res, e);
+      throw e;
+    }
   });
 
   router.get("/units/catalog", requireAuth, requireAdmin, async (req, res) => {
@@ -228,11 +388,11 @@ export function createProductsRouter(db) {
 
   router.get("/next-barcode", requireAuth, requireAdmin, async (_req, res) => {
     try {
-      const barcode = await getNextSuggestedBarcode(db);
-      return res.json({ barcode });
+      const sku = await getNextSuggestedBarcode(db);
+      return res.json({ sku, barcode: sku });
     } catch (e) {
       console.error("[products-next-barcode]", e);
-      return res.status(500).json({ error: "تعذّر توليد باركود مقترح" });
+      return res.status(500).json({ error: "تعذّر توليد رقم مقترح" });
     }
   });
 
@@ -281,10 +441,11 @@ export function createProductsRouter(db) {
     const inventoryScope = parseInventoryScope(req.body?.inventory_scope, "retail");
     const isBakery = inventoryScope === "bakery";
     const isWeighed = req.body?.is_weighed === 1 || req.body?.is_weighed === true ? 1 : 0;
-    const resolvedBarcode = String(barcode ?? "").trim()
-      ? String(barcode).trim()
-      : await getNextSuggestedBarcode(db);
-    if (!resolvedBarcode || !name || stock === undefined) {
+    const resolvedBarcode = String(barcode ?? "").trim() || null;
+    if (!resolvedBarcode) {
+      return res.status(400).json({ error: "الباركود مطلوب" });
+    }
+    if (!name || stock === undefined) {
       return res.status(400).json({ error: "الباركود والاسم والمخزون مطلوبة" });
     }
     if (!isBakery && price === undefined) {
@@ -294,14 +455,16 @@ export function createProductsRouter(db) {
     if (!Number.isFinite(finalPrice) || finalPrice < 0) {
       return res.status(400).json({ error: "السعر غير صالح" });
     }
-    const bcNorm = digitsOnly(normalizeBarcodeInput(resolvedBarcode));
-    const unitDup = await db.get("SELECT product_id FROM product_units WHERE barcode = ?", [bcNorm]);
-    if (unitDup) {
-      return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
-    }
-    const pbDup = await db.get("SELECT product_id FROM product_barcodes WHERE barcode = ?", [bcNorm]);
-    if (pbDup) {
-      return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
+    if (resolvedBarcode) {
+      const bcNorm = digitsOnly(normalizeBarcodeInput(resolvedBarcode));
+      const unitDup = await db.get("SELECT product_id FROM product_units WHERE barcode = ?", [bcNorm]);
+      if (unitDup) {
+        return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
+      }
+      const pbDup = await db.get("SELECT product_id FROM product_barcodes WHERE barcode = ?", [bcNorm]);
+      if (pbDup) {
+        return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
+      }
     }
     const c = cost !== undefined ? Number(cost) : 0;
     const taxR = tax_rate !== undefined && tax_rate !== null && tax_rate !== "" ? Number(tax_rate) : null;
@@ -309,13 +472,18 @@ export function createProductsRouter(db) {
       return res.status(400).json({ error: "نسبة الضريبة يجب أن تكون بين 0 و 1" });
     }
     try {
-      const skuCode = await ensureEntityCode(db, "product", sku);
+      const skuCode = formatProductSku(await ensureEntityCode(db, "product", sku));
       const unitName = isWeighed ? "كغم" : unit ? String(unit).trim() : null;
-      const finalCategory = category != null && String(category).trim()
-        ? String(category).trim()
-        : isBakery
-          ? "مواد مخبز"
-          : null;
+      if (unitName) await ensureUnitName(db, unitName);
+      let finalCategory = normalizeCategoryName(category);
+      if (finalCategory) {
+        await ensureProductCategory(db, finalCategory);
+      } else if (isBakery) {
+        await ensureProductCategory(db, BAKERY_CATEGORY_NAME);
+        finalCategory = BAKERY_CATEGORY_NAME;
+      } else {
+        finalCategory = null;
+      }
       const minStockVal =
         min_stock !== undefined && min_stock !== null && min_stock !== ""
           ? Number(min_stock)
@@ -324,7 +492,7 @@ export function createProductsRouter(db) {
         `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, is_weighed, inventory_scope, min_stock)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          String(resolvedBarcode).trim(),
+          resolvedBarcode,
           String(name).trim(),
           name_en ? String(name_en).trim() : null,
           finalPrice,
@@ -343,7 +511,9 @@ export function createProductsRouter(db) {
           Number.isFinite(minStockVal) ? minStockVal : null,
         ]
       );
-      await ensureProductBarcodeOnCreate(db, info.lastID, resolvedBarcode);
+      if (resolvedBarcode) {
+        await ensureProductBarcodeOnCreate(db, info.lastID, resolvedBarcode);
+      }
       await upsertProductUnit(db, info.lastID, {
         unit_name: unitName || "حبة",
         barcode: resolvedBarcode,
@@ -381,7 +551,9 @@ export function createProductsRouter(db) {
     const b = req.body || {};
     let barcode = existing.barcode;
     if (b.barcode !== undefined) {
-      barcode = normalizeBarcodeInput(String(b.barcode));
+      barcode = String(b.barcode ?? "").trim()
+        ? normalizeBarcodeInput(String(b.barcode))
+        : null;
       if (!barcode) {
         return res.status(400).json({ error: "الباركود مطلوب" });
       }
@@ -406,8 +578,18 @@ export function createProductsRouter(db) {
     const stock = b.stock !== undefined ? clampProductStock(b.stock) : clampProductStock(existing.stock);
     const name = b.name !== undefined ? String(b.name).trim() : existing.name;
     const name_en = b.name_en !== undefined ? (b.name_en ? String(b.name_en).trim() : null) : existing.name_en;
-    const category = b.category !== undefined ? (b.category || null) : existing.category;
+    let category = existing.category;
+    if (b.category !== undefined) {
+      const next = normalizeCategoryName(b.category);
+      if (next) {
+        await ensureProductCategory(db, next);
+        category = next;
+      } else {
+        category = null;
+      }
+    }
     const unit = b.unit !== undefined ? (b.unit || null) : existing.unit;
+    if (unit) await ensureUnitName(db, unit);
     const expiry_date = b.expiry_date !== undefined ? (b.expiry_date || null) : existing.expiry_date;
     const cost = b.cost !== undefined ? Number(b.cost) : existing.cost;
     let tax_rate = existing.tax_rate;
@@ -416,7 +598,9 @@ export function createProductsRouter(db) {
     }
     const min_price = b.min_price !== undefined ? (b.min_price != null && b.min_price !== "" ? Number(b.min_price) : null) : existing.min_price;
     const max_price = b.max_price !== undefined ? (b.max_price != null && b.max_price !== "" ? Number(b.max_price) : null) : existing.max_price;
-    const sku = b.sku !== undefined ? (b.sku ? String(b.sku).trim() : null) : existing.sku;
+    const sku = b.sku !== undefined
+      ? (b.sku ? formatProductSku(String(b.sku).trim()) : existing.sku)
+      : existing.sku;
     const image_url = b.image_url !== undefined ? (b.image_url ? String(b.image_url).trim() : null) : existing.image_url;
     const isWeighed =
       b.is_weighed !== undefined
@@ -447,7 +631,7 @@ export function createProductsRouter(db) {
       }
       throw e;
     }
-    if (b.barcode !== undefined && barcode !== existing.barcode) {
+    if (b.barcode !== undefined && barcode && barcode !== existing.barcode) {
       const pbNorm = digitsOnly(barcode);
       const existingPb = await db.get(
         "SELECT id FROM product_barcodes WHERE product_id = ? AND is_primary = 1",
@@ -767,11 +951,13 @@ export function createProductsRouter(db) {
       "SELECT COUNT(*) AS n FROM product_barcodes WHERE product_id = ?",
       [pid]
     );
+    await attachDisplayBarcodes(db, [product]);
 
     res.json({
       product: {
         id: product.id,
         barcode: product.barcode,
+        barcode_display: product.barcode_display || "",
         barcode_count: Number(barcodeCount?.n) || 0,
         sku: product.sku ?? product.barcode ?? null,
         name: product.name,
@@ -1112,24 +1298,23 @@ export function createProductsRouter(db) {
     }
 
     try {
-      await db.run("BEGIN IMMEDIATE");
-      await db.run("UPDATE products SET price = ? WHERE id = ?", [round2(newPrice), product.id]);
-      const defaultUnit = await getDefaultUnit(db, product.id);
-      if (defaultUnit) {
-        await db.run("UPDATE product_units SET price = ?, updated_at = datetime('now') WHERE id = ?", [
-          round2(newPrice),
-          defaultUnit.id,
-        ]);
-      }
-      await recordPriceChange(db, req, {
-        productId: product.id,
-        oldPrice,
-        newPrice: round2(newPrice),
-        reason,
+      await withTransaction(db, async () => {
+        await db.run("UPDATE products SET price = ? WHERE id = ?", [round2(newPrice), product.id]);
+        const defaultUnit = await getDefaultUnit(db, product.id);
+        if (defaultUnit) {
+          await db.run("UPDATE product_units SET price = ?, updated_at = datetime('now') WHERE id = ?", [
+            round2(newPrice),
+            defaultUnit.id,
+          ]);
+        }
+        await recordPriceChange(db, req, {
+          productId: product.id,
+          oldPrice,
+          newPrice: round2(newPrice),
+          reason,
+        });
       });
-      await db.run("COMMIT");
     } catch (e) {
-      try { await db.run("ROLLBACK"); } catch (_) {}
       return next(e);
     }
 

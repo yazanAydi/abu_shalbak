@@ -1,6 +1,7 @@
 import {
   parseApprovalCallbackData,
   isManagerChat,
+  isAllowedTelegramApprover,
   answerCallbackQuery,
   editRefundMessageAlreadyHandled,
   editOnAccountMessageAlreadyHandled,
@@ -25,6 +26,13 @@ import {
   rejectAdvanceRequest,
   getAdvanceRequestById,
 } from "./advanceRequestService.js";
+
+function telegramReviewNote(managerUser) {
+  const id = managerUser?.telegram_user_id;
+  const uname = managerUser?.telegram_username;
+  if (!id) return null;
+  return uname ? `telegram:${id} (@${uname})` : `telegram:${id}`;
+}
 
 function isBotConfigured(kind) {
   if (kind === "zimma") return isZimmaTelegramConfigured();
@@ -57,21 +65,33 @@ export async function handleTelegramUpdate(db, update) {
     return { handled: true, action: "denied", kind: parsed.kind };
   }
 
+  const fromId = cq.from?.id;
+  if (!isAllowedTelegramApprover(fromId, chatId, parsed.kind)) {
+    await answerCallbackQuery(cq.id, "غير مسموح", parsed.kind);
+    return { handled: true, action: "denied", kind: parsed.kind };
+  }
+
   const managerUser = await getTelegramManagerUser(db);
   if (!managerUser) {
     await answerCallbackQuery(cq.id, "لا يوجد مدير مُعرّف في النظام", parsed.kind);
     return { handled: true, action: "no_manager", kind: parsed.kind };
   }
 
+  const approver = {
+    ...managerUser,
+    telegram_user_id: fromId,
+    telegram_username: cq.from?.username || null,
+  };
+
   try {
     if (parsed.kind === "refund") {
-      return handleRefundCallback(db, cq, parsed, managerUser);
+      return handleRefundCallback(db, cq, parsed, approver);
     }
     if (parsed.kind === "zimma") {
-      return handleZimmaCallback(db, cq, parsed, managerUser);
+      return handleZimmaCallback(db, cq, parsed, approver);
     }
     if (parsed.kind === "sulaf") {
-      return handleSulafCallback(db, cq, parsed, managerUser);
+      return handleSulafCallback(db, cq, parsed, approver);
     }
     return { handled: false };
   } catch (e) {
@@ -98,12 +118,26 @@ async function handleRefundCallback(db, cq, parsed, managerUser) {
   }
 
   if (parsed.action === "approve") {
-    await approveRefundRequest(db, parsed.requestId, managerUser, null, null, "telegram");
+    await approveRefundRequest(
+      db,
+      parsed.requestId,
+      managerUser,
+      telegramReviewNote(managerUser),
+      null,
+      "telegram"
+    );
     await answerCallbackQuery(cq.id, "تمت الموافقة", "refund");
     return { handled: true, action: "approve", requestId: parsed.requestId, kind: "refund" };
   }
 
-  await rejectRefundRequest(db, parsed.requestId, managerUser, null, null, "telegram");
+  await rejectRefundRequest(
+    db,
+    parsed.requestId,
+    managerUser,
+    telegramReviewNote(managerUser),
+    null,
+    "telegram"
+  );
   await answerCallbackQuery(cq.id, "تم الرفض", "refund");
   return { handled: true, action: "reject", requestId: parsed.requestId, kind: "refund" };
 }
@@ -125,12 +159,26 @@ async function handleZimmaCallback(db, cq, parsed, managerUser) {
   }
 
   if (parsed.action === "approve") {
-    await approveOnAccountRequest(db, parsed.requestId, managerUser, null, null, "telegram");
+    await approveOnAccountRequest(
+      db,
+      parsed.requestId,
+      managerUser,
+      telegramReviewNote(managerUser),
+      null,
+      "telegram"
+    );
     await answerCallbackQuery(cq.id, "تمت الموافقة", "zimma");
     return { handled: true, action: "approve", requestId: parsed.requestId, kind: "zimma" };
   }
 
-  await rejectOnAccountRequest(db, parsed.requestId, managerUser, null, null, "telegram");
+  await rejectOnAccountRequest(
+    db,
+    parsed.requestId,
+    managerUser,
+    telegramReviewNote(managerUser),
+    null,
+    "telegram"
+  );
   await answerCallbackQuery(cq.id, "تم الرفض", "zimma");
   return { handled: true, action: "reject", requestId: parsed.requestId, kind: "zimma" };
 }
@@ -152,12 +200,26 @@ async function handleSulafCallback(db, cq, parsed, managerUser) {
   }
 
   if (parsed.action === "approve") {
-    await approveAdvanceRequest(db, parsed.requestId, managerUser, null, null, "telegram");
+    await approveAdvanceRequest(
+      db,
+      parsed.requestId,
+      managerUser,
+      telegramReviewNote(managerUser),
+      null,
+      "telegram"
+    );
     await answerCallbackQuery(cq.id, "تمت الموافقة", "sulaf");
     return { handled: true, action: "approve", requestId: parsed.requestId, kind: "sulaf" };
   }
 
-  await rejectAdvanceRequest(db, parsed.requestId, managerUser, null, null, "telegram");
+  await rejectAdvanceRequest(
+    db,
+    parsed.requestId,
+    managerUser,
+    telegramReviewNote(managerUser),
+    null,
+    "telegram"
+  );
   await answerCallbackQuery(cq.id, "تم الرفض", "sulaf");
   return { handled: true, action: "reject", requestId: parsed.requestId, kind: "sulaf" };
 }

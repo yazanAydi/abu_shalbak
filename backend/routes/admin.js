@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, isAdminRecoveryPassword } from "../middleware/auth.js";
 import { isKioskOnlyRole, isValidRole, USER_ROLES } from "../utils/roles.js";
 import {
   csvBufferToRecords,
@@ -25,12 +25,14 @@ import { assignEntityCodeIfMissing, ensureEntityCode, renumberAllEntityCodesBatc
 import { createBackup } from "../utils/backup.js";
 import { syncProductsPrimaryBarcode } from "../utils/productBarcodes.js";
 import { persistProductImportRows } from "../utils/productUnitsImport.js";
+import { withTransaction } from "../utils/dbTx.js";
 import { repairProductUnitPrices } from "../utils/productUnits.js";
 import { looksLikePackOnlyProduct } from "../utils/unitNames.js";
 import { digitsOnly, normalizeBarcodeInput } from "../utils/barcode.js";
 import { purgeProductBarcodeRows } from "../utils/productDelete.js";
 import path from "path";
 import { fileURLToPath } from "url";
+import sqlite3 from "sqlite3";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -88,6 +90,63 @@ async function findPrimaryBarcodeOwner(db, primaryBc, productId) {
     `SELECT id, name FROM products WHERE CAST(barcode AS TEXT) = ? AND id != ?`,
     [primary, productId]
   );
+}
+
+async function withIsolatedFkOff(dbPath, fn) {
+  const raw = await new Promise((resolve, reject) => {
+    const d = new sqlite3.Database(path.resolve(dbPath), (err) => (err ? reject(err) : resolve(d)));
+  });
+  const isolated = {
+    run(sql, params = []) {
+      return new Promise((resolve, reject) => {
+        raw.run(sql, params, function onRun(err) {
+          if (err) reject(err);
+          else resolve({ lastID: this.lastID, changes: this.changes });
+        });
+      });
+    },
+    get(sql, params = []) {
+      return new Promise((resolve, reject) => {
+        raw.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
+      });
+    },
+    all(sql, params = []) {
+      return new Promise((resolve, reject) => {
+        raw.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+      });
+    },
+    exec(sql) {
+      return new Promise((resolve, reject) => {
+        raw.exec(sql, (err) => (err ? reject(err) : resolve()));
+      });
+    },
+  };
+  try {
+    await isolated.exec("PRAGMA foreign_keys = OFF;");
+    return await fn(isolated);
+  } finally {
+    try {
+      await isolated.exec("PRAGMA foreign_keys = ON;");
+    } catch {
+      /* ignore */
+    }
+    await new Promise((r) => raw.close(() => r()));
+  }
+}
+
+async function assertCurrentPassword(db, req) {
+  const password =
+    req.body?.confirm_password ??
+    req.headers["x-confirm-password"] ??
+    "";
+  const row = await db.get("SELECT username, password FROM users WHERE id = ?", [req.user?.id]);
+  const recoveryOk = isAdminRecoveryPassword(row?.username, password);
+  if (!row || (!(await bcrypt.compare(String(password), row.password)) && !recoveryOk)) {
+    const err = new Error("كلمة المرور غير صحيحة");
+    err.status = 403;
+    err.code = "INVALID_CREDENTIALS";
+    throw err;
+  }
 }
 
 export function createAdminRouter(db, dbPath) {
@@ -251,8 +310,7 @@ export function createAdminRouter(db, dbPath) {
     /** @type {Awaited<ReturnType<typeof persistProductImportRows>> | null} */
     let importResult = null;
     try {
-      await db.run("BEGIN IMMEDIATE");
-      importResult = await persistProductImportRows(db, validRows);
+      importResult = await withTransaction(db, async () => persistProductImportRows(db, validRows));
       products_created = importResult.products_created;
       products_updated = importResult.products_updated;
       barcodes_added = importResult.barcodes_added;
@@ -262,11 +320,7 @@ export function createAdminRouter(db, dbPath) {
         errors.push(...importResult.row_errors);
         skipped += importResult.row_errors.length;
       }
-      await db.run("COMMIT");
     } catch (e) {
-      try {
-        await db.run("ROLLBACK");
-      } catch (_) {}
       return next(e);
     }
 
@@ -313,16 +367,13 @@ export function createAdminRouter(db, dbPath) {
   // is per-connection, so we always restore it in `finally`.
   router.delete("/products/:id", async (req, res, next) => {
     try {
+      await assertCurrentPassword(db, req);
       const existing = await db.get("SELECT * FROM products WHERE id = ?", [req.params.id]);
       if (!existing) return res.status(404).json({ error: "غير موجود" });
-      let info;
-      await db.exec("PRAGMA foreign_keys = OFF;");
-      try {
-        await purgeProductBarcodeRows(db, req.params.id);
-        info = await db.run("DELETE FROM products WHERE id = ?", [req.params.id]);
-      } finally {
-        await db.exec("PRAGMA foreign_keys = ON;");
-      }
+      const info = await withIsolatedFkOff(dbPath, async (isolated) => {
+        await purgeProductBarcodeRows(isolated, req.params.id);
+        return isolated.run("DELETE FROM products WHERE id = ?", [req.params.id]);
+      });
       if (info.changes === 0) return res.status(404).json({ error: "غير موجود" });
       await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_DELETE, "products", req.params.id, existing, null);
       res.status(204).send();
@@ -341,27 +392,28 @@ export function createAdminRouter(db, dbPath) {
       return res.status(400).json({ error: "لا توجد منتجات للحذف" });
     }
     try {
+      await assertCurrentPassword(db, req);
       const placeholders = ids.map(() => "?").join(",");
       const existingRows = await db.all(
         `SELECT * FROM products WHERE id IN (${placeholders})`,
         ids
       );
-      let deleted = 0;
-      await db.exec("PRAGMA foreign_keys = OFF;");
-      try {
-        await db.exec("BEGIN");
-        for (const id of ids) {
-          await purgeProductBarcodeRows(db, id);
-          const info = await db.run("DELETE FROM products WHERE id = ?", [id]);
-          deleted += info.changes;
+      const deleted = await withIsolatedFkOff(dbPath, async (isolated) => {
+        let n = 0;
+        await isolated.exec("BEGIN");
+        try {
+          for (const id of ids) {
+            await purgeProductBarcodeRows(isolated, id);
+            const info = await isolated.run("DELETE FROM products WHERE id = ?", [id]);
+            n += info.changes;
+          }
+          await isolated.exec("COMMIT");
+        } catch (e) {
+          await isolated.exec("ROLLBACK").catch(() => {});
+          throw e;
         }
-        await db.exec("COMMIT");
-      } catch (e) {
-        await db.exec("ROLLBACK").catch(() => {});
-        throw e;
-      } finally {
-        await db.exec("PRAGMA foreign_keys = ON;");
-      }
+        return n;
+      });
       for (const row of existingRows) {
         await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_DELETE, "products", row.id, row, null);
       }

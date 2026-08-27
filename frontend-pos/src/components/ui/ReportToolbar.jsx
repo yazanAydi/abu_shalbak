@@ -13,7 +13,7 @@ function sanitizeFilename(name) {
 
 /**
  * Shared Print + Export toolbar for report pages.
- * @param {{ title: string, subtitle?: string, columns: object[], rows: object[], summary?: { label: string, value: string }[], filename?: string, meta?: string[], disabled?: boolean }} props
+ * @param {{ title: string, subtitle?: string, columns: object[], rows: object[], summary?: { label: string, value: string }[], filename?: string, meta?: string[], disabled?: boolean, getExportRows?: () => Promise<object[]> }} props
  */
 export default function ReportToolbar({
   title,
@@ -24,6 +24,7 @@ export default function ReportToolbar({
   filename,
   meta,
   disabled,
+  getExportRows,
 }) {
   const hasTableData =
     Array.isArray(rows) && rows.length > 0 && Array.isArray(columns) && columns.length > 0;
@@ -46,9 +47,12 @@ export default function ReportToolbar({
     }
   }
 
-  function onExport() {
-    if (hasTableData) {
-      exportToCsv(csvName, columns, rows);
+  async function onExport() {
+    const exportRows = typeof getExportRows === "function" ? await getExportRows() : rows;
+    const canExportTable =
+      Array.isArray(exportRows) && exportRows.length > 0 && Array.isArray(columns) && columns.length > 0;
+    if (canExportTable) {
+      exportToCsv(csvName, columns, exportRows);
       return;
     }
     if (hasSummary) {

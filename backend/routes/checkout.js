@@ -8,10 +8,11 @@ import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
 import { checkoutSchema } from "../middleware/schemas.js";
-import { getDefaultUnit, ensureDefaultProductUnit } from "../utils/productUnits.js";
+import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost } from "../utils/productUnits.js";
 import {
   resolveCheckoutPayments,
   loadSalePayments,
+  assertDrawerCanGiveChange,
 } from "../utils/salePayments.js";
 import {
   loadSuspendedSaleItemMap,
@@ -47,7 +48,7 @@ function validateCheckoutBody(body) {
     if (!Number.isInteger(Number(line.product_id)) || Number(line.product_id) <= 0) {
       return "product_id غير صالح في أحد الأصناف";
     }
-    if (!Number.isFinite(qty) || qty < 1) {
+    if (!Number.isFinite(qty) || qty <= 0) {
       return "الكمية يجب أن تكون رقماً موجباً";
     }
     if (!Number.isFinite(price) || price < 0) {
@@ -330,7 +331,7 @@ export function createCheckoutRouter(db) {
         category: p.category,
         quantity: qty,
         price: effectivePrice,
-        cost: round2(Number(unit.cost) || Number(p.cost) || 0),
+        cost: resolveSoldUnitCost(unit, p),
         taxRate: lineTaxRate,
         is_weighed: isWeighed,
       });
@@ -367,9 +368,11 @@ export function createCheckoutRouter(db) {
           promoBreakdown = promoResult.breakdown || [];
           discount = Math.min(discount, grossTotal);
         }
-      } catch (_) {
-        discount = 0;
-        promoBreakdown = [];
+      } catch (err) {
+        const e = new Error(err?.message || "فشل احتساب العرض");
+        e.status = 409;
+        e.code = "PROMO_FAILED";
+        throw e;
       }
     }
     const total = round2(grossTotal - discount);
@@ -379,8 +382,17 @@ export function createCheckoutRouter(db) {
       return res.status(400).json({ error: paymentResolved.error, code: "PAYMENT_ERROR" });
     }
 
-    const { lines: paymentLines, summaryMethod, cashTendered, onAccountTotal, cashTotal, changeNis } =
-      paymentResolved;
+    const {
+      lines: paymentLines,
+      summaryMethod,
+      cashTendered,
+      onAccountTotal,
+      cashTotal,
+      changeNis,
+      changeOriginal,
+      changeCurrencyId,
+      changeCurrencyCode,
+    } = paymentResolved;
 
     if (onAccountTotal > 0 && !custId) {
       return res.status(400).json({ error: "اختر عميلاً للبيع على الذمة", code: "CUSTOMER_REQUIRED" });
@@ -413,6 +425,15 @@ export function createCheckoutRouter(db) {
       return res.status(400).json({ error: shiftErr || "لا توجد وردية مفتوحة", code: "NO_OPEN_SHIFT" });
     }
 
+    const changeErr = await assertDrawerCanGiveChange(db, shift.id, shift.opening_cash, paymentLines, {
+      changeOriginal,
+      changeNis,
+      changeCurrencyCode,
+    });
+    if (changeErr) {
+      return res.status(400).json({ error: changeErr.error, code: changeErr.code });
+    }
+
     if (suspendedContext && Number(suspendedContext.sale.shift_id) !== Number(shift.id)) {
       return res.status(403).json({
         error: "الفاتورة المعلقة تابعة لوردية أخرى",
@@ -438,6 +459,8 @@ export function createCheckoutRouter(db) {
           onAccountTotal,
           cashTotal,
           changeNis,
+          changeCurrencyId,
+          changeOriginalAmount: changeOriginal,
           idempotencyKey,
           suspendedSaleId: suspendedSaleId || null,
           promoBreakdown,
@@ -485,6 +508,8 @@ export function createCheckoutRouter(db) {
         onAccountTotal,
         cashTotal,
         changeNis,
+        changeCurrencyId,
+        changeOriginalAmount: changeOriginal,
         idempotencyKey,
         suspendedSaleId: suspendedSaleId || null,
         promoBreakdown,

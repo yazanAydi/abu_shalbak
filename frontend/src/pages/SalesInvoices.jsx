@@ -21,7 +21,6 @@ import {
   deriveTotalPrice,
   deriveUnitPrice,
   formatDiscountPercent,
-  formatTaxRatePercent,
 } from "../utils/saleInvoiceTotals";
 import "./purchase-item-editor.css";
 
@@ -39,18 +38,17 @@ function pickDefaultSaleUnit(units) {
   return def ? { id: def.id, price: def.price } : { id: null, price: null };
 }
 
-function SaleSummaryFooter({ totals, defaultTaxRate }) {
+function SaleSummaryFooter({ totals }) {
   if (!totals) return null;
   const hasDiscount = (totals.discountSaved ?? 0) > 0;
   const rows = [
-    { label: "المجموع (يشمل ض.ق.م)", value: ils(totals.listGrossTotal ?? 0), muted: false },
+    { label: "المجموع", value: ils(totals.listGrossTotal ?? 0), muted: false },
     ...(hasDiscount
       ? [
           { label: `الخصم ${formatDiscountPercent(totals.effectiveDiscountPct)}%`, value: ils(totals.discountSaved), muted: true },
           { label: "بعد الخصم", value: ils(totals.total ?? 0), muted: true },
         ]
       : []),
-    { label: `ضريبة ${formatTaxRatePercent(defaultTaxRate)}%`, value: ils(totals.tax ?? 0), muted: true },
     { label: "الصافي", value: ils(totals.total ?? 0), grand: true },
   ];
   return (
@@ -148,7 +146,6 @@ function ItemEditor({ items, setItems, defaultTaxRate = 0, taxInclusive = true }
       <div style={{ marginBottom: "0.75rem" }}>
         <ProductPicker onPick={addProduct} />
       </div>
-      <div className="purchase-item-editor__hint">الأسعار شامل ضريبة القيمة المضافة</div>
       <div className="ui-table-wrap">
         <table className="ui-table">
           <thead>
@@ -198,7 +195,7 @@ function ItemEditor({ items, setItems, defaultTaxRate = 0, taxInclusive = true }
           </tbody>
         </table>
       </div>
-      <SaleSummaryFooter totals={totals} defaultTaxRate={defaultTaxRate} />
+      <SaleSummaryFooter totals={totals} />
     </div>
   );
 }

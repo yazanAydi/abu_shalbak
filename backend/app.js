@@ -40,6 +40,7 @@ import { createAttendanceRouter } from "./routes/attendance.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { responseEnvelope } from "./middleware/responseEnvelope.js";
 import { apiLimiter } from "./middleware/rateLimit.js";
+import { requireAuth, requirePasswordChanged } from "./middleware/auth.js";
 import { HttpError } from "./utils/httpError.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,7 +74,7 @@ function isDevTailscaleOrigin(origin) {
 }
 
 function isOriginAllowed(origin, allowedOrigins) {
-  if (!origin || allowedOrigins.length === 0) return true;
+  if (!origin) return true;
   if (allowedOrigins.includes(origin)) return true;
   return isDevTailscaleOrigin(origin);
 }
@@ -88,6 +89,15 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
     });
   });
   router.use("/auth", createAuthRouter(db));
+  router.use("/telegram", createTelegramRouter(db));
+  const requireChanged = requirePasswordChanged(db);
+  router.use((req, res, next) => {
+    if (req.path.startsWith("/attendance/kiosk")) return next();
+    requireAuth(req, res, (err) => {
+      if (err) return next(err);
+      requireChanged(req, res, next);
+    });
+  });
   router.use("/products", createProductsRouter(db));
   router.use("/checkout", createCheckoutRouter(db));
   router.use("/reports", createReportsRouter(db));
@@ -97,7 +107,6 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/refund-requests", createRefundRequestsRouter(db));
   router.use("/advance-requests", createAdvanceRequestsRouter(db));
   router.use("/on-account-requests", createOnAccountRequestsRouter(db));
-  router.use("/telegram", createTelegramRouter(db));
   router.use("/shifts", createShiftsRouter(db));
   router.use("/settings", createSettingsRouter(db));
   router.use("/inventory", createInventoryRouter(db));
@@ -124,6 +133,11 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
 export function createApp(db, dbPath, options = {}) {
   const { enableStatic = false } = options;
   const allowedOrigins = parseAllowedOrigins();
+  if (process.env.NODE_ENV === "production" && allowedOrigins.length === 0) {
+    console.warn(
+      "[cors] ALLOWED_ORIGINS is empty in production — browser cross-origin requests will be denied."
+    );
+  }
   const app = express();
 
   // The app is served over plain HTTP on the store LAN. Helmet's default CSP
@@ -162,6 +176,7 @@ export function createApp(db, dbPath, options = {}) {
         "X-Requested-With",
         "X-Request-Id",
         "X-Kiosk-Key",
+        "X-Confirm-Password",
       ],
     })
   );

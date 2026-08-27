@@ -96,6 +96,15 @@ describe("product units", () => {
     expect(prices).toEqual([2, 13]);
   });
 
+  test("pack-unit barcode lookup reports product barcode/price and matched unit", async () => {
+    const lookup = await buildBarcodeLookupResponse(ctx.db, "9000000000002");
+    expect(lookup).toBeTruthy();
+    expect(lookup.product.barcode).toBe("9000000000001");
+    expect(Number(lookup.product.price)).toBe(2);
+    expect(lookup.matched_barcode).toBe("9000000000002");
+    expect(lookup.matched_unit_name).toBe("صندوق");
+  });
+
   test("checkout rejects wrong unit price from frontend", async () => {
     const product = await ctx.db.get("SELECT id FROM products WHERE barcode = ?", ["9000000000001"]);
     const unit = await ctx.db.get("SELECT id FROM product_units WHERE barcode = ?", ["9000000000002"]);
@@ -536,6 +545,8 @@ describe("sale_enabled POS lookup", () => {
 
     const lookup = await buildBarcodeLookupResponse(ctx.db, "8600000002");
     expect(lookup).toBeTruthy();
+    expect(lookup.matched_unit_name).toBe("صندوق");
+    expect(lookup.matched_barcode).toBe("8600000002");
     expect(lookup.selectedUnit.unit_name).toBe("حبة");
     expect(lookup.unit_name).toBe("حبة");
     expect(lookup.availableUnits.some((u) => u.unit_name === "صندوق")).toBe(false);

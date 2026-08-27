@@ -1,9 +1,20 @@
 import { digitsOnly, normalizeBarcodeInput } from "./barcode.js";
 import { resolveUnitPrice, buildSourceRowIndexFromProducts } from "./importPriceResolver.js";
 import { normalizeUnitName } from "./unitNames.js";
+import { ensureUnitName } from "./unitNameCatalog.js";
 
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
+import { round2 } from "./money.js";
+
+/**
+ * Cost of the sold unit. A blank/zero pack cost must not fall back to the
+ * single-piece product cost — scale the base cost by conversion_to_base.
+ */
+export function resolveSoldUnitCost(unit, product) {
+  const unitCost = Number(unit?.cost);
+  if (Number.isFinite(unitCost) && unitCost > 0) return round2(unitCost);
+  const baseCost = Number(product?.cost) || 0;
+  const conversion = Math.max(0.0001, Number(unit?.conversion_to_base) || 1);
+  return round2(baseCost * conversion);
 }
 
 /**
@@ -255,28 +266,40 @@ export async function syncProductFromDefaultUnit(db, productId) {
   );
   if (!unit) return;
 
-  await db.run(
-    `UPDATE products SET barcode = ?, price = ?, cost = ?, updated_at = datetime('now') WHERE id = ?`,
-    [String(unit.barcode), round2(unit.price), round2(unit.cost), productId]
-  );
+  const unitBarcode = unit.barcode != null && String(unit.barcode).trim()
+    ? String(unit.barcode).trim()
+    : null;
 
-  const existingPb = await db.get(
-    "SELECT id FROM product_barcodes WHERE product_id = ? AND barcode = ?",
-    [productId, unit.barcode]
-  );
-  if (!existingPb) {
-    await db.run("UPDATE product_barcodes SET is_primary = 0 WHERE product_id = ?", [productId]);
+  if (unitBarcode) {
     await db.run(
-      "INSERT OR IGNORE INTO product_barcodes (product_id, barcode, label, is_primary) VALUES (?, ?, ?, 1)",
-      [productId, unit.barcode, unit.unit_name]
+      `UPDATE products SET barcode = ?, price = ?, cost = ?, updated_at = datetime('now') WHERE id = ?`,
+      [unitBarcode, round2(unit.price), round2(unit.cost), productId]
     );
-  } else {
-    await db.run("UPDATE product_barcodes SET is_primary = 0 WHERE product_id = ?", [productId]);
-    await db.run("UPDATE product_barcodes SET is_primary = 1, label = ? WHERE id = ?", [
-      unit.unit_name,
-      existingPb.id,
-    ]);
+
+    const existingPb = await db.get(
+      "SELECT id FROM product_barcodes WHERE product_id = ? AND barcode = ?",
+      [productId, unitBarcode]
+    );
+    if (!existingPb) {
+      await db.run("UPDATE product_barcodes SET is_primary = 0 WHERE product_id = ?", [productId]);
+      await db.run(
+        "INSERT OR IGNORE INTO product_barcodes (product_id, barcode, label, is_primary) VALUES (?, ?, ?, 1)",
+        [productId, unitBarcode, unit.unit_name]
+      );
+    } else {
+      await db.run("UPDATE product_barcodes SET is_primary = 0 WHERE product_id = ?", [productId]);
+      await db.run("UPDATE product_barcodes SET is_primary = 1, label = ? WHERE id = ?", [
+        unit.unit_name,
+        existingPb.id,
+      ]);
+    }
+    return;
   }
+
+  await db.run(
+    `UPDATE products SET price = ?, cost = ?, updated_at = datetime('now') WHERE id = ?`,
+    [round2(unit.price), round2(unit.cost), productId]
+  );
 }
 
 /**
@@ -286,14 +309,20 @@ export async function syncProductFromDefaultUnit(db, productId) {
  */
 export async function upsertProductUnit(db, productId, data) {
   const unitName = normalizeUnitName(data.unit_name || data.unitName || "حبة");
-  const barcode = digitsOnly(normalizeBarcodeInput(data.barcode));
-  if (barcode.length < 4 || barcode.length > 14) {
+  await ensureUnitName(db, unitName);
+  const barcode = data.barcode != null && String(data.barcode).trim()
+    ? digitsOnly(normalizeBarcodeInput(data.barcode))
+    : "";
+  if (barcode && (barcode.length < 4 || barcode.length > 14)) {
     throw Object.assign(new Error("باركود غير صالح"), { status: 400 });
   }
 
   const price = round2(Number(data.price) || 0);
   const cost = round2(Number(data.cost) || 0);
-  const conversion = Math.max(0.0001, Number(data.conversion_to_base) || 1);
+  const requestedConversion = Number(data.conversion_to_base);
+  const conversion = Number.isFinite(requestedConversion) && requestedConversion > 0
+    ? requestedConversion
+    : null;
   const isDefault = data.is_default ? 1 : 0;
   const sourceRowId = data.source_row_id != null ? Number(data.source_row_id) : null;
   const needsReview = data.needs_review ? 1 : 0;
@@ -302,27 +331,30 @@ export async function upsertProductUnit(db, productId, data) {
   const isDefaultPurchase = data.is_default_purchase == null ? null : data.is_default_purchase ? 1 : 0;
   const saleEnabled = data.sale_enabled == null ? null : data.sale_enabled ? 1 : 0;
 
-  const owner = await db.get("SELECT id, product_id FROM product_units WHERE barcode = ?", [barcode]);
+  const storedBarcode = barcode || null;
+  const owner = storedBarcode
+    ? await db.get("SELECT id, product_id FROM product_units WHERE barcode = ?", [storedBarcode])
+    : null;
   const existingByName = await db.get(
     "SELECT id FROM product_units WHERE product_id = ? AND unit_name = ?",
     [productId, unitName]
   );
 
-  // Cross-table barcode conflicts: friendly 409 instead of a raw DB constraint
-  // error. A barcode may legitimately live on this product's own primary row.
-  const pbOwner = await db.get(
-    "SELECT product_id FROM product_barcodes WHERE barcode = ?",
-    [barcode]
-  );
-  if (pbOwner && Number(pbOwner.product_id) !== Number(productId)) {
-    throw Object.assign(new Error("هذا الباركود مرتبط بمنتج آخر"), { status: 409 });
-  }
-  const prodOwner = await db.get(
-    "SELECT id FROM products WHERE barcode = ? AND id != ?",
-    [barcode, productId]
-  );
-  if (prodOwner) {
-    throw Object.assign(new Error("هذا الباركود مرتبط بمنتج آخر"), { status: 409 });
+  if (storedBarcode) {
+    const pbOwner = await db.get(
+      "SELECT product_id FROM product_barcodes WHERE barcode = ?",
+      [storedBarcode]
+    );
+    if (pbOwner && Number(pbOwner.product_id) !== Number(productId)) {
+      throw Object.assign(new Error("هذا الباركود مرتبط بمنتج آخر"), { status: 409 });
+    }
+    const prodOwner = await db.get(
+      "SELECT id FROM products WHERE barcode = ? AND id != ?",
+      [storedBarcode, productId]
+    );
+    if (prodOwner) {
+      throw Object.assign(new Error("هذا الباركود مرتبط بمنتج آخر"), { status: 409 });
+    }
   }
 
   if (isDefault) {
@@ -339,13 +371,13 @@ export async function upsertProductUnit(db, productId, data) {
       throw Object.assign(new Error("هذا الباركود مرتبط بوحدة أخرى"), { status: 409 });
     }
     await db.run(
-      `UPDATE product_units SET barcode = ?, price = ?, cost = ?, conversion_to_base = ?,
+      `UPDATE product_units SET barcode = ?, price = ?, cost = ?, conversion_to_base = COALESCE(?, conversion_to_base),
        is_default = ?, needs_review = ?, purchase_enabled = COALESCE(?, purchase_enabled),
        is_default_purchase = COALESCE(?, is_default_purchase),
        sale_enabled = COALESCE(?, sale_enabled),
        source_row_id = COALESCE(?, source_row_id), updated_at = datetime('now')
        WHERE id = ?`,
-      [barcode, price, cost, conversion, isDefault, needsReview, purchaseEnabled, isDefaultPurchase, saleEnabled, sourceRowId, unitId]
+      [storedBarcode, price, cost, conversion, isDefault, needsReview, purchaseEnabled, isDefaultPurchase, saleEnabled, sourceRowId, unitId]
     );
   } else if (owner) {
     if (Number(owner.product_id) !== Number(productId)) {
@@ -353,7 +385,7 @@ export async function upsertProductUnit(db, productId, data) {
     }
     unitId = owner.id;
     await db.run(
-      `UPDATE product_units SET unit_name = ?, price = ?, cost = ?, conversion_to_base = ?,
+      `UPDATE product_units SET unit_name = ?, price = ?, cost = ?, conversion_to_base = COALESCE(?, conversion_to_base),
        is_default = ?, needs_review = ?, purchase_enabled = COALESCE(?, purchase_enabled),
        is_default_purchase = COALESCE(?, is_default_purchase),
        sale_enabled = COALESCE(?, sale_enabled),
@@ -366,7 +398,7 @@ export async function upsertProductUnit(db, productId, data) {
       `INSERT INTO product_units
          (product_id, unit_name, barcode, price, cost, conversion_to_base, is_default, needs_review, purchase_enabled, is_default_purchase, sale_enabled, source_row_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1), COALESCE(?, 0), COALESCE(?, 1), ?)`,
-      [productId, unitName, barcode, price, cost, conversion, isDefault, needsReview, purchaseEnabled, isDefaultPurchase, saleEnabled, sourceRowId]
+      [productId, unitName, storedBarcode, price, cost, conversion ?? 1, isDefault, needsReview, purchaseEnabled, isDefaultPurchase, saleEnabled, sourceRowId]
     );
     unitId = info.lastID;
   }

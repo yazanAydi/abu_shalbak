@@ -83,4 +83,14 @@ describe("Sales reports API: range and daily-series", () => {
       .set(authHeader(adminToken));
     expect(res.status).toBe(400);
   });
+
+  test("GET /reports/daily batches line items and keeps sold qty", async () => {
+    const res = await request(ctx.app)
+      .get(`/api/v1/reports/daily?date=${today}`)
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    const body = res.body.data ?? res.body;
+    expect(body.items_sold).toBe(2);
+    expect(body.top_products[0].quantity).toBe(2);
+  });
 });

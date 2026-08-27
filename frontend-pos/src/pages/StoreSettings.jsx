@@ -23,10 +23,7 @@ import "../components/barcode/barcode-scanner.css";
 import { STORE_LOGO_PATH, resolveStoreLogoUrl } from "../utils/storeBranding";
 
 const LABELS = {
-  default_tax_rate: "نسبة الضريبة الافتراضية (0–1)",
-  tax_inclusive: "السعر شامل الضريبة",
   business_day_cutoff_hour: "ساعة بداية اليوم (0–23)",
-  receipt_show_tax: "إظهار الضريبة في الإيصال",
   receipt_show_cashier: "إظهار اسم الكاشير في الإيصال",
   receipt_logo_url: "رابط الشعار في الإيصال",
   default_opening_cash: "النقد الافتتاحي الافتراضي (₪)",
@@ -189,7 +186,6 @@ export default function StoreSettings() {
       const patch = {
         ...form,
         default_tax_rate: Number(form.default_tax_rate),
-        business_day_cutoff_hour: Number(form.business_day_cutoff_hour),
         default_opening_cash: Number(form.default_opening_cash),
         shift_variance_threshold: Number(form.shift_variance_threshold),
         expiry_alert_days: Number(form.expiry_alert_days),
@@ -235,7 +231,7 @@ export default function StoreSettings() {
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
-      <PageHeader title="إعدادات المتجر" subtitle="الضريبة، الإيصال، وأزرار نقطة البيع السريعة" icon="settings" />
+      <PageHeader title="إعدادات المتجر" subtitle="الإيصال، الوردية، وأزرار نقطة البيع السريعة" icon="settings" />
 
       {!settings ? (
         <div className="ui-page-loading">
@@ -245,45 +241,8 @@ export default function StoreSettings() {
         <Card>
         <CardBody>
         <form onSubmit={save}>
-          <SectionTitle>الضريبة والإيصال</SectionTitle>
+          <SectionTitle>الإيصال والوردية</SectionTitle>
           <FormGrid>
-            <FormField label={LABELS.default_tax_rate} hint="مثال: 0.16 = 16%">
-              <Input
-                type="number"
-                min="0"
-                max="1"
-                step="0.01"
-                value={form.default_tax_rate}
-                onChange={(e) => onChange("default_tax_rate", e.target.value)}
-              />
-            </FormField>
-            <FormField label={LABELS.tax_inclusive} hint="عند التفعيل، سعر الرف يشمل الضريبة">
-              <Input
-                type="checkbox"
-                checked={!!form.tax_inclusive}
-                onChange={(e) => onChange("tax_inclusive", e.target.checked)}
-              />
-            </FormField>
-            <FormField
-              label={LABELS.business_day_cutoff_hour}
-              hint="0 = منتصف الليل. اضبط 3 لتقارير المتاجر التي تعمل حتى الفجر"
-            >
-              <Input
-                type="number"
-                min="0"
-                max="23"
-                step="1"
-                value={form.business_day_cutoff_hour}
-                onChange={(e) => onChange("business_day_cutoff_hour", e.target.value)}
-              />
-            </FormField>
-            <FormField label={LABELS.receipt_show_tax}>
-              <Input
-                type="checkbox"
-                checked={!!form.receipt_show_tax}
-                onChange={(e) => onChange("receipt_show_tax", e.target.checked)}
-              />
-            </FormField>
             <FormField label={LABELS.receipt_show_cashier}>
               <Input
                 type="checkbox"

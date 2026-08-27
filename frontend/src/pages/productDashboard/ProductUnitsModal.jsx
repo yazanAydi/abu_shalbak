@@ -7,7 +7,7 @@ export default function ProductUnitsModal({ open, onClose, product, onChanged })
       open={open}
       onClose={onClose}
       title={product ? `وحدات: ${product.name}` : "الوحدات"}
-      size="lg"
+      size="xl"
       footer={
         <SecondaryButton type="button" onClick={onClose}>
           تم

@@ -1,7 +1,7 @@
 import { round2 } from "../utils/tax.js";
 import { recordMovement } from "../utils/inventory.js";
 import { nextReceiptNumber } from "../utils/receiptNumber.js";
-import { insertSalePayments } from "../utils/salePayments.js";
+import { insertSalePayments, netDrawerCashNis } from "../utils/salePayments.js";
 import { markSuspendedSaleCompleted } from "../services/suspendedSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
 
@@ -30,8 +30,10 @@ async function executeCheckoutSaleCore(db, params) {
     paymentLines,
     summaryMethod,
     onAccountTotal,
-    cashTotal,
+    cashTotal: _cashTotal,
     changeNis,
+    changeCurrencyId,
+    changeOriginalAmount,
     idempotencyKey,
     suspendedSaleId,
     promoBreakdown,
@@ -45,8 +47,8 @@ async function executeCheckoutSaleCore(db, params) {
   const receiptNumber = await nextReceiptNumber(db, 1);
 
     const ins = await db.run(
-      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?)`,
+      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id, idempotency_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?)`,
       [
         cashierId,
         JSON.stringify(itemsForJson),
@@ -55,6 +57,8 @@ async function executeCheckoutSaleCore(db, params) {
         total,
         discount,
         round2(changeNis || 0),
+        changeCurrencyId ?? null,
+        changeOriginalAmount != null ? round2(changeOriginalAmount) : round2(changeNis || 0),
         summaryMethod,
         shiftId,
         custId,
@@ -64,10 +68,26 @@ async function executeCheckoutSaleCore(db, params) {
     );
     const transactionId = ins.lastID;
 
+    const preDiscountGross = round2(
+      normalized.reduce((s, L) => s + round2(L.price * L.quantity), 0)
+    );
+    let discountAllocated = 0;
+
     for (let i = 0; i < normalized.length; i++) {
       const L = normalized[i];
       const d = detailed[i];
-      const grossProfit = round2(d.lineNet - L.cost * L.quantity);
+      const lineGross = round2(L.price * L.quantity);
+      let lineDiscount = 0;
+      if (discount > 0 && preDiscountGross > 0) {
+        if (i === normalized.length - 1) {
+          lineDiscount = round2(discount - discountAllocated);
+        } else {
+          lineDiscount = round2(discount * (lineGross / preDiscountGross));
+          discountAllocated = round2(discountAllocated + lineDiscount);
+        }
+      }
+      const lineNetAfterDiscount = round2(d.lineNet - lineDiscount);
+      const grossProfit = round2(lineNetAfterDiscount - L.cost * L.quantity);
       await db.run(
         `INSERT INTO transaction_items
            (transaction_id, product_id, barcode, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,
@@ -81,13 +101,13 @@ async function executeCheckoutSaleCore(db, params) {
           L.name,
           L.quantity,
           L.price,
-          d.lineNet,
+          lineNetAfterDiscount,
           d.lineTax,
           d.lineGross,
           L.taxRate,
           L.cost,
           grossProfit,
-          0,
+          lineDiscount,
           L.scanned_barcode,
           L.product_barcode_id,
           L.product_unit_id,
@@ -99,7 +119,7 @@ async function executeCheckoutSaleCore(db, params) {
 
     await insertSalePayments(db, transactionId, paymentLines);
 
-    const netCashNis = round2((cashTotal || 0) - (changeNis || 0));
+    const netCashNis = netDrawerCashNis(paymentLines, changeNis);
     if (netCashNis > 0) {
       await db.run(
         `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description, transaction_id)

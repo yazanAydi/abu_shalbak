@@ -5,6 +5,7 @@ import { recordMovement } from "../utils/inventory.js";
 import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { resolveInvoicePayments, insertSalePayments } from "../utils/salePayments.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { withTransaction } from "../utils/dbTx.js";
 
 function round6(n) {
   return Math.round((Number(n) || 0) * 1e6) / 1e6;
@@ -72,10 +73,7 @@ export async function normalizeSaleItems(db, items) {
     const rawUnitId = it.unit_id != null ? Number(it.unit_id) : it.product_unit_id != null ? Number(it.product_unit_id) : null;
     const unit = await resolveSaleUnit(db, pid, rawUnitId);
 
-    const hasTotal = it.total_price != null && it.total_price !== "";
-    const listGross = hasTotal
-      ? round2(Number(it.total_price) || 0)
-      : round2((Number(it.unit_price) || unit.unit_price || Number(product.price) || 0) * qty);
+    const listGross = round2((Number(unit.unit_price) || Number(product.price) || 0) * qty);
 
     const discountPct = Math.min(100, Math.max(0, Number(it.discount_pct) || 0));
     const bonusQty = Math.max(0, Number(it.bonus_quantity) || 0);
@@ -160,8 +158,7 @@ export async function createSalesInvoiceDraft(db, body, userId) {
   if (!norm) return { error: "أصناف غير صالحة", status: 400 };
   const { subtotal, tax, total, lines } = await computeSalesInvoiceTotals(db, norm);
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const row = await withTransaction(db, async () => {
     const no = await nextInvoiceNo(db);
     const ins = await db.run(
       `INSERT INTO sales_invoices
@@ -180,12 +177,9 @@ export async function createSalesInvoiceDraft(db, body, userId) {
       ]
     );
     await insertInvoiceItems(db, ins.lastID, lines);
-    await db.run("COMMIT");
-    return { row: await db.get("SELECT * FROM sales_invoices WHERE id = ?", [ins.lastID]) };
-  } catch (e) {
-    try { await db.run("ROLLBACK"); } catch (_) {}
-    throw e;
-  }
+    return db.get("SELECT * FROM sales_invoices WHERE id = ?", [ins.lastID]);
+  });
+  return { row };
 }
 
 export async function updateSalesInvoiceDraft(db, invoiceId, body) {
@@ -200,8 +194,7 @@ export async function updateSalesInvoiceDraft(db, invoiceId, body) {
   if (!norm) return { error: "أصناف غير صالحة", status: 400 };
   const { subtotal, tax, total, lines } = await computeSalesInvoiceTotals(db, norm);
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const row = await withTransaction(db, async () => {
     await db.run(
       `UPDATE sales_invoices
          SET customer_id = ?, ref_text = ?, invoice_date = ?, notes = ?, subtotal = ?, tax = ?, total = ?
@@ -210,12 +203,9 @@ export async function updateSalesInvoiceDraft(db, invoiceId, body) {
     );
     await db.run("DELETE FROM sales_invoice_items WHERE invoice_id = ?", [inv.id]);
     await insertInvoiceItems(db, inv.id, lines);
-    await db.run("COMMIT");
-    return { row: await db.get("SELECT * FROM sales_invoices WHERE id = ?", [inv.id]) };
-  } catch (e) {
-    try { await db.run("ROLLBACK"); } catch (_) {}
-    throw e;
-  }
+    return db.get("SELECT * FROM sales_invoices WHERE id = ?", [inv.id]);
+  });
+  return { row };
 }
 
 export async function postSalesInvoice(db, invoiceId, body, userId) {
@@ -260,8 +250,7 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
     unit_name: it.unit_name,
   }));
 
-  await db.run("BEGIN IMMEDIATE");
-  try {
+  const row = await withTransaction(db, async () => {
     const ins = await db.run(
       `INSERT INTO transactions
          (cashier_id, items_json, subtotal, tax, total, discount, change_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id)
@@ -353,10 +342,7 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
       [transactionId, summaryMethod, onAccountTotal, inv.id]
     );
 
-    await db.run("COMMIT");
-    return { row: await db.get("SELECT * FROM sales_invoices WHERE id = ?", [inv.id]) };
-  } catch (e) {
-    try { await db.run("ROLLBACK"); } catch (_) {}
-    throw e;
-  }
+    return db.get("SELECT * FROM sales_invoices WHERE id = ?", [inv.id]);
+  });
+  return { row };
 }

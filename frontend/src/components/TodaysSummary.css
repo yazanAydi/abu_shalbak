@@ -30,10 +30,6 @@
   background: var(--office-bg, transparent);
 }
 
-.today-collection-card--total {
-  border-inline-start: 3px solid var(--office-success);
-}
-
 .today-collection-code {
   font-size: 0.85rem;
   opacity: 0.75;

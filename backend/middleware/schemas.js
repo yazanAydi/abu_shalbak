@@ -38,6 +38,8 @@ export const checkoutSchema = z
     currency_id: z.coerce.number().int().positive().optional().nullable(),
     currency_code: z.string().trim().min(1).max(10).optional().nullable(),
     original_amount: z.coerce.number().nonnegative().optional().nullable(),
+    change_currency_id: z.coerce.number().int().positive().optional().nullable(),
+    change_currency_code: z.string().trim().min(1).max(10).optional().nullable(),
     idempotency_key: z.string().trim().min(8).max(100).optional().nullable(),
     suspended_sale_id: z.coerce.number().int().positive().optional().nullable(),
   })

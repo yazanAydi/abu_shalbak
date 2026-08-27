@@ -3,9 +3,9 @@
  *
  * SOURCE OF TRUTH: `inventory_ledger` is the authoritative, append-only history
  * of stock movements. `products.stock` is a live cache that this module keeps
- * in sync via the atomic `UPDATE products SET stock = stock + ?`. Stock is
- * clamped at zero (overselling is allowed but stock never goes below 0); the
- * ledger records the effective delta with qty_before / qty_after for every change.
+ * in sync via the atomic `UPDATE products SET stock = stock + ?`. Overselling
+ * is allowed and stock may go negative; the ledger records the requested
+ * delta with qty_before / qty_after for every change.
  *
  * `inventory_movements` (see utils/inventory.js) is a SECONDARY/legacy analytics
  * log written only by `recordMovement`. It does NOT mutate stock and is not the
@@ -66,9 +66,8 @@ export async function addLedgerEntry(
   }
 
   const qtyBefore = Number(product.stock) || 0;
-  const requestedAfter = qtyBefore + d;
-  const qtyAfter = Math.max(0, requestedAfter);
-  const effectiveDelta = qtyAfter - qtyBefore;
+  const qtyAfter = qtyBefore + d;
+  const effectiveDelta = d;
 
   if (effectiveDelta !== 0) {
     await db.run("UPDATE products SET stock = stock + ? WHERE id = ?", [effectiveDelta, pid]);
