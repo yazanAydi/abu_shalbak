@@ -14,7 +14,7 @@ import CategorySelect from "../../components/CategorySelect";
 import UnitNameSelect from "../../components/UnitNameSelect";
 import CameraBarcodeButton from "../../components/barcode/CameraBarcodeButton";
 import { normalizeBarcode } from "../../utils/barcode";
-import { displayProductSku } from "../../utils/entityCodeDisplay";
+import { productSkuInputValue } from "../../utils/entityCodeDisplay";
 import "./productBarcodes.css";
 import "../../components/barcode/barcode-scanner.css";
 
@@ -36,7 +36,7 @@ function productToForm(product) {
   if (!product) return emptyForm;
   return {
     barcode: product.barcode || "",
-    sku: product.sku ? displayProductSku(product.sku) : "",
+    sku: productSkuInputValue(product.sku),
     name: product.name || "",
     price: product.price != null ? String(product.price) : "",
     cost: product.cost != null ? String(product.cost) : "",
@@ -75,7 +75,7 @@ function dirtyProductPayload(form, product) {
   const is_weighed = form.is_weighed ? 1 : 0;
 
   if (!sameText(barcode, product.barcode)) payload.barcode = barcode;
-  if (!sameText(sku, product.sku ? displayProductSku(product.sku) : null)) payload.sku = sku;
+  if (!sameText(sku, productSkuInputValue(product.sku) || null)) payload.sku = sku;
   if (!sameText(name, product.name)) payload.name = name;
   if (!sameNumber(price, product.price)) payload.price = price;
   if (!sameNumber(cost, product.cost ?? 0)) payload.cost = cost;

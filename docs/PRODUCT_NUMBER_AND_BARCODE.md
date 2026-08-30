@@ -4,7 +4,7 @@
 
 | Concept | Column | UI label | Format | Purpose |
 |---|---|---|---|---|
-| Product number | `products.sku` | الرقم / رقم المنتج | Numeric values stored as 11-digit zero-padded text (`00000000001`) | Internal catalogue order, search by number, display |
+| Product number | `products.sku` | الرقم / رقم المنتج | Stored as 11-digit zero-padded text (`00000000001`); UI shows the plain number (`1`) | Internal catalogue order, search by number, display |
 | Barcode | `products.barcode` | الباركود | Digits only, 4–14 characters | Scanner lookup, POS, units, checkout |
 
 The column is named `sku` for backward compatibility only. In this system it means **رقم المنتج**, never a scannable barcode.

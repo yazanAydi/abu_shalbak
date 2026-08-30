@@ -1,5 +1,3 @@
-const PRODUCT_SKU_LENGTH = 11;
-
 /**
  * Display entity code (sku / customer_code / supplier_code) as plain integer when numeric.
  * @param {unknown} code
@@ -22,13 +20,19 @@ export function displayProductBarcode(product) {
   return barcode || "—";
 }
 
+/**
+ * products.sku is رقم المنتج (not a barcode).
+ * Storage is 11-digit zero-padded; the UI shows the plain number (2, not 00000000002).
+ */
 export function displayProductSku(code) {
-  if (code == null || String(code).trim() === "") return "—";
-  const s = String(code).trim();
-  if (!/^\d+$/.test(s)) return s;
-  const n = Number(s);
-  if (!Number.isFinite(n) || n <= 0) return s;
-  return String(Math.floor(n)).padStart(PRODUCT_SKU_LENGTH, "0");
+  return displayEntityCode(code);
+}
+
+/** Value for an editable الرقم field — empty string instead of an em dash. */
+export function productSkuInputValue(code) {
+  if (code == null || String(code).trim() === "") return "";
+  const n = parseProductSkuNumber(code);
+  return n != null ? String(n) : String(code).trim();
 }
 
 /**

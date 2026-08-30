@@ -29,6 +29,7 @@ import {
   displayProductSku,
   filterProductsBySkuQuery,
   parseProductSkuNumber,
+  productSkuInputValue,
   sortProductsBySku,
 } from "../utils/entityCodeDisplay";
 import CategorySelect from "../components/CategorySelect";
@@ -104,14 +105,14 @@ async function fetchSuggestedSku() {
     const { data } = await api.get("/api/products/next-barcode", {
       headers: getAuthHeaders(),
     });
-    return data?.sku ?? data?.barcode ?? "";
+    return productSkuInputValue(data?.sku ?? data?.barcode ?? "");
   } catch {
     return "";
   }
 }
 
 function freshAddFormSync(sku = "") {
-  return { ...emptyForm, sku: sku || "" };
+  return { ...emptyForm, sku: productSkuInputValue(sku) };
 }
 
 function mergeProductRow(list, row) {
