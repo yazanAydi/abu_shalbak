@@ -14,6 +14,7 @@
  */
 
 import { round2 as r2 } from "./money.js";
+import { CACHE_KEYS, cacheClone, cacheGet, cacheInvalidate, cacheSet } from "./cache.js";
 
 const OFFER_PRIORITY = {
   multi_price: 50,
@@ -182,8 +183,14 @@ export function computeCartDiscount(promos, lines) {
 }
 
 /** Build the SQL WHERE for active promotions (active + within date window). */
+export function invalidatePromotionsCache() {
+  cacheInvalidate(CACHE_KEYS.PROMOTIONS);
+}
+
 export async function getActivePromotions(db) {
-  return db.all(
+  const cached = cacheGet(CACHE_KEYS.PROMOTIONS);
+  if (cached) return cacheClone(cached);
+  const rows = await db.all(
     `SELECT p.* FROM promotions p
      LEFT JOIN campaigns c ON c.id = p.campaign_id
      WHERE p.active = 1
@@ -196,4 +203,6 @@ export async function getActivePromotions(db) {
        AND (p.stop_when_out_of_stock = 0 OR p.product_id IS NULL
             OR (SELECT stock FROM products WHERE id = p.product_id) > 0)`
   );
+  cacheSet(CACHE_KEYS.PROMOTIONS, rows, 30_000);
+  return cacheClone(rows);
 }

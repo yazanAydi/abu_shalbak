@@ -12,8 +12,12 @@ function round6(n) {
 }
 
 async function nextInvoiceNo(db) {
-  const row = await db.get("SELECT MAX(invoice_no) AS mx FROM sales_invoices");
-  return (Number(row?.mx) || 0) + 1;
+  await db.run(
+    `INSERT INTO invoice_sequences (name, last_seq) VALUES ('sales_invoice', 1)
+     ON CONFLICT(name) DO UPDATE SET last_seq = last_seq + 1`
+  );
+  const row = await db.get("SELECT last_seq FROM invoice_sequences WHERE name = 'sales_invoice'");
+  return Number(row?.last_seq) || 1;
 }
 
 async function resolveSaleUnit(db, productId, unitId) {
@@ -240,7 +244,6 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
     changeNis,
   } = paymentResolved;
 
-  const receiptNumber = await nextReceiptNumber(db, 1);
   const itemsForJson = items.map((it) => ({
     product_id: it.product_id,
     name: it.name,
@@ -251,6 +254,7 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
   }));
 
   const row = await withTransaction(db, async () => {
+    const receiptNumber = await nextReceiptNumber(db, 1);
     const ins = await db.run(
       `INSERT INTO transactions
          (cashier_id, items_json, subtotal, tax, total, discount, change_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id)

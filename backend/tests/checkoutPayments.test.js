@@ -7,6 +7,7 @@ import {
 } from "./helpers.js";
 import { resolveCheckoutPayments } from "../utils/salePayments.js";
 import { sumShiftCashPayments, sumShiftCardPayments } from "../utils/salePayments.js";
+import { invalidateCurrencyCache } from "../utils/currencies.js";
 
 describe("Checkout payments", () => {
   let ctx;
@@ -370,6 +371,7 @@ describe("physical multi-currency drawer", () => {
   beforeAll(async () => {
     ctx = await createTestContext();
     await ctx.db.run("UPDATE currencies SET exchange_rate_to_nis = 3.6 WHERE code = 'USD'");
+    invalidateCurrencyCache();
     await ctx.db.run(
       "INSERT INTO app_settings (key, value) VALUES ('default_opening_cash', '50') ON CONFLICT(key) DO UPDATE SET value = '50'"
     );

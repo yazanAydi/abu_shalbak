@@ -1,4 +1,9 @@
 import { CANONICAL_UNIT_NAMES } from "./unitNames.js";
+import { CACHE_KEYS, cacheClone, cacheGet, cacheInvalidatePrefix, cacheSet } from "./cache.js";
+
+function invalidateUnitNameCache() {
+  cacheInvalidatePrefix("unit_names:");
+}
 
 export function normalizeCatalogUnitName(raw) {
   if (raw == null) return null;
@@ -22,19 +27,25 @@ export async function ensureUnitName(db, rawName) {
   if (existing) {
     if (!existing.active) {
       await db.run("UPDATE unit_names SET active = 1 WHERE id = ?", [existing.id]);
+      invalidateUnitNameCache();
       return { ...existing, active: 1 };
     }
     return existing;
   }
   const ins = await db.run("INSERT INTO unit_names (name, active) VALUES (?, 1)", [name]);
+  invalidateUnitNameCache();
   return db.get("SELECT * FROM unit_names WHERE id = ?", [ins.lastID]);
 }
 
 export async function listUnitNames(db, { activeOnly = false } = {}) {
-  if (activeOnly) {
-    return db.all("SELECT * FROM unit_names WHERE active = 1 ORDER BY name COLLATE NOCASE");
-  }
-  return db.all("SELECT * FROM unit_names ORDER BY active DESC, name COLLATE NOCASE");
+  const key = activeOnly ? CACHE_KEYS.UNIT_NAMES_ACTIVE : CACHE_KEYS.UNIT_NAMES_ALL;
+  const cached = cacheGet(key);
+  if (cached) return cacheClone(cached);
+  const rows = activeOnly
+    ? await db.all("SELECT * FROM unit_names WHERE active = 1 ORDER BY name COLLATE NOCASE")
+    : await db.all("SELECT * FROM unit_names ORDER BY active DESC, name COLLATE NOCASE");
+  cacheSet(key, rows);
+  return cacheClone(rows);
 }
 
 export async function seedUnitNamesCatalog(db) {
@@ -79,6 +90,7 @@ export async function createUnitName(db, rawName) {
   const existing = await findUnitNameByName(db, name);
   if (existing) throw httpError(409, "اسم الوحدة موجود بالفعل", "DUPLICATE");
   const ins = await db.run("INSERT INTO unit_names (name, active) VALUES (?, 1)", [name]);
+  invalidateUnitNameCache();
   return db.get("SELECT * FROM unit_names WHERE id = ?", [ins.lastID]);
 }
 
@@ -106,6 +118,7 @@ export async function updateUnitName(db, id, { name, active } = {}) {
     "UPDATE unit_names SET name = ?, active = ? WHERE id = ?",
     [nextName, nextActive, id]
   );
+  invalidateUnitNameCache();
   return db.get("SELECT * FROM unit_names WHERE id = ?", [id]);
 }
 
@@ -122,8 +135,10 @@ export async function deleteUnitName(db, id) {
   );
   if ((usedUnits?.n || 0) > 0 || (usedProducts?.n || 0) > 0) {
     await db.run("UPDATE unit_names SET active = 0 WHERE id = ?", [id]);
+    invalidateUnitNameCache();
     return { success: true, deactivated: true };
   }
   await db.run("DELETE FROM unit_names WHERE id = ?", [id]);
+  invalidateUnitNameCache();
   return { success: true, deactivated: false };
 }

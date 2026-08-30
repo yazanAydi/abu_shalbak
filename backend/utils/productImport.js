@@ -57,7 +57,7 @@ const EXCLUDED_BARCODE_SCAN_FIELDS = new Set([
 ]);
 
 const BARCODE_SCAN_HEADER_RE =
-  /barcodes?|باركود|الباركود|كود\s*الصنف|كود|unit\s*barcode|package\s*barcode|وحدات\s*الباركود|باركود\s*الوحدات|bk\.?code|sku|رقم\s*الصنف|رقم\s*المنتج|رقم\s*المادة/i;
+  /barcodes?|باركود|الباركود|كود\s*الصنف|كود|unit\s*barcode|package\s*barcode|وحدات\s*الباركود|باركود\s*الوحدات|bk\.?code|رقم\s*الصنف|رقم\s*المادة/i;
 
 const EXCLUDED_HEADER_RE =
   /price|cost|stock|quantity|qty|السعر|التكلفة|الكمية|المخزون|سعر|amount|قيمة|₪|tax_rate|^tax$|الضريبة|min_price|max_price|السعر\s*الأدنى|السعر\s*الأقصى/i;
@@ -71,12 +71,12 @@ function isForbiddenKey(key) {
 const HEADER_PATTERNS = [
   {
     field: "sku",
-    re: /^الرقم$|^#$|^no\.?$|^item\s*no\.?$|^product\s*no\.?$|^sku$/i,
+    re: /^الرقم$|^رقم المنتج$|^#$|^no\.?$|^item\s*no\.?$|^product\s*no\.?$|^sku$/i,
   },
   { field: "barcode_units", re: /^باركود الوحدات$|باركود الوحدات|وحدات الباركود/i },
   {
     field: "barcode",
-    re: /^barcodes?$|^باركود$|barcodes?|الباركود|الكود|^code$|رقم الصنف|رقم المنتج|رقم المادة|كود الصنف|كود|bk\.?code|unit barcode|package barcode/i,
+    re: /^barcodes?$|^باركود$|barcodes?|الباركود|الكود|^code$|رقم الصنف|رقم المادة|كود الصنف|كود|bk\.?code|unit barcode|package barcode/i,
   },
   { field: "name", re: /name|الاسم|^الاسم$|المادة|البيان|الصنف|صنف|وصف|المنتج|description|item|اسم المنتج/i },
   { field: "name_en", re: /name_en|الاسم الإنجليزي|الاسم انجليزي|english name/i },

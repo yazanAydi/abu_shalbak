@@ -154,10 +154,18 @@ export function resolveUnitPrice({
  * @param {object} db
  * @returns {Promise<SourceRowIndex>}
  */
-export async function buildSourceRowIndexFromProducts(db) {
-  const products = await db.all(
-    `SELECT id, barcode, name, price, cost, category, stock FROM products ORDER BY id ASC`
-  );
+export async function buildSourceRowIndexFromProducts(db, options = {}) {
+  const productIds = Array.isArray(options.productIds)
+    ? options.productIds.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)
+    : null;
+  let sql = `SELECT id, barcode, name, price, cost, category, stock FROM products`;
+  const params = [];
+  if (productIds?.length) {
+    sql += ` WHERE id IN (${productIds.map(() => "?").join(",")})`;
+    params.push(...productIds);
+  }
+  sql += " ORDER BY id ASC";
+  const products = await db.all(sql, params);
   const validRows = products.map((p) => ({
     rowNum: p.id,
     row: {

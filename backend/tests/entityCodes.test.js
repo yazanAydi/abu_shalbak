@@ -27,7 +27,7 @@ describe("entityCodes", () => {
     expect(parseNumericCode("")).toBeNull();
   });
 
-  test("nextEntityCode returns sequential unpadded strings per entity type", async () => {
+  test("nextEntityCode returns sequential codes per entity type", async () => {
     const p1 = await nextEntityCode(ctx.db, "product");
     const p2 = await nextEntityCode(ctx.db, "product");
     expect(Number(p2)).toBe(Number(p1) + 1);
@@ -42,7 +42,7 @@ describe("entityCodes", () => {
   });
 
   test("ensureEntityCode keeps provided code or allocates next", async () => {
-    expect(await ensureEntityCode(ctx.db, "product", "99")).toBe("99");
+    expect(await ensureEntityCode(ctx.db, "product", "99")).toBe("00000000099");
     const before = await ctx.db.get(
       "SELECT last_seq FROM entity_code_sequences WHERE entity_type = 'product'"
     );
@@ -106,7 +106,7 @@ describe("entityCodes", () => {
 
     const rows = await ctx.db.all("SELECT id, sku FROM products ORDER BY id");
     rows.forEach((row, index) => {
-      expect(row.sku).toBe(String(index + 1));
+      expect(row.sku).toBe(String(index + 1).padStart(11, "0"));
     });
   });
 

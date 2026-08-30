@@ -6,6 +6,7 @@ import {
   authHeader,
 } from "./helpers.js";
 import { approveRefundRequest } from "../services/refundRequestService.js";
+import { invalidateCurrencyCache } from "../utils/currencies.js";
 
 describe("shift edge cases: refund attribution, business day, sale search", () => {
   let ctx;
@@ -211,6 +212,7 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
 
   test("cash count matches physical ILS + USD after giving shekel change", async () => {
     await ctx.db.run("UPDATE currencies SET exchange_rate_to_nis = 3.6 WHERE code = 'USD'");
+    invalidateCurrencyCache();
     await ctx.db.run("UPDATE products SET price = 5, tax_rate = 0 WHERE id = ?", [ctx.productId]);
     await ctx.db.run("UPDATE product_units SET price = 5 WHERE product_id = ? AND is_default = 1", [
       ctx.productId,

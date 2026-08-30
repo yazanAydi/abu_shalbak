@@ -7,7 +7,16 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test:concurrency": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand tests/load",
+    "seed:perf": "node scripts/seed-perf-db.mjs",
+    "bench": "node scripts/bench.mjs",
+    "explain": "node scripts/explain-plans.mjs",
+    "loadtest:seed": "node scripts/loadtest/seed-loadtest-db.mjs",
+    "loadtest": "node scripts/loadtest/runner.mjs",
+    "loadtest:sweep": "node scripts/loadtest/runner.mjs --sweep 5,10,20,30,50",
+    "loadtest:multiproc": "node scripts/loadtest/runner.mjs --mode multiproc --processes 3",
+    "loadtest:resilience": "node scripts/loadtest/runner.mjs --mode restart --processes 2"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
@@ -26,6 +35,9 @@
     "uuid": "^14.0.0",
     "xlsx": "^0.18.5",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0"
   },
   "devDependencies": {
     "jest": "^30.4.2",

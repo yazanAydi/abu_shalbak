@@ -5,6 +5,7 @@ import bcrypt from "bcrypt";
 import request from "supertest";
 import { initDatabase } from "../database/init.js";
 import { createApp } from "../app.js";
+import { closeSqliteConnection } from "../database/sqliteDriver.js";
 
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "test-jwt-secret-for-abo-shalbak-tests-only";
@@ -64,7 +65,7 @@ export function authHeader(token) {
 
 export async function destroyTestContext(ctx) {
   try {
-    ctx.db.raw.close();
+    await closeSqliteConnection(ctx.db);
   } catch (_) {}
   try {
     fs.rmSync(ctx.tmpDir, { recursive: true, force: true });

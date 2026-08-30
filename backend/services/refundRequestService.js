@@ -98,7 +98,11 @@ export async function applyApprovedRefundEffects(db, refund) {
     const shift = await db.get("SELECT opening_cash FROM cashier_shifts WHERE id = ?", [refund.shift_id]);
     if (shift) {
       const available = await computeExpectedBaseCash(db, refund.shift_id, shift.opening_cash);
-      if (available + 0.005 < total) {
+      // approveRefundRequest inserts the row as approved before this runs, so the
+      // drawer query has already subtracted this refund. Add it back for the check.
+      const alreadyCounted =
+        String(refund.status || "").toLowerCase() === "approved" ? total : 0;
+      if (available + alreadyCounted + 0.005 < total) {
         const err = new Error(
           `النقد بالشيكل في الدرج غير كافٍ للاسترجاع (المتاح: ₪${available.toFixed(2)})`
         );

@@ -6,6 +6,7 @@ export const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, error: "محاولات دخول كثيرة — حاول لاحقاً", code: "RATE_LIMIT" },
+  skip: () => process.env.NODE_ENV === "test",
 });
 
 export const apiLimiter = rateLimit({

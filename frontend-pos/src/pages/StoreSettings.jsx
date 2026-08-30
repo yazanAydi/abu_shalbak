@@ -29,8 +29,8 @@ const LABELS = {
   default_opening_cash: "النقد الافتتاحي الافتراضي (₪)",
   shift_variance_threshold: "حد الفارق في الوردية (₪)",
   expiry_alert_days: "تنبيه الصلاحية عبر تيليجرام (أيام)",
-  pos_shortcut_hold_cart: "اختصار تعليق الفاتورة (مثل F6 أو Ctrl+H)",
-  pos_shortcut_suspended_carts: "اختصار الفواتير المعلقة (مثل F7 أو Ctrl+L)",
+  pos_shortcut_hold_cart: "اختصار تعليق الفاتورة (مثل F8 أو Ctrl+Shift+L)",
+  pos_shortcut_suspended_carts: "اختصار الفواتير المعلقة (مثل F10 أو Ctrl+Shift+U)",
 };
 
 const OTHER_CATEGORY = "أخرى";
@@ -366,8 +366,14 @@ export default function StoreSettings() {
             </div>
 
           <SectionTitle>اختصارات نقطة البيع</SectionTitle>
+          <p className="settings-favorites-hint">
+            لا تستخدم مفاتيح محجوزة للمتصفح مثل F12 أو Ctrl+Shift+I — تفتح أدوات المطوّر أو صفحات المتصفح.
+          </p>
           <FormGrid>
-            <FormField label={LABELS.pos_shortcut_hold_cart}>
+            <FormField
+              label={LABELS.pos_shortcut_hold_cart}
+              hint="مفاتيح آمنة: F8، F10، Ctrl+Shift+L. فارغ يعطّل الاختصار."
+            >
               <Input
                 type="text"
                 value={form.pos_shortcut_hold_cart}
@@ -375,7 +381,10 @@ export default function StoreSettings() {
                 placeholder="اتركه فارغاً لتعطيل الاختصار"
               />
             </FormField>
-            <FormField label={LABELS.pos_shortcut_suspended_carts}>
+            <FormField
+              label={LABELS.pos_shortcut_suspended_carts}
+              hint="مفاتيح آمنة: F8، F10، Ctrl+Shift+U. فارغ يعطّل الاختصار."
+            >
               <Input
                 type="text"
                 value={form.pos_shortcut_suspended_carts}
@@ -384,6 +393,7 @@ export default function StoreSettings() {
               />
             </FormField>
           </FormGrid>
+          {error ? <p className="ui-text-danger">{error}</p> : null}
 
           <SectionTitle>أزرار الكاشير السريعة</SectionTitle>
             <p className="settings-favorites-hint">

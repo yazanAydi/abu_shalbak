@@ -1,5 +1,6 @@
 import { Card, CardBody, StatCard, StatusBadge } from "../../components/ui";
 import { ils, num } from "../../utils/format";
+import { displayProductBarcode, displayProductSku } from "../../utils/entityCodeDisplay";
 import { useProductTab } from "./useProductTab";
 import { TabState, expiryBadge } from "./shared";
 
@@ -25,8 +26,8 @@ export default function OverviewTab({ productId }) {
                 <dl className="pd-defs">
                   <div><dt>الاسم</dt><dd>{data.basic.name}</dd></div>
                   {data.basic.name_en ? <div><dt>الاسم (EN)</dt><dd>{data.basic.name_en}</dd></div> : null}
-                  <div><dt>الباركود</dt><dd>{data.basic.barcode}</dd></div>
-                  <div><dt>الرقم</dt><dd>{data.basic.sku || "—"}</dd></div>
+                  <div><dt>الباركود</dt><dd>{displayProductBarcode(data.basic)}</dd></div>
+                  <div><dt>الرقم</dt><dd>{displayProductSku(data.basic.sku)}</dd></div>
                   <div><dt>التصنيف</dt><dd>{data.basic.category || "—"}</dd></div>
                   <div><dt>الوحدة</dt><dd>{data.basic.unit || "—"}</dd></div>
                 </dl>

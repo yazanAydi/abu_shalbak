@@ -157,8 +157,22 @@ export function createOfficeRouter(db) {
     const byPath = filterBadgesForUser(req.user?.role, permissions, rawByPath);
     const total = Object.values(byPath).reduce((sum, n) => sum + n, 0);
 
+    const preview = await db.all(
+      `SELECT id, name, stock, min_stock, barcode
+       FROM products
+       WHERE (
+         (min_stock IS NOT NULL AND stock <= min_stock)
+         OR (min_stock IS NULL AND stock <= ?)
+       )
+       AND COALESCE(inventory_scope, 'retail') = 'retail'
+       ORDER BY stock ASC, name ASC
+       LIMIT 10`,
+      [LOW_STOCK_THRESHOLD]
+    );
+
     res.json({
       retail_low_stock: retailLowStock,
+      low_stock_preview: preview,
       bakery_low_stock: bakeryLowStock,
       near_expiry: nearExpiry,
       expiry_page_alerts: expiryPageAlerts,

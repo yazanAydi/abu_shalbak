@@ -10,7 +10,7 @@ import {
   fetchRefundsForShopDate,
   fetchTransactionsForShopDate,
 } from "../utils/businessDay.js";
-import { shopDateRange } from "../utils/shopTime.js";
+import { nextCalendarYmd, shopDateRange } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
 
 function parseDateParam(s) {
@@ -495,10 +495,11 @@ export function createFinanceRouter(db) {
     const from = parseDateParam(String(req.query.from || ""));
     const to = parseDateParam(String(req.query.to || ""));
     if (!from || !to) return res.status(400).json({ error: "مطلوب from و to (YYYY-MM-DD)" });
+    const toExclusive = nextCalendarYmd(to);
     const salesRow = await db.get(
       `SELECT COALESCE(SUM(total),0) t FROM transactions
-       WHERE date(created_at) >= ? AND date(created_at) <= ?`,
-      [from, to]
+       WHERE created_at >= ? AND created_at < ?`,
+      [from, toExclusive]
     );
     const payRows = await db.all(
       `SELECT * FROM supplier_payments WHERE paid_on >= ? AND paid_on <= ? ORDER BY paid_on`,
@@ -509,9 +510,9 @@ export function createFinanceRouter(db) {
       [from, to]
     );
     const refRows = await db.all(
-      `SELECT id, total, date(created_at) as d, original_transaction_id, payment_method
-       FROM refunds WHERE date(created_at) >= ? AND date(created_at) <= ?`,
-      [from, to]
+      `SELECT id, total, substr(created_at, 1, 10) as d, original_transaction_id, payment_method
+       FROM refunds WHERE created_at >= ? AND created_at < ?`,
+      [from, toExclusive]
     );
     const lines = [
       `Summary ${from} to ${to}`,

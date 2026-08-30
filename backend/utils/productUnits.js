@@ -55,6 +55,32 @@ export async function loadUnitsForProduct(db, productId) {
   return rows.map(formatProductUnit);
 }
 
+/**
+ * Load units for many products in one query (avoids N+1 in the units catalog).
+ * @param {object} db
+ * @param {number[]} productIds
+ * @returns {Promise<Map<number, ReturnType<typeof formatProductUnit>[]>>}
+ */
+export async function loadUnitsForProducts(db, productIds) {
+  const ids = [...new Set((productIds || []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0))];
+  /** @type {Map<number, ReturnType<typeof formatProductUnit>[]>} */
+  const map = new Map();
+  if (!ids.length) return map;
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await db.all(
+    `SELECT * FROM product_units
+     WHERE product_id IN (${placeholders})
+     ORDER BY is_default DESC, id ASC`,
+    ids
+  );
+  for (const row of rows) {
+    const list = map.get(row.product_id) || [];
+    list.push(formatProductUnit(row));
+    map.set(row.product_id, list);
+  }
+  return map;
+}
+
 const UNITS_CATALOG_HAVING = `
   HAVING COUNT(pu.id) > 1
       OR MAX(CASE WHEN pu.conversion_to_base != 1 THEN 1 ELSE 0 END) = 1
@@ -94,17 +120,20 @@ export async function loadUnitsCatalog(db, { search = "", limit = 100, offset = 
     [...params, limit, offset]
   );
 
-  const rows = [];
-  for (const row of productRows) {
-    const units = await loadUnitsForProduct(db, row.product_id);
-    rows.push({
+  const unitsByProduct = await loadUnitsForProducts(
+    db,
+    productRows.map((row) => row.product_id)
+  );
+  const rows = productRows.map((row) => {
+    const units = unitsByProduct.get(row.product_id) || [];
+    return {
       product_id: row.product_id,
       product_name: row.product_name,
       product_barcode: row.product_barcode,
       unit_count: Number(row.unit_count) || units.length,
       units,
-    });
-  }
+    };
+  });
 
   const totalRow = await db.get(
     `SELECT COUNT(*) AS n FROM (
@@ -430,14 +459,23 @@ export async function upsertProductUnit(db, productId, data) {
  * @param {object} db
  * @param {import("./importPriceResolver.js").SourceRowIndex | null} [sourceIndex]
  */
-export async function repairProductUnitPrices(db, sourceIndex = null) {
-  const index = sourceIndex ?? (await buildSourceRowIndexFromProducts(db));
-  const units = await db.all(`
+export async function repairProductUnitPrices(db, sourceIndex = null, options = {}) {
+  const productIds = Array.isArray(options.productIds)
+    ? options.productIds.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)
+    : null;
+  const index = sourceIndex ?? (await buildSourceRowIndexFromProducts(db, { productIds }));
+  let sql = `
     SELECT pu.*, p.barcode AS product_barcode, p.price AS product_price
     FROM product_units pu
     JOIN products p ON p.id = pu.product_id
-    ORDER BY pu.id ASC
-  `);
+  `;
+  const params = [];
+  if (productIds?.length) {
+    sql += ` WHERE pu.product_id IN (${productIds.map(() => "?").join(",")})`;
+    params.push(...productIds);
+  }
+  sql += " ORDER BY pu.id ASC";
+  const units = await db.all(sql, params);
 
   let updated = 0;
   let needs_review_count = 0;

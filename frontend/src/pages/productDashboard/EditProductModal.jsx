@@ -12,9 +12,15 @@ import {
 import ProductUnitsSection from "./ProductUnitsSection";
 import CategorySelect from "../../components/CategorySelect";
 import UnitNameSelect from "../../components/UnitNameSelect";
+import CameraBarcodeButton from "../../components/barcode/CameraBarcodeButton";
+import { normalizeBarcode } from "../../utils/barcode";
+import { displayProductSku } from "../../utils/entityCodeDisplay";
 import "./productBarcodes.css";
+import "../../components/barcode/barcode-scanner.css";
 
 const emptyForm = {
+  barcode: "",
+  sku: "",
   name: "",
   price: "",
   cost: "",
@@ -29,6 +35,8 @@ const emptyForm = {
 function productToForm(product) {
   if (!product) return emptyForm;
   return {
+    barcode: product.barcode || "",
+    sku: product.sku ? displayProductSku(product.sku) : "",
     name: product.name || "",
     price: product.price != null ? String(product.price) : "",
     cost: product.cost != null ? String(product.cost) : "",
@@ -39,6 +47,44 @@ function productToForm(product) {
     expiry_date: product.expiry_date || "",
     is_weighed: Number(product.is_weighed) === 1,
   };
+}
+
+function sameText(a, b) {
+  return String(a ?? "").trim() === String(b ?? "").trim();
+}
+
+function sameNumber(a, b) {
+  const na = a === "" || a == null ? null : Number(a);
+  const nb = b === "" || b == null ? null : Number(b);
+  if (na == null && nb == null) return true;
+  if (na == null || nb == null) return false;
+  return Number(na) === Number(nb);
+}
+
+function dirtyProductPayload(form, product) {
+  const payload = {};
+  const barcode = form.barcode.trim();
+  const name = form.name.trim();
+  const sku = form.sku.trim() || null;
+  const price = Number(form.price);
+  const cost = form.cost === "" ? 0 : Number(form.cost);
+  const category = form.category.trim() || null;
+  const tax_rate = form.tax_rate !== "" ? Number(form.tax_rate) : null;
+  const unit = form.is_weighed ? "كغم" : form.unit?.trim() || null;
+  const expiry_date = form.expiry_date?.trim() || null;
+  const is_weighed = form.is_weighed ? 1 : 0;
+
+  if (!sameText(barcode, product.barcode)) payload.barcode = barcode;
+  if (!sameText(sku, product.sku ? displayProductSku(product.sku) : null)) payload.sku = sku;
+  if (!sameText(name, product.name)) payload.name = name;
+  if (!sameNumber(price, product.price)) payload.price = price;
+  if (!sameNumber(cost, product.cost ?? 0)) payload.cost = cost;
+  if (!sameText(category, product.category)) payload.category = category;
+  if (!sameNumber(tax_rate, product.tax_rate)) payload.tax_rate = tax_rate;
+  if (!sameText(unit, product.unit)) payload.unit = unit;
+  if (!sameText(expiry_date, product.expiry_date)) payload.expiry_date = expiry_date;
+  if (is_weighed !== (Number(product.is_weighed) === 1 ? 1 : 0)) payload.is_weighed = is_weighed;
+  return payload;
 }
 
 export default function EditProductModal({ open, onClose, product, onSaved }) {
@@ -65,6 +111,10 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
     setErr(null);
 
     const name = form.name.trim();
+    if (!form.barcode.trim()) {
+      setErr("الباركود مطلوب");
+      return;
+    }
     if (!name) {
       setErr("الاسم مطلوب");
       return;
@@ -73,24 +123,16 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
       setErr("أدخل سعر بيع صالحاً");
       return;
     }
-    if (form.stock === "" || !Number.isFinite(Number(form.stock))) {
-      setErr("أدخل مخزوناً صالحاً");
+
+    const payload = dirtyProductPayload(form, product);
+    if (Object.keys(payload).length === 0) {
+      close();
       return;
     }
 
     setSaving(true);
     try {
-      const { data } = await api.put(`/api/products/${product.id}`, {
-        name,
-        price: Number(form.price),
-        cost: form.cost === "" ? 0 : Number(form.cost),
-        category: form.category.trim() || null,
-        stock: Number(form.stock),
-        tax_rate: form.tax_rate !== "" ? Number(form.tax_rate) : null,
-        unit: form.is_weighed ? "كغم" : form.unit?.trim() || null,
-        expiry_date: form.expiry_date?.trim() || null,
-        is_weighed: form.is_weighed ? 1 : 0,
-      });
+      const { data } = await api.put(`/api/products/${product.id}`, payload);
       toast.success("تم حفظ التعديلات");
       onSaved?.(data);
       close();
@@ -119,8 +161,25 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
       }
     >
       <FormGrid>
-        <FormField label="الباركود">
-          <Input value={product?.barcode || ""} readOnly disabled />
+        <FormField label="الباركود" required hint="باركود المنتج المخزّن — ليس رقم المنتج">
+          <div className="barcode-input-row">
+            <Input
+              value={form.barcode}
+              onChange={(e) => setForm({ ...form, barcode: e.target.value })}
+              placeholder="امسح أو أدخل الباركود"
+            />
+            <CameraBarcodeButton
+              onScan={(code) =>
+                setForm((f) => ({ ...f, barcode: normalizeBarcode(code) }))
+              }
+            />
+          </div>
+        </FormField>
+        <FormField label="الرقم" hint="رقم المنتج — مستقل عن الباركود">
+          <Input
+            value={form.sku}
+            onChange={(e) => setForm({ ...form, sku: e.target.value })}
+          />
         </FormField>
         <FormField label="الاسم" required>
           <Input
@@ -168,12 +227,11 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
             onChange={(e) => setForm({ ...form, category: e.target.value })}
           />
         </FormField>
-        <FormField label="المخزون" required>
-          <Input
-            type="number"
-            value={form.stock}
-            onChange={(e) => setForm({ ...form, stock: e.target.value })}
-          />
+        <FormField
+          label="المخزون"
+          hint="يُحدَّث من المبيعات والتسويات فقط — لا يُحفظ من هذه الشاشة"
+        >
+          <Input type="number" value={form.stock} readOnly disabled />
         </FormField>
         <FormField label="الوحدة">
           <UnitNameSelect
@@ -190,7 +248,7 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
           />
         </FormField>
       </FormGrid>
-      <ProductUnitsSection productId={product?.id ?? null} onChanged={onSaved} />
+      <ProductUnitsSection productId={product?.id ?? null} />
       {err ? (
         <p style={{ color: "var(--office-danger, #dc2626)", marginBottom: 0, marginTop: "0.75rem" }}>
           {err}

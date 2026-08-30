@@ -1,12 +1,15 @@
-import sqlite3 from "sqlite3";
 import path from "path";
 import fs from "fs";
 import bcrypt from "bcrypt";
 import { seedDefaultSettings } from "../utils/settings.js";
 import { backfillMissingEntityCodes } from "../utils/entityCodes.js";
+import { migrateSkuBarcodeSeparation } from "../utils/skuBarcodeRepair.js";
 import { migrateProductBarcodesToUnits } from "../utils/productUnits.js";
 import { seedProductCategoriesFromProducts } from "../utils/productCategories.js";
 import { seedUnitNamesCatalog } from "../utils/unitNameCatalog.js";
+import { cacheInvalidate } from "../utils/cache.js";
+import { incrementQueryCount, maybeLogSlowQuery } from "../utils/queryStats.js";
+import { openSqliteConnection } from "./sqliteDriver.js";
 
 function txKeyword(sql) {
   const s = String(sql || "").trim();
@@ -42,8 +45,11 @@ function wrapDb(raw) {
   }
 
   function runRaw(sql, params = []) {
+    incrementQueryCount();
+    const started = Date.now();
     return new Promise((resolve, reject) => {
       raw.run(sql, params, function onRun(err) {
+        maybeLogSlowQuery(sql, started);
         if (err) reject(err);
         else resolve({ lastID: this.lastID, changes: this.changes });
       });
@@ -51,8 +57,11 @@ function wrapDb(raw) {
   }
 
   function execRaw(sql) {
+    incrementQueryCount();
+    const started = Date.now();
     return new Promise((resolve, reject) => {
       raw.exec(sql, (err) => {
+        maybeLogSlowQuery(sql, started);
         if (err) reject(err);
         else resolve();
       });
@@ -77,16 +86,22 @@ function wrapDb(raw) {
       return runRaw(sql, params);
     },
     get(sql, params = []) {
+      incrementQueryCount();
+      const started = Date.now();
       return new Promise((resolve, reject) => {
         raw.get(sql, params, (err, row) => {
+          maybeLogSlowQuery(sql, started);
           if (err) reject(err);
           else resolve(row);
         });
       });
     },
     all(sql, params = []) {
+      incrementQueryCount();
+      const started = Date.now();
       return new Promise((resolve, reject) => {
         raw.all(sql, params, (err, rows) => {
+          maybeLogSlowQuery(sql, started);
           if (err) reject(err);
           else resolve(rows);
         });
@@ -135,7 +150,7 @@ async function migrateProductsExtendedColumns(db) {
     ["expiry_date", "TEXT"],
     ["min_price", "REAL"],
     ["max_price", "REAL"],
-    ["sku", "TEXT"],
+    ["sku", "TEXT"], // رقم المنتج — not a barcode; name kept for backward compatibility
     ["image_url", "TEXT"],
     // Product deactivation: inactive products are hidden from POS and rejected
     // at checkout, but never hard-deleted (history/reports stay intact).
@@ -1226,6 +1241,9 @@ async function migrateCashierShiftsTables(db) {
     CREATE INDEX IF NOT EXISTS idx_cashier_shifts_start ON cashier_shifts(start_time);
     CREATE INDEX IF NOT EXISTS idx_shift_movements_shift_time ON shift_cash_movements(shift_id, created_at);
   `);
+  // Partial unique idx_cashier_shifts_one_open is applied later by
+  // migrateOneOpenShiftPerCashier so existing duplicate open rows fail loudly
+  // instead of aborting this CREATE TABLE IF NOT EXISTS block.
 }
 
 async function migrateTransactionsShiftId(db) {
@@ -1507,6 +1525,45 @@ async function migrateCashierShiftsPendingStatus(db) {
     CREATE INDEX IF NOT EXISTS idx_cashier_shifts_cashier_status ON cashier_shifts(cashier_id, status);
     CREATE INDEX IF NOT EXISTS idx_cashier_shifts_start ON cashier_shifts(start_time);
     PRAGMA foreign_keys = ON;
+  `);
+  // Unique one-open-shift index is recreated by migrateOneOpenShiftPerCashier
+  // after this rebuild (DROP TABLE would drop it).
+}
+
+/**
+ * At most one open shift per cashier. Partial unique index is SQLite-compatible
+ * (same pattern as receipt_number / idempotency_key). Existing duplicate open
+ * rows are not cleaned automatically — startup fails until they are resolved.
+ */
+async function migrateOneOpenShiftPerCashier(db) {
+  const existing = await db.get(
+    `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_cashier_shifts_one_open'`
+  );
+  if (existing) return;
+
+  const table = await db.get(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cashier_shifts'`
+  );
+  if (!table) return;
+
+  const dups = await db.all(`
+    SELECT cashier_id, COUNT(*) AS n
+    FROM cashier_shifts
+    WHERE status = 'open'
+    GROUP BY cashier_id
+    HAVING n > 1
+  `);
+  if (dups.length) {
+    const detail = dups.map((d) => `cashier_id=${d.cashier_id} open=${d.n}`).join("; ");
+    throw new Error(
+      `Cannot create idx_cashier_shifts_one_open: duplicate open shifts exist (${detail}). ` +
+        "Resolve these rows before migrating. No automatic cleanup was applied."
+    );
+  }
+
+  await db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cashier_shifts_one_open
+    ON cashier_shifts(cashier_id) WHERE status = 'open'
   `);
 }
 
@@ -1934,25 +1991,13 @@ async function seedSampleProducts(db) {
  * @returns {Promise<ReturnType<typeof wrapDb>>}
  */
 export async function initDatabase(dbPath) {
+  cacheInvalidate();
   const dir = path.dirname(path.resolve(dbPath));
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  const raw = await new Promise((resolve, reject) => {
-    const d = new sqlite3.Database(dbPath, (err) => {
-      if (err) reject(err);
-      else resolve(d);
-    });
-  });
-
-  const db = wrapDb(raw);
-
-  await db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
-    PRAGMA busy_timeout = 5000;
-  `);
+  const db = await openSqliteConnection(dbPath);
 
   await migrateLegacyIfNeeded(db);
 
@@ -1965,6 +2010,8 @@ export async function initDatabase(dbPath) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- products.sku = رقم المنتج (column name kept for backward compatibility).
+    -- products.barcode = scannable barcode only. Never store the رقم in barcode.
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       barcode TEXT UNIQUE,
@@ -2129,6 +2176,7 @@ export async function initDatabase(dbPath) {
   await migrateEntityCodeSequencesTable(db);
   await migrateShiftReconciliationExtended(db);
   await migrateCashierShiftsPendingStatus(db);
+  await migrateOneOpenShiftPerCashier(db);
   await migrateRefundRequestsTable(db);
   await migrateRefundRequestSyncColumns(db);
   await migrateLegacyPendingRefundsToRequests(db);
@@ -2177,7 +2225,11 @@ export async function initDatabase(dbPath) {
   await migrateOrphanProductBarcodes(db);
   await seedUnitNamesCatalog(db);
   await seedDefaultSettings(db);
+  await migrateSkuBarcodeSeparation(db);
   await backfillMissingEntityCodes(db);
+  await normalizePaddedProductSkus(db);
+  await migratePerfIndexes(db);
+  await db.exec("PRAGMA optimize;");
 
   await recordSchemaVersion(db);
 
@@ -2189,7 +2241,36 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.07-sales-invoices";
+const SCHEMA_VERSION = "2026.08-one-open-shift";
+
+/**
+ * Zero-pad numeric SKUs to 11 digits so text ORDER BY / equality can use
+ * idx_products_sku_sort instead of CAST(sku AS INTEGER).
+ */
+async function normalizePaddedProductSkus(db) {
+  await db.run(`
+    UPDATE products
+       SET sku = printf('%011d', CAST(sku AS INTEGER))
+     WHERE sku IS NOT NULL
+       AND TRIM(sku) != ''
+       AND sku GLOB '[0-9]*'
+       AND length(TRIM(sku)) BETWEEN 1 AND 11
+       AND sku != printf('%011d', CAST(sku AS INTEGER))
+  `);
+}
+
+async function migratePerfIndexes(db) {
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_products_name_nocase ON products(name COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+    CREATE INDEX IF NOT EXISTS idx_products_sku_sort ON products(sku);
+    CREATE INDEX IF NOT EXISTS idx_products_active_scope ON products(is_active, inventory_scope);
+    CREATE INDEX IF NOT EXISTS idx_products_needs_review ON products(needs_review) WHERE needs_review = 1;
+    CREATE INDEX IF NOT EXISTS idx_pinvi_product ON purchase_invoice_items(product_id);
+    CREATE INDEX IF NOT EXISTS idx_inv_ledger_product_type ON inventory_ledger(product_id, movement_type);
+    CREATE INDEX IF NOT EXISTS idx_tx_items_prod_created ON transaction_items(product_id, created_at);
+  `);
+}
 
 async function migrateTransactionsPaymentMethodExpanded(db) {
   const txChk = await db.get(`SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'`);
@@ -2387,7 +2468,20 @@ async function migrateSalesInvoicesTables(db) {
     CREATE INDEX IF NOT EXISTS idx_sinvi_invoice ON sales_invoice_items(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_sinvp_invoice ON sales_invoice_payments(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_sinv_customer_date ON sales_invoices(customer_id, invoice_date);
+    CREATE TABLE IF NOT EXISTS invoice_sequences (
+      name TEXT PRIMARY KEY,
+      last_seq INTEGER NOT NULL DEFAULT 0
+    );
   `);
+  const maxNo = await db.get("SELECT COALESCE(MAX(invoice_no), 0) AS mx FROM sales_invoices");
+  const current = Number(maxNo?.mx) || 0;
+  await db.run(
+    `INSERT INTO invoice_sequences (name, last_seq) VALUES ('sales_invoice', ?)
+     ON CONFLICT(name) DO UPDATE SET last_seq = CASE
+       WHEN excluded.last_seq > invoice_sequences.last_seq THEN excluded.last_seq
+       ELSE invoice_sequences.last_seq END`,
+    [current]
+  );
 }
 
 async function migrateSalePaymentsCheckMethod(db) {

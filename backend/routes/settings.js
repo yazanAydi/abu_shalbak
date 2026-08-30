@@ -3,6 +3,7 @@ import { Router } from "express";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 
 import { getAppSettings, updateAppSettings } from "../utils/settings.js";
+import { sendCachedJson } from "../utils/httpCache.js";
 
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 
@@ -14,12 +15,9 @@ export function createSettingsRouter(db) {
 
 
 
-  router.get("/", requireAuth, async (_req, res) => {
-
+  router.get("/", requireAuth, async (req, res) => {
     const settings = await getAppSettings(db);
-
-    res.json(settings);
-
+    return sendCachedJson(req, res, settings, { maxAgeSec: 30 });
   });
 
 

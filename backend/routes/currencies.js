@@ -2,7 +2,8 @@ import { Router } from "express";
 
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
-import { listCurrencies, getCurrencyById, round2Rate } from "../utils/currencies.js";
+import { listCurrencies, getCurrencyById, invalidateCurrencyCache, round2Rate } from "../utils/currencies.js";
+import { sendCachedJson } from "../utils/httpCache.js";
 import { withTransaction } from "../utils/dbTx.js";
 
 export function createCurrenciesRouter(db) {
@@ -12,7 +13,7 @@ export function createCurrenciesRouter(db) {
   router.get("/", requireAuth, async (_req, res, next) => {
     try {
       const currencies = await listCurrencies(db, { enabledOnly: true });
-      res.json({ currencies });
+      return sendCachedJson(req, res, { currencies }, { maxAgeSec: 60 });
     } catch (e) {
       next(e);
     }
@@ -22,7 +23,7 @@ export function createCurrenciesRouter(db) {
   router.get("/all", requireAuth, requireAdmin, async (_req, res, next) => {
     try {
       const currencies = await listCurrencies(db, { enabledOnly: false });
-      res.json({ currencies });
+      return sendCachedJson(req, res, { currencies }, { maxAgeSec: 30 });
     } catch (e) {
       next(e);
     }
@@ -92,6 +93,7 @@ export function createCurrenciesRouter(db) {
         }
       });
 
+      invalidateCurrencyCache();
       const after = await getCurrencyById(db, id);
       await logAudit(db, req, AUDIT_ACTIONS.CURRENCY_UPDATE, "currencies", id, before, after);
       res.json({ currency: after });

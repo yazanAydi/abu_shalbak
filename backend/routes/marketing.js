@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { requireAuth, requireAdmin, requirePosAccess } from "../middleware/auth.js";
-import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js";
+import { getActivePromotions, computeCartDiscount, invalidatePromotionsCache } from "../utils/promotions.js";
 import { round2 } from "../utils/money.js";
 
 const OFFER_TYPES = ["percentage", "fixed", "bundle", "buy_x_get_y", "multi_price"];
 
 async function deactivateConflictingPromos(db, productId, productUnitId, excludeId) {
   if (!productId || !productUnitId) return 0;
+  invalidatePromotionsCache();
   const result = await db.run(
     `UPDATE promotions SET active = 0
      WHERE product_id = ? AND product_unit_id = ? AND id != ? AND active = 1`,

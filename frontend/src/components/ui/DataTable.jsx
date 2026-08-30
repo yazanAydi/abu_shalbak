@@ -1,5 +1,11 @@
+import { memo, useMemo, useState } from "react";
 import { SkeletonRows } from "./Skeleton";
 import EmptyState from "./EmptyState";
+
+const VIRTUALIZE_AFTER = 80;
+const ROW_HEIGHT = 48;
+const OVERSCAN = 8;
+const VIEWPORT_HEIGHT = 520;
 
 function columnLabel(column) {
   if (column.label != null && String(column.label).trim() !== "") {
@@ -25,6 +31,35 @@ function columnClassName(column, mobileColumns) {
   return parts.length ? parts.join(" ") : undefined;
 }
 
+const TableRow = memo(function TableRow({
+  row,
+  index,
+  columns,
+  rowKey,
+  rowClassName,
+  onRowClick,
+  mobileColumns,
+}) {
+  return (
+    <tr
+      key={rowKey(row, index)}
+      className={rowClassName ? rowClassName(row) : undefined}
+      onClick={onRowClick ? () => onRowClick(row) : undefined}
+    >
+      {columns.map((c) => (
+        <td
+          key={c.key}
+          className={columnClassName(c, mobileColumns)}
+          data-label={columnLabel(c)}
+          style={c.align ? { textAlign: c.align } : undefined}
+        >
+          {c.render ? c.render(row, index) : row[c.key]}
+        </td>
+      ))}
+    </tr>
+  );
+});
+
 /**
  * Lightweight declarative table.
  * columns: [{ key, header, label?, render?(row), className?, align?, hideOnMobile? }]
@@ -42,6 +77,22 @@ export default function DataTable({
   onRowClick,
   mobileColumns,
 }) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const virtualize = Boolean(rows && rows.length > VIRTUALIZE_AFTER);
+
+  const windowed = useMemo(() => {
+    if (!virtualize || !rows) return { start: 0, end: rows?.length || 0, top: 0, bottom: 0 };
+    const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+    const visible = Math.ceil(VIEWPORT_HEIGHT / ROW_HEIGHT) + OVERSCAN * 2;
+    const end = Math.min(rows.length, start + visible);
+    return {
+      start,
+      end,
+      top: start * ROW_HEIGHT,
+      bottom: Math.max(0, (rows.length - end) * ROW_HEIGHT),
+    };
+  }, [virtualize, scrollTop, rows]);
+
   if (loading) {
     return (
       <div className="ui-table-wrap">
@@ -58,8 +109,14 @@ export default function DataTable({
     );
   }
 
+  const slice = virtualize ? rows.slice(windowed.start, windowed.end) : rows;
+
   return (
-    <div className="ui-table-wrap">
+    <div
+      className="ui-table-wrap"
+      style={virtualize ? { maxHeight: VIEWPORT_HEIGHT, overflow: "auto" } : undefined}
+      onScroll={virtualize ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}
+    >
       <table className="ui-table">
         <thead>
           <tr>
@@ -75,24 +132,31 @@ export default function DataTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, i) => (
-            <tr
-              key={rowKey(row, i)}
-              className={rowClassName ? rowClassName(row) : undefined}
-              onClick={onRowClick ? () => onRowClick(row) : undefined}
-            >
-              {columns.map((c) => (
-                <td
-                  key={c.key}
-                  className={columnClassName(c, mobileColumns)}
-                  data-label={columnLabel(c)}
-                  style={c.align ? { textAlign: c.align } : undefined}
-                >
-                  {c.render ? c.render(row, i) : row[c.key]}
-                </td>
-              ))}
+          {virtualize && windowed.top > 0 ? (
+            <tr aria-hidden="true">
+              <td colSpan={columns.length} style={{ height: windowed.top, padding: 0, border: 0 }} />
             </tr>
-          ))}
+          ) : null}
+          {slice.map((row, i) => {
+            const index = virtualize ? windowed.start + i : i;
+            return (
+              <TableRow
+                key={rowKey(row, index)}
+                row={row}
+                index={index}
+                columns={columns}
+                rowKey={rowKey}
+                rowClassName={rowClassName}
+                onRowClick={onRowClick}
+                mobileColumns={mobileColumns}
+              />
+            );
+          })}
+          {virtualize && windowed.bottom > 0 ? (
+            <tr aria-hidden="true">
+              <td colSpan={columns.length} style={{ height: windowed.bottom, padding: 0, border: 0 }} />
+            </tr>
+          ) : null}
         </tbody>
       </table>
     </div>

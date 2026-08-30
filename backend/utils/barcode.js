@@ -156,6 +156,24 @@ export function digitsOnly(s) {
 }
 
 /**
+ * Canonical barcode for products / product_barcodes / product_units storage.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function normalizeStoredBarcode(raw) {
+  return digitsOnly(normalizeBarcodeInput(raw));
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {boolean}
+ */
+export function isValidStoredBarcode(raw) {
+  const digits = typeof raw === "string" && /^\d+$/.test(raw) ? raw : normalizeStoredBarcode(raw);
+  return digits.length >= 4 && digits.length <= 14;
+}
+
+/**
  * String barcode for DB storage — avoids float/scientific corruption; preserves leading zeros.
  * @param {unknown} raw
  * @returns {string}

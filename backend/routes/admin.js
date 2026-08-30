@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { requireAuth, requireAdmin, isAdminRecoveryPassword } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
 import { isKioskOnlyRole, isValidRole, USER_ROLES } from "../utils/roles.js";
 import {
   csvBufferToRecords,
@@ -29,10 +29,10 @@ import { withTransaction } from "../utils/dbTx.js";
 import { repairProductUnitPrices } from "../utils/productUnits.js";
 import { looksLikePackOnlyProduct } from "../utils/unitNames.js";
 import { digitsOnly, normalizeBarcodeInput } from "../utils/barcode.js";
-import { purgeProductBarcodeRows } from "../utils/productDelete.js";
+import { purgeProductBarcodeRows, purgeProductBarcodeRowsForIds } from "../utils/productDelete.js";
 import path from "path";
 import { fileURLToPath } from "url";
-import sqlite3 from "sqlite3";
+import { closeSqliteConnection, openSqliteConnection } from "../database/sqliteDriver.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -93,34 +93,7 @@ async function findPrimaryBarcodeOwner(db, primaryBc, productId) {
 }
 
 async function withIsolatedFkOff(dbPath, fn) {
-  const raw = await new Promise((resolve, reject) => {
-    const d = new sqlite3.Database(path.resolve(dbPath), (err) => (err ? reject(err) : resolve(d)));
-  });
-  const isolated = {
-    run(sql, params = []) {
-      return new Promise((resolve, reject) => {
-        raw.run(sql, params, function onRun(err) {
-          if (err) reject(err);
-          else resolve({ lastID: this.lastID, changes: this.changes });
-        });
-      });
-    },
-    get(sql, params = []) {
-      return new Promise((resolve, reject) => {
-        raw.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-      });
-    },
-    all(sql, params = []) {
-      return new Promise((resolve, reject) => {
-        raw.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
-      });
-    },
-    exec(sql) {
-      return new Promise((resolve, reject) => {
-        raw.exec(sql, (err) => (err ? reject(err) : resolve()));
-      });
-    },
-  };
+  const isolated = await openSqliteConnection(path.resolve(dbPath), { isolated: true });
   try {
     await isolated.exec("PRAGMA foreign_keys = OFF;");
     return await fn(isolated);
@@ -130,7 +103,7 @@ async function withIsolatedFkOff(dbPath, fn) {
     } catch {
       /* ignore */
     }
-    await new Promise((r) => raw.close(() => r()));
+    await closeSqliteConnection(isolated);
   }
 }
 
@@ -308,9 +281,32 @@ export function createAdminRouter(db, dbPath) {
     }
 
     /** @type {Awaited<ReturnType<typeof persistProductImportRows>> | null} */
-    let importResult = null;
+    let importResult = {
+      products_created: 0,
+      products_updated: 0,
+      units_upserted: 0,
+      barcodes_added: 0,
+      duplicate_barcodes_skipped: 0,
+      barcode_conflicts: [],
+      needs_review_count: 0,
+      absorbed_rows: 0,
+      row_errors: [],
+    };
     try {
-      importResult = await withTransaction(db, async () => persistProductImportRows(db, validRows));
+      const IMPORT_CHUNK = 150;
+      for (let i = 0; i < validRows.length; i += IMPORT_CHUNK) {
+        const chunk = validRows.slice(i, i + IMPORT_CHUNK);
+        const part = await withTransaction(db, async () => persistProductImportRows(db, chunk));
+        importResult.products_created += part.products_created;
+        importResult.products_updated += part.products_updated;
+        importResult.units_upserted += part.units_upserted;
+        importResult.barcodes_added += part.barcodes_added;
+        importResult.duplicate_barcodes_skipped += part.duplicate_barcodes_skipped;
+        importResult.needs_review_count += part.needs_review_count;
+        importResult.absorbed_rows += part.absorbed_rows;
+        importResult.barcode_conflicts.push(...part.barcode_conflicts);
+        if (part.row_errors?.length) importResult.row_errors.push(...part.row_errors);
+      }
       products_created = importResult.products_created;
       products_updated = importResult.products_updated;
       barcodes_added = importResult.barcodes_added;
@@ -399,20 +395,17 @@ export function createAdminRouter(db, dbPath) {
         ids
       );
       const deleted = await withIsolatedFkOff(dbPath, async (isolated) => {
-        let n = 0;
         await isolated.exec("BEGIN");
         try {
-          for (const id of ids) {
-            await purgeProductBarcodeRows(isolated, id);
-            const info = await isolated.run("DELETE FROM products WHERE id = ?", [id]);
-            n += info.changes;
-          }
+          await purgeProductBarcodeRowsForIds(isolated, ids);
+          const placeholders = ids.map(() => "?").join(",");
+          const info = await isolated.run(`DELETE FROM products WHERE id IN (${placeholders})`, ids);
           await isolated.exec("COMMIT");
+          return info.changes;
         } catch (e) {
           await isolated.exec("ROLLBACK").catch(() => {});
           throw e;
         }
-        return n;
       });
       for (const row of existingRows) {
         await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_DELETE, "products", row.id, row, null);
@@ -506,6 +499,7 @@ export function createAdminRouter(db, dbPath) {
     const row = await db.get("SELECT id, username, role, created_at FROM users WHERE id = ?", [
       id,
     ]);
+    invalidateUserCache(id);
     await logAudit(db, req, AUDIT_ACTIONS.USER_UPDATE, "users", id, { role: ex.role }, { role: row.role });
     res.json(row);
   });
@@ -557,12 +551,12 @@ export function createAdminRouter(db, dbPath) {
       }
       if (date_from) {
         const { startIso } = shopYmdToUtcBounds(String(date_from));
-        sql += " AND datetime(created_at) >= datetime(?)";
+        sql += " AND created_at >= ?";
         params.push(startIso.replace("T", " ").slice(0, 19));
       }
       if (date_to) {
         const { endIso } = shopYmdToUtcBounds(String(date_to));
-        sql += " AND datetime(created_at) <= datetime(?)";
+        sql += " AND created_at <= ?";
         params.push(endIso.replace("T", " ").slice(0, 19));
       }
       sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?";

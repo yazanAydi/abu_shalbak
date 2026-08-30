@@ -15,9 +15,10 @@ import {
   STORE_NAME_AR,
   STORE_PHONE,
 } from "../utils/storeBranding.js";
-import { shopTodayYmd } from "../utils/shopTime.js";
+import { nextCalendarYmd, shopTodayYmd } from "../utils/shopTime.js";
 import { round2 } from "../utils/money.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { formatProductSku, parseNumericCode } from "../utils/entityCodes.js";
 import { HttpError } from "../utils/httpError.js";
 import { listLimitSql } from "../utils/listQuery.js";
 
@@ -154,15 +155,21 @@ export function createRefundsRouter(db) {
     }
     if (productRaw) {
       const like = `%${productRaw.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+      const skuNum = parseNumericCode(productRaw);
       sql += ` AND (
         EXISTS (
           SELECT 1 FROM transaction_items ti
+          LEFT JOIN products p ON p.id = ti.product_id
           WHERE ti.transaction_id = t.id
-            AND (ti.name LIKE ? ESCAPE '\\' OR ti.barcode = ? OR CAST(ti.product_id AS TEXT) = ?)
+            AND (ti.name LIKE ? ESCAPE '\\' OR ti.barcode = ? OR CAST(ti.product_id AS TEXT) = ?${
+              skuNum != null ? " OR p.sku = ?" : ""
+            })
         )
         OR t.items_json LIKE ?
       )`;
-      params.push(like, productRaw, productRaw, like);
+      params.push(like, productRaw, productRaw);
+      if (skuNum != null) params.push(formatProductSku(skuNum));
+      params.push(like);
     }
 
     sql += " ORDER BY t.created_at DESC, t.id DESC LIMIT ?";
@@ -267,8 +274,8 @@ export function createRefundsRouter(db) {
     const todayRow = await db.get(
       `SELECT COUNT(*) AS count,
         COALESCE(SUM(CASE WHEN status IN ('approved','pending') THEN total ELSE 0 END),0) AS amount
-       FROM refunds WHERE date(created_at) = ?`,
-      [today]
+       FROM refunds WHERE created_at >= ? AND created_at < ?`,
+      [today, nextCalendarYmd(today)]
     );
     const pendingRow = await db.get(
       `SELECT COUNT(*) AS count, COALESCE(SUM(total_amount),0) AS amount FROM refund_requests WHERE status = 'pending'`

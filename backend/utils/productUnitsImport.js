@@ -98,6 +98,9 @@ export async function persistProductImportRows(db, validRows) {
   /** @type {Set<number>} */
   const absorbedRows = new Set();
 
+  /** @type {Set<number>} */
+  const touchedProductIds = new Set();
+
   let products_created = 0;
   let products_updated = 0;
   let units_upserted = 0;
@@ -169,6 +172,7 @@ export async function persistProductImportRows(db, validRows) {
           units_upserted++;
           absorbedRows.add(rowNum);
           await syncProductFromDefaultUnit(db, linkedOwner);
+          touchedProductIds.add(Number(linkedOwner));
           await db.run("RELEASE SAVEPOINT import_row");
           continue;
         }
@@ -404,6 +408,7 @@ export async function persistProductImportRows(db, validRows) {
 
       await syncProductsPrimaryBarcode(db, productId);
       await syncProductFromDefaultUnit(db, productId);
+      if (productId) touchedProductIds.add(Number(productId));
       await db.run("RELEASE SAVEPOINT import_row");
     } catch (rowErr) {
       try {
@@ -419,9 +424,10 @@ export async function persistProductImportRows(db, validRows) {
     }
   }
 
-  const dbIndex = await buildSourceRowIndexFromProducts(db);
+  const touchedIds = [...touchedProductIds];
+  const dbIndex = await buildSourceRowIndexFromProducts(db, { productIds: touchedIds });
   const mergedIndex = mergeSourceRowIndexes(dbIndex, sourceIndex);
-  const repairResult = await repairProductUnitPrices(db, mergedIndex);
+  const repairResult = await repairProductUnitPrices(db, mergedIndex, { productIds: touchedIds });
 
   return {
     products_created,

@@ -25,6 +25,17 @@ function parseDate(s) {
   return s.trim();
 }
 
+function alreadyHasOpenShiftResponse(res) {
+  return res.status(409).json({ error: "لديك وردية مفتوحة بالفعل" });
+}
+
+function isOpenShiftUniqueViolation(err) {
+  const code = String(err?.code || "");
+  if (!code.startsWith("SQLITE_CONSTRAINT")) return false;
+  const msg = String(err?.message || "");
+  return /idx_cashier_shifts_one_open/i.test(msg) || /UNIQUE constraint failed: cashier_shifts/i.test(msg);
+}
+
 async function computeShiftTotals(db, shiftId) {
   const card_total = await sumShiftCardPayments(db, shiftId);
   const refundRow = await db.get(
@@ -158,12 +169,14 @@ export function createShiftsRouter(db) {
     if (Number.isNaN(opening_cash) || opening_cash < 0) {
       return res.status(400).json({ error: "مبلغ افتتاح الوردية غير صالح في الإعدادات" });
     }
-    const existing = await getOpenShiftForCashier(db, req.user.id);
-    if (existing) {
-      return res.status(409).json({ error: "لديك وردية مفتوحة بالفعل" });
-    }
     try {
       const { shiftId, row } = await withTransaction(db, async () => {
+        const existing = await getOpenShiftForCashier(db, req.user.id);
+        if (existing) {
+          const err = new Error("لديك وردية مفتوحة بالفعل");
+          err.status = 409;
+          throw err;
+        }
         const ins = await db.run(
           `INSERT INTO cashier_shifts (cashier_id, opening_cash, status, hourly_rate_snapshot)
            VALUES (?, ?, 'open', (SELECT hourly_rate FROM users WHERE id = ?))`,
@@ -186,6 +199,12 @@ export function createShiftsRouter(db) {
         opening_cash,
       });
     } catch (e) {
+      if (e?.status === 409) {
+        return alreadyHasOpenShiftResponse(res);
+      }
+      if (isOpenShiftUniqueViolation(e)) {
+        return alreadyHasOpenShiftResponse(res);
+      }
       next(e);
     }
   });

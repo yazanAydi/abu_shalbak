@@ -12,22 +12,14 @@ export function displayEntityCode(code) {
 }
 
 /**
- * Product رقم keeps leading zeros (11 digits when numeric).
- * @param {unknown} code
+ * Show the stored scannable barcode. products.barcode is never a رقم.
+ * @param {{ barcode?: unknown } | null | undefined} product
  * @returns {string}
  */
 export function displayProductBarcode(product) {
   if (product == null) return "—";
-  const shown = product.barcode_display != null && String(product.barcode_display).trim() !== ""
-    ? String(product.barcode_display).trim()
-    : "";
-  if (shown) return shown;
   const barcode = product.barcode != null ? String(product.barcode).trim() : "";
-  if (!barcode) return "—";
-  const skuShown = displayProductSku(product.sku);
-  const barcodeAsSku = displayProductSku(barcode);
-  if (skuShown !== "—" && barcodeAsSku === skuShown) return "—";
-  return barcode;
+  return barcode || "—";
 }
 
 export function displayProductSku(code) {

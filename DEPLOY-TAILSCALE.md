@@ -139,6 +139,7 @@ Safari → Share → **Add to Home Screen**. This creates an app-like icon that 
 - Change default seeded passwords after first login.
 - Keep `data/` and `backups/` folders off any public web path.
 - Set a strong unique `JWT_SECRET` before going live.
+- POS complete-sale is **F9** (not F12). F12 is Edge DevTools and must stay unbound. After a rebuild, hard-reload (`Ctrl+F5`) on the phone/remote browser. For cashier PCs, see the Edge `DeveloperToolsAvailability` step in `docs/LAN_DEPLOYMENT_CHECKLIST.md`.
 
 ---
 

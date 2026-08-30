@@ -16,6 +16,26 @@
 
 const chains = new WeakMap();
 
+function isBusyError(err) {
+  const code = String(err?.code || "");
+  const msg = String(err?.message || "");
+  return code === "SQLITE_BUSY" || /SQLITE_BUSY|database is locked/i.test(msg);
+}
+
+async function beginImmediateWithRetry(db, attempts = 6) {
+  let delay = 40;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await db.run("BEGIN IMMEDIATE");
+      return;
+    } catch (err) {
+      if (!isBusyError(err) || i === attempts - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(400, delay * 2);
+    }
+  }
+}
+
 /**
  * Run `fn` inside a serialized BEGIN IMMEDIATE / COMMIT transaction.
  * Rolls back automatically if `fn` throws. Returns whatever `fn` returns.
@@ -34,7 +54,7 @@ export function withTransaction(db, fn) {
   );
 
   const result = gate.then(async () => {
-    await db.run("BEGIN IMMEDIATE");
+    await beginImmediateWithRetry(db);
     try {
       const value = await fn();
       await db.run("COMMIT");

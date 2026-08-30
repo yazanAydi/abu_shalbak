@@ -14,6 +14,17 @@ export const SHOP_TZ_LABEL = "Ramallah";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Calendar day after `ymd` (UTC date arithmetic; input is a shop YYYY-MM-DD).
+ * Used for half-open SQL ranges: `created_at >= from AND created_at < nextDay(to)`.
+ */
+export function nextCalendarYmd(ymd) {
+  if (!YMD_RE.test(String(ymd || ""))) return null;
+  const [y, m, d] = String(ymd).split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + 1));
+  return dt.toISOString().slice(0, 10);
+}
+
 const ymdFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: SHOP_TZ,
   year: "numeric",

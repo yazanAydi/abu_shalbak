@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -20,11 +20,6 @@ import {
   Modal,
   useToast,
 } from "../components/ui";
-import EditProductModal from "./productDashboard/EditProductModal";
-import ProductUnitsModal from "./productDashboard/ProductUnitsModal";
-import DuplicateBarcodeConflict from "./productDashboard/DuplicateBarcodeConflict";
-import EditBarcodeModal from "./productDashboard/EditBarcodeModal";
-import ImportSummaryModal from "./productDashboard/ImportSummaryModal";
 import { pickExportColumns } from "../utils/reportExport";
 import "./productDashboard/productBarcodes.css";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
@@ -33,11 +28,18 @@ import {
   displayProductBarcode,
   displayProductSku,
   filterProductsBySkuQuery,
+  parseProductSkuNumber,
   sortProductsBySku,
 } from "../utils/entityCodeDisplay";
 import CategorySelect from "../components/CategorySelect";
 import UnitNameSelect from "../components/UnitNameSelect";
 import "../components/barcode/barcode-scanner.css";
+
+const EditProductModal = lazy(() => import("./productDashboard/EditProductModal"));
+const ProductUnitsModal = lazy(() => import("./productDashboard/ProductUnitsModal"));
+const DuplicateBarcodeConflict = lazy(() => import("./productDashboard/DuplicateBarcodeConflict"));
+const EditBarcodeModal = lazy(() => import("./productDashboard/EditBarcodeModal"));
+const ImportSummaryModal = lazy(() => import("./productDashboard/ImportSummaryModal"));
 
 const emptyForm = {
   barcode: "",
@@ -108,15 +110,37 @@ async function fetchSuggestedSku() {
   }
 }
 
-async function freshAddForm() {
-  const sku = await fetchSuggestedSku();
-  return { ...emptyForm, sku };
+function freshAddFormSync(sku = "") {
+  return { ...emptyForm, sku: sku || "" };
+}
+
+function mergeProductRow(list, row) {
+  if (!row?.id) return list;
+  const idx = list.findIndex((p) => p.id === row.id);
+  if (idx === -1) {
+    return sortProductsBySku([row, ...list]);
+  }
+  const next = list.slice();
+  next[idx] = { ...list[idx], ...row };
+  return next;
+}
+
+function removeProductRows(list, ids) {
+  const drop = new Set(ids.map(Number));
+  return list.filter((p) => !drop.has(Number(p.id)));
+}
+
+function barcodeMatchesSku(barcode, sku) {
+  const b = parseProductSkuNumber(barcode);
+  const s = parseProductSkuNumber(sku);
+  return b != null && s != null && b === s;
 }
 
 function formToPayload(form) {
   return {
     barcode: form.barcode.trim(),
     sku: form.sku?.trim() || null,
+    needs_review: barcodeMatchesSku(form.barcode, form.sku) ? 1 : 0,
     name: form.name.trim(),
     name_en: form.name_en?.trim() || null,
     price: Number(form.price),
@@ -130,6 +154,11 @@ function formToPayload(form) {
     max_price: form.max_price !== "" ? Number(form.max_price) : null,
     is_weighed: form.is_weighed ? 1 : 0,
   };
+}
+
+function formToUpdatePayload(form) {
+  const { stock: _ignoredStock, ...payload } = formToPayload(form);
+  return payload;
 }
 
 function validateAddForm(form) {
@@ -198,17 +227,28 @@ export default function ProductManagement() {
     [showNeedsReviewOnly]
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const applyLocalRow = useCallback((row) => {
+    if (!row?.id) return;
+    setProducts((prev) => mergeProductRow(prev, row));
+    setSearchResults((prev) => (prev ? mergeProductRow(prev, row) : prev));
+  }, []);
+
+  const applyLocalRemove = useCallback((ids) => {
+    setProducts((prev) => removeProductRows(prev, ids));
+    setSearchResults((prev) => (prev ? removeProductRows(prev, ids) : prev));
+    setProductsTotal((n) => Math.max(0, n - ids.length));
+  }, []);
+
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const { items, total } = await fetchProductPage(0);
       setProducts(items);
       setProductsTotal(total);
-      setSearchResults(null);
     } catch (e) {
       toast.error(e.response?.data?.error || e.message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [fetchProductPage, toast]);
 
@@ -270,13 +310,16 @@ export default function ProductManagement() {
   }, [search, toast]);
 
   const isSearchActive = Boolean(search.trim());
-  const rawList = isSearchActive ? (searchResults ?? []) : products;
-  const baseList = isSearchActive
-    ? filterProductsBySkuQuery(rawList, search)
-    : sortProductsBySku(rawList);
-  const filtered = showNeedsReviewOnly
-    ? baseList.filter((p) => Number(p.needs_review) === 1)
-    : baseList;
+  const filtered = useMemo(() => {
+    const rawList = isSearchActive ? (searchResults ?? []) : products;
+    const baseList = isSearchActive
+      ? filterProductsBySkuQuery(rawList, search)
+      : sortProductsBySku(rawList);
+    if (isSearchActive && showNeedsReviewOnly) {
+      return baseList.filter((p) => Number(p.needs_review) === 1);
+    }
+    return baseList;
+  }, [isSearchActive, searchResults, products, search, showNeedsReviewOnly]);
   const listLoading = isSearchActive
     ? searchLoading || searchResults === null
     : loading;
@@ -316,7 +359,7 @@ export default function ProductManagement() {
         text: data.message || `تمت إضافة ${data.inserted} منتجًا`,
       });
       setImportSummary(data);
-      await load();
+      await load({ silent: true });
     } catch (e) {
       if (e.response?.status === 401) {
         setUploadFeedback({
@@ -359,16 +402,29 @@ export default function ProductManagement() {
       return;
     }
 
+    if (barcodeMatchesSku(form.barcode, form.sku)) {
+      const ok = window.confirm(
+        "الباركود المدخل يطابق رقم المنتج. إذا كان هذا الباركود الحقيقي للمتابعة اضغط موافق، وإلا أدخل باركوداً مختلفاً."
+      );
+      if (!ok) return;
+    }
+
     try {
       const { data: created } = await api.post(
         "/api/products",
         formToPayload(form),
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
-      setForm(await freshAddForm());
+      applyLocalRow(created);
+      setProductsTotal((n) => n + 1);
+      setForm(freshAddFormSync(created?.next_sku));
+      if (!created?.next_sku) {
+        fetchSuggestedSku().then((sku) => {
+          if (sku) setForm((f) => (f.sku ? f : { ...f, sku }));
+        });
+      }
       setConflictProduct(null);
       toast.success("تمت إضافة المنتج");
-      await load();
       if (created?.id) setUnitsProduct(created);
     } catch (e) {
       if (e.response?.status === 409) {
@@ -395,15 +451,15 @@ export default function ProductManagement() {
 
     setConflictBusy(true);
     try {
-      await api.put(
+      const { data: updated } = await api.put(
         `/api/products/${conflictProduct.id}`,
-        formToPayload(form),
+        formToUpdatePayload(form),
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
-      setForm(await freshAddForm());
+      applyLocalRow(updated);
+      setForm(freshAddFormSync(updated?.next_sku));
       setConflictProduct(null);
       toast.success("تم استبدال المنتج");
-      await load();
     } catch (e) {
       setFormErr(e.response?.data?.error || e.message);
     } finally {
@@ -421,9 +477,9 @@ export default function ProductManagement() {
       await api.delete(`/api/admin/products/${conflictProduct.id}`, {
         headers: getAuthHeaders(),
       });
+      applyLocalRemove([conflictProduct.id]);
       setConflictProduct(null);
       toast.success("تم الحذف — يمكنك الآن إضافة المنتج");
-      await load();
     } catch (e) {
       setFormErr(e.response?.data?.error || e.message);
     } finally {
@@ -431,10 +487,10 @@ export default function ProductManagement() {
     }
   }
 
-  function handleEditBarcodeSaved() {
+  function handleEditBarcodeSaved(row) {
     setEditBarcodeProduct(null);
     setConflictProduct(null);
-    load();
+    if (row) applyLocalRow(row);
   }
 
   function clearSelection() {
@@ -488,8 +544,8 @@ export default function ProductManagement() {
         });
       }
       toast.success(ids.length > 1 ? `تم حذف ${ids.length} منتجًا` : "تم الحذف");
+      applyLocalRemove(ids);
       clearSelection();
-      await load();
     } catch (e) {
       toast.error(e.response?.data?.error || e.message);
     }
@@ -519,7 +575,7 @@ export default function ProductManagement() {
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       toast.success(next ? "تم تفعيل المنتج" : "تم إيقاف المنتج");
-      await load();
+      applyLocalRow({ ...p, is_active: next });
     } catch (e) {
       toast.error(e.response?.data?.error || e.message);
     }
@@ -528,7 +584,7 @@ export default function ProductManagement() {
   const allVisibleSelected =
     filtered.length > 0 && filtered.every((p) => selectedIds.has(p.id));
 
-  const columns = [
+  const columns = useMemo(() => [
     {
       key: "select",
       hideOnMobile: true,
@@ -627,7 +683,7 @@ export default function ProductManagement() {
         </div>
       ),
     },
-  ];
+  ], [allVisibleSelected, selectedIds, navigate]);
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
@@ -784,6 +840,7 @@ export default function ProductManagement() {
                 />
               </FormField>
             </FormGrid>
+            <Suspense fallback={null}>
             <DuplicateBarcodeConflict
               existingProduct={conflictProduct}
               busy={conflictBusy}
@@ -792,6 +849,7 @@ export default function ProductManagement() {
               onEditBarcode={() => setEditBarcodeProduct(conflictProduct)}
               onEditUnits={() => setUnitsProduct(conflictProduct)}
             />
+            </Suspense>
             {formErr ? (
               <p style={{ color: "var(--office-danger)", marginTop: "0.5rem" }}>{formErr}</p>
             ) : null}
@@ -856,19 +914,22 @@ export default function ProductManagement() {
         </CardBody>
       </Card>
 
+      <Suspense fallback={null}>
       <ImportSummaryModal
         open={!!importSummary}
         onClose={() => setImportSummary(null)}
         data={importSummary}
       />
+      </Suspense>
 
+      <Suspense fallback={null}>
       <EditProductModal
         open={!!editProduct}
         onClose={() => setEditProduct(null)}
         product={editProduct}
-        onSaved={() => {
+        onSaved={(row) => {
           setEditProduct(null);
-          load();
+          applyLocalRow(row);
         }}
       />
 
@@ -877,12 +938,9 @@ export default function ProductManagement() {
         product={unitsProduct}
         onClose={() => setUnitsProduct(null)}
         onChanged={async () => {
-          await load();
+          if (unitsProduct) applyLocalRow(unitsProduct);
           const code = form.barcode.trim();
-          if (!code) {
-            setConflictProduct(null);
-            return;
-          }
+          if (!code) return;
           try {
             const hit = await lookupProductByBarcodeApi(code);
             setConflictProduct(toConflictProduct(hit));
@@ -898,6 +956,7 @@ export default function ProductManagement() {
         product={editBarcodeProduct}
         onSaved={handleEditBarcodeSaved}
       />
+      </Suspense>
 
       <Modal
         open={!!pendingDelete}

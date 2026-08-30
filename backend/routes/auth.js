@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { JWT_SECRET, JWT_OPTIONS, requireAuth, isAdminRecoveryPassword } from "../middleware/auth.js";
+import { JWT_SECRET, JWT_OPTIONS, requireAuth, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
 import { loginLimiter } from "../middleware/rateLimit.js";
 import { validate } from "../middleware/validate.js";
 import { loginSchema, changePasswordSchema } from "../middleware/schemas.js";
@@ -95,6 +95,7 @@ export function createAuthRouter(db) {
         "UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?",
         [hash, req.user.id]
       );
+      invalidateUserCache(req.user.id);
       res.json({ success: true, message: "تم تغيير كلمة المرور" });
     } catch (err) {
       next(err);

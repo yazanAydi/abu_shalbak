@@ -47,7 +47,7 @@ api.interceptors.response.use(
     // A write may have changed settings, currencies, categories or unit names,
     // so drop the GET cache rather than try to guess which entry is affected.
     if (r.config?.method && r.config.method.toLowerCase() !== "get") {
-      clearApiCache();
+      invalidateCacheForWrite(r.config.url || "");
     }
     return r;
   },
@@ -106,6 +106,23 @@ const inFlightRequests = new Map();
 export function clearApiCache() {
   cachedResponses.clear();
   inFlightRequests.clear();
+}
+
+function invalidateCacheForWrite(url) {
+  const path = String(url || "");
+  const keys = [];
+  if (path.includes("/settings")) keys.push("/api/settings");
+  if (path.includes("/currencies")) keys.push("/api/currencies");
+  if (path.includes("/categories")) keys.push("/api/products/categories");
+  if (path.includes("/unit-names")) keys.push("/api/products/unit-names");
+  if (!keys.length) return;
+  for (const cacheKey of [...cachedResponses.keys()]) {
+    if (keys.some((prefix) => cacheKey.startsWith(prefix))) cachedResponses.delete(cacheKey);
+  }
+}
+
+export function createAbortController() {
+  return new AbortController();
 }
 
 function serializeParams(params) {

@@ -26,6 +26,7 @@ import { customerHasLedgerActivity } from "../utils/balanceSheetImport.js";
 import { ensureEntityCode } from "../utils/entityCodes.js";
 import { buildCustomerLedger } from "../utils/customerLedger.js";
 import { getAccountStatement } from "../utils/accountStatementService.js";
+import { withTransaction } from "../utils/dbTx.js";
 import {
   createStatementHistoryPreviewHandler,
   createStatementHistoryConfirmHandler,
@@ -39,6 +40,66 @@ function normalizeCategory(c) {
 
   return CUSTOMER_CATEGORIES.includes(String(c)) ? String(c) : "retail";
 
+}
+
+function httpErr(status, message, code) {
+  const err = new Error(message);
+  err.status = status;
+  err.code = code;
+  return err;
+}
+
+/**
+ * Write only fields present on the body. Never writes balance / opening_balance
+ * (those change via sales, vouchers, payments, and imports).
+ */
+async function applyCustomerMetadataPatch(db, id, body) {
+  return withTransaction(db, async () => {
+    const live = await db.get("SELECT * FROM customers WHERE id = ?", [id]);
+    if (!live) throw httpErr(404, "العميل غير موجود", "NOT_FOUND");
+
+    const b = body || {};
+    const sets = [];
+    const params = [];
+    const setCol = (col, value) => {
+      sets.push(`${col} = ?`);
+      params.push(value);
+    };
+
+    if (b.name !== undefined) {
+      const name = String(b.name).trim();
+      if (!name) throw httpErr(400, "اسم العميل مطلوب", "VALIDATION_ERROR");
+      setCol("name", name);
+    }
+    if (b.phone !== undefined) setCol("phone", b.phone || null);
+    if (b.phone2 !== undefined) setCol("phone2", b.phone2 || null);
+    if (b.address !== undefined) setCol("address", b.address || null);
+    if (b.city !== undefined) setCol("city", b.city || null);
+    if (b.price_category !== undefined) setCol("price_category", normalizeCategory(b.price_category));
+    if (b.credit_limit !== undefined) setCol("credit_limit", Number(b.credit_limit) || 0);
+    if (b.no_credit !== undefined) setCol("no_credit", b.no_credit ? 1 : 0);
+    if (b.notes !== undefined) setCol("notes", b.notes || null);
+    if (b.customer_code !== undefined) {
+      setCol("customer_code", b.customer_code ? String(b.customer_code).trim() : null);
+    }
+    if (b.payment_terms !== undefined) setCol("payment_terms", b.payment_terms || null);
+    if (b.balance_group_id !== undefined) {
+      let groupId = live.balance_group_id;
+      const gid = Number(b.balance_group_id);
+      if (Number.isFinite(gid) && gid > 0) {
+        const g = await getBalanceGroupById(db, gid);
+        if (g) groupId = g.id;
+      }
+      setCol("balance_group_id", groupId);
+    }
+
+    if (sets.length) {
+      params.push(id);
+      await db.run(`UPDATE customers SET ${sets.join(", ")} WHERE id = ?`, params);
+    }
+
+    return db.get(`${CUSTOMER_SELECT} WHERE c.id = ?`, [id]);
+  });
 }
 
 
@@ -519,66 +580,14 @@ export function createCustomersRouter(db) {
 
 
 
-  router.put("/:id", requireAuth, requireAdmin, async (req, res) => {
-
-    const existing = await db.get("SELECT * FROM customers WHERE id = ?", [req.params.id]);
-
-    if (!existing) return res.status(404).json({ error: "العميل غير موجود", code: "NOT_FOUND" });
-
-    const b = req.body || {};
-
-    const name = b.name !== undefined ? String(b.name).trim() : existing.name;
-
-    const phone = b.phone !== undefined ? (b.phone || null) : existing.phone;
-
-    const phone2 = b.phone2 !== undefined ? (b.phone2 || null) : existing.phone2;
-
-    const address = b.address !== undefined ? (b.address || null) : existing.address;
-
-    const city = b.city !== undefined ? (b.city || null) : existing.city;
-
-    const price_category = b.price_category !== undefined ? normalizeCategory(b.price_category) : existing.price_category;
-
-    const credit_limit = b.credit_limit !== undefined ? Number(b.credit_limit) : existing.credit_limit;
-
-    const no_credit = b.no_credit !== undefined ? (b.no_credit ? 1 : 0) : existing.no_credit;
-
-    const notes = b.notes !== undefined ? (b.notes || null) : existing.notes;
-
-    const customer_code = b.customer_code !== undefined ? (b.customer_code ? String(b.customer_code).trim() : null) : existing.customer_code;
-
-    const payment_terms = b.payment_terms !== undefined ? (b.payment_terms || null) : existing.payment_terms;
-
-    let balance_group_id = existing.balance_group_id;
-
-    if (b.balance_group_id !== undefined) {
-
-      const gid = Number(b.balance_group_id);
-
-      if (Number.isFinite(gid) && gid > 0) {
-
-        const g = await getBalanceGroupById(db, gid);
-
-        if (g) balance_group_id = g.id;
-
-      }
-
+  router.put("/:id", requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+      const row = await applyCustomerMetadataPatch(db, req.params.id, req.body || {});
+      res.json(row);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
     }
-
-    await db.run(
-
-      `UPDATE customers SET name=?, phone=?, phone2=?, address=?, city=?, price_category=?,
-
-          credit_limit=?, no_credit=?, notes=?, customer_code=?, payment_terms=?, balance_group_id=? WHERE id=?`,
-
-      [name, phone, phone2, address, city, price_category, credit_limit, no_credit, notes, customer_code, payment_terms, balance_group_id, req.params.id]
-
-    );
-
-    const row = await db.get(`${CUSTOMER_SELECT} WHERE c.id = ?`, [req.params.id]);
-
-    res.json(row);
-
   });
 
 
@@ -704,26 +713,25 @@ export function createCustomersRouter(db) {
 
 
 
-  router.post("/:id/payment", requireAuth, requireAdmin, async (req, res) => {
-
-    const customer = await db.get("SELECT * FROM customers WHERE id = ?", [req.params.id]);
-
-    if (!customer) return res.status(404).json({ error: "العميل غير موجود", code: "NOT_FOUND" });
-
+  router.post("/:id/payment", requireAuth, requireAdmin, async (req, res, next) => {
     const amount = Number(req.body?.amount);
-
     if (!Number.isFinite(amount) || amount <= 0) {
-
       return res.status(400).json({ error: "المبلغ غير صالح", code: "VALIDATION_ERROR" });
-
     }
-
-    const newBalance = round2(customer.balance - amount);
-
-    await db.run("UPDATE customers SET balance = ? WHERE id = ?", [newBalance, customer.id]);
-
-    res.json({ success: true, new_balance: newBalance });
-
+    const delta = round2(amount);
+    try {
+      const result = await withTransaction(db, async () => {
+        const customer = await db.get("SELECT * FROM customers WHERE id = ?", [req.params.id]);
+        if (!customer) throw httpErr(404, "العميل غير موجود", "NOT_FOUND");
+        await db.run("UPDATE customers SET balance = balance - ? WHERE id = ?", [delta, customer.id]);
+        const live = await db.get("SELECT balance FROM customers WHERE id = ?", [customer.id]);
+        return { new_balance: round2(Number(live.balance)) };
+      });
+      res.json({ success: true, new_balance: result.new_balance });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
   });
 
 

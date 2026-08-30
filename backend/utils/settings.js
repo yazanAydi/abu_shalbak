@@ -2,6 +2,7 @@ import {
   defaultAccountantPermissions,
   normalizeAccountantPermissions,
 } from "./accountantPermissions.js";
+import { CACHE_KEYS, cacheClone, cacheGet, cacheInvalidate, cacheSet } from "./cache.js";
 
 export const OTHER_QUICK_CATEGORY = "أخرى";
 export const DEFAULT_QUICK_CATEGORIES = ["معجنات", "بيتزا", OTHER_QUICK_CATEGORY];
@@ -32,6 +33,84 @@ const MAX_POS_FAVORITES = 24;
 const MAX_QUICK_CATEGORIES = 20;
 const MAX_DAIRY_CATEGORIES = 20;
 const MAX_POS_QUICK_BUTTONS = 48;
+
+/**
+ * Browser-reserved shortcuts that Chromium (Edge/Chrome) handles before
+ * the page can cancel them. Binding these opens DevTools, History, etc.
+ */
+export const RESERVED_BROWSER_KEYS = new Set([
+  "f1",
+  "f6",
+  "f7",
+  "f11",
+  "f12",
+  "ctrl+shift+i",
+  "ctrl+shift+j",
+  "ctrl+shift+c",
+  "ctrl+n",
+  "ctrl+t",
+  "ctrl+w",
+  "ctrl+h",
+  "ctrl+l",
+  "ctrl+p",
+  "ctrl+s",
+]);
+
+const RESERVED_SHORTCUT_ERROR =
+  "هذا الاختصار محجوز للمتصفح (مثل F12 أو Ctrl+Shift+I). اختر مفتاحاً آخر مثل F8 أو Ctrl+Shift+L";
+
+export function normalizeShortcutKey(raw) {
+  const trimmed = String(raw ?? "").trim().slice(0, 40);
+  if (!trimmed) return "";
+  const parts = trimmed.split("+").map((p) => p.trim().toLowerCase()).filter(Boolean);
+  const modifiers = [];
+  let key = "";
+  for (const part of parts) {
+    const mod = part === "control" ? "ctrl" : part;
+    if (mod === "ctrl" || mod === "shift" || mod === "alt") {
+      if (!modifiers.includes(mod)) modifiers.push(mod);
+    } else {
+      key = part;
+    }
+  }
+  const order = { ctrl: 0, alt: 1, shift: 2 };
+  modifiers.sort((a, b) => (order[a] ?? 9) - (order[b] ?? 9));
+  return [...modifiers, key].filter(Boolean).join("+");
+}
+
+export function isReservedBrowserShortcut(raw) {
+  const normalized = normalizeShortcutKey(raw);
+  return Boolean(normalized) && RESERVED_BROWSER_KEYS.has(normalized);
+}
+
+function formatShortcutKey(normalized) {
+  if (!normalized) return "";
+  return normalized
+    .split("+")
+    .map((part) => {
+      if (part === "ctrl") return "Ctrl";
+      if (part === "shift") return "Shift";
+      if (part === "alt") return "Alt";
+      if (/^f\d+$/.test(part)) return part.toUpperCase();
+      return part.length === 1 ? part.toUpperCase() : part;
+    })
+    .join("+");
+}
+
+export function sanitizePosShortcut(raw) {
+  const normalized = normalizeShortcutKey(raw);
+  if (!normalized) return "";
+  if (RESERVED_BROWSER_KEYS.has(normalized)) {
+    throw new Error(RESERVED_SHORTCUT_ERROR);
+  }
+  return formatShortcutKey(normalized);
+}
+
+function parsePosShortcut(raw) {
+  const normalized = normalizeShortcutKey(raw);
+  if (!normalized || RESERVED_BROWSER_KEYS.has(normalized)) return "";
+  return formatShortcutKey(normalized);
+}
 
 const DEFAULTS = {
   [SETTING_KEYS.default_tax_rate]: 0.16,
@@ -229,13 +308,15 @@ function parseValue(key, raw, context = {}) {
     }
     default:
       if (key === SETTING_KEYS.pos_shortcut_hold_cart || key === SETTING_KEYS.pos_shortcut_suspended_carts) {
-        return String(raw ?? "");
+        return parsePosShortcut(raw);
       }
       return String(raw);
   }
 }
 
 export async function getAppSettings(db) {
+  const cached = cacheGet(CACHE_KEYS.SETTINGS);
+  if (cached) return cacheClone(cached);
   const rows = await db.all("SELECT key, value FROM app_settings");
   const map = {};
   for (const r of rows) map[r.key] = r.value;
@@ -303,6 +384,8 @@ export async function getAppSettings(db) {
       map[SETTING_KEYS.accountant_permissions]
     ),
   };
+  cacheSet(CACHE_KEYS.SETTINGS, settings);
+  return cacheClone(settings);
 }
 
 export async function updateAppSettings(db, patch) {
@@ -392,8 +475,8 @@ export async function updateAppSettings(db, patch) {
       return String(n);
     },
     [SETTING_KEYS.expiry_dairy_categories]: (v) => serializeDairyCategories(v),
-    [SETTING_KEYS.pos_shortcut_hold_cart]: (v) => String(v ?? "").trim().slice(0, 40),
-    [SETTING_KEYS.pos_shortcut_suspended_carts]: (v) => String(v ?? "").trim().slice(0, 40),
+    [SETTING_KEYS.pos_shortcut_hold_cart]: (v) => sanitizePosShortcut(v),
+    [SETTING_KEYS.pos_shortcut_suspended_carts]: (v) => sanitizePosShortcut(v),
     [SETTING_KEYS.accountant_permissions]: (v) => {
       if (v === undefined || v === null) {
         return JSON.stringify(defaultAccountantPermissions());
@@ -414,6 +497,7 @@ export async function updateAppSettings(db, patch) {
       [key, value]
     );
   }
+  cacheInvalidate(CACHE_KEYS.SETTINGS);
   return getAppSettings(db);
 }
 

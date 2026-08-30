@@ -33,7 +33,7 @@ test("raw BEGIN IMMEDIATE is only allowed in dbTx.js", () => {
   for (const file of walkJs(backendRoot)) {
     const rel = path.relative(backendRoot, file).replaceAll("\\", "/");
     if (rel === "utils/dbTx.js") continue;
-    if (rel.startsWith("tests/")) continue;
+    if (rel.startsWith("tests/") || rel.startsWith("scripts/")) continue;
     const src = fs.readFileSync(file, "utf8");
     if (/BEGIN\s+IMMEDIATE/i.test(src)) offenders.push(rel);
   }

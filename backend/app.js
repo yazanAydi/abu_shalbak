@@ -42,6 +42,7 @@ import { responseEnvelope } from "./middleware/responseEnvelope.js";
 import { apiLimiter } from "./middleware/rateLimit.js";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth.js";
 import { HttpError } from "./utils/httpError.js";
+import { queryCountMiddleware } from "./utils/queryStats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -158,6 +159,7 @@ export function createApp(db, dbPath, options = {}) {
   );
   app.use(compression());
   app.use(requestIdMiddleware);
+  app.use(queryCountMiddleware);
   app.use(
     cors({
       origin(origin, callback) {

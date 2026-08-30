@@ -19,6 +19,8 @@ import {
 } from "../services/suspendedSaleService.js";
 import { createOnAccountRequest } from "../services/onAccountRequestService.js";
 import { executeCheckoutSale } from "../services/checkoutSaleService.js";
+import { withTransaction } from "../utils/dbTx.js";
+import { validateCustomerCredit } from "../utils/customerCredit.js";
 
 const SUSPENDED_QTY_TOLERANCE = 0.0001;
 
@@ -54,17 +56,6 @@ function validateCheckoutBody(body) {
     if (!Number.isFinite(price) || price < 0) {
       return "السعر غير صالح في أحد الأصناف";
     }
-  }
-  return null;
-}
-
-async function validateCustomerCredit(db, custId, onAccountAmount) {
-  if (!custId || onAccountAmount <= 0) return null;
-  const cust = await db.get("SELECT * FROM customers WHERE id = ?", [custId]);
-  if (!cust) return { status: 404, error: "العميل غير موجود", code: "NOT_FOUND" };
-  if (cust.no_credit) return { status: 400, error: "هذا العميل ممنوع الدين", code: "CREDIT_BLOCKED" };
-  if (cust.credit_limit > 0 && cust.balance + onAccountAmount > cust.credit_limit) {
-    return { status: 400, error: "العميل تجاوز حد الائتمان", code: "CREDIT_LIMIT_EXCEEDED" };
   }
   return null;
 }
@@ -246,15 +237,10 @@ export function createCheckoutRouter(db) {
       if (Number(unit.is_default) === 1 && !explicitUnitId) {
         const livePrice = round2(Number(p.price));
         if (Math.abs(livePrice - round2(Number(unit.price))) > 0.009) {
-          await db.run("UPDATE product_units SET price = ?, updated_at = datetime('now') WHERE id = ?", [
-            livePrice,
-            unit.id,
-          ]);
           unit.price = livePrice;
         }
         const liveCost = round2(Number(p.cost) || 0);
         if (liveCost !== round2(Number(unit.cost) || 0)) {
-          await db.run("UPDATE product_units SET cost = ? WHERE id = ?", [liveCost, unit.id]);
           unit.cost = liveCost;
         }
       }
@@ -398,13 +384,7 @@ export function createCheckoutRouter(db) {
       return res.status(400).json({ error: "اختر عميلاً للبيع على الذمة", code: "CUSTOMER_REQUIRED" });
     }
 
-    const creditErr = await validateCustomerCredit(db, custId, onAccountTotal);
-    if (creditErr) {
-      return res.status(creditErr.status).json({
-        error: creditErr.error,
-        code: creditErr.code,
-      });
-    }
+    // Credit + drawer checks run inside the write transaction below.
 
     const itemsForJson = normalized.map((L) => ({
       product_id: L.product_id,
@@ -425,14 +405,7 @@ export function createCheckoutRouter(db) {
       return res.status(400).json({ error: shiftErr || "لا توجد وردية مفتوحة", code: "NO_OPEN_SHIFT" });
     }
 
-    const changeErr = await assertDrawerCanGiveChange(db, shift.id, shift.opening_cash, paymentLines, {
-      changeOriginal,
-      changeNis,
-      changeCurrencyCode,
-    });
-    if (changeErr) {
-      return res.status(400).json({ error: changeErr.error, code: changeErr.code });
-    }
+    // Drawer availability is re-checked under the serialized write lock.
 
     if (suspendedContext && Number(suspendedContext.sale.shift_id) !== Number(shift.id)) {
       return res.status(403).json({
@@ -492,7 +465,26 @@ export function createCheckoutRouter(db) {
     }
 
     try {
-      const result = await executeCheckoutSale(db, {
+      const result = await withTransaction(db, async () => {
+        const creditErr = await validateCustomerCredit(db, custId, onAccountTotal);
+        if (creditErr) {
+          const err = new Error(creditErr.error);
+          err.status = creditErr.status;
+          err.code = creditErr.code;
+          throw err;
+        }
+        const changeErr = await assertDrawerCanGiveChange(db, shift.id, shift.opening_cash, paymentLines, {
+          changeOriginal,
+          changeNis,
+          changeCurrencyCode,
+        });
+        if (changeErr) {
+          const err = new Error(changeErr.error);
+          err.status = 400;
+          err.code = changeErr.code;
+          throw err;
+        }
+        return executeCheckoutSale(db, {
         cashierId: req.user.id,
         shiftId: shift.id,
         custId,
@@ -513,6 +505,7 @@ export function createCheckoutRouter(db) {
         idempotencyKey,
         suspendedSaleId: suspendedSaleId || null,
         promoBreakdown,
+        }, { inTransaction: true });
       });
 
       if (result.replayTxId) {
@@ -561,6 +554,9 @@ export function createCheckoutRouter(db) {
         receipt_html,
       });
     } catch (e) {
+      if (e?.status) {
+        return res.status(e.status).json({ error: e.message, code: e.code });
+      }
       if (
         idempotencyKey &&
         e &&

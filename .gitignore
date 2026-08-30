@@ -33,6 +33,9 @@ node_modules/
 /backend/public/admin/
 /backend/public/pos/
 
+# ── Load-test artifacts (generated, disposable) ─────────
+/docs/perf/load/
+
 # ── Logs ────────────────────────────────────────────────
 *.log
 npm-debug.log*

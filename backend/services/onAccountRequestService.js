@@ -12,6 +12,7 @@ import {
   sendOnAccountDecisionStatusMessage,
 } from "../utils/telegram.js";
 import { round2 } from "../utils/money.js";
+import { validateCustomerCredit, throwCreditError } from "../utils/customerCredit.js";
 
 export { getTelegramManagerUser };
 
@@ -302,37 +303,41 @@ export async function approveOnAccountRequest(
   req = null,
   decisionSource = "admin"
 ) {
-  const request = await db.get("SELECT * FROM on_account_requests WHERE id = ?", [requestId]);
-  if (!request) {
-    const err = new Error("طلب الذمة غير موجود");
-    err.status = 404;
-    throw err;
-  }
-  if (request.status !== "pending") {
-    const err = new Error("الطلب ليس قيد المراجعة");
-    err.status = 400;
-    err.code = "NOT_PENDING";
-    throw err;
-  }
+  await withTransaction(db, async () => {
+    const request = await db.get("SELECT * FROM on_account_requests WHERE id = ?", [requestId]);
+    if (!request) {
+      const err = new Error("طلب الذمة غير موجود");
+      err.status = 404;
+      throw err;
+    }
+    if (request.status !== "pending") {
+      const err = new Error("الطلب ليس قيد المراجعة");
+      err.status = 400;
+      err.code = "NOT_PENDING";
+      throw err;
+    }
 
-  const { shift, error: shiftErr } = await requireOpenShiftForCashier(db, request.cashier_id);
-  if (shiftErr || !shift) {
-    const err = new Error("لا توجد وردية مفتوحة للكاشير");
-    err.status = 400;
-    err.code = "NO_OPEN_SHIFT";
-    throw err;
-  }
+    const { shift, error: shiftErr } = await requireOpenShiftForCashier(db, request.cashier_id);
+    if (shiftErr || !shift) {
+      const err = new Error("لا توجد وردية مفتوحة للكاشير");
+      err.status = 400;
+      err.code = "NO_OPEN_SHIFT";
+      throw err;
+    }
 
-  let snapshot;
-  try {
-    snapshot = JSON.parse(request.sale_snapshot_json);
-  } catch {
-    const err = new Error("بيانات البيع غير صالحة");
-    err.status = 500;
-    throw err;
-  }
+    let snapshot;
+    try {
+      snapshot = JSON.parse(request.sale_snapshot_json);
+    } catch {
+      const err = new Error("بيانات البيع غير صالحة");
+      err.status = 500;
+      throw err;
+    }
 
-  const result = await withTransaction(db, async () => {
+    const onAccountAmount = round2(Number(request.on_account_amount ?? snapshot.onAccountTotal) || 0);
+    const creditErr = await validateCustomerCredit(db, request.customer_id, onAccountAmount);
+    if (creditErr) throwCreditError(creditErr);
+
     const saleResult = await executeCheckoutSale(
       db,
       {
@@ -362,13 +367,19 @@ export async function approveOnAccountRequest(
 
     const txId = saleResult.replayTxId || saleResult.transactionId;
     const now = new Date().toISOString();
-    await db.run(
+    const upd = await db.run(
       `UPDATE on_account_requests SET
         status = 'approved', manager_id = ?, approved_at = ?, transaction_id = ?,
         review_notes = COALESCE(?, review_notes), rejected_at = NULL, decision_source = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'pending'`,
       [managerUser.id, now, txId, reviewNotes, decisionSource, requestId]
     );
+    if (!upd.changes) {
+      const err = new Error("الطلب ليس قيد المراجعة");
+      err.status = 400;
+      err.code = "NOT_PENDING";
+      throw err;
+    }
 
     const auditUser = req?.user || managerUser;
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.ON_ACCOUNT_REQUEST_APPROVE, "on_account_requests", requestId, { status: "pending" }, {

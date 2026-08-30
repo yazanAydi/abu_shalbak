@@ -232,6 +232,8 @@ describe("Product import hardening", () => {
     expect(classifyHeader("#")).toBe("sku");
     expect(classifyHeader("no.")).toBe("sku");
     expect(classifyHeader("barcode")).toBe("barcode");
+    expect(classifyHeader("رقم المنتج")).toBe("sku");
+    expect(classifyHeader("رقم الصنف")).toBe("barcode");
   });
 
   test("parseArabicRetailMatrix preserves product number as displayed text", () => {

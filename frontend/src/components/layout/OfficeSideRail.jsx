@@ -42,21 +42,14 @@ export default function OfficeSideRail() {
   const loadLowStock = useCallback(async () => {
     setLoadingStock(true);
     try {
-      const { data } = await api.get(
-        `/api/reports/low-stock?threshold=${LOW_STOCK_THRESHOLD}&limit=${LOW_STOCK_RAIL_LIMIT}`,
-        { headers: getAuthHeaders() }
-      );
+      const { data } = await api.get("/api/office/nav-badges", {
+        headers: getAuthHeaders(),
+      });
       const payload = data;
-      const products = Array.isArray(payload?.products)
-        ? payload.products
-        : Array.isArray(payload)
-          ? payload
-          : [];
-      const apiTotal = Number(payload?.total_count);
-      const hasApiTotal =
-        payload && typeof payload === "object" && "total_count" in payload && Number.isFinite(apiTotal);
-      setLowStock(products);
-      setLowStockTotal(hasApiTotal ? apiTotal : products.length);
+      const products = Array.isArray(payload?.low_stock_preview) ? payload.low_stock_preview : [];
+      const apiTotal = Number(payload?.retail_low_stock);
+      setLowStock(products.slice(0, LOW_STOCK_RAIL_LIMIT));
+      setLowStockTotal(Number.isFinite(apiTotal) ? apiTotal : products.length);
     } catch {
       setLowStock([]);
       setLowStockTotal(0);

@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess } from "../middleware/auth.js";
 import { getAppSettings } from "../utils/settings.js";
+import { formatProductSku, parseNumericCode } from "../utils/entityCodes.js";
+import { listUnreadRefundDecisions } from "../services/refundRequestService.js";
 
 async function loadQuickButtonProducts(db, settings) {
   const { pos_quick_categories: categories, pos_quick_buttons: buttons } = settings;
@@ -65,6 +67,11 @@ export function createPosRouter(db) {
       return res.json([]);
     }
     const like = `%${q}%`;
+    const skuNum = parseNumericCode(q);
+    const skuClause = skuNum != null ? " OR p.sku = ?" : "";
+    const params = skuNum != null
+      ? [like, like, like, like, formatProductSku(skuNum)]
+      : [like, like, like, like];
     const rows = await db.all(
       `SELECT DISTINCT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate,
               pu.id AS unit_id, pu.unit_name, pu.price AS unit_price, pu.conversion_to_base
@@ -74,10 +81,10 @@ export function createPosRouter(db) {
        LEFT JOIN product_units pu2 ON pu2.product_id = p.id
        WHERE COALESCE(p.is_active, 1) = 1
          AND COALESCE(p.inventory_scope, 'retail') = 'retail'
-         AND (p.name LIKE ? OR p.barcode LIKE ? OR pb.barcode LIKE ? OR pu2.barcode LIKE ?)
+         AND (p.name LIKE ? OR p.barcode LIKE ? OR pb.barcode LIKE ? OR pu2.barcode LIKE ?${skuClause})
        ORDER BY p.name
        LIMIT 20`,
-      [like, like, like, like]
+      params
     );
     res.json(
       rows.map((r) => ({
@@ -85,6 +92,32 @@ export function createPosRouter(db) {
         price: r.unit_price ?? r.price,
       }))
     );
+  });
+
+  router.get("/events", requireAuth, requirePosAccess, async (req, res) => {
+    req.headers["x-no-compression"] = "1";
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+    let closed = false;
+    const send = async () => {
+      if (closed) return;
+      try {
+        const unread = await listUnreadRefundDecisions(db, req.user.id);
+        res.write(`event: refunds\ndata: ${JSON.stringify(unread)}\n\n`);
+      } catch {
+        /* keep the stream alive */
+      }
+    };
+    await send();
+    const timer = setInterval(send, 3000);
+    req.on("close", () => {
+      closed = true;
+      clearInterval(timer);
+    });
   });
 
   return router;

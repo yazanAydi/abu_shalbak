@@ -39,6 +39,18 @@ If sales were already recorded with a wrong clock, stop the store (`npm run stor
 - [ ] Browser bookmark: `http://SERVER_IP:5000/pos` (cashier) or `/admin` (office)
 - [ ] No separate API URL needed in production (same origin)
 - [ ] For dev builds: set `REACT_APP_API_BASE=http://SERVER_IP:5000` in frontend `.env`
+- [ ] After a POS rebuild: hard-reload (`Ctrl+F5`) so cashiers pick up the new F9 complete-sale shortcut (F12 is Edge DevTools)
+- [ ] One-time if DevTools is already open: close the console, then fully quit Edge (not just the tab) so it does not restore the docked tools on the next launch
+- [ ] Recommended on cashier machines only — block DevTools in Edge so F12 cannot open the console. In an elevated PowerShell:
+
+```powershell
+$policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
+# 2 = Developer tools are not allowed. Do NOT set this on the development PC.
+Set-ItemProperty -Path $policyPath -Name "DeveloperToolsAvailability" -Type DWord -Value 2
+```
+
+  Restart Edge after setting the policy. Development machines stay unchanged so you can still open DevTools manually while coding.
 
 ## Network
 

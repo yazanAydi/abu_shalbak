@@ -4,6 +4,7 @@ import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { insertSalePayments, netDrawerCashNis } from "../utils/salePayments.js";
 import { markSuspendedSaleCompleted } from "../services/suspendedSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { invalidatePromotionsCache } from "../utils/promotions.js";
 
 /**
  * Execute a validated checkout sale (inventory, payments, customer balance, cash movement).
@@ -157,7 +158,18 @@ async function executeCheckoutSaleCore(db, params) {
         usageByPromo.set(entry.promotion_id, (usageByPromo.get(entry.promotion_id) || 0) + units);
       }
       for (const [promoId, units] of usageByPromo) {
-        await db.run("UPDATE promotions SET used_qty = used_qty + ? WHERE id = ?", [units, promoId]);
+        const info = await db.run(
+          `UPDATE promotions SET used_qty = used_qty + ?
+           WHERE id = ? AND (limit_qty <= 0 OR used_qty + ? <= limit_qty)`,
+          [units, promoId, units]
+        );
+        if (!info.changes) {
+          const err = new Error("تجاوز حد العرض");
+          err.status = 409;
+          err.code = "PROMO_LIMIT";
+          throw err;
+        }
+        invalidatePromotionsCache();
       }
     }
 

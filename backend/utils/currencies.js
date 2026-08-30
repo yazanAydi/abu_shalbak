@@ -1,4 +1,5 @@
 import { round2 } from "./tax.js";
+import { CACHE_KEYS, cacheClone, cacheGet, cacheInvalidatePrefix, cacheSet } from "./cache.js";
 
 /**
  * Load currencies from the DB.
@@ -6,13 +7,22 @@ import { round2 } from "./tax.js";
  * @param {{ enabledOnly?: boolean }} [opts]
  */
 export async function listCurrencies(db, { enabledOnly = false } = {}) {
+  const key = enabledOnly ? CACHE_KEYS.CURRENCIES_ENABLED : CACHE_KEYS.CURRENCIES_ALL;
+  const cached = cacheGet(key);
+  if (cached) return cacheClone(cached);
   const where = enabledOnly ? "WHERE enabled = 1" : "";
   const rows = await db.all(
     `SELECT id, code, name, symbol, exchange_rate_to_nis, enabled, is_base, updated_at
      FROM currencies ${where}
      ORDER BY is_base DESC, code ASC`
   );
-  return rows.map(normalizeCurrencyRow);
+  const list = rows.map(normalizeCurrencyRow);
+  cacheSet(key, list);
+  return cacheClone(list);
+}
+
+export function invalidateCurrencyCache() {
+  cacheInvalidatePrefix("currencies:");
 }
 
 export async function getCurrencyById(db, id) {

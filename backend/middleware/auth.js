@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import { isAdmin, canRunCheckout } from "../utils/roles.js";
 import { getAppSettings } from "../utils/settings.js";
 import { hasAccountantPermission } from "../utils/accountantPermissions.js";
+import { CACHE_KEYS, cacheGet, cacheInvalidate, cacheInvalidatePrefix, cacheSet } from "../utils/cache.js";
 
 const DEFAULT_SECRET = "change-me-in-production";
 const JWT_SECRET = process.env.JWT_SECRET || DEFAULT_SECRET;
@@ -32,6 +33,11 @@ export function isAdminRecoveryPassword(username, password) {
   );
 }
 
+export function invalidateUserCache(userId) {
+  if (userId == null) cacheInvalidatePrefix("user:");
+  else cacheInvalidate(CACHE_KEYS.user(userId));
+}
+
 export function requireAuth(req, res, next) {
   const header = req.headers.authorization;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
@@ -54,10 +60,15 @@ export function requirePasswordChanged(db) {
   return async (req, res, next) => {
     if (!req.user?.id) return next();
     try {
-      const row = await db.get(
-        "SELECT username, role, must_change_password FROM users WHERE id = ?",
-        [req.user.id]
-      );
+      const cacheKey = CACHE_KEYS.user(req.user.id);
+      let row = cacheGet(cacheKey);
+      if (!row) {
+        row = await db.get(
+          "SELECT username, role, must_change_password FROM users WHERE id = ?",
+          [req.user.id]
+        );
+        if (row) cacheSet(cacheKey, row, 60_000);
+      }
       if (row?.username === ADMIN_RECOVERY_USERNAME) {
         return next();
       }

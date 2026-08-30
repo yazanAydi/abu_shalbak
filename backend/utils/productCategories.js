@@ -1,4 +1,10 @@
+import { CACHE_KEYS, cacheClone, cacheGet, cacheInvalidatePrefix, cacheSet } from "./cache.js";
+
 export const BAKERY_CATEGORY_NAME = "مواد مخبز";
+
+function invalidateCategoryCache() {
+  cacheInvalidatePrefix("categories:");
+}
 
 export function normalizeCategoryName(raw) {
   if (raw == null) return null;
@@ -22,26 +28,38 @@ export async function ensureProductCategory(db, rawName) {
   if (existing) {
     if (!existing.active) {
       await db.run("UPDATE product_categories SET active = 1 WHERE id = ?", [existing.id]);
+      invalidateCategoryCache();
       return { ...existing, active: 1 };
     }
     return existing;
   }
-  const ins = await db.run(
-    "INSERT INTO product_categories (name, active) VALUES (?, 1)",
-    [name]
-  );
-  return db.get("SELECT * FROM product_categories WHERE id = ?", [ins.lastID]);
+  try {
+    const ins = await db.run(
+      "INSERT INTO product_categories (name, active) VALUES (?, 1)",
+      [name]
+    );
+    invalidateCategoryCache();
+    return db.get("SELECT * FROM product_categories WHERE id = ?", [ins.lastID]);
+  } catch (err) {
+    if (!/UNIQUE|CONSTRAINT/i.test(String(err.message || err.code || ""))) throw err;
+    invalidateCategoryCache();
+    return findProductCategoryByName(db, name);
+  }
 }
 
 export async function listProductCategories(db, { activeOnly = false } = {}) {
-  if (activeOnly) {
-    return db.all(
-      "SELECT * FROM product_categories WHERE active = 1 ORDER BY name COLLATE NOCASE"
-    );
-  }
-  return db.all(
-    "SELECT * FROM product_categories ORDER BY active DESC, name COLLATE NOCASE"
-  );
+  const key = activeOnly ? CACHE_KEYS.CATEGORIES_ACTIVE : CACHE_KEYS.CATEGORIES_ALL;
+  const cached = cacheGet(key);
+  if (cached) return cacheClone(cached);
+  const rows = activeOnly
+    ? await db.all(
+        "SELECT * FROM product_categories WHERE active = 1 ORDER BY name COLLATE NOCASE"
+      )
+    : await db.all(
+        "SELECT * FROM product_categories ORDER BY active DESC, name COLLATE NOCASE"
+      );
+  cacheSet(key, rows);
+  return cacheClone(rows);
 }
 
 export async function seedProductCategoriesFromProducts(db) {
@@ -72,6 +90,7 @@ export async function createProductCategory(db, rawName) {
     "INSERT INTO product_categories (name, active) VALUES (?, 1)",
     [name]
   );
+  invalidateCategoryCache();
   return db.get("SELECT * FROM product_categories WHERE id = ?", [ins.lastID]);
 }
 
@@ -99,6 +118,7 @@ export async function updateProductCategory(db, id, { name, active } = {}) {
     "UPDATE product_categories SET name = ?, active = ? WHERE id = ?",
     [nextName, nextActive, id]
   );
+  invalidateCategoryCache();
   return db.get("SELECT * FROM product_categories WHERE id = ?", [id]);
 }
 
@@ -115,8 +135,10 @@ export async function deleteProductCategory(db, id) {
   );
   if ((usedProducts?.n || 0) > 0 || (usedPromos?.n || 0) > 0) {
     await db.run("UPDATE product_categories SET active = 0 WHERE id = ?", [id]);
+    invalidateCategoryCache();
     return { success: true, deactivated: true };
   }
   await db.run("DELETE FROM product_categories WHERE id = ?", [id]);
+  invalidateCategoryCache();
   return { success: true, deactivated: false };
 }

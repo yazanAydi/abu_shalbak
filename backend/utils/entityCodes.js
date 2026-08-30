@@ -2,11 +2,42 @@
 
 import { withTransaction } from "./dbTx.js";
 
+/**
+ * products.sku is رقم المنتج (product number), not a barcode.
+ * The column name is kept for backward compatibility. See docs/PRODUCT_NUMBER_AND_BARCODE.md.
+ */
 export const ENTITY_TYPES = {
   product: { table: "products", column: "sku" },
   customer: { table: "customers", column: "customer_code" },
   supplier: { table: "suppliers", column: "supplier_code" },
 };
+
+/** Canonical width for a numeric رقم المنتج stored in products.sku. */
+export const PRODUCT_SKU_LENGTH = 11;
+
+/**
+ * Keep a product رقم as 11-digit zero-padded text when it is numeric.
+ * @param {unknown} code
+ * @returns {string | null}
+ */
+export function formatProductSku(code) {
+  if (code == null) return null;
+  const s = String(code).trim();
+  if (!s) return null;
+  const n = parseNumericCode(s);
+  return n != null ? String(n).padStart(PRODUCT_SKU_LENGTH, "0") : s;
+}
+
+/**
+ * @param {EntityType} entityType
+ * @param {unknown} code
+ * @returns {string | null}
+ */
+function formatEntityCode(entityType, code) {
+  const normalized = normalizeProvidedCode(code);
+  if (!normalized) return null;
+  return entityType === "product" ? formatProductSku(normalized) : normalized;
+}
 
 /**
  * @param {unknown} val
@@ -53,7 +84,30 @@ export async function nextEntityCode(db, entityType) {
     [entityType]
   );
 
-  return String(row?.last_seq ?? 1);
+  return formatEntityCode(entityType, row?.last_seq ?? 1) ?? String(row?.last_seq ?? 1);
+}
+
+/**
+ * Raise the sequence high-water mark so a code handed out by the caller can never
+ * be allocated a second time. Without this, codes supplied by the client (the add
+ * form pre-fills the suggested رقم) leave last_seq behind, and deleting the newest
+ * row would make its number available again.
+ * @param {object} db
+ * @param {EntityType} entityType
+ * @param {unknown} code
+ * @returns {Promise<void>}
+ */
+export async function reserveEntityCode(db, entityType, code) {
+  if (!ENTITY_TYPES[entityType]) throw new Error(`Unknown entity type: ${entityType}`);
+  const n = parseNumericCode(code);
+  if (n == null) return;
+
+  await db.run(
+    `INSERT INTO entity_code_sequences (entity_type, last_seq)
+     VALUES (?, ?)
+     ON CONFLICT(entity_type) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)`,
+    [entityType, n]
+  );
 }
 
 /**
@@ -94,8 +148,11 @@ async function syncSequenceFromExisting(db, entityType) {
  * @returns {Promise<string>}
  */
 export async function ensureEntityCode(db, entityType, providedCode) {
-  const normalized = normalizeProvidedCode(providedCode);
-  if (normalized) return normalized;
+  const formatted = formatEntityCode(entityType, providedCode);
+  if (formatted) {
+    await reserveEntityCode(db, entityType, formatted);
+    return formatted;
+  }
   return nextEntityCode(db, entityType);
 }
 
@@ -114,8 +171,14 @@ export async function assignEntityCodeIfMissing(db, entityType, rowId) {
   );
   if (!row) return null;
 
-  const existing = normalizeProvidedCode(row.code);
-  if (existing) return existing;
+  const existing = formatEntityCode(entityType, row.code);
+  if (existing) {
+    if (existing !== normalizeProvidedCode(row.code)) {
+      await db.run(`UPDATE ${meta.table} SET ${meta.column} = ? WHERE id = ?`, [existing, rowId]);
+    }
+    await reserveEntityCode(db, entityType, existing);
+    return existing;
+  }
 
   const code = await nextEntityCode(db, entityType);
   await db.run(`UPDATE ${meta.table} SET ${meta.column} = ? WHERE id = ?`, [code, rowId]);
@@ -161,7 +224,7 @@ export async function renumberAllEntityCodes(db, entityType) {
     for (const row of rows) {
       seq += 1;
       await db.run(`UPDATE ${meta.table} SET ${meta.column} = ? WHERE id = ?`, [
-        String(seq),
+        formatEntityCode(entityType, seq) ?? String(seq),
         row.id,
       ]);
     }
