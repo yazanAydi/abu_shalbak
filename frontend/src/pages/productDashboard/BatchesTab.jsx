@@ -29,7 +29,7 @@ export default function BatchesTab({ productId }) {
                 <tr key={r.id}>
                   <td>{r.batch_no || "—"}</td>
                   <td>{dateOnly(r.created_at)}</td>
-                  <td>{r.expiry_date || "—"}</td>
+                  <td>{dateOnly(r.expiry_date)}</td>
                   <td className="num">{r.days_remaining != null ? num(r.days_remaining, 0) : "—"}</td>
                   <td className="num">{num(r.quantity, 0)}</td>
                   <td className="num">{r.cost != null ? ils(r.cost) : "—"}</td>

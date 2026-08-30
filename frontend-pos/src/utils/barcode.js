@@ -13,15 +13,20 @@ export function normalizeBarcode(raw) {
 export async function lookupProductByBarcode(raw) {
   const code = normalizeBarcode(raw);
   if (!code) throw new Error("باركود فارغ");
+  let data;
   try {
-    const { data } = await api.get(`/api/products/${encodeURIComponent(code)}`, {
+    ({ data } = await api.get("/api/products/lookup", {
+      params: { barcode: code },
       headers: getAuthHeaders(),
-    });
-    return data;
+    }));
   } catch (e) {
     if (e.response?.status === 404) {
       throw new Error(`لم يُعثر على المنتج (${code})`);
     }
     throw new Error(e.response?.data?.error || e.message || "تعذّر البحث");
   }
+  if (!data?.found || data.inactive) {
+    throw new Error(`لم يُعثر على المنتج (${code})`);
+  }
+  return data;
 }

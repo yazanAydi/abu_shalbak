@@ -16,7 +16,34 @@ export const ENTITY_TYPES = {
 export const PRODUCT_SKU_LENGTH = 11;
 
 /**
- * Keep a product رقم as 11-digit zero-padded text when it is numeric.
+ * Parse a positive integer from digits only. Rejects scientific notation
+ * (`1.78e+28`) and values longer than maxDigits so Number() cannot become a float.
+ * @param {unknown} val
+ * @param {number} [maxDigits]
+ * @returns {number | null}
+ */
+export function parseDigitCode(val, maxDigits = 15) {
+  if (val === undefined || val === null) return null;
+  const s = String(val).trim();
+  if (!s || !/^\d+$/.test(s)) return null;
+  if (s.length > maxDigits) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
+/**
+ * A رقم المنتج is at most 11 digits. Longer digit strings are barcodes, not numbers.
+ * @param {unknown} val
+ * @returns {number | null}
+ */
+export function parseProductNumber(val) {
+  return parseDigitCode(val, PRODUCT_SKU_LENGTH);
+}
+
+/**
+ * Keep a product رقم as 11-digit zero-padded text when it is a real رقم.
+ * Scientific notation and oversized digit strings are rejected (not rewritten).
  * @param {unknown} code
  * @returns {string | null}
  */
@@ -24,8 +51,10 @@ export function formatProductSku(code) {
   if (code == null) return null;
   const s = String(code).trim();
   if (!s) return null;
-  const n = parseNumericCode(s);
-  return n != null ? String(n).padStart(PRODUCT_SKU_LENGTH, "0") : s;
+  const n = parseProductNumber(s);
+  if (n != null) return String(n).padStart(PRODUCT_SKU_LENGTH, "0");
+  if (/^\d+$/.test(s) || /[eE]/.test(s)) return null;
+  return s;
 }
 
 /**
@@ -44,12 +73,7 @@ function formatEntityCode(entityType, code) {
  * @returns {number | null}
  */
 export function parseNumericCode(val) {
-  if (val === undefined || val === null) return null;
-  const s = String(val).trim();
-  if (!s) return null;
-  const n = Number(s);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.floor(n);
+  return parseDigitCode(val, 15);
 }
 
 /**
@@ -84,7 +108,32 @@ export async function nextEntityCode(db, entityType) {
     [entityType]
   );
 
-  return formatEntityCode(entityType, row?.last_seq ?? 1) ?? String(row?.last_seq ?? 1);
+  const raw = row?.last_seq ?? 1;
+  const formatted = formatEntityCode(entityType, raw);
+  if (formatted) return formatted;
+  if (entityType === "product") {
+    const maxSku = await highestProductNumber(db);
+    return formatProductSku(maxSku + 1);
+  }
+  return String(raw);
+}
+
+/**
+ * Highest stored رقم that is actually a product number (1–11 digits).
+ * Ignores barcodes and scientific-notation junk that landed in products.sku.
+ * @param {object} db
+ * @returns {Promise<number>}
+ */
+export async function highestProductNumber(db) {
+  const rows = await db.all(
+    "SELECT sku FROM products WHERE sku IS NOT NULL AND TRIM(sku) != ''"
+  );
+  let max = 0;
+  for (const row of rows) {
+    const n = parseProductNumber(row.sku);
+    if (n != null) max = Math.max(max, n);
+  }
+  return max;
 }
 
 /**
@@ -99,7 +148,7 @@ export async function nextEntityCode(db, entityType) {
  */
 export async function reserveEntityCode(db, entityType, code) {
   if (!ENTITY_TYPES[entityType]) throw new Error(`Unknown entity type: ${entityType}`);
-  const n = parseNumericCode(code);
+  const n = entityType === "product" ? parseProductNumber(code) : parseNumericCode(code);
   if (n == null) return;
 
   await db.run(
@@ -120,7 +169,8 @@ async function syncSequenceFromExisting(db, entityType) {
   const rows = await db.all(`SELECT ${meta.column} AS code FROM ${meta.table}`);
   let max = 0;
   for (const row of rows) {
-    const n = parseNumericCode(row.code);
+    const n =
+      entityType === "product" ? parseProductNumber(row.code) : parseNumericCode(row.code);
     if (n != null) max = Math.max(max, n);
   }
 

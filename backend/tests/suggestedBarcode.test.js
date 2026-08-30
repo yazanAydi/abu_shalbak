@@ -43,6 +43,8 @@ describe("suggestedBarcode", () => {
     expect(formatProductSku("00000000002")).toBe("00000000002");
     expect(formatProductSku("ABC-9")).toBe("ABC-9");
     expect(formatProductSku("")).toBeNull();
+    expect(formatProductSku("1.7800109000346217e+28")).toBeNull();
+    expect(formatProductSku("7290013586773")).toBeNull();
   });
 
   test("parseShortNumericBarcode accepts 1–11 digit codes only", () => {
@@ -106,6 +108,28 @@ describe("suggestedBarcode", () => {
     }
 
     expect(await getNextProductNumber(ctx.db)).toBe("00000000051");
+  });
+
+  test("scientific notation or barcode-sized sku does not become the next رقم", async () => {
+    await resetProducts();
+    await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, category, stock, sku)
+       VALUES ('55550001', 'A', 1, 1, 'Test', 1, '00000000003')`
+    );
+    await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, category, stock, sku)
+       VALUES ('55550002', 'B', 1, 1, 'Test', 1, '1.7800109000346217e+28')`
+    );
+    await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, category, stock, sku)
+       VALUES ('55550003', 'C', 1, 1, 'Test', 1, '7290013586773')`
+    );
+    await ctx.db.run(
+      `INSERT INTO entity_code_sequences (entity_type, last_seq) VALUES ('product', 3)
+       ON CONFLICT(entity_type) DO UPDATE SET last_seq = 3`
+    );
+
+    expect(await getNextProductNumber(ctx.db)).toBe("00000000004");
   });
 
   test("GET /api/products/next-sku and deprecated next-barcode return only sku", async () => {

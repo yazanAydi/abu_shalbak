@@ -1,6 +1,6 @@
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
-import { formatDateTimeShopAr } from "./format";
+import { dateOnly, formatDateTimeShopAr } from "./format";
 
 const MOVEMENT_TYPE_AR = {
   opening_balance: "رصيد افتتاحي",
@@ -58,7 +58,7 @@ export function printSupplierStatement(report) {
   const summary = report.summary || {};
   const range =
     report.date_from && report.date_to
-      ? `من ${report.date_from} إلى ${report.date_to}`
+      ? `من ${dateOnly(report.date_from)} إلى ${dateOnly(report.date_to)}`
       : "كل الفترات";
   const finalBalance = Number(summary.finalBalance) || 0;
 
@@ -66,7 +66,7 @@ export function printSupplierStatement(report) {
     .map((m) => {
       const neg = Number(m.runningBalance) < 0 ? " balance-neg" : "";
       return `<tr>
-        <td>${escapeHtml(m.date ? String(m.date).slice(0, 10) : "—")}</td>
+        <td>${escapeHtml(dateOnly(m.date))}</td>
         <td>${escapeHtml(movementTypeLabel(m.type))}</td>
         <td>${escapeHtml(m.documentNo || "—")}</td>
         <td>${escapeHtml(m.description || "")}</td>

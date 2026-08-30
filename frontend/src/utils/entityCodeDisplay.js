@@ -1,12 +1,14 @@
 /**
- * Display entity code (sku / customer_code / supplier_code) as plain integer when numeric.
+ * Display entity code as a plain integer when it is digits.
+ * Strips leading zeros in text — never Number(), which turns long values into 1.78e+28.
  * @param {unknown} code
  * @returns {string}
  */
 export function displayEntityCode(code) {
   if (code == null || String(code).trim() === "") return "—";
-  const n = Number(String(code).trim());
-  return Number.isFinite(n) ? String(n) : String(code).trim();
+  const s = String(code).trim();
+  if (/^\d+$/.test(s)) return s.replace(/^0+/, "") || "0";
+  return s;
 }
 
 /**
@@ -23,16 +25,18 @@ export function displayProductBarcode(product) {
 /**
  * products.sku is رقم المنتج (not a barcode).
  * Storage is 11-digit zero-padded; the UI shows the plain number (2, not 00000000002).
+ * Scientific notation and oversized digit strings are not product numbers.
  */
 export function displayProductSku(code) {
-  return displayEntityCode(code);
+  if (code == null || String(code).trim() === "") return "—";
+  const n = parseProductSkuNumber(code);
+  return n != null ? String(n) : "—";
 }
 
-/** Value for an editable الرقم field — empty string instead of an em dash. */
+/** Value for an editable الرقم field — empty if the value is not a real رقم. */
 export function productSkuInputValue(code) {
-  if (code == null || String(code).trim() === "") return "";
   const n = parseProductSkuNumber(code);
-  return n != null ? String(n) : String(code).trim();
+  return n != null ? String(n) : "";
 }
 
 /**
@@ -42,7 +46,7 @@ export function productSkuInputValue(code) {
 export function parseProductSkuNumber(code) {
   if (code == null || String(code).trim() === "") return null;
   const s = String(code).trim();
-  if (!/^\d+$/.test(s)) return null;
+  if (!/^\d{1,11}$/.test(s)) return null;
   const n = Number(s);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.floor(n);

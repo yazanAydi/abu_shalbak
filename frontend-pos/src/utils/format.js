@@ -19,6 +19,42 @@ export function qty(n) {
   return Number.isInteger(v) ? String(v) : v.toLocaleString("en-US", { maximumFractionDigits: 3 });
 }
 
+const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const DMY_RE = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2}|\d{4})$/;
+
+/** YYYY-MM-DD → DD/MM/YY */
+export function ymdToDmy(ymd) {
+  const m = YMD_RE.exec(String(ymd || "").trim());
+  if (!m) return "";
+  return `${m[3]}/${m[2]}/${m[1].slice(-2)}`;
+}
+
+/**
+ * Parse a typed date (DD/MM/YY, D/M/YY, DD/MM/YYYY, or YYYY-MM-DD) to YYYY-MM-DD.
+ * Two-digit years map to 2000–2099. Invalid calendar dates return "".
+ */
+export function dmyToYmd(text) {
+  const str = String(text || "").trim();
+  const asYmd = YMD_RE.exec(str);
+  if (asYmd) return `${asYmd[1]}-${asYmd[2]}-${asYmd[3]}`;
+  const m = DMY_RE.exec(str);
+  if (!m) return "";
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  let year = Number(m[3]);
+  if (m[3].length === 2) year += 2000;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return "";
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) {
+    return "";
+  }
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function partsToDmy(p) {
+  return `${p.day}/${p.month}/${String(p.year).slice(-2)}`;
+}
+
 function shopDateParts(d) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: SHOP_TZ,
@@ -49,38 +85,34 @@ export function parseServerDate(s) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** YYYY-MM-DD HH:MM in Ramallah shop time */
+/** DD/MM/YY HH:MM in Ramallah shop time */
 export function dateTime(s) {
   const d = parseServerDate(s);
   if (!d) return "—";
   const p = shopDateParts(d);
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+  return `${partsToDmy(p)} ${p.hour}:${p.minute}`;
 }
 
+/** DD/MM/YY in Ramallah shop time (ISO date-only strings stay on that calendar day) */
 export function dateOnly(s) {
   if (!s) return "—";
   const str = String(s).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  const fromYmd = ymdToDmy(str);
+  if (fromYmd) return fromYmd;
   const d = parseServerDate(str);
   if (!d) return str.slice(0, 10);
-  const p = shopDateParts(d);
-  return `${p.year}-${p.month}-${p.day}`;
+  return partsToDmy(shopDateParts(d));
 }
 
+/** Date + time in Ramallah shop timezone as DD/MM/YY HH:MM */
 export function formatDateTimeShopAr(s) {
   let d = null;
   if (s instanceof Date) d = s;
   else if (typeof s === "number") d = new Date(s);
   else d = parseServerDate(s);
   if (!d || Number.isNaN(d.getTime())) return s ? String(s) : "—";
-  return d.toLocaleString("ar-EG", {
-    timeZone: SHOP_TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const p = shopDateParts(d);
+  return `${partsToDmy(p)} ${p.hour}:${p.minute}`;
 }
 
 export function todayISO() {

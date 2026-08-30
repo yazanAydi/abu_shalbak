@@ -89,23 +89,19 @@ function toConflictProduct(hit) {
 async function lookupProductByBarcodeApi(barcode) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
-  try {
-    const { data } = await api.get(`/api/products/${encodeURIComponent(code)}`, {
-      headers: getAuthHeaders(),
-    });
-    return data;
-  } catch (e) {
-    if (e.response?.status === 404) return null;
-    throw e;
-  }
+  const { data } = await api.get("/api/products/lookup", {
+    params: { barcode: code },
+    headers: getAuthHeaders(),
+  });
+  return data?.found ? data : null;
 }
 
 async function fetchSuggestedSku() {
   try {
-    const { data } = await api.get("/api/products/next-barcode", {
+    const { data } = await api.get("/api/products/next-sku", {
       headers: getAuthHeaders(),
     });
-    return productSkuInputValue(data?.sku ?? data?.barcode ?? "");
+    return productSkuInputValue(data?.sku);
   } catch {
     return "";
   }
@@ -278,7 +274,9 @@ export default function ProductManagement() {
     let cancelled = false;
     fetchSuggestedSku().then((sku) => {
       if (!cancelled && sku) {
-        setForm((f) => (f.sku ? f : { ...f, sku }));
+        setForm((f) =>
+          parseProductSkuNumber(f.sku) != null ? f : { ...f, sku }
+        );
       }
     });
     return () => {
@@ -768,7 +766,13 @@ export default function ProductManagement() {
               >
                 <Input
                   value={form.sku}
-                  onChange={(e) => setForm({ ...form, sku: e.target.value })}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  maxLength={11}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/\D/g, "").slice(0, 11);
+                    setForm({ ...form, sku: raw });
+                  }}
                   placeholder="يُولَّد تلقائياً إن تُرك فارغاً"
                 />
               </FormField>

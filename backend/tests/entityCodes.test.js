@@ -25,6 +25,7 @@ describe("entityCodes", () => {
     expect(parseNumericCode("00042")).toBe(42);
     expect(parseNumericCode("C001")).toBeNull();
     expect(parseNumericCode("")).toBeNull();
+    expect(parseNumericCode("1.7800109000346217e+28")).toBeNull();
   });
 
   test("nextEntityCode returns sequential codes per entity type", async () => {

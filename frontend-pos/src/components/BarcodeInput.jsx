@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import api from "../apiClient";
-import { getAuthHeaders } from "../utils/auth";
 import { focusBarcodeInput } from "../utils/focusBarcodeInput";
+import { lookupProductByBarcode, normalizeBarcode } from "../utils/barcode";
 import {
   beginProductNotFound,
   playProductNotFound,
@@ -11,19 +10,6 @@ import {
 import "./BarcodeInput.css";
 
 const notFoundCache = new Set();
-
-function normalizeBarcode(raw) {
-  let t = String(raw ?? "")
-    .trim()
-    .replace(/[\u200B-\u200D\uFEFF\u200E\u200F]/g, "");
-  t = t.replace(/[\u0660-\u0669]/g, (ch) =>
-    String(ch.charCodeAt(0) - 0x0660)
-  );
-  t = t.replace(/[\u06F0-\u06F9]/g, (ch) =>
-    String(ch.charCodeAt(0) - 0x06f0)
-  );
-  return t;
-}
 
 function isNotFoundError(e) {
   const status = e.response?.status;
@@ -70,10 +56,7 @@ export default function BarcodeInput({ onProductFound, onError }) {
         setValue("");
         setTimeout(() => focusBarcodeInput(), 0);
         try {
-          const { data } = await api.get(
-            `/api/products/by-barcode/${encodeURIComponent(code)}`,
-            { headers: { ...getAuthHeaders() } }
-          );
+          const data = await lookupProductByBarcode(code);
           notFoundCache.delete(code);
           setErr("");
           onProductFoundRef.current?.(data);
@@ -91,10 +74,7 @@ export default function BarcodeInput({ onProductFound, onError }) {
       cancelPendingError = beginProductNotFound();
 
       try {
-        const { data } = await api.get(
-          `/api/products/by-barcode/${encodeURIComponent(code)}`,
-          { headers: { ...getAuthHeaders() } }
-        );
+        const data = await lookupProductByBarcode(code);
         cancelPendingError?.();
         onProductFoundRef.current?.(data);
         setValue("");

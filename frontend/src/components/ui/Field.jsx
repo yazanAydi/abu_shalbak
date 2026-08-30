@@ -1,4 +1,5 @@
 import SearchableSelect from "./SearchableSelect";
+import DateField from "./DateField";
 import {
   focusNextField,
   handleEnterNavKeyDown,
@@ -20,7 +21,7 @@ export function FormField({ label, required, hint, children, className = "" }) {
   );
 }
 
-export function Input({ className = "", onKeyDown, ...rest }) {
+export function Input({ className = "", onKeyDown, type, ...rest }) {
   function handleKeyDown(e) {
     onKeyDown?.(e);
     if (e.defaultPrevented) return;
@@ -30,8 +31,14 @@ export function Input({ className = "", onKeyDown, ...rest }) {
     }
   }
 
+  if (type === "date") {
+    return (
+      <DateField className={`ui-input ${className}`} onKeyDown={handleKeyDown} {...rest} />
+    );
+  }
+
   return (
-    <input className={`ui-input ${className}`} {...rest} onKeyDown={handleKeyDown} />
+    <input className={`ui-input ${className}`} type={type} {...rest} onKeyDown={handleKeyDown} />
   );
 }
 

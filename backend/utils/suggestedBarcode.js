@@ -1,5 +1,10 @@
 import { digitsOnly, normalizeBarcodeInput } from "./barcode.js";
-import { formatProductSku, parseNumericCode, PRODUCT_SKU_LENGTH } from "./entityCodes.js";
+import {
+  formatProductSku,
+  highestProductNumber,
+  parseProductNumber,
+  PRODUCT_SKU_LENGTH,
+} from "./entityCodes.js";
 
 export const SUGGESTED_BARCODE_LENGTH = PRODUCT_SKU_LENGTH;
 export const SUGGESTED_BARCODE_MAX_DIGITS = PRODUCT_SKU_LENGTH;
@@ -61,13 +66,9 @@ export async function getNextProductNumber(db) {
   const seqRow = await db.get(
     "SELECT last_seq FROM entity_code_sequences WHERE entity_type = 'product'"
   );
-  const maxRow = await db.get(
-    "SELECT MAX(CAST(sku AS INTEGER)) AS mx FROM products WHERE sku IS NOT NULL AND TRIM(sku) != ''"
-  );
-  const maxSku = parseNumericCode(maxRow?.mx) ?? 0;
-  const lastSeq = Number(seqRow?.last_seq ?? 0);
-  const next = Math.max(lastSeq, maxSku) + 1;
-  return formatProductSku(next);
+  const maxSku = await highestProductNumber(db);
+  const lastSeq = parseProductNumber(seqRow?.last_seq) ?? 0;
+  return formatProductSku(Math.max(lastSeq, maxSku) + 1);
 }
 
 /** @deprecated Use getNextProductNumber — the value is a رقم, not a barcode. */

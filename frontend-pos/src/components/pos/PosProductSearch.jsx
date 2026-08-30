@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import api from "../../apiClient";
-import { getAuthHeaders } from "../../utils/auth";
 import { searchProductsApi } from "../../utils/productSearch";
+import { lookupProductByBarcode } from "../../utils/barcode";
 import { mapLookupToCartProduct } from "../../utils/cartProduct";
 import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
 
@@ -39,10 +38,7 @@ export default function PosProductSearch({ onProductFound }) {
     const code = product.matched_barcode || product.barcode;
     try {
       if (code) {
-        const { data } = await api.get(
-          `/api/products/by-barcode/${encodeURIComponent(String(code))}`,
-          { headers: getAuthHeaders() }
-        );
+        const data = await lookupProductByBarcode(code);
         onProductFound(mapLookupToCartProduct(data));
       } else {
         onProductFound(mapLookupToCartProduct({ product, ...product }));

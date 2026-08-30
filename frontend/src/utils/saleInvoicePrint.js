@@ -1,6 +1,7 @@
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { formatDiscountPercent } from "./saleInvoiceTotals";
+import { dateOnly, formatDateTimeShopAr } from "./format";
 
 const STATUS_LABEL = { draft: "مسودة", posted: "مرحّلة" };
 
@@ -20,14 +21,7 @@ function qty(n) {
 }
 
 function formatTimestamp(value) {
-  const d = value ? new Date(value) : new Date();
-  return d.toLocaleString("ar-EG", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTimeShopAr(value || new Date());
 }
 
 /**
@@ -38,7 +32,7 @@ export function printSalesInvoiceDoc(doc, store = {}) {
   if (!doc) return;
   const items = doc.items || [];
   const docNo = doc.invoice_no ?? doc.id;
-  const docDate = doc.invoice_date ? String(doc.invoice_date).slice(0, 10) : "—";
+  const docDate = dateOnly(doc.invoice_date);
   const total = Number(doc.total) || 0;
   const storeName = store.store_name_ar || store.store_name || STORE_NAME_AR;
 

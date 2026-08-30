@@ -313,7 +313,7 @@ function Batches() {
   const batchColumns = [
     { key: "product_name", header: "الصنف" },
     { key: "batch_no", header: "رقم الدفعة", value: (r) => r.batch_no || "—", render: (r) => r.batch_no || "—" },
-    { key: "expiry_date", header: "الصلاحية", value: (r) => r.expiry_date || "—", render: (r) => r.expiry_date || "—" },
+    { key: "expiry_date", header: "الصلاحية", value: (r) => dateOnly(r.expiry_date), render: (r) => dateOnly(r.expiry_date) },
     { key: "quantity", header: "الكمية", value: (r) => fmtQty(r.quantity), render: (r) => fmtQty(r.quantity) },
     {
       key: "days_until_expiry", header: "الحالة",

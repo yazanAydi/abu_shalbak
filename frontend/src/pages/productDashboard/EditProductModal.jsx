@@ -178,7 +178,13 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
         <FormField label="الرقم" hint="رقم المنتج — مستقل عن الباركود">
           <Input
             value={form.sku}
-            onChange={(e) => setForm({ ...form, sku: e.target.value })}
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={11}
+            onChange={(e) => {
+              const raw = e.target.value.replace(/\D/g, "").slice(0, 11);
+              setForm({ ...form, sku: raw });
+            }}
           />
         </FormField>
         <FormField label="الاسم" required>

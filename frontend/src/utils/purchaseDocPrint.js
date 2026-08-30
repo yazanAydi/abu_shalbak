@@ -1,6 +1,7 @@
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { formatDiscountPercent, formatTaxRatePercent } from "./purchaseTotals";
+import { dateOnly, formatDateTimeShopAr } from "./format";
 const STATUS_LABEL = {
   draft: "مسودة",
   posted: "مرحّلة",
@@ -31,14 +32,7 @@ function qty(n) {
 }
 
 function formatTimestamp(value) {
-  const d = value ? new Date(value) : new Date();
-  return d.toLocaleString("ar-EG", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTimeShopAr(value || new Date());
 }
 
 /**
@@ -52,7 +46,7 @@ export function printPurchaseDoc(doc, which, store = {}) {
   const meta = DOC_META[which] || DOC_META.invoices;
   const items = doc.items || [];
   const docNo = doc[meta.noKey] ?? doc.id;
-  const docDate = doc[meta.dateKey] ? String(doc[meta.dateKey]).slice(0, 10) : "—";
+  const docDate = dateOnly(doc[meta.dateKey]);
   const total = Number(doc[meta.totalKey]) || 0;
   const subtotal = doc.subtotal != null ? Number(doc.subtotal) : null;
   const vat = doc.vat != null ? Number(doc.vat) : null;

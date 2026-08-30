@@ -8,6 +8,7 @@ export { default as StatCard } from "./StatCard";
 export { default as SearchInput } from "./SearchInput";
 export { default as DataTable } from "./DataTable";
 export { FormField, Input, Select, Textarea, FormGrid } from "./Field";
+export { default as DateField } from "./DateField";
 export { default as StatusPill } from "./StatusPill";
 export { default as StatusBadge } from "./StatusBadge";
 export { default as Modal } from "./Modal";

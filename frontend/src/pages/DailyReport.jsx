@@ -7,6 +7,7 @@ import {
   buildDemoChartSeries,
 } from "../utils/dashboardHelpers";
 import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
+import { dateOnly } from "../utils/format";
 import {
   TOP_PRODUCT_COLUMNS,
   buildDailySummaryItems,
@@ -452,7 +453,7 @@ export default function DailyReport() {
                       <td>{label}</td>
                       <td>{item.barcode || "—"}</td>
                       <td>{item.quantity}</td>
-                      <td>{item.expiry_date}</td>
+                      <td>{dateOnly(item.expiry_date)}</td>
                       <td>{formatDaysUntilExpiry(days)}</td>
                     </tr>
                   );

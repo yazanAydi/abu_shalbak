@@ -1,5 +1,5 @@
 import "./RefundsManagement.css";
-import { Select } from "./ui";
+import { DateField, Select } from "./ui";
 
 const STATUS_OPTS = [
   { value: "", label: "الكل" },
@@ -25,8 +25,7 @@ export default function RefundFilters({ filters, onChange, onSearch, onReset }) 
       <div className="rf-filters-grid">
         <label className="rf-flab">
           من تاريخ
-          <input
-            type="date"
+          <DateField
             className="rf-finput"
             value={filters.dateFrom}
             onChange={(e) => set("dateFrom", e.target.value)}
@@ -34,8 +33,7 @@ export default function RefundFilters({ filters, onChange, onSearch, onReset }) 
         </label>
         <label className="rf-flab">
           إلى تاريخ
-          <input
-            type="date"
+          <DateField
             className="rf-finput"
             value={filters.dateTo}
             onChange={(e) => set("dateTo", e.target.value)}

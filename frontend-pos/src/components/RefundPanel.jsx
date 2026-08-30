@@ -4,6 +4,7 @@ import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import PosRefundWaitingModal from "./pos/PosRefundWaitingModal";
 import QtyStepper from "./QtyStepper";
+import { DateField } from "./ui";
 import "./RefundPanel.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -293,18 +294,16 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
               <div className="rf-row">
                 <label>
                   من تاريخ
-                  <input
+                  <DateField
                     className="rf-input"
-                    type="date"
                     value={searchDateFrom}
                     onChange={(e) => setSearchDateFrom(e.target.value)}
                   />
                 </label>
                 <label>
                   إلى تاريخ
-                  <input
+                  <DateField
                     className="rf-input"
-                    type="date"
                     value={searchDateTo}
                     onChange={(e) => setSearchDateTo(e.target.value)}
                   />

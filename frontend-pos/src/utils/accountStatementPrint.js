@@ -1,6 +1,7 @@
 import { getDisplayRows } from "../components/AccountStatementView";
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
+import { dateOnly, formatDateTimeShopAr } from "./format";
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text == null ? "" : String(text);
@@ -8,13 +9,7 @@ function escapeHtml(text) {
 }
 
 function formatPrintTimestamp() {
-  return new Date().toLocaleString("ar-EG", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTimeShopAr(new Date());
 }
 
 function amountCell(n) {
@@ -42,7 +37,7 @@ export function printAccountStatement(report, partyType) {
   const totals = report.totals || report.formatted?.totals;
   const range =
     report.date_from && report.date_to
-      ? `من ${report.date_from} إلى ${report.date_to}`
+      ? `من ${dateOnly(report.date_from)} إلى ${dateOnly(report.date_to)}`
       : "كل الفترات";
 
   const bodyRows = rows
@@ -51,7 +46,7 @@ export function printAccountStatement(report, partyType) {
       return `<tr>
         <td>${escapeHtml(r.line_no || "—")}</td>
         <td>${escapeHtml(r.description)}</td>
-        <td>${escapeHtml(r.date || "—")}</td>
+        <td>${escapeHtml(r.date ? dateOnly(r.date) : "—")}</td>
         <td class="num">${amountCell(r.debit)}</td>
         <td class="num">${amountCell(r.credit)}</td>
         <td class="num${neg}">${escapeHtml(r.balance_formatted)}</td>

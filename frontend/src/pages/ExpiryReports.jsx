@@ -12,13 +12,14 @@ import {
   Input,
   useToast,
 } from "../components/ui";
+import { dateOnly } from "../utils/format";
 
 const EXPIRY_COLUMNS = [
   { key: "name", header: "المنتج" },
   { key: "barcode", header: "الباركود" },
   { key: "unit", header: "الوحدة", value: (r) => r.unit || "—" },
   { key: "stock", header: "الكمية" },
-  { key: "expiry_date", header: "تاريخ الصلاحية" },
+  { key: "expiry_date", header: "تاريخ الصلاحية", value: (r) => dateOnly(r.expiry_date) },
   {
     key: "days_until_expiry",
     header: "الأيام المتبقية",
@@ -109,7 +110,7 @@ export default function ExpiryReports() {
       { key: "barcode", header: "الباركود" },
       { key: "unit", header: "الوحدة", render: (r) => r.unit || "—" },
       { key: "stock", header: "الكمية", className: "num" },
-      { key: "expiry_date", header: "تاريخ الصلاحية" },
+      { key: "expiry_date", header: "تاريخ الصلاحية", render: (r) => dateOnly(r.expiry_date) },
       {
         key: "days_until_expiry",
         header: "الأيام المتبقية",

@@ -102,6 +102,33 @@ function parsePositiveInt(value) {
   return n;
 }
 
+/** Flat product fields for barcode lookup fallbacks (no unit catalog). */
+function flatBarcodeLookupFields(found) {
+  const row = found.product;
+  return {
+    id: row.id,
+    barcode: row.barcode,
+    primary_barcode: row.barcode,
+    name: row.name,
+    name_en: row.name_en ?? null,
+    price: row.price,
+    cost: row.cost,
+    stock: row.stock,
+    category: row.category,
+    tax_rate: row.tax_rate ?? null,
+    unit: row.unit ?? null,
+    expiry_date: row.expiry_date ?? null,
+    min_price: row.min_price ?? null,
+    max_price: row.max_price ?? null,
+    sku: row.sku ?? null,
+    image_url: row.image_url ?? null,
+    is_active: row.is_active,
+    scanned_barcode: found.scannedBarcode,
+    product_barcode_id: found.productBarcodeId,
+    matched_barcode: found.matchedBarcode,
+  };
+}
+
 const DEFAULT_PRODUCT_PAGE_SIZE = 200;
 const MAX_PRODUCT_PAGE_SIZE = 500;
 
@@ -666,6 +693,38 @@ export function createProductsRouter(db) {
   /** @deprecated Use /next-sku — this never returns a barcode. */
   router.get("/next-barcode", requireAuth, requireAdmin, sendNextSku);
 
+  /**
+   * Duplicate-check for the admin add-product form. Always 200 so Chrome
+   * does not log "Failed to load resource" for a free barcode.
+   * POS / checkout still use GET /:barcode and GET /by-barcode/:barcode (404).
+   */
+  router.get("/lookup", requireAuth, async (req, res) => {
+    const barcode = normalizeBarcodeInput(String(req.query.barcode || ""));
+    if (!barcode) {
+      return res.json({ found: false });
+    }
+
+    const payload = await buildBarcodeLookupResponse(db, barcode);
+    if (payload) {
+      return res.json({
+        found: true,
+        inactive: Boolean(payload.inactive),
+        ...payload,
+      });
+    }
+
+    const found = await findProductByBarcode(db, barcode);
+    if (!found) {
+      return res.json({ found: false });
+    }
+
+    return res.json({
+      found: true,
+      inactive: Number(found.product.is_active) === 0,
+      ...flatBarcodeLookupFields(found),
+    });
+  });
+
   router.get("/:barcode", requireAuth, async (req, res) => {
     const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
     const payload = await buildBarcodeLookupResponse(db, barcode);
@@ -674,31 +733,10 @@ export function createProductsRouter(db) {
       if (!found) {
         return res.status(404).json({ error: "المنتج غير موجود" });
       }
-      const row = found.product;
-      if (Number(row.is_active) === 0) {
+      if (Number(found.product.is_active) === 0) {
         return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
       }
-      return res.json({
-        id: row.id,
-        barcode: row.barcode,
-        primary_barcode: row.barcode,
-        name: row.name,
-        name_en: row.name_en ?? null,
-        price: row.price,
-        cost: row.cost,
-        stock: row.stock,
-        category: row.category,
-        tax_rate: row.tax_rate ?? null,
-        unit: row.unit ?? null,
-        expiry_date: row.expiry_date ?? null,
-        min_price: row.min_price ?? null,
-        max_price: row.max_price ?? null,
-        sku: row.sku ?? null,
-        image_url: row.image_url ?? null,
-        scanned_barcode: found.scannedBarcode,
-        product_barcode_id: found.productBarcodeId,
-        matched_barcode: found.matchedBarcode,
-      });
+      return res.json(flatBarcodeLookupFields(found));
     }
     if (payload.inactive) {
       return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });

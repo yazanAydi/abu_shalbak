@@ -1,4 +1,5 @@
 import SearchableSelect from "./SearchableSelect";
+import DateField from "./DateField";
 
 export function FormField({ label, required, hint, children, className = "" }) {
   return (
@@ -15,8 +16,11 @@ export function FormField({ label, required, hint, children, className = "" }) {
   );
 }
 
-export function Input({ className = "", ...rest }) {
-  return <input className={`ui-input ${className}`} {...rest} />;
+export function Input({ className = "", type, ...rest }) {
+  if (type === "date") {
+    return <DateField className={`ui-input ${className}`} {...rest} />;
+  }
+  return <input className={`ui-input ${className}`} type={type} {...rest} />;
 }
 
 export function Select(props) {

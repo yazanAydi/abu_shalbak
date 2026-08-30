@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
 import { isAdminRole } from "../utils/roles";
-import { PageHeader, ReportToolbar, Select } from "../components/ui";
+import { DateField, PageHeader, ReportToolbar, Select } from "../components/ui";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -438,8 +438,7 @@ export default function SupplierFinance() {
         <div className="sf-range">
           <label>
             من
-            <input
-              type="date"
+            <DateField
               className="sf-input"
               value={from}
               onChange={(e) => setFrom(e.target.value)}
@@ -447,8 +446,7 @@ export default function SupplierFinance() {
           </label>
           <label>
             إلى
-            <input
-              type="date"
+            <DateField
               className="sf-input"
               value={to}
               onChange={(e) => setTo(e.target.value)}
@@ -552,9 +550,8 @@ export default function SupplierFinance() {
             value={opexForm.amount}
             onChange={(e) => setOpexForm((f) => ({ ...f, amount: e.target.value }))}
           />
-          <input
+          <DateField
             className="sf-input"
-            type="date"
             value={opexForm.paid_on}
             onChange={(e) => setOpexForm((f) => ({ ...f, paid_on: e.target.value }))}
           />
@@ -619,8 +616,7 @@ export default function SupplierFinance() {
         <div className="sf-range">
           <label>
             التاريخ
-            <input
-              type="date"
+            <DateField
               className="sf-input"
               value={reconDate}
               onChange={(e) => setReconDate(e.target.value)}
@@ -693,9 +689,8 @@ export default function SupplierFinance() {
             value={invForm.amount_paid}
             onChange={(e) => setInvForm((f) => ({ ...f, amount_paid: e.target.value }))}
           />
-          <input
+          <DateField
             className="sf-input"
-            type="date"
             value={invForm.due_on}
             onChange={(e) => setInvForm((f) => ({ ...f, due_on: e.target.value }))}
           />
@@ -943,9 +938,8 @@ export default function SupplierFinance() {
           </label>
           <label>
             تاريخ الدفع
-            <input
+            <DateField
               className="sf-input"
-              type="date"
               value={payForm.paid_on}
               onChange={(e) => setPayForm((f) => ({ ...f, paid_on: e.target.value }))}
             />

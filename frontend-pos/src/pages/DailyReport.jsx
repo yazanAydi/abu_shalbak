@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { todayISO } from "../utils/format";
+import { todayISO, dateOnly } from "../utils/format";
 import api from "../apiClient";
 import { Link } from "react-router-dom";
 import { getAuthHeaders } from "../utils/auth";
@@ -348,7 +348,7 @@ export default function DailyReport() {
                       <td>{label}</td>
                       <td>{item.barcode || "—"}</td>
                       <td>{item.quantity}</td>
-                      <td>{item.expiry_date}</td>
+                      <td>{dateOnly(item.expiry_date)}</td>
                       <td>{formatDaysUntilExpiry(days)}</td>
                     </tr>
                   );

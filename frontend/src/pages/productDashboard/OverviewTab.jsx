@@ -1,5 +1,5 @@
 import { Card, CardBody, StatCard, StatusBadge } from "../../components/ui";
-import { ils, num } from "../../utils/format";
+import { ils, num, dateOnly } from "../../utils/format";
 import { displayProductBarcode, displayProductSku } from "../../utils/entityCodeDisplay";
 import { useProductTab } from "./useProductTab";
 import { TabState, expiryBadge } from "./shared";
@@ -51,7 +51,7 @@ export default function OverviewTab({ productId }) {
               <CardBody>
                 <h3 className="pd-section-title">الصلاحية والتنبيهات</h3>
                 <dl className="pd-defs">
-                  <div><dt>تاريخ الصلاحية</dt><dd>{data.expiry.expiry_date || "—"}</dd></div>
+                  <div><dt>تاريخ الصلاحية</dt><dd>{dateOnly(data.expiry.expiry_date)}</dd></div>
                   <div>
                     <dt>حالة الصلاحية</dt>
                     <dd>
