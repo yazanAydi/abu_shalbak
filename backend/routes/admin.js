@@ -460,7 +460,7 @@ export function createAdminRouter(db, dbPath) {
       await logAudit(db, req, AUDIT_ACTIONS.USER_CREATE, "users", row.id, null, { username: row.username, role: row.role });
       res.status(201).json(row);
     } catch (e) {
-      if (e && e.code === "SQLITE_CONSTRAINT") {
+      if (e && String(e.code || "").startsWith("SQLITE_CONSTRAINT")) {
         return res.status(409).json({ error: "اسم المستخدم موجود مسبقاً" });
       }
       throw e;

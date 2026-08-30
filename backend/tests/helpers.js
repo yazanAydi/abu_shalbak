@@ -64,10 +64,12 @@ export function authHeader(token) {
 }
 
 export async function destroyTestContext(ctx) {
+  if (!ctx) return;
   try {
-    await closeSqliteConnection(ctx.db);
+    if (ctx.db) await closeSqliteConnection(ctx.db);
   } catch (_) {}
+  ctx.db = null;
   try {
-    fs.rmSync(ctx.tmpDir, { recursive: true, force: true });
+    if (ctx.tmpDir) fs.rmSync(ctx.tmpDir, { recursive: true, force: true });
   } catch (_) {}
 }

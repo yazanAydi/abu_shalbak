@@ -112,26 +112,29 @@ export async function checkInvariants(db, baseline, extras = {}) {
   );
 
   // 3. Every sale line has a sale ledger row; every approved refund has a refund ledger row
-  const missingSaleLedger = await db.get(`
-    SELECT COUNT(*) AS n FROM transaction_items ti
-    WHERE ti.transaction_id > ${maxTx}
-      AND NOT EXISTS (
-        SELECT 1 FROM inventory_ledger il
-        WHERE il.reference_type = 'transaction'
-          AND il.reference_id = ti.transaction_id
-          AND il.product_id = ti.product_id
-          AND il.movement_type = 'sale'
-      )
-  `);
-  const missingRefundLedger = await db.get(`
-    SELECT COUNT(*) AS n FROM refunds r
-    WHERE r.id > COALESCE((SELECT MAX(id) FROM refunds WHERE id <= ?), 0)
-      AND r.status = 'approved'
-      AND NOT EXISTS (
-        SELECT 1 FROM inventory_ledger il
-        WHERE il.reference_type = 'refund' AND il.reference_id = r.id AND il.movement_type = 'refund'
-      )
-  `);
+  const maxRefund = Number(baseline?.maxIds?.refunds) || 0;
+  const missingSaleLedger = await db.get(
+    `SELECT COUNT(*) AS n FROM transaction_items ti
+     WHERE ti.transaction_id > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM inventory_ledger il
+         WHERE il.reference_type = 'transaction'
+           AND il.reference_id = ti.transaction_id
+           AND il.product_id = ti.product_id
+           AND il.movement_type = 'sale'
+       )`,
+    [maxTx]
+  );
+  const missingRefundLedger = await db.get(
+    `SELECT COUNT(*) AS n FROM refunds r
+     WHERE r.id > ?
+       AND r.status = 'approved'
+       AND NOT EXISTS (
+         SELECT 1 FROM inventory_ledger il
+         WHERE il.reference_type = 'refund' AND il.reference_id = r.id AND il.movement_type = 'refund'
+       )`,
+    [maxRefund]
+  );
   out.push(
     result(
       "sale_and_refund_ledger_coverage",

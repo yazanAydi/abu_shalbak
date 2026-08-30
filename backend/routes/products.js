@@ -67,9 +67,13 @@ function clampProductStock(raw) {
   return Math.max(0, Math.round(n * 1000) / 1000);
 }
 
+function isSqliteConstraint(err) {
+  return String(err?.code || "").startsWith("SQLITE_CONSTRAINT");
+}
+
 function skuConstraintError(err) {
   const msg = String(err?.message || "");
-  return err?.code === "SQLITE_CONSTRAINT" && /sku|idx_products_sku/i.test(msg);
+  return isSqliteConstraint(err) && /sku|idx_products_sku/i.test(msg);
 }
 
 /**
@@ -725,11 +729,13 @@ export function createProductsRouter(db) {
       return res.status(400).json({ error: "السعر غير صالح" });
     }
     const barcodeDup = await db.get(
-      `SELECT product_id AS id FROM product_units WHERE barcode = ?
+      `SELECT id FROM products WHERE barcode = ?
+       UNION
+       SELECT product_id AS id FROM product_units WHERE barcode = ?
        UNION
        SELECT product_id AS id FROM product_barcodes WHERE barcode = ?
        LIMIT 1`,
-      [resolvedBarcode, resolvedBarcode]
+      [resolvedBarcode, resolvedBarcode, resolvedBarcode]
     );
     if (barcodeDup) {
       return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
@@ -826,7 +832,7 @@ export function createProductsRouter(db) {
       if (skuConstraintError(e)) {
         return res.status(409).json({ error: "رقم المنتج مستخدم مسبقاً" });
       }
-      if (e && e.code === "SQLITE_CONSTRAINT") {
+      if (isSqliteConstraint(e)) {
         return res.status(409).json({ error: "الباركود موجود مسبقاً" });
       }
       throw e;
@@ -847,7 +853,7 @@ export function createProductsRouter(db) {
       if (skuConstraintError(e)) {
         return res.status(409).json({ error: "رقم المنتج مستخدم مسبقاً" });
       }
-      if (e && e.code === "SQLITE_CONSTRAINT") {
+      if (isSqliteConstraint(e)) {
         return res.status(409).json({ error: "الباركود موجود مسبقاً" });
       }
       throw e;

@@ -1,4 +1,5 @@
 import { CACHE_KEYS, cacheClone, cacheGet, cacheInvalidatePrefix, cacheSet } from "./cache.js";
+import { invalidatePromotionsCache } from "./promotions.js";
 
 export const BAKERY_CATEGORY_NAME = "مواد مخبز";
 
@@ -112,7 +113,11 @@ export async function updateProductCategory(db, id, { name, active } = {}) {
 
   if (nextName !== ex.name) {
     await db.run("UPDATE products SET category = ? WHERE category = ?", [nextName, ex.name]);
-    await db.run("UPDATE promotions SET category = ? WHERE category = ?", [nextName, ex.name]);
+    const promoRename = await db.run("UPDATE promotions SET category = ? WHERE category = ?", [
+      nextName,
+      ex.name,
+    ]);
+    if ((promoRename.changes ?? 0) > 0) invalidatePromotionsCache();
   }
   await db.run(
     "UPDATE product_categories SET name = ?, active = ? WHERE id = ?",

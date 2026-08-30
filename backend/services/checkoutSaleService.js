@@ -169,8 +169,8 @@ async function executeCheckoutSaleCore(db, params) {
           err.code = "PROMO_LIMIT";
           throw err;
         }
-        invalidatePromotionsCache();
       }
+      invalidatePromotionsCache();
     }
 
     return { transactionId, receiptNumber };

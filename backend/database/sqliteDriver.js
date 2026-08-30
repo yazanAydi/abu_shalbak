@@ -133,52 +133,94 @@ function wrapShared(runRaw, getRaw, allRaw, execRaw, extras = {}) {
   };
 }
 
-function wrapBetterSqlite(writeRaw, readRaw) {
-  const stmtCache = new Map();
+export function wrapBetterSqlite(writeRaw, readRaw) {
+  // Statements are bound to the Database they were prepared on. Cache per
+  // connection so a GET that primed the readonly handle cannot later satisfy
+  // a writer/transaction read of the same SQL (or vice versa).
+  const stmtCaches = new Map();
   const MAX_STMTS = 256;
+  let writerTxDepth = 0;
+
+  function cacheFor(raw) {
+    let cache = stmtCaches.get(raw);
+    if (!cache) {
+      cache = new Map();
+      stmtCaches.set(raw, cache);
+    }
+    return cache;
+  }
 
   function prepare(raw, sql) {
-    const key = sql;
-    let stmt = stmtCache.get(key);
-    if (!stmt) {
+    const cache = cacheFor(raw);
+    let stmt = cache.get(sql);
+    if (!stmt || (stmt.database && stmt.database !== raw)) {
       stmt = raw.prepare(sql);
-      if (stmtCache.size >= MAX_STMTS) {
-        const first = stmtCache.keys().next().value;
-        stmtCache.delete(first);
+      if (cache.size >= MAX_STMTS) {
+        const first = cache.keys().next().value;
+        cache.delete(first);
       }
-      stmtCache.set(key, stmt);
+      cache.set(sql, stmt);
     }
     return stmt;
   }
 
+  function isSelect(sql) {
+    return /^\s*SELECT\b/i.test(String(sql || ""));
+  }
+
   function target(sql) {
-    if (
-      readRaw &&
-      preferReadonlyReads() &&
-      /^\s*SELECT\b/i.test(String(sql || ""))
-    ) {
+    // Concurrent GET/HEAD reads keep using the readonly WAL snapshot even
+    // while a writer transaction is open. Only the writer-side async work
+    // (no readonly preference) must stay on writeRaw so it sees its own
+    // uncommitted changes and never a cached readonly statement.
+    if (writerTxDepth > 0 && !preferReadonlyReads()) {
+      return writeRaw;
+    }
+    if (readRaw && preferReadonlyReads() && isSelect(sql)) {
       return readRaw;
     }
     return writeRaw;
   }
 
+  function withWriterTxTracking(sql, fn) {
+    const kind = txKeyword(sql);
+    if (kind === "begin") writerTxDepth += 1;
+    try {
+      const result = fn();
+      if (kind === "end") writerTxDepth = Math.max(0, writerTxDepth - 1);
+      return result;
+    } catch (err) {
+      if (kind === "begin") writerTxDepth = Math.max(0, writerTxDepth - 1);
+      throw err;
+    }
+  }
+
+  function clearStmtCaches() {
+    stmtCaches.clear();
+  }
+
   return wrapShared(
     (sql, params) =>
-      Promise.resolve().then(() => {
-        const info = prepare(target(sql), sql).run(params);
-        return { lastID: Number(info.lastInsertRowid), changes: info.changes };
-      }),
+      Promise.resolve().then(() =>
+        withWriterTxTracking(sql, () => {
+          const info = prepare(target(sql), sql).run(params);
+          return { lastID: Number(info.lastInsertRowid), changes: info.changes };
+        })
+      ),
     (sql, params) => Promise.resolve().then(() => prepare(target(sql), sql).get(params)),
     (sql, params) => Promise.resolve().then(() => prepare(target(sql), sql).all(params)),
     (sql) =>
-      Promise.resolve().then(() => {
-        target(sql).exec(sql);
-      }),
+      Promise.resolve().then(() =>
+        withWriterTxTracking(sql, () => {
+          target(sql).exec(sql);
+        })
+      ),
     {
       raw: writeRaw,
       driver: "better-sqlite3",
       close() {
         return Promise.resolve().then(() => {
+          clearStmtCaches();
           try {
             readRaw?.close();
           } catch {

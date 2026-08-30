@@ -10,7 +10,7 @@ export function createCurrenciesRouter(db) {
   const router = Router();
 
   // Enabled currencies for POS / cashier use.
-  router.get("/", requireAuth, async (_req, res, next) => {
+  router.get("/", requireAuth, async (req, res, next) => {
     try {
       const currencies = await listCurrencies(db, { enabledOnly: true });
       return sendCachedJson(req, res, { currencies }, { maxAgeSec: 60 });
@@ -20,7 +20,7 @@ export function createCurrenciesRouter(db) {
   });
 
   // Full list (including disabled) for the admin settings page.
-  router.get("/all", requireAuth, requireAdmin, async (_req, res, next) => {
+  router.get("/all", requireAuth, requireAdmin, async (req, res, next) => {
     try {
       const currencies = await listCurrencies(db, { enabledOnly: false });
       return sendCachedJson(req, res, { currencies }, { maxAgeSec: 30 });

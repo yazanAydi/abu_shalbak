@@ -271,6 +271,8 @@ describe("suggestedBarcode", () => {
 
   test("POST rolls back when products.barcode is already taken", async () => {
     await resetProducts();
+    // Seed only products.barcode (no unit/alias rows) so the duplicate is
+    // visible on the unique products.barcode column, not the unit tables.
     await ctx.db.run(
       `INSERT INTO products (barcode, name, price, cost, category, stock, sku)
        VALUES ('5555666677', 'Existing', 1, 1, 'Test', 1, '00000000001')`
@@ -291,12 +293,15 @@ describe("suggestedBarcode", () => {
       });
 
     expect(res.status).toBe(409);
+    expect((res.body.data ?? res.body).error).toMatch(/باركود/);
     const after = await ctx.db.get("SELECT COUNT(*) AS c FROM products");
     expect(after.c).toBe(before.c);
     const orphanUnits = await ctx.db.get(
       "SELECT COUNT(*) AS c FROM product_units WHERE barcode = '5555666677'"
     );
     expect(orphanUnits.c).toBe(0);
+    const names = await ctx.db.all("SELECT name FROM products");
+    expect(names.map((r) => r.name)).toEqual(["Existing"]);
   });
 
   test("repair migration promotes a real unit barcode and clears the رقم-shaped default", async () => {

@@ -5,15 +5,20 @@ import { round2 } from "../utils/money.js";
 
 const OFFER_TYPES = ["percentage", "fixed", "bundle", "buy_x_get_y", "multi_price"];
 
+function onPromotionsDataChanged() {
+  invalidatePromotionsCache();
+}
+
 async function deactivateConflictingPromos(db, productId, productUnitId, excludeId) {
   if (!productId || !productUnitId) return 0;
-  invalidatePromotionsCache();
   const result = await db.run(
     `UPDATE promotions SET active = 0
      WHERE product_id = ? AND product_unit_id = ? AND id != ? AND active = 1`,
     [productId, productUnitId, excludeId ?? 0]
   );
-  return result.changes ?? 0;
+  const changes = result.changes ?? 0;
+  if (changes > 0) onPromotionsDataChanged();
+  return changes;
 }
 
 function normalizePromoBody(b, ex = null) {
@@ -106,6 +111,7 @@ export function createMarketingRouter(db) {
        VALUES (?, ?, ?, ?, ?, ?)`,
       [String(name).trim(), description || null, start_date || null, end_date || null, active === false ? 0 : 1, req.user.id]
     );
+    onPromotionsDataChanged();
     res.status(201).json(await db.get("SELECT * FROM campaigns WHERE id = ?", [ins.lastID]));
   });
 
@@ -124,11 +130,13 @@ export function createMarketingRouter(db) {
         req.params.id,
       ]
     );
+    onPromotionsDataChanged();
     res.json(await db.get("SELECT * FROM campaigns WHERE id = ?", [req.params.id]));
   });
 
   router.delete("/campaigns/:id", requireAuth, requireAdmin, async (req, res) => {
     await db.run("DELETE FROM campaigns WHERE id = ?", [req.params.id]);
+    onPromotionsDataChanged();
     res.json({ success: true });
   });
 
@@ -187,6 +195,7 @@ export function createMarketingRouter(db) {
         normalized.active,
       ]
     );
+    onPromotionsDataChanged();
     res.status(201).json({
       ...(await db.get(
         `SELECT pr.*, p.name AS product_name, pu.unit_name
@@ -243,6 +252,7 @@ export function createMarketingRouter(db) {
         req.params.id,
       ]
     );
+    onPromotionsDataChanged();
     res.json({
       ...(await db.get(
         `SELECT pr.*, p.name AS product_name, pu.unit_name
@@ -258,6 +268,7 @@ export function createMarketingRouter(db) {
 
   router.delete("/promotions/:id", requireAuth, requireAdmin, async (req, res) => {
     await db.run("DELETE FROM promotions WHERE id = ?", [req.params.id]);
+    onPromotionsDataChanged();
     res.json({ success: true });
   });
 

@@ -417,7 +417,7 @@ export async function persistProductImportRows(db, validRows) {
       rowErrors.push({
         row: rowNum,
         reason:
-          rowErr.code === "SQLITE_CONSTRAINT"
+          String(rowErr.code || "").startsWith("SQLITE_CONSTRAINT")
             ? `تعارض باركود: ${rowErr.message}`
             : rowErr.message || "فشل استيراد الصف",
       });

@@ -5,6 +5,7 @@ import {
   login,
   authHeader,
 } from "./helpers.js";
+import { invalidatePromotionsCache } from "../utils/promotions.js";
 
 describe("Checkout flow", () => {
   let ctx;
@@ -62,5 +63,69 @@ describe("Checkout flow", () => {
 
   test("shift was used for checkout", () => {
     expect(shiftId).toBeTruthy();
+  });
+
+  test("exhausted promotion is omitted; checkout is a normal full-price sale", async () => {
+    const product = await ctx.db.get("SELECT * FROM products WHERE id = ?", [ctx.productId]);
+    await ctx.db.run(
+      `INSERT INTO promotions
+         (name, offer_type, product_id, discount_value, limit_qty, used_qty, active)
+       VALUES ('Exhausted checkout', 'percentage', ?, 50, 2, 2, 1)`,
+      [ctx.productId]
+    );
+    invalidatePromotionsCache();
+
+    const res = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
+        payment_method: "cash",
+      });
+
+    expect(res.status).toBe(201);
+    expect(Number(res.body.data.discount)).toBe(0);
+    expect(Number(res.body.data.total)).toBe(Number(product.price));
+    const row = await ctx.db.get(
+      "SELECT used_qty, limit_qty FROM promotions WHERE name = 'Exhausted checkout'"
+    );
+    expect(Number(row.used_qty)).toBe(Number(row.limit_qty));
+  });
+
+  test("active limited promotion applies until used_qty reaches the cap", async () => {
+    const product = await ctx.db.get("SELECT * FROM products WHERE id = ?", [ctx.productId]);
+    const ins = await ctx.db.run(
+      `INSERT INTO promotions
+         (name, offer_type, product_id, discount_value, limit_qty, used_qty, active)
+       VALUES ('One remaining', 'percentage', ?, 50, 1, 0, 1)`,
+      [ctx.productId]
+    );
+    invalidatePromotionsCache();
+
+    const first = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
+        payment_method: "cash",
+      });
+    expect(first.status).toBe(201);
+    expect(Number(first.body.data.discount)).toBeGreaterThan(0);
+
+    invalidatePromotionsCache();
+    const second = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
+        payment_method: "cash",
+      });
+    expect(second.status).toBe(201);
+    expect(Number(second.body.data.discount)).toBe(0);
+
+    const row = await ctx.db.get("SELECT used_qty, limit_qty FROM promotions WHERE id = ?", [
+      ins.lastID,
+    ]);
+    expect(Number(row.used_qty)).toBe(Number(row.limit_qty));
   });
 });

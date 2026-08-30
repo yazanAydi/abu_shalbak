@@ -56,12 +56,20 @@ describe("C4 limited promotions", () => {
     const other = results.filter((r) => r.status !== 201 && !(r.status === 409 && envelopeCode(r) === "PROMO_LIMIT"));
 
     expect(other).toHaveLength(0);
-    expect(ok.length).toBeLessThanOrEqual(10);
     expect(ok.length + limited.length).toBe(30);
+
+    // Checkout auto-selects from getActivePromotions(); it does not take a requested
+    // promotion id. Once used_qty hits the limit the promo drops out of the active
+    // list and later carts are ordinary full-price sales (201, discount 0).
+    // PROMO_LIMIT is only for the race where selection still saw the promo.
+    const applied = ok.filter((r) => Number(unwrap(r).discount) > 0);
+    const fullPrice = ok.filter((r) => Number(unwrap(r).discount) === 0);
 
     const row = await h.db.get("SELECT used_qty, limit_qty FROM promotions WHERE id = ?", [promo.id]);
     expect(Number(row.used_qty)).toBeLessThanOrEqual(Number(row.limit_qty));
-    expect(Number(row.used_qty)).toBe(ok.length);
+    expect(Number(row.used_qty)).toBe(applied.length);
+    expect(applied.length).toBeLessThanOrEqual(10);
+    expect(applied.length + limited.length + fullPrice.length).toBe(30);
 
     const receipts = ok.map((r) => unwrap(r).receipt_number);
     await runAndCheckInvariants(h.db, baseline, {
@@ -71,7 +79,26 @@ describe("C4 limited promotions", () => {
 
     // eslint-disable-next-line no-console
     console.log(
-      `[C4] accepted=${ok.length} promo_limit=${limited.length} abort_rate=${(limited.length / 30).toFixed(2)} used_qty=${row.used_qty}`
+      `[C4] accepted=${ok.length} applied=${applied.length} full_price=${fullPrice.length} promo_limit=${limited.length} used_qty=${row.used_qty}`
     );
   }, 30000);
+
+  test("exhausted promotion is skipped and checkout continues as a normal sale", async () => {
+    await h.db.run("UPDATE promotions SET used_qty = limit_qty WHERE id = ?", [promo.id]);
+    invalidatePromotionsCache();
+
+    const res = await checkout(
+      h.app,
+      h.cashierToken,
+      checkoutBody({
+        productId: h.productId,
+        price: Number(h.product.price),
+      })
+    );
+    expect(res.status).toBe(201);
+    expect(Number(unwrap(res).discount)).toBe(0);
+
+    const row = await h.db.get("SELECT used_qty, limit_qty FROM promotions WHERE id = ?", [promo.id]);
+    expect(Number(row.used_qty)).toBe(Number(row.limit_qty));
+  });
 });
