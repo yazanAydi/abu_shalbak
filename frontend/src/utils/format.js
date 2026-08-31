@@ -17,6 +17,35 @@ export function qty(n) {
   return Number.isInteger(v) ? String(v) : v.toLocaleString("en-US", { maximumFractionDigits: 3 });
 }
 
+export function isWeighedProduct(product) {
+  return Number(product?.is_weighed) === 1;
+}
+
+/** Authoritative stock text: 3 decimals + كغم for weighed products. */
+export function formatStockQty(stock, product) {
+  return num(stock, isWeighedProduct(product) ? 3 : 0);
+}
+
+/**
+ * Stock label with unit. Optional package equivalent is informational only.
+ * @param {number} stock
+ * @param {object | null | undefined} product
+ * @param {Array<{ conversion_to_base?: number, unit_name?: string }> | null} [units]
+ */
+export function formatStockWithUnit(stock, product, units) {
+  const weighed = isWeighedProduct(product);
+  const qtyText = formatStockQty(stock, product);
+  const unitName = weighed ? (product?.unit || "كغم") : "";
+  const main = unitName ? `${qtyText} ${unitName}` : qtyText;
+  if (!weighed || !Array.isArray(units)) return main;
+  const pack = units.find((u) => Number(u.conversion_to_base) > 1);
+  if (!pack) return main;
+  const equiv = Number(stock) / Number(pack.conversion_to_base);
+  if (!Number.isFinite(equiv)) return main;
+  const equivText = equiv.toLocaleString("en-US", { maximumFractionDigits: 3 });
+  return `${main} ≈ ${equivText} ${pack.unit_name}`;
+}
+
 
 const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const DMY_RE = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2}|\d{4})$/;

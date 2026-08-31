@@ -205,7 +205,7 @@ export async function migrateSkuBarcodeSeparation(db) {
         old_sku: product.sku,
         new_sku: replacement,
         action: "sku_reassigned",
-        reason: "duplicate رقم after padding",
+        reason: "duplicate رقم after normalize",
       });
       continue;
     }

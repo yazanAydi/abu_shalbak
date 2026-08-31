@@ -1,8 +1,8 @@
 /**
  * Product identity contract (do not conflate these fields):
  * - products.sku     = رقم المنتج (internal product number). Column name kept
- *                      for backward compatibility. Always 11-digit zero-padded
- *                      when numeric. Never a scannable barcode.
+ *                      for backward compatibility. Stored as plain integer text
+ *                      (`1`, `2`, `10`) with no leading zeros. Never a barcode.
  * - products.barcode = الباركود (scannable code, digits-only, 4–14 chars).
  *                      Never derived from sku.
  * See docs/PRODUCT_NUMBER_AND_BARCODE.md.
@@ -27,17 +27,21 @@ import {
 } from "../utils/productBarcodes.js";
 import { buildBarcodeLookupResponse } from "../utils/productUnitLookup.js";
 import {
+  DEFAULT_PACKAGE_UNIT_NAME,
+  WEIGHED_BASE_UNIT_NAME,
+  checkUnitBarcodeAvailability,
   deleteProductUnit,
+  ensureWeighedProductUnits,
   formatProductUnit,
   getDefaultUnit,
-  checkUnitBarcodeAvailability,
   loadUnitsCatalog,
   loadUnitsForProduct,
   syncProductFromDefaultUnit,
   upsertProductUnit,
+  withScaleCode,
 } from "../utils/productUnits.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
-import { ensureEntityCode, parseNumericCode } from "../utils/entityCodes.js";
+import { ensureEntityCode, parseNumericCode, productSkuLookupValues } from "../utils/entityCodes.js";
 import { recordPriceChange } from "../utils/priceHistory.js";
 import { getSalesByPrice } from "../utils/salesByPrice.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
@@ -82,18 +86,15 @@ function skuConstraintError(err) {
  * @param {number | null} [excludeId]
  */
 async function findSkuConflict(db, sku, excludeId = null) {
-  const formatted = formatProductSku(sku);
-  if (!formatted) return null;
-  const n = parseNumericCode(formatted);
-  if (n != null) {
-    const padded = formatProductSku(n);
-    return excludeId
-      ? db.get("SELECT id FROM products WHERE sku = ? AND id != ?", [padded, excludeId])
-      : db.get("SELECT id FROM products WHERE sku = ?", [padded]);
-  }
+  const values = productSkuLookupValues(sku);
+  if (!values.length) return null;
+  const placeholders = values.map(() => "?").join(", ");
   return excludeId
-    ? db.get("SELECT id FROM products WHERE sku = ? AND id != ?", [formatted, excludeId])
-    : db.get("SELECT id FROM products WHERE sku = ?", [formatted]);
+    ? db.get(
+        `SELECT id FROM products WHERE sku IN (${placeholders}) AND id != ?`,
+        [...values, excludeId]
+      )
+    : db.get(`SELECT id FROM products WHERE sku IN (${placeholders})`, values);
 }
 
 function parsePositiveInt(value) {
@@ -153,13 +154,25 @@ function marginPct(price, cost) {
   return round2(((p - c) / p) * 100);
 }
 
+const SCALE_CODE_SQL = `CASE WHEN COALESCE(is_weighed, 0) = 1 THEN (
+  SELECT pu.barcode FROM product_units pu
+  WHERE pu.product_id = products.id AND pu.unit_name = '${WEIGHED_BASE_UNIT_NAME}'
+  ORDER BY pu.is_default DESC, pu.id ASC LIMIT 1
+) ELSE NULL END AS scale_code`;
+
+const SCALE_CODE_SQL_P = `CASE WHEN COALESCE(p.is_weighed, 0) = 1 THEN (
+  SELECT pu.barcode FROM product_units pu
+  WHERE pu.product_id = p.id AND pu.unit_name = '${WEIGHED_BASE_UNIT_NAME}'
+  ORDER BY pu.is_default DESC, pu.id ASC LIMIT 1
+) ELSE NULL END AS scale_code`;
+
 const PRODUCT_LIST_SELECT = `id, barcode, name, name_en, price, cost, stock, category, tax_rate, unit, expiry_date, min_price, max_price, sku,
               COALESCE(is_active, 1) AS is_active, COALESCE(needs_review, 0) AS needs_review, COALESCE(is_weighed, 0) AS is_weighed,
-              COALESCE(inventory_scope, 'retail') AS inventory_scope, min_stock`;
+              COALESCE(inventory_scope, 'retail') AS inventory_scope, min_stock, ${SCALE_CODE_SQL}`;
 
 const PRODUCT_LIST_SELECT_P = `p.id, p.barcode, p.name, p.name_en, p.price, p.cost, p.stock, p.category, p.tax_rate, p.unit, p.expiry_date, p.min_price, p.max_price, p.sku,
               COALESCE(p.is_active, 1) AS is_active, COALESCE(p.needs_review, 0) AS needs_review, COALESCE(p.is_weighed, 0) AS is_weighed,
-              COALESCE(p.inventory_scope, 'retail') AS inventory_scope, p.min_stock`;
+              COALESCE(p.inventory_scope, 'retail') AS inventory_scope, p.min_stock, ${SCALE_CODE_SQL_P}`;
 
 const VALID_INVENTORY_SCOPES = ["retail", "bakery"];
 
@@ -172,6 +185,46 @@ function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
   return err;
+}
+
+function parseScaleCodeInput(raw) {
+  if (raw === undefined) return { provided: false, value: undefined };
+  if (raw === null || String(raw).trim() === "") return { provided: true, value: null };
+  const code = normalizeStoredBarcode(raw);
+  if (!isValidStoredBarcode(code)) {
+    return { provided: true, error: "رمز الميزان غير صالح" };
+  }
+  return { provided: true, value: code };
+}
+
+function parsePackageConversion(raw) {
+  if (raw === undefined || raw === null || raw === "") return { provided: false, value: undefined };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    return { provided: true, error: "وزن الحبة غير صالح" };
+  }
+  return { provided: true, value: n };
+}
+
+function parsePackagePrice(raw) {
+  if (raw === undefined || raw === null || raw === "") return { provided: false, value: undefined };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    return { provided: true, error: "سعر الحبة غير صالح" };
+  }
+  return { provided: true, value: n };
+}
+
+async function assertScaleCodeAvailable(db, scaleCode, productId, excludeUnitId = null) {
+  if (!scaleCode) return;
+  const avail = await checkUnitBarcodeAvailability(db, {
+    barcode: scaleCode,
+    productId,
+    excludeUnitId,
+  });
+  if (avail.status === "conflict") {
+    throw httpError(409, "رمز الميزان مرتبط بمنتج آخر");
+  }
 }
 
 /**
@@ -321,16 +374,43 @@ async function applyProductMetadataPatch(db, req, id, body) {
         await addProductBarcode(db, Number(id), barcode, { isPrimary: true });
       }
       await syncProductsPrimaryBarcode(db, Number(id));
-      const defaultUnit = await getDefaultUnit(db, Number(id));
-      if (
-        defaultUnit &&
-        (!defaultUnit.barcode ||
-          normalizeStoredBarcode(defaultUnit.barcode) === normalizeStoredBarcode(live.barcode))
-      ) {
-        await db.run("UPDATE product_units SET barcode = ?, updated_at = datetime('now') WHERE id = ?", [
-          barcode,
-          defaultUnit.id,
-        ]);
+      const units = await loadUnitsForProduct(db, Number(id));
+      if (isWeighed) {
+        const oldDigits = normalizeStoredBarcode(live.barcode);
+        const packUnit = units.find((u) => {
+          const ub = u.barcode ? normalizeStoredBarcode(u.barcode) : "";
+          return ub && ub === oldDigits && String(u.unit_name || "") !== WEIGHED_BASE_UNIT_NAME;
+        });
+        if (packUnit) {
+          await db.run("UPDATE product_units SET barcode = ?, updated_at = datetime('now') WHERE id = ?", [
+            barcode,
+            packUnit.id,
+          ]);
+        } else {
+          const defaultUnit = units.find((u) => u.is_default) || units[0];
+          if (
+            defaultUnit &&
+            (!defaultUnit.barcode ||
+              normalizeStoredBarcode(defaultUnit.barcode) === oldDigits)
+          ) {
+            await db.run("UPDATE product_units SET barcode = ?, updated_at = datetime('now') WHERE id = ?", [
+              barcode,
+              defaultUnit.id,
+            ]);
+          }
+        }
+      } else {
+        const defaultUnit = units.find((u) => u.is_default) || units[0];
+        if (
+          defaultUnit &&
+          (!defaultUnit.barcode ||
+            normalizeStoredBarcode(defaultUnit.barcode) === normalizeStoredBarcode(live.barcode))
+        ) {
+          await db.run("UPDATE product_units SET barcode = ?, updated_at = datetime('now') WHERE id = ?", [
+            barcode,
+            defaultUnit.id,
+          ]);
+        }
       }
     }
 
@@ -354,6 +434,44 @@ async function applyProductMetadataPatch(db, req, id, body) {
       }
     }
 
+    const scaleParsed = parseScaleCodeInput(b.scale_code);
+    if (scaleParsed.error) throw httpError(400, scaleParsed.error);
+    const packParsed = parsePackageConversion(b.package_conversion);
+    if (packParsed.error) throw httpError(400, packParsed.error);
+    const packPriceParsed = parsePackagePrice(b.package_price);
+    if (packPriceParsed.error) throw httpError(400, packPriceParsed.error);
+
+    if (isWeighed) {
+      const kgRow = await db.get(
+        `SELECT id FROM product_units WHERE product_id = ? AND unit_name = ?`,
+        [Number(id), WEIGHED_BASE_UNIT_NAME]
+      );
+      if (scaleParsed.provided && scaleParsed.value) {
+        await assertScaleCodeAvailable(db, scaleParsed.value, Number(id), kgRow?.id ?? null);
+      }
+      if (
+        scaleParsed.provided &&
+        scaleParsed.value &&
+        barcode &&
+        scaleParsed.value === barcode &&
+        packParsed.provided
+      ) {
+        throw httpError(400, "رمز الميزان يجب أن يختلف عن باركود الحبة");
+      }
+      const turnedOn = b.is_weighed !== undefined && isWeighed && Number(live.is_weighed) !== 1;
+      if (turnedOn || scaleParsed.provided || packParsed.provided || packPriceParsed.provided) {
+        await ensureWeighedProductUnits(db, Number(id), {
+          productBarcode: barcode,
+          scaleCode: scaleParsed.provided ? scaleParsed.value : undefined,
+          kgPrice: price,
+          kgCost: cost,
+          packageConversion: packParsed.provided ? packParsed.value : undefined,
+          packageUnitName: b.package_unit_name,
+          packagePrice: packPriceParsed.provided ? packPriceParsed.value : undefined,
+        });
+      }
+    }
+
     const updated = await db.get("SELECT * FROM products WHERE id = ?", [id]);
     if (priceChanged) {
       await recordPriceChange(db, req, {
@@ -362,10 +480,10 @@ async function applyProductMetadataPatch(db, req, id, body) {
         newPrice: price,
         reason: b.reason != null && String(b.reason).trim() !== "" ? String(b.reason).trim() : "تعديل المنتج",
       });
-    } else if (sets.length) {
+    } else if (sets.length || scaleParsed.provided || packParsed.provided || packPriceParsed.provided) {
       await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_UPDATE, "products", id, live, updated);
     }
-    return updated;
+    return withScaleCode(db, updated);
   });
 }
 
@@ -432,13 +550,14 @@ export async function searchProducts(db, rawQuery, options = {}) {
       }
     }
 
-    const skuNum = parseNumericCode(normalized);
-    if (skuNum != null) {
+    const skuValues = productSkuLookupValues(normalized);
+    if (skuValues.length) {
+      const skuPlaceholders = skuValues.map(() => "?").join(", ");
       const fromSku = await db.all(
         `SELECT ${PRODUCT_LIST_SELECT_P}
          FROM products p
-         WHERE p.sku = ?${scopeSql}`,
-        [formatProductSku(skuNum), ...scopeParams]
+         WHERE p.sku IN (${skuPlaceholders})${scopeSql}`,
+        [...skuValues, ...scopeParams]
       );
       for (const row of fromSku) {
         if (!byId.has(row.id)) byId.set(row.id, row);
@@ -530,7 +649,7 @@ export function createProductsRouter(db) {
 
     if (String(req.query.fields || "") === "id") {
       const rows = await db.all(
-        `SELECT id FROM products WHERE 1=1${scopeSql} ORDER BY sku ASC, id ASC LIMIT 5000`,
+        `SELECT id FROM products WHERE 1=1${scopeSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC LIMIT 5000`,
         scopeParams
       );
       return res.json(rows);
@@ -552,7 +671,7 @@ export function createProductsRouter(db) {
     }
     const countRow = await db.get(`SELECT COUNT(*) AS total FROM products ${whereSql}`, params);
     const rows = await db.all(
-      `SELECT ${PRODUCT_LIST_SELECT} FROM products ${whereSql} ORDER BY sku ASC, id ASC LIMIT ? OFFSET ?`,
+      `SELECT ${PRODUCT_LIST_SELECT} FROM products ${whereSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
     return res.json({
@@ -789,11 +908,45 @@ export function createProductsRouter(db) {
     if (taxR !== null && (!Number.isFinite(taxR) || taxR < 0 || taxR > 1)) {
       return res.status(400).json({ error: "نسبة الضريبة يجب أن تكون بين 0 و 1" });
     }
+    const scaleParsed = parseScaleCodeInput(req.body?.scale_code);
+    if (scaleParsed.error) {
+      return res.status(400).json({ error: scaleParsed.error });
+    }
+    const packParsed = parsePackageConversion(req.body?.package_conversion);
+    if (packParsed.error) {
+      return res.status(400).json({ error: packParsed.error });
+    }
+    const packPriceParsed = parsePackagePrice(req.body?.package_price);
+    if (packPriceParsed.error) {
+      return res.status(400).json({ error: packPriceParsed.error });
+    }
+    if (
+      isWeighed &&
+      scaleParsed.value &&
+      scaleParsed.value === resolvedBarcode &&
+      packParsed.provided
+    ) {
+      return res.status(400).json({ error: "رمز الميزان يجب أن يختلف عن باركود الحبة" });
+    }
+    if (isWeighed && scaleParsed.value && scaleParsed.value !== resolvedBarcode) {
+      const scaleDup = await db.get(
+        `SELECT id FROM products WHERE barcode = ?
+         UNION
+         SELECT product_id AS id FROM product_units WHERE barcode = ?
+         UNION
+         SELECT product_id AS id FROM product_barcodes WHERE barcode = ?
+         LIMIT 1`,
+        [scaleParsed.value, scaleParsed.value, scaleParsed.value]
+      );
+      if (scaleDup) {
+        return res.status(409).json({ error: "رمز الميزان مرتبط بمنتج آخر" });
+      }
+    }
     const needsReview = req.body?.needs_review === 1 || req.body?.needs_review === true ? 1 : 0;
     try {
       const row = await withTransaction(db, async () => {
         const skuCode = formatProductSku(await ensureEntityCode(db, "product", sku));
-        const unitName = isWeighed ? "كغم" : unit ? String(unit).trim() : null;
+        const unitName = isWeighed ? WEIGHED_BASE_UNIT_NAME : unit ? String(unit).trim() : null;
         if (unitName) await ensureUnitName(db, unitName);
         let finalCategory = normalizeCategoryName(category);
         if (finalCategory) {
@@ -833,17 +986,29 @@ export function createProductsRouter(db) {
           ]
         );
         await ensureProductBarcodeOnCreate(db, info.lastID, resolvedBarcode);
-        await upsertProductUnit(db, info.lastID, {
-          unit_name: unitName || "حبة",
-          barcode: resolvedBarcode,
-          price: finalPrice,
-          cost: c,
-          conversion_to_base: 1,
-          is_default: true,
-          sale_enabled: !isBakery,
-          purchase_enabled: true,
-          is_default_purchase: true,
-        });
+        if (isWeighed) {
+          await ensureWeighedProductUnits(db, info.lastID, {
+            productBarcode: resolvedBarcode,
+            scaleCode: scaleParsed.provided ? scaleParsed.value : undefined,
+            kgPrice: finalPrice,
+            kgCost: c,
+            packageConversion: packParsed.provided ? packParsed.value : undefined,
+            packageUnitName: req.body?.package_unit_name || DEFAULT_PACKAGE_UNIT_NAME,
+            packagePrice: packPriceParsed.provided ? packPriceParsed.value : undefined,
+          });
+        } else {
+          await upsertProductUnit(db, info.lastID, {
+            unit_name: unitName || DEFAULT_PACKAGE_UNIT_NAME,
+            barcode: resolvedBarcode,
+            price: finalPrice,
+            cost: c,
+            conversion_to_base: 1,
+            is_default: true,
+            sale_enabled: !isBakery,
+            purchase_enabled: true,
+            is_default_purchase: true,
+          });
+        }
         const created = await db.get("SELECT * FROM products WHERE id = ?", [info.lastID]);
         await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_CREATE, "products", created.id, null, { name: created.name, price: created.price, stock: created.stock });
         if (Number(created.price) > 0) {
@@ -854,7 +1019,7 @@ export function createProductsRouter(db) {
             reason: "السعر الأولي عند إنشاء المنتج",
           });
         }
-        return created;
+        return withScaleCode(db, created);
       });
       let nextSku = null;
       try {
@@ -1169,6 +1334,7 @@ export function createProductsRouter(db) {
     const stock = Number(product.stock) || 0;
     const price = Number(product.price) || 0;
     const avgCost = Number(product.cost) || 0;
+    const withScale = await withScaleCode(db, product);
 
     const barcodeCount = await db.get(
       "SELECT COUNT(*) AS n FROM product_barcodes WHERE product_id = ?",
@@ -1186,6 +1352,10 @@ export function createProductsRouter(db) {
         category: product.category ?? null,
         unit: product.unit ?? null,
         is_active: Number(product.is_active ?? 1),
+        is_weighed: Number(product.is_weighed) === 1 ? 1 : 0,
+        scale_code: withScale.scale_code ?? null,
+        package_price: withScale.package_price ?? null,
+        package_conversion: withScale.package_conversion ?? null,
         tax_rate: product.tax_rate ?? null,
         expiry_date: product.expiry_date ?? null,
         min_price: product.min_price ?? null,
@@ -1235,6 +1405,7 @@ export function createProductsRouter(db) {
     }
 
     const stock = Number(product.stock) || 0;
+    const withScale = await withScaleCode(db, product);
     res.json({
       basic: {
         id: product.id,
@@ -1245,6 +1416,10 @@ export function createProductsRouter(db) {
         category: product.category ?? null,
         unit: product.unit ?? null,
         tax_rate: product.tax_rate ?? null,
+        is_weighed: Number(product.is_weighed) === 1 ? 1 : 0,
+        scale_code: withScale.scale_code ?? null,
+        package_price: withScale.package_price ?? null,
+        package_conversion: withScale.package_conversion ?? null,
       },
       inventory: {
         current_stock: stock,

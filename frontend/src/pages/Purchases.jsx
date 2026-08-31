@@ -40,6 +40,14 @@ export async function fetchProductUnits(productId) {
   }
 }
 
+function itemBaseUnitName(it) {
+  const units = Array.isArray(it.units) ? it.units : [];
+  const base = units.find((u) => Number(u.conversion_to_base) === 1);
+  if (base?.unit_name) return base.unit_name;
+  if (it.product_unit) return it.product_unit;
+  return "حبة";
+}
+
 function pickDefaultPurchaseUnit(units) {
   const purchasable = units.filter((u) => u.purchase_enabled !== false);
   const pool = purchasable.length ? purchasable : units;
@@ -122,6 +130,8 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
           product_id: p.id,
           name: p.name,
           barcode: p.barcode,
+          product_unit: p.unit || null,
+          is_weighed: Number(p.is_weighed) === 1 ? 1 : 0,
           quantity: 1,
           unit_id: unitId,
           units,
@@ -309,7 +319,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                 </td>
                 <td>
                   <QtyStepper className="ui-input" min={0} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
-                  {conv > 1 && qtyNum > 0 ? <div className="purchase-item-editor__meta">= {fmtQty(baseQty)} حبة</div> : null}
+                  {conv > 1 && qtyNum > 0 ? <div className="purchase-item-editor__meta">= {fmtQty(baseQty)} {itemBaseUnitName(it)}</div> : null}
                   {suggestion ? (
                     <button
                       type="button"
@@ -325,7 +335,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                   <QtyStepper className="ui-input" min={0} value={it.bonus_quantity ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "bonus_quantity", e.target.value)} />
                   {bonusNum > 0 ? (
                     <div className="purchase-item-editor__meta purchase-item-editor__meta--accent">
-                      + {fmtQty(bonusNum)} بونص{stockBaseQty > baseQty ? ` = ${fmtQty(stockBaseQty)} حبة` : ""}
+                      + {fmtQty(bonusNum)} بونص{stockBaseQty > baseQty ? ` = ${fmtQty(stockBaseQty)} ${itemBaseUnitName(it)}` : ""}
                     </div>
                   ) : null}
                 </td>
@@ -698,7 +708,7 @@ export default function Purchases() {
                 { key: "name", header: "الصنف" },
                 { key: "unit_name", header: "الوحدة", render: (it) => it.unit_name || "—" },
                 { key: "quantity", header: "الكمية", align: "left", render: (it) => fmtQty(it.quantity) },
-                { key: "base_quantity", header: "بالحبة", align: "left", render: (it) => fmtQty(it.base_quantity ?? it.quantity) },
+                { key: "base_quantity", header: "كمية الأساس", align: "left", render: (it) => fmtQty(it.base_quantity ?? it.quantity) },
                 { key: "total_cost", header: "إجمالي الكلفة", align: "left", className: "num", render: (it) => ils(it.total_cost) },
                 { key: "discount_pct", header: "خصم %", align: "left", render: (it) => (it.discount_pct ? `${it.discount_pct}%` : "—") },
                 { key: "bonus_quantity", header: "بونص", align: "left", render: (it) => (it.bonus_quantity ? fmtQty(it.bonus_quantity) : "—") },

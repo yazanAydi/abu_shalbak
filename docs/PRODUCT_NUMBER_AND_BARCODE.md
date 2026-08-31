@@ -4,7 +4,7 @@
 
 | Concept | Column | UI label | Format | Purpose |
 |---|---|---|---|---|
-| Product number | `products.sku` | الرقم / رقم المنتج | Stored as 11-digit zero-padded text (`00000000001`); UI shows the plain number (`1`) | Internal catalogue order, search by number, display |
+| Product number | `products.sku` | الرقم / رقم المنتج | Stored as the plain integer text (`1`, `2`, `10`) with no leading zeros | Internal catalogue order, search by number, display |
 | Barcode | `products.barcode` | الباركود | Digits only, 4–14 characters | Scanner lookup, POS, units, checkout |
 
 The column is named `sku` for backward compatibility only. In this system it means **رقم المنتج**, never a scannable barcode.
@@ -20,7 +20,7 @@ Related barcode storage (also never a product number):
 1. Creating a product requires a real barcode. The suggested الرقم must not be copied into الباركود.
 2. A barcode may coincidentally look like a product number. That is allowed; do not hide or rewrite it.
 3. `GET /api/products/next-sku` returns only the next رقم. It never returns a barcode.
-4. Every write path pads numeric `sku` values with `formatProductSku`.
+4. Every write path stores numeric `sku` values via `formatProductSku` (no leading zeros).
 5. Every write path stores barcodes via `digitsOnly(normalizeBarcodeInput(...))`.
 
 ## Numbering policy
@@ -44,3 +44,38 @@ operation: reachable through `POST /api/admin/renumber-entity-codes` behind
 script. It is deliberately absent from the product management UI and must never be
 called automatically, because it invalidates printed labels and any historical
 reference to a رقم.
+
+## One-time sequential SKU rewrite (manual)
+
+This is **not** an auto-migration. `init.js` does not renumber on startup.
+
+On the **dev PC** (test DB only):
+
+```
+node backend/scripts/renumber-test-product-skus.mjs
+```
+
+That script refuses `supermarket.db` and refuses `NODE_ENV=production`.
+
+On the **shop PC**, after a backup and preferably with the API stopped:
+
+```
+node backend/scripts/renumber-store-product-skus.mjs --confirm-store-db
+```
+
+Optional explicit path:
+
+```
+node backend/scripts/renumber-store-product-skus.mjs --confirm-store-db --db C:\abo_shalbak\data\supermarket.db
+```
+
+Docker (container name `supermarket-pos`):
+
+```
+docker exec supermarket-pos node /app/backend/scripts/renumber-store-product-skus.mjs --confirm-store-db
+```
+
+The store script refuses to run without `--confirm-store-db`, refuses
+`supermarket-dev.db`, and refuses a missing file. It backs up first, then
+updates only `products.sku` to `1`…`N` by `id ASC` (no leading zeros), and
+sets `entity_code_sequences.last_seq` to N so the next generated رقم is N+1.

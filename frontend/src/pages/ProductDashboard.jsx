@@ -12,7 +12,7 @@ import {
   Card,
   CardBody,
 } from "../components/ui";
-import { ils, num } from "../utils/format";
+import { ils, num, formatStockWithUnit } from "../utils/format";
 import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
 import ChangePriceModal from "./productDashboard/ChangePriceModal";
 import EditProductModal from "./productDashboard/EditProductModal";
@@ -107,18 +107,25 @@ export default function ProductDashboard() {
 
   const summaryCards = useMemo(() => {
     if (!s) return [];
-    return [
-      { label: "المخزون الحالي", value: num(s.current_stock, 0), icon: "inventory", tone: "teal" },
+    const weighed = Number(product?.is_weighed) === 1;
+    const cards = [
+      { label: "المخزون الحالي", value: formatStockWithUnit(s.current_stock, product), icon: "inventory", tone: "teal" },
       { label: "مبيعات اليوم", value: ils(s.today_sales), icon: "finance", tone: "green" },
       { label: "مبيعات هذا الشهر", value: ils(s.month_sales), icon: "finance", tone: "green" },
-      { label: "سعر البيع الحالي", value: ils(s.current_price), icon: "finance", tone: "teal" },
+      { label: weighed ? "سعر الكغم" : "سعر البيع الحالي", value: ils(s.current_price), icon: "finance", tone: "teal" },
+    ];
+    if (weighed && product?.package_price != null) {
+      cards.push({ label: "سعر الحبة", value: ils(product.package_price), icon: "finance", tone: "teal" });
+    }
+    cards.push(
       { label: "متوسط تكلفة الشراء", value: ils(s.average_cost), icon: "purchases", tone: "orange" },
       { label: "ربح إجمالي تقديري", value: ils(s.estimated_gross_profit), icon: "finance", tone: "teal" },
       { label: "عدد الموردين", value: String(s.supplier_count), icon: "suppliers", tone: "teal" },
       { label: "عدد تغييرات السعر", value: String(s.price_changes), icon: "finance", tone: "orange" },
       { label: "قيمة المخزون", value: ils(s.inventory_value), icon: "warehouses", tone: "teal" },
-    ];
-  }, [s]);
+    );
+    return cards;
+  }, [s, product]);
 
   function renderTab(tabId) {
     const key = `${tabId}-${version}`;
@@ -128,7 +135,7 @@ export default function ProductDashboard() {
       case "price-history": return <PriceHistoryTab key={key} productId={id} />;
       case "sales": return <SalesByPriceTab key={key} productId={id} />;
       case "purchases": return <PurchaseHistoryTab key={key} productId={id} />;
-      case "inventory": return <InventoryHistoryTab key={key} productId={id} />;
+      case "inventory": return <InventoryHistoryTab key={key} productId={id} weighed={Number(product?.is_weighed) === 1} />;
       case "profit": return <ProfitAnalysisTab key={key} productId={id} />;
       case "batches": return <BatchesTab key={key} productId={id} />;
       case "audit": return <AuditLogTab key={key} productId={id} />;
@@ -186,10 +193,24 @@ export default function ProductDashboard() {
               <span className="pd-chip">الرقم: {displayProductSku(product?.sku)}</span>
               {product?.category ? <span className="pd-chip">التصنيف: {product.category}</span> : null}
               {product?.unit ? <span className="pd-chip">الوحدة: {product.unit}</span> : null}
+              {product?.scale_code ? <span className="pd-chip">رمز الميزان: {product.scale_code}</span> : null}
+              {Number(product?.is_weighed) === 1 && product?.package_conversion != null ? (
+                <span className="pd-chip">وزن الحبة: {product.package_conversion} كغم</span>
+              ) : null}
+              {Number(product?.is_weighed) === 1 ? <span className="pd-chip">يُباع بالوزن (ميزان)</span> : null}
             </div>
             <div className="pd-keyfigures">
-              <div className="pd-kf"><span>المخزون</span><strong>{num(product?.stock, 0)}</strong></div>
-              <div className="pd-kf"><span>سعر البيع</span><strong>{ils(product?.price)}</strong></div>
+              <div className="pd-kf"><span>المخزون</span><strong>{formatStockWithUnit(product?.stock, product)}</strong></div>
+              {Number(product?.is_weighed) === 1 ? (
+                <>
+                  <div className="pd-kf"><span>سعر الكغم</span><strong>{ils(product?.price)}</strong></div>
+                  {product?.package_price != null ? (
+                    <div className="pd-kf"><span>سعر الحبة</span><strong>{ils(product.package_price)}</strong></div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="pd-kf"><span>سعر البيع</span><strong>{ils(product?.price)}</strong></div>
+              )}
               <div className="pd-kf"><span>آخر تكلفة شراء</span><strong>{s?.last_purchase_cost != null ? ils(s.last_purchase_cost) : "—"}</strong></div>
               <div className="pd-kf"><span>متوسط التكلفة</span><strong>{ils(product?.cost)}</strong></div>
               <div className="pd-kf"><span>هامش الربح</span><strong>{num(s?.profit_margin_pct)}%</strong></div>
@@ -199,7 +220,7 @@ export default function ProductDashboard() {
 
         <div className="pd-actions">
           <PrimaryButton type="button" onClick={() => setPriceOpen(true)}>
-            <Icon name="finance" size={16} /> تغيير سعر البيع
+            <Icon name="finance" size={16} /> {Number(product?.is_weighed) === 1 ? "تغيير سعر الكغم" : "تغيير سعر البيع"}
           </PrimaryButton>
           <SecondaryButton type="button" onClick={() => setEditOpen(true)}>
             <Icon name="edit" size={16} /> تعديل المنتج

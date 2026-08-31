@@ -176,13 +176,30 @@ describe("audit remediation regressions", () => {
   });
 
   test("weighed product can be sold in fractional quantity", async () => {
-    await ctx.db.run("UPDATE products SET is_weighed = 1, stock = 10 WHERE id = ?", [ctx.productId]);
+    const on = await request(ctx.app)
+      .put(`/api/v1/products/${ctx.productId}`)
+      .set(authHeader(adminToken))
+      .send({ is_weighed: 1 });
+    expect(on.status).toBe(200);
+    await ctx.db.run("UPDATE products SET stock = 10 WHERE id = ?", [ctx.productId]);
+    const kg = await ctx.db.get(
+      "SELECT * FROM product_units WHERE product_id = ? AND unit_name = ?",
+      [ctx.productId, "كغم"]
+    );
+    expect(kg).toBeTruthy();
     const product = await ctx.db.get("SELECT * FROM products WHERE id = ?", [ctx.productId]);
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
       .send({
-        items: [{ product_id: ctx.productId, quantity: 0.25, price: product.price }],
+        items: [
+          {
+            product_id: ctx.productId,
+            unit_id: kg.id,
+            quantity: 0.25,
+            price: product.price,
+          },
+        ],
         payment_method: "cash",
       });
     expect(res.status).toBe(201);

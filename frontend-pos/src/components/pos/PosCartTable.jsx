@@ -1,16 +1,30 @@
 import { useEffect, useRef } from "react";
 import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
 import { cartItemPromoKey, computeDealLineTotal } from "../../utils/posTotals";
+import { isKgSoldUnit } from "../../utils/cartProduct";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
+function selectedSoldUnit(it) {
+  const units = it.availableUnits || [];
+  return units.find((u) => Number(u.id) === Number(it.unitId)) || {
+    id: it.unitId,
+    unit_name: it.unitName,
+    price: it.price,
+  };
+}
+
+function isKgCartLine(it) {
+  return isKgSoldUnit(selectedSoldUnit(it)) || isKgSoldUnit(it);
+}
+
 function formatQty(it) {
-  if (it.weighed) return `${Number(it.quantity).toFixed(3)} كغم`;
+  if (isKgCartLine(it)) return `${Number(it.quantity).toFixed(3)} كغم`;
   return it.quantity;
 }
 
 function formatUnitPrice(it) {
-  if (it.weighed) return `${ils(it.price)}/كغم`;
+  if (isKgCartLine(it)) return `${ils(it.price)}/كغم`;
   return ils(it.price);
 }
 
@@ -125,7 +139,7 @@ function CartTableBody({
                     )}
                   </td>
                   <td className="pos-col-qty">
-                    {it.weighed ? (
+                    {isKgCartLine(it) ? (
                       <span className="pos-qty-val pos-qty-val--weight">{formatQty(it)}</span>
                     ) : (
                       <div className="pos-qty-controls">

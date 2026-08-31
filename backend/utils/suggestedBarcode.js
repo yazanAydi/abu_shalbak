@@ -18,7 +18,7 @@ export { formatProductSku, PRODUCT_SKU_LENGTH };
 export function padSuggestedBarcode(n) {
   const formatted = formatProductSku(n);
   if (!formatted) {
-    throw new Error("Suggested barcode must be a positive integer");
+    throw new Error("Suggested product number must be a positive integer");
   }
   return formatted;
 }
@@ -51,14 +51,15 @@ export function parseShortNumericBarcode(raw) {
 }
 
 /**
- * Next 11-digit رقم المنتج. Always one past the high-water mark — never the lowest
- * free number, so a رقم released by deleting a product is not handed out again.
- * Does not inspect barcode tables — barcode and رقم are independent.
+ * Next رقم المنتج (plain integer text, no leading zeros). Always one past the
+ * high-water mark — never the lowest free number, so a رقم released by deleting
+ * a product is not handed out again. Does not inspect barcode tables — barcode
+ * and رقم are independent.
  *
  * entity_code_sequences.last_seq is the authority; ensureEntityCode reserves every
  * code it issues, so it already covers all live rows. MAX(sku) is only a fallback
  * for rows written before reservation existed. Both are read numerically because a
- * TEXT MAX would rank '5' above '00000000010'.
+ * TEXT MAX would rank '5' above '10'.
  * @param {object} db
  * @returns {Promise<string>}
  */

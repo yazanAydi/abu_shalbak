@@ -140,7 +140,7 @@ export function printPurchaseDoc(doc, which, store = {}) {
   <table>
     <thead>
       <tr>
-        <th class="num">#</th><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th class="num">الكمية</th><th class="num">بونص</th><th class="num">بالحبة</th><th class="num">إجمالي الكلفة</th><th class="num">خصم</th><th class="num">كلفة الوحدة</th><th class="num">الإجمالي</th>
+        <th class="num">#</th><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th class="num">الكمية</th><th class="num">بونص</th><th class="num">كمية الأساس</th><th class="num">إجمالي الكلفة</th><th class="num">خصم</th><th class="num">كلفة الوحدة</th><th class="num">الإجمالي</th>
       </tr>
     </thead>
     <tbody>${bodyRows || `<tr><td colspan="11" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>

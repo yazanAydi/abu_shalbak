@@ -2227,7 +2227,6 @@ export async function initDatabase(dbPath) {
   await seedDefaultSettings(db);
   await migrateSkuBarcodeSeparation(db);
   await backfillMissingEntityCodes(db);
-  await normalizePaddedProductSkus(db);
   await migratePerfIndexes(db);
   await db.exec("PRAGMA optimize;");
 
@@ -2242,22 +2241,6 @@ export async function initDatabase(dbPath) {
  * baseline version so operators can confirm which schema the live DB is on.
  */
 const SCHEMA_VERSION = "2026.08-one-open-shift";
-
-/**
- * Zero-pad numeric SKUs to 11 digits so text ORDER BY / equality can use
- * idx_products_sku_sort instead of CAST(sku AS INTEGER).
- */
-async function normalizePaddedProductSkus(db) {
-  await db.run(`
-    UPDATE products
-       SET sku = printf('%011d', CAST(sku AS INTEGER))
-     WHERE sku IS NOT NULL
-       AND TRIM(sku) != ''
-       AND sku GLOB '[0-9]*'
-       AND length(TRIM(sku)) BETWEEN 1 AND 11
-       AND sku != printf('%011d', CAST(sku AS INTEGER))
-  `);
-}
 
 async function migratePerfIndexes(db) {
   await db.exec(`

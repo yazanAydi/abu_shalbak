@@ -26,10 +26,10 @@ describe("suggestedBarcode", () => {
     await destroyTestContext(ctx);
   });
 
-  test("padSuggestedBarcode zero-pads to 11 digits", () => {
-    expect(padSuggestedBarcode(1)).toBe("00000000001");
-    expect(padSuggestedBarcode(50)).toBe("00000000050");
-    expect(padSuggestedBarcode(999)).toBe("00000000999");
+  test("padSuggestedBarcode stores the plain integer with no leading zeros", () => {
+    expect(padSuggestedBarcode(1)).toBe("1");
+    expect(padSuggestedBarcode(50)).toBe("50");
+    expect(padSuggestedBarcode(999)).toBe("999");
   });
 
   test("isProductNumberShaped compares numeric رقم values only", () => {
@@ -38,9 +38,9 @@ describe("suggestedBarcode", () => {
     expect(isProductNumberShaped("7290013586773", "00000000001")).toBe(false);
   });
 
-  test("formatProductSku keeps leading zeros for numeric رقم", () => {
-    expect(formatProductSku("2")).toBe("00000000002");
-    expect(formatProductSku("00000000002")).toBe("00000000002");
+  test("formatProductSku strips leading zeros for numeric رقم", () => {
+    expect(formatProductSku("2")).toBe("2");
+    expect(formatProductSku("00000000002")).toBe("2");
     expect(formatProductSku("ABC-9")).toBe("ABC-9");
     expect(formatProductSku("")).toBeNull();
     expect(formatProductSku("1.7800109000346217e+28")).toBeNull();
@@ -61,9 +61,9 @@ describe("suggestedBarcode", () => {
     await ctx.db.run("DELETE FROM entity_code_sequences WHERE entity_type = 'product'");
   }
 
-  test("empty product tables suggest 00000000001", async () => {
+  test("empty product tables suggest 1", async () => {
     await resetProducts();
-    expect(await getNextProductNumber(ctx.db)).toBe("00000000001");
+    expect(await getNextProductNumber(ctx.db)).toBe("1");
   });
 
   test("next رقم follows existing sku values, not barcodes", async () => {
@@ -77,7 +77,7 @@ describe("suggestedBarcode", () => {
       );
     }
 
-    expect(await getNextProductNumber(ctx.db)).toBe("00000000004");
+    expect(await getNextProductNumber(ctx.db)).toBe("4");
   });
 
   test("unit barcodes that look like a رقم do not consume the next رقم", async () => {
@@ -93,10 +93,10 @@ describe("suggestedBarcode", () => {
       [ins.lastID]
     );
 
-    expect(await getNextProductNumber(ctx.db)).toBe("00000000002");
+    expect(await getNextProductNumber(ctx.db)).toBe("2");
   });
 
-  test("many products with sku suggest next padded رقم", async () => {
+  test("many products with sku suggest next رقم", async () => {
     await resetProducts();
 
     for (let i = 1; i <= 50; i += 1) {
@@ -107,7 +107,7 @@ describe("suggestedBarcode", () => {
       );
     }
 
-    expect(await getNextProductNumber(ctx.db)).toBe("00000000051");
+    expect(await getNextProductNumber(ctx.db)).toBe("51");
   });
 
   test("scientific notation or barcode-sized sku does not become the next رقم", async () => {
@@ -129,7 +129,7 @@ describe("suggestedBarcode", () => {
        ON CONFLICT(entity_type) DO UPDATE SET last_seq = 3`
     );
 
-    expect(await getNextProductNumber(ctx.db)).toBe("00000000004");
+    expect(await getNextProductNumber(ctx.db)).toBe("4");
   });
 
   test("GET /api/products/next-sku and deprecated next-barcode return only sku", async () => {
@@ -142,7 +142,7 @@ describe("suggestedBarcode", () => {
       .get("/api/products/next-sku")
       .set(authHeader(token));
     expect(nextSku.status).toBe(200);
-    expect(nextSku.body.data?.sku ?? nextSku.body.sku).toBe("00000000001");
+    expect(nextSku.body.data?.sku ?? nextSku.body.sku).toBe("1");
     expect(nextSku.body.data?.barcode ?? nextSku.body.barcode).toBeUndefined();
 
     const alias = await request(ctx.app)
@@ -150,7 +150,7 @@ describe("suggestedBarcode", () => {
       .set(authHeader(token));
     expect(alias.status).toBe(200);
     const body = alias.body.data ?? alias.body;
-    expect(body.sku).toBe("00000000001");
+    expect(body.sku).toBe("1");
     expect(body.barcode).toBeUndefined();
   });
 
@@ -194,7 +194,7 @@ describe("suggestedBarcode", () => {
     expect(after.c).toBe(before.c);
   });
 
-  test("POST /api/products keeps scanned barcode and pads الرقم", async () => {
+  test("POST /api/products keeps scanned barcode and stores unpadded الرقم", async () => {
     await resetProducts();
 
     const loginRes = await login(ctx.app, "testadmin", "adminpass123");
@@ -214,10 +214,10 @@ describe("suggestedBarcode", () => {
     expect(res.status).toBe(201);
     const row = res.body.data ?? res.body;
     expect(row.barcode).toBe("7290013586773");
-    expect(row.sku).toBe("00000000002");
+    expect(row.sku).toBe("2");
   });
 
-  test("POST /api/products assigns padded الرقم when sku omitted", async () => {
+  test("POST /api/products assigns الرقم 1 when sku omitted", async () => {
     await resetProducts();
 
     const loginRes = await login(ctx.app, "testadmin", "adminpass123");
@@ -236,7 +236,7 @@ describe("suggestedBarcode", () => {
     expect(res.status).toBe(201);
     const row = res.body.data ?? res.body;
     expect(row.barcode).toBe("7290013586773");
-    expect(row.sku).toBe("00000000001");
+    expect(row.sku).toBe("1");
   });
 
   test("POST /api/products preserves a barcode that equals the رقم", async () => {
@@ -258,7 +258,7 @@ describe("suggestedBarcode", () => {
     expect(res.status).toBe(201);
     const row = res.body.data ?? res.body;
     expect(row.barcode).toBe("00000000007");
-    expect(row.sku).toBe("00000000007");
+    expect(row.sku).toBe("7");
   });
 
   test("POST /api/products rejects a duplicate رقم", async () => {
@@ -277,7 +277,7 @@ describe("suggestedBarcode", () => {
         sku: "10",
       });
     expect(first.status).toBe(201);
-    expect((first.body.data ?? first.body).sku).toBe("00000000010");
+    expect((first.body.data ?? first.body).sku).toBe("10");
 
     const dup = await request(ctx.app)
       .post("/api/products")
@@ -360,7 +360,7 @@ describe("suggestedBarcode", () => {
       ins.lastID,
     ]);
     expect(product.barcode).toBe("1234567890");
-    expect(product.sku).toBe("00000000001");
+    expect(product.sku).toBe("1");
     expect(Number(product.needs_review)).toBe(0);
 
     const piece = await ctx.db.get(
@@ -398,7 +398,7 @@ describe("suggestedBarcode", () => {
       ins.lastID,
     ]);
     expect(product.barcode).toBe("00000000008");
-    expect(product.sku).toBe("00000000008");
+    expect(product.sku).toBe("8");
     expect(Number(product.needs_review)).toBe(1);
   });
 
@@ -406,10 +406,10 @@ describe("suggestedBarcode", () => {
     await resetProducts();
 
     const rows = [
-      { sku: "00000000004", barcode: "12332122", name: "hgt" },
-      { sku: "00000000001", barcode: "1234567890", name: "ui" },
-      { sku: "00000000002", barcode: "1234567891", name: "ty" },
-      { sku: "00000000003", barcode: "123456787", name: "tyt" },
+      { sku: "4", barcode: "12332122", name: "hgt" },
+      { sku: "1", barcode: "1234567890", name: "ui" },
+      { sku: "2", barcode: "1234567891", name: "ty" },
+      { sku: "3", barcode: "123456787", name: "tyt" },
     ];
     for (const row of rows) {
       await ctx.db.run(
@@ -432,12 +432,7 @@ describe("suggestedBarcode", () => {
     expect(res.status).toBe(200);
     const body = res.body.data ?? res.body;
     const items = Array.isArray(body) ? body : body.items;
-    expect(items.map((p) => p.sku)).toEqual([
-      "00000000001",
-      "00000000002",
-      "00000000003",
-      "00000000004",
-    ]);
+    expect(items.map((p) => p.sku)).toEqual(["1", "2", "3", "4"]);
     expect(items[0].barcode_display).toBeUndefined();
   });
 
@@ -454,7 +449,7 @@ describe("suggestedBarcode", () => {
     expect(res.status).toBe(200);
     const body = res.body.data ?? res.body;
     expect(body).toHaveLength(1);
-    expect(body[0]?.sku).toBe("00000000004");
+    expect(body[0]?.sku).toBe("4");
     expect(body[0]?.name).toBe("hgt");
   });
 
@@ -471,7 +466,7 @@ describe("suggestedBarcode", () => {
     expect(res.status).toBe(200);
     const body = res.body.data ?? res.body;
     expect(body).toHaveLength(1);
-    expect(body[0]?.sku).toBe("00000000004");
+    expect(body[0]?.sku).toBe("4");
     expect(body[0]?.name).toBe("hgt");
   });
 });

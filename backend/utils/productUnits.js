@@ -1,9 +1,88 @@
-import { digitsOnly, normalizeBarcodeInput } from "./barcode.js";
+import { digitsOnly, normalizeBarcodeInput, normalizeStoredBarcode } from "./barcode.js";
 import { resolveUnitPrice, buildSourceRowIndexFromProducts } from "./importPriceResolver.js";
 import { normalizeUnitName } from "./unitNames.js";
 import { ensureUnitName } from "./unitNameCatalog.js";
 
 import { round2 } from "./money.js";
+
+/** Base unit name for weighed / deli products. */
+export const WEIGHED_BASE_UNIT_NAME = "كغم";
+export const DEFAULT_PACKAGE_UNIT_NAME = "حبة";
+
+/**
+ * True when this sold unit is the kg/base line of a weighed product
+ * (fractional qty, price per kg). Package units on the same product are false,
+ * even when conversion_to_base is 1 (1 حبة = 1 KG).
+ * @param {object | null | undefined} unit
+ * @param {boolean} isWeighed
+ */
+export function isWeighedBaseUnit(unit, isWeighed) {
+  if (!isWeighed || !unit) return false;
+  return String(unit.unit_name || "") === WEIGHED_BASE_UNIT_NAME;
+}
+
+/**
+ * @param {Array<{ unit_name?: string, conversion_to_base?: number, is_default?: boolean }>} units
+ */
+export function findKgUnit(units) {
+  const list = Array.isArray(units) ? units : [];
+  const byName = list.find((u) => String(u.unit_name || "") === WEIGHED_BASE_UNIT_NAME);
+  if (byName) return byName;
+  return (
+    list.find((u) => {
+      if (String(u.unit_name || "") === DEFAULT_PACKAGE_UNIT_NAME) return false;
+      return Math.abs(Number(u.conversion_to_base) - 1) < 1e-9;
+    }) || null
+  );
+}
+
+/**
+ * Scale PLU lives on the كغم unit barcode (not products.sku, not a new column).
+ * @param {object | null | undefined} product
+ * @param {object[]} units
+ * @returns {string | null}
+ */
+export function resolveScaleCode(product, units) {
+  if (!product || Number(product.is_weighed) !== 1) return null;
+  const kg = findKgUnit(units);
+  const code = kg?.barcode != null ? String(kg.barcode).trim() : "";
+  return code || null;
+}
+
+/**
+ * @param {object} db
+ * @param {object} product
+ */
+/**
+ * Package/حبة unit for a weighed product (conversion may be 1 KG per حبة).
+ * @param {object[]} units
+ */
+export function resolvePackageUnit(units) {
+  const list = Array.isArray(units) ? units : [];
+  return (
+    list.find((u) => String(u.unit_name || "") === DEFAULT_PACKAGE_UNIT_NAME) ||
+    list.find((u) => Number(u.conversion_to_base) > 1) ||
+    null
+  );
+}
+
+export async function withScaleCode(db, product) {
+  if (!product) return product;
+  if (Number(product.is_weighed) !== 1) {
+    return { ...product, scale_code: null, package_price: null, package_conversion: null };
+  }
+  const units = await loadUnitsForProduct(db, product.id);
+  const pack = resolvePackageUnit(units);
+  const existingScale = product.scale_code != null && String(product.scale_code).trim() !== ""
+    ? String(product.scale_code).trim()
+    : resolveScaleCode(product, units);
+  return {
+    ...product,
+    scale_code: existingScale,
+    package_price: pack ? round2(Number(pack.price) || 0) : null,
+    package_conversion: pack ? Number(pack.conversion_to_base) || null : null,
+  };
+}
 
 /**
  * Cost of the sold unit. A blank/zero pack cost must not fall back to the
@@ -299,6 +378,25 @@ export async function syncProductFromDefaultUnit(db, productId) {
     ? String(unit.barcode).trim()
     : null;
 
+  const product = await db.get(
+    "SELECT id, barcode, is_weighed FROM products WHERE id = ?",
+    [productId]
+  );
+  const productBarcode = product?.barcode != null ? String(product.barcode).trim() : "";
+  const keepProductBarcode =
+    Number(product?.is_weighed) === 1 &&
+    Boolean(productBarcode) &&
+    Boolean(unitBarcode) &&
+    productBarcode !== unitBarcode;
+
+  if (keepProductBarcode) {
+    await db.run(
+      `UPDATE products SET price = ?, cost = ?, updated_at = datetime('now') WHERE id = ?`,
+      [round2(unit.price), round2(unit.cost), productId]
+    );
+    return;
+  }
+
   if (unitBarcode) {
     await db.run(
       `UPDATE products SET barcode = ?, price = ?, cost = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -452,6 +550,110 @@ export async function upsertProductUnit(db, productId, data) {
 
   await syncProductFromDefaultUnit(db, productId);
   return db.get("SELECT * FROM product_units WHERE id = ?", [unitId]);
+}
+
+/**
+ * Ensure a weighed product has a كغم base unit and, optionally, a package unit
+ * with per-product conversion_to_base (1 حبة = N كغم). Scale PLU is stored on
+ * the كغم unit barcode; the package/normal barcode stays on products.barcode
+ * and the package unit.
+ *
+ * @param {object} db
+ * @param {number} productId
+ * @param {object} [opts]
+ * @param {string | null} [opts.productBarcode]
+ * @param {string | null | undefined} [opts.scaleCode] undefined = keep existing
+ * @param {number} [opts.kgPrice]
+ * @param {number} [opts.kgCost]
+ * @param {number} [opts.packageConversion]
+ * @param {string} [opts.packageUnitName]
+ * @param {number} [opts.packagePrice]
+ * @param {number} [opts.packageCost]
+ */
+export async function ensureWeighedProductUnits(db, productId, opts = {}) {
+  const product = await db.get("SELECT * FROM products WHERE id = ?", [productId]);
+  if (!product) return;
+
+  const productBarcode = opts.productBarcode != null
+    ? (String(opts.productBarcode).trim() || null)
+    : (product.barcode != null ? String(product.barcode).trim() : null);
+  const kgPrice = opts.kgPrice != null ? round2(Number(opts.kgPrice) || 0) : round2(Number(product.price) || 0);
+  const kgCost = opts.kgCost != null ? round2(Number(opts.kgCost) || 0) : round2(Number(product.cost) || 0);
+
+  const existingKg = await db.get(
+    `SELECT * FROM product_units WHERE product_id = ? AND unit_name = ?`,
+    [productId, WEIGHED_BASE_UNIT_NAME]
+  );
+
+  let packageConversion = Number(opts.packageConversion);
+  let hasPackage = Number.isFinite(packageConversion) && packageConversion > 0;
+
+  let kgBarcode;
+  if (opts.scaleCode !== undefined) {
+    kgBarcode = opts.scaleCode ? normalizeStoredBarcode(opts.scaleCode) : null;
+  } else if (existingKg?.barcode) {
+    kgBarcode = String(existingKg.barcode).trim() || null;
+  } else if (hasPackage) {
+    kgBarcode = null;
+  } else {
+    kgBarcode = productBarcode;
+  }
+
+  await upsertProductUnit(db, productId, {
+    unit_name: WEIGHED_BASE_UNIT_NAME,
+    barcode: kgBarcode || "",
+    price: kgPrice,
+    cost: kgCost,
+    conversion_to_base: 1,
+    is_default: true,
+    sale_enabled: true,
+    purchase_enabled: true,
+    is_default_purchase: hasPackage ? false : existingKg ? undefined : true,
+  });
+
+  const pkgName = opts.packageUnitName
+    ? normalizeUnitName(opts.packageUnitName)
+    : DEFAULT_PACKAGE_UNIT_NAME;
+  const existingPack = await db.get(
+    `SELECT * FROM product_units WHERE product_id = ? AND unit_name = ?`,
+    [productId, pkgName]
+  );
+
+  if (!hasPackage && opts.packagePrice != null) {
+    packageConversion = existingPack
+      ? Number(existingPack.conversion_to_base) || 1
+      : 1;
+    hasPackage = true;
+  }
+
+  if (!hasPackage) return;
+
+  // Selling prices are independent of conversion. Conversion only drives inventory.
+  let pkgPrice;
+  if (opts.packagePrice != null && opts.packagePrice !== "") {
+    pkgPrice = round2(Number(opts.packagePrice) || 0);
+  } else if (existingPack) {
+    pkgPrice = round2(Number(existingPack.price) || 0);
+  } else {
+    pkgPrice = 0;
+  }
+  const pkgCost = opts.packageCost != null
+    ? round2(Number(opts.packageCost) || 0)
+    : existingPack
+      ? round2(Number(existingPack.cost) || 0)
+      : 0;
+
+  await upsertProductUnit(db, productId, {
+    unit_name: pkgName,
+    barcode: productBarcode || "",
+    price: pkgPrice,
+    cost: pkgCost,
+    conversion_to_base: packageConversion,
+    is_default: false,
+    sale_enabled: true,
+    purchase_enabled: true,
+    is_default_purchase: true,
+  });
 }
 
 /**

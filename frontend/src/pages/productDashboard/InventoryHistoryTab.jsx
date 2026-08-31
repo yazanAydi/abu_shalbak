@@ -3,7 +3,7 @@ import { num, dateTime } from "../../utils/format";
 import { useProductTab } from "./useProductTab";
 import { TabState, movementLabel, MOVEMENT_TONE } from "./shared";
 
-export default function InventoryHistoryTab({ productId }) {
+export default function InventoryHistoryTab({ productId, weighed = false }) {
   const { data, loading, error } = useProductTab(`/api/products/${productId}/inventory-history`);
   const rows = data?.rows || [];
 
@@ -30,9 +30,9 @@ export default function InventoryHistoryTab({ productId }) {
                   <td><StatusBadge tone={MOVEMENT_TONE[r.movement_type] || "neutral"} noDot>{movementLabel(r.movement_type)}</StatusBadge></td>
                   <td>{r.reference_type ? `${r.reference_type} #${r.reference_id ?? "—"}` : (r.notes || "—")}</td>
                   <td className="num" style={{ color: delta < 0 ? "var(--office-danger, #dc2626)" : "var(--office-success, #16a34a)" }}>
-                    {delta > 0 ? `+${num(delta, 0)}` : num(delta, 0)}
+                    {delta > 0 ? `+${num(delta, weighed ? 3 : 0)}` : num(delta, weighed ? 3 : 0)}
                   </td>
-                  <td className="num">{r.qty_after != null ? num(r.qty_after, 0) : "—"}</td>
+                  <td className="num">{r.qty_after != null ? num(r.qty_after, weighed ? 3 : 0) : "—"}</td>
                   <td>{r.user_name || "—"}</td>
                 </tr>
               );

@@ -1,5 +1,5 @@
 import { Card, CardBody, StatCard, StatusBadge } from "../../components/ui";
-import { ils, num, dateOnly } from "../../utils/format";
+import { ils, num, dateOnly, formatStockWithUnit } from "../../utils/format";
 import { displayProductBarcode, displayProductSku } from "../../utils/entityCodeDisplay";
 import { useProductTab } from "./useProductTab";
 import { TabState, expiryBadge } from "./shared";
@@ -12,9 +12,12 @@ export default function OverviewTab({ productId }) {
       {data ? (
         <div className="pd-overview">
           <div className="ui-stat-grid pd-cards">
-            <StatCard label="المخزون الحالي" value={num(data.inventory.current_stock, 0)} icon="inventory" tone={data.inventory.low_stock ? "orange" : "teal"} alert={data.inventory.out_of_stock} />
+            <StatCard label="المخزون الحالي" value={formatStockWithUnit(data.inventory.current_stock, { is_weighed: data.basic.is_weighed, unit: data.basic.unit })} icon="inventory" tone={data.inventory.low_stock ? "orange" : "teal"} alert={data.inventory.out_of_stock} />
             <StatCard label="قيمة المخزون" value={ils(data.inventory.inventory_value)} icon="finance" tone="teal" />
-            <StatCard label="سعر البيع الحالي" value={ils(data.pricing.current_price)} icon="finance" tone="green" />
+            <StatCard label={Number(data.basic.is_weighed) === 1 ? "سعر الكغم" : "سعر البيع الحالي"} value={ils(data.pricing.current_price)} icon="finance" tone="green" />
+            {Number(data.basic.is_weighed) === 1 ? (
+              <StatCard label="سعر الحبة" value={data.basic.package_price != null ? ils(data.basic.package_price) : "—"} icon="finance" tone="green" />
+            ) : null}
             <StatCard label="متوسط التكلفة" value={ils(data.pricing.average_cost)} icon="purchases" tone="orange" />
             <StatCard label="هامش الربح" value={`${num(data.pricing.margin_pct)}%`} icon="finance" tone="green" />
           </div>
@@ -30,6 +33,12 @@ export default function OverviewTab({ productId }) {
                   <div><dt>الرقم</dt><dd>{displayProductSku(data.basic.sku)}</dd></div>
                   <div><dt>التصنيف</dt><dd>{data.basic.category || "—"}</dd></div>
                   <div><dt>الوحدة</dt><dd>{data.basic.unit || "—"}</dd></div>
+                  {Number(data.basic.is_weighed) === 1 ? (
+                    <div><dt>رمز الميزان</dt><dd>{data.basic.scale_code || "—"}</dd></div>
+                  ) : null}
+                  {Number(data.basic.is_weighed) === 1 ? (
+                    <div><dt>وزن الحبة</dt><dd>{data.basic.package_conversion != null ? `${data.basic.package_conversion} كغم` : "—"}</dd></div>
+                  ) : null}
                 </dl>
               </CardBody>
             </Card>
@@ -38,7 +47,14 @@ export default function OverviewTab({ productId }) {
               <CardBody>
                 <h3 className="pd-section-title">التسعير والتكلفة</h3>
                 <dl className="pd-defs">
-                  <div><dt>سعر البيع الحالي</dt><dd>{ils(data.pricing.current_price)}</dd></div>
+                  {Number(data.basic.is_weighed) === 1 ? (
+                    <>
+                      <div><dt>سعر الكغم</dt><dd>{ils(data.pricing.current_price)}</dd></div>
+                      <div><dt>سعر الحبة</dt><dd>{data.basic.package_price != null ? ils(data.basic.package_price) : "—"}</dd></div>
+                    </>
+                  ) : (
+                    <div><dt>سعر البيع الحالي</dt><dd>{ils(data.pricing.current_price)}</dd></div>
+                  )}
                   <div><dt>متوسط التكلفة</dt><dd>{ils(data.pricing.average_cost)}</dd></div>
                   <div><dt>الحد الأدنى للسعر</dt><dd>{data.pricing.min_price != null ? ils(data.pricing.min_price) : "—"}</dd></div>
                   <div><dt>الحد الأقصى للسعر</dt><dd>{data.pricing.max_price != null ? ils(data.pricing.max_price) : "—"}</dd></div>

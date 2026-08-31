@@ -24,7 +24,7 @@ export function displayProductBarcode(product) {
 
 /**
  * products.sku is رقم المنتج (not a barcode).
- * Storage is 11-digit zero-padded; the UI shows the plain number (2, not 00000000002).
+ * Storage and UI both show the plain number (2, not 00000000002).
  * Scientific notation and oversized digit strings are not product numbers.
  */
 export function displayProductSku(code) {

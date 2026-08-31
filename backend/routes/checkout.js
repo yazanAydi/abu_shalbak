@@ -8,7 +8,7 @@ import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
 import { checkoutSchema } from "../middleware/schemas.js";
-import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost } from "../utils/productUnits.js";
+import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost, isWeighedBaseUnit } from "../utils/productUnits.js";
 import {
   resolveCheckoutPayments,
   loadSalePayments,
@@ -167,19 +167,6 @@ export function createCheckoutRouter(db) {
         return res.status(404).json({ error: `المنتج غير موجود: ${productId}`, code: "NOT_FOUND" });
       }
       const isWeighed = Number(p.is_weighed) === 1;
-      let qty;
-      if (isWeighed) {
-        if (!Number.isFinite(rawQty) || rawQty <= 0) {
-          return res.status(400).json({
-            error: "كمية الوزن غير صالحة",
-            code: "INVALID_WEIGHT_QTY",
-            product_id: productId,
-          });
-        }
-        qty = rawQty;
-      } else {
-        qty = Math.max(1, rawQty || 1);
-      }
       if (Number(p.is_active) === 0) {
         return res.status(409).json({
           error: "المنتج غير نشط ولا يمكن بيعه",
@@ -295,6 +282,32 @@ export function createCheckoutRouter(db) {
       const conversionToBase = snapshotRow
         ? Math.max(0.0001, Number(snapshotRow.conversion_to_base) || 1)
         : Math.max(0.0001, Number(unit.conversion_to_base) || 1);
+      const unitForQty = snapshotRow
+        ? { unit_name: snapshotRow.unit_name_snapshot, conversion_to_base: conversionToBase }
+        : unit;
+      const isWeightLine = isWeighedBaseUnit(unitForQty, isWeighed);
+      let qty;
+      if (isWeightLine) {
+        if (!Number.isFinite(rawQty) || rawQty <= 0) {
+          return res.status(400).json({
+            error: "كمية الوزن غير صالحة",
+            code: "INVALID_WEIGHT_QTY",
+            product_id: productId,
+          });
+        }
+        qty = rawQty;
+      } else if (isWeighed) {
+        if (!Number.isFinite(rawQty) || rawQty < 1 || Math.abs(rawQty - Math.round(rawQty)) > 1e-9) {
+          return res.status(400).json({
+            error: "كمية الحبة غير صالحة",
+            code: "INVALID_PACKAGE_QTY",
+            product_id: productId,
+          });
+        }
+        qty = Math.round(rawQty);
+      } else {
+        qty = Math.max(1, rawQty || 1);
+      }
       const stockDelta = qty * conversionToBase;
 
       const lineName = snapshotRow ? snapshotRow.product_name_snapshot : p.name;
@@ -319,7 +332,7 @@ export function createCheckoutRouter(db) {
         price: effectivePrice,
         cost: resolveSoldUnitCost(unit, p),
         taxRate: lineTaxRate,
-        is_weighed: isWeighed,
+        is_weighed: isWeightLine,
       });
     }
 

@@ -30,6 +30,9 @@ const emptyForm = {
   unit: "",
   expiry_date: "",
   is_weighed: false,
+  scale_code: "",
+  package_conversion: "",
+  package_price: "",
 };
 
 function productToForm(product) {
@@ -46,6 +49,9 @@ function productToForm(product) {
     unit: product.unit || "",
     expiry_date: product.expiry_date || "",
     is_weighed: Number(product.is_weighed) === 1,
+    scale_code: product.scale_code || "",
+    package_conversion: product.package_conversion != null ? String(product.package_conversion) : "",
+    package_price: product.package_price != null ? String(product.package_price) : "",
   };
 }
 
@@ -84,6 +90,18 @@ function dirtyProductPayload(form, product) {
   if (!sameText(unit, product.unit)) payload.unit = unit;
   if (!sameText(expiry_date, product.expiry_date)) payload.expiry_date = expiry_date;
   if (is_weighed !== (Number(product.is_weighed) === 1 ? 1 : 0)) payload.is_weighed = is_weighed;
+  if (form.is_weighed) {
+    const scale = form.scale_code?.trim() || null;
+    if (!sameText(scale, product.scale_code || null)) payload.scale_code = scale;
+    const conv = form.package_conversion === "" ? null : Number(form.package_conversion);
+    if (!sameNumber(conv, product.package_conversion) && conv != null && Number.isFinite(conv)) {
+      payload.package_conversion = conv;
+    }
+    const pkgPrice = form.package_price === "" ? null : Number(form.package_price);
+    if (!sameNumber(pkgPrice, product.package_price) && pkgPrice != null && Number.isFinite(pkgPrice)) {
+      payload.package_price = pkgPrice;
+    }
+  }
   return payload;
 }
 
@@ -120,7 +138,15 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
       return;
     }
     if (form.price === "" || !Number.isFinite(Number(form.price)) || Number(form.price) < 0) {
-      setErr("أدخل سعر بيع صالحاً");
+      setErr(form.is_weighed ? "أدخل سعر الكغم" : "أدخل سعر بيع صالحاً");
+      return;
+    }
+    if (
+      form.is_weighed &&
+      form.package_conversion !== "" &&
+      (form.package_price === "" || !Number.isFinite(Number(form.package_price)) || Number(form.package_price) < 0)
+    ) {
+      setErr("أدخل سعر الحبة — مستقل عن سعر الكغم");
       return;
     }
 
@@ -207,10 +233,49 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
                 })
               }
             />
-            <span>منتج ميزان — السعر لكل كغم</span>
+            <span>يدعم البيع بالوزن من الميزان بالإضافة إلى بيع الحبة</span>
           </label>
         </FormField>
-        <FormField label={form.is_weighed ? "السعر لكل كغم" : "سعر البيع"} required>
+        {form.is_weighed ? (
+          <FormField label="رمز الميزان" hint="مثل 2100003 — مستقل عن الباركود ورقم المنتج">
+            <Input
+              value={form.scale_code}
+              inputMode="numeric"
+              autoComplete="off"
+              onChange={(e) => setForm({ ...form, scale_code: e.target.value.replace(/\D/g, "") })}
+              placeholder="2100003"
+            />
+          </FormField>
+        ) : null}
+        {form.is_weighed ? (
+          <FormField label="وزن الحبة (كغم)" hint="يحدد خصم المخزون فقط — ليس سعر البيع">
+            <Input
+              type="number"
+              step="0.001"
+              min="0.001"
+              value={form.package_conversion}
+              onChange={(e) => setForm({ ...form, package_conversion: e.target.value })}
+              placeholder="1.000"
+            />
+          </FormField>
+        ) : null}
+        {form.is_weighed ? (
+          <FormField label="سعر الحبة" hint="سعر بيع العبوة كاملة — مستقل عن سعر الكغم">
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              value={form.package_price}
+              onChange={(e) => setForm({ ...form, package_price: e.target.value })}
+              placeholder="12.00"
+            />
+          </FormField>
+        ) : null}
+        <FormField
+          label={form.is_weighed ? "سعر الكغم (ميزان)" : "سعر البيع"}
+          hint={form.is_weighed ? "سعر الميزان لكل كغم — مستقل عن سعر الحبة" : undefined}
+          required
+        >
           <Input
             type="number"
             step="0.01"

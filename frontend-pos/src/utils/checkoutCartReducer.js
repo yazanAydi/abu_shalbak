@@ -1,4 +1,4 @@
-import { cartKeyFor, mapLookupToCartProduct } from "./cartProduct.js";
+import { applyCartUnit, cartKeyFor, mapLookupToCartProduct } from "./cartProduct.js";
 import {
   createScanHistoryEntry,
   pushScanHistory,
@@ -131,31 +131,26 @@ export function checkoutReducer(state, action) {
       const { cartKey, unitId } = action;
       const idx = state.cartItems.findIndex((x) => cartKeyFor(x) === cartKey);
       if (idx < 0) return state;
-      const row = { ...state.cartItems[idx] };
+      const row = state.cartItems[idx];
       const unit = (row.availableUnits || []).find((u) => sameId(u.id, unitId));
       if (!unit) return state;
-      const newKey = `${row.id}-${unit.id}`;
+      if (sameId(row.unitId, unit.id)) return state;
+      const switched = applyCartUnit(row, unit);
+      switched.cartKey = `${row.id}-${unit.id}`;
       const existingIdx = state.cartItems.findIndex(
-        (x, i) => i !== idx && cartKeyFor(x) === newKey
+        (x, i) => i !== idx && cartKeyFor(x) === switched.cartKey
       );
       if (existingIdx >= 0) {
         const merged = [...state.cartItems];
         const target = { ...merged[existingIdx] };
-        target.quantity += row.quantity;
-        target.subtotal = target.quantity * target.price;
+        target.quantity += switched.quantity;
+        target.subtotal = target.quantity * Number(target.price);
         merged[existingIdx] = target;
         merged.splice(idx, 1);
         return { ...state, cartItems: merged, scanHistory: [], error: null, blockedScan: null };
       }
-      row.cartKey = newKey;
-      row.unitId = unit.id;
-      row.unitName = unit.unit_name;
-      row.barcode = unit.barcode;
-      row.price = Number(unit.price);
-      row.conversionToBase = Number(unit.conversion_to_base) || 1;
-      row.subtotal = row.quantity * row.price;
       const cartItems = [...state.cartItems];
-      cartItems[idx] = row;
+      cartItems[idx] = switched;
       return { ...state, cartItems, scanHistory: [], error: null, blockedScan: null };
     }
     case "CLEAR_CART":

@@ -52,11 +52,13 @@ export default function ChangePriceModal({ open, onClose, product, onSaved }) {
     }
   }
 
+  const weighed = Number(product?.is_weighed) === 1;
+
   return (
     <Modal
       open={open}
       onClose={close}
-      title="تغيير سعر البيع"
+      title={weighed ? "تغيير سعر الكغم" : "تغيير سعر البيع"}
       footer={
         <>
           <PrimaryButton type="button" onClick={submit} disabled={saving}>
@@ -69,7 +71,12 @@ export default function ChangePriceModal({ open, onClose, product, onSaved }) {
       }
     >
       <p style={{ marginTop: 0, color: "var(--office-panel-muted, #64748b)" }}>
-        السعر الحالي: <strong>{ils(product?.price)}</strong>
+        {weighed ? "سعر الكغم الحالي" : "السعر الحالي"}: <strong>{ils(product?.price)}</strong>
+        {weighed && product?.package_price != null ? (
+          <span>
+            {"  "}— سعر الحبة {ils(product.package_price)} (مستقل، لا يتغير من هنا)
+          </span>
+        ) : null}
         {product?.min_price != null || product?.max_price != null ? (
           <span>
             {"  "}(المسموح: {product?.min_price != null ? ils(product.min_price) : "—"} —{" "}
@@ -78,7 +85,7 @@ export default function ChangePriceModal({ open, onClose, product, onSaved }) {
         ) : null}
       </p>
       <FormGrid>
-        <FormField label="السعر الجديد" required>
+        <FormField label={weighed ? "سعر الكغم الجديد" : "السعر الجديد"} required>
           <Input
             type="number"
             step="0.01"

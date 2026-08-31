@@ -7,7 +7,7 @@ import {
 } from "./helpers.js";
 
 function formatSku(n) {
-  return String(n).padStart(11, "0");
+  return String(n);
 }
 
 /**

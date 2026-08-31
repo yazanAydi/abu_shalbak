@@ -4,6 +4,7 @@ import { canViewReports } from "../utils/roles.js";
 import { parseItemsJson } from "../utils/cogs.js";
 import {
   refundedQtyByProduct,
+  refundLineKey,
   applyApprovedRefundEffects,
   createRefundRequest,
   resolveRefundTargetShift,
@@ -18,7 +19,7 @@ import {
 import { nextCalendarYmd, shopTodayYmd } from "../utils/shopTime.js";
 import { round2 } from "../utils/money.js";
 import { withTransaction } from "../utils/dbTx.js";
-import { formatProductSku, parseNumericCode } from "../utils/entityCodes.js";
+import { productSkuLookupValues } from "../utils/entityCodes.js";
 import { HttpError } from "../utils/httpError.js";
 import { listLimitSql } from "../utils/listQuery.js";
 
@@ -155,20 +156,20 @@ export function createRefundsRouter(db) {
     }
     if (productRaw) {
       const like = `%${productRaw.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
-      const skuNum = parseNumericCode(productRaw);
+      const skuValues = productSkuLookupValues(productRaw);
       sql += ` AND (
         EXISTS (
           SELECT 1 FROM transaction_items ti
           LEFT JOIN products p ON p.id = ti.product_id
           WHERE ti.transaction_id = t.id
             AND (ti.name LIKE ? ESCAPE '\\' OR ti.barcode = ? OR CAST(ti.product_id AS TEXT) = ?${
-              skuNum != null ? " OR p.sku = ?" : ""
+              skuValues.length ? ` OR p.sku IN (${skuValues.map(() => "?").join(", ")})` : ""
             })
         )
         OR t.items_json LIKE ?
       )`;
       params.push(like, productRaw, productRaw);
-      if (skuNum != null) params.push(formatProductSku(skuNum));
+      if (skuValues.length) params.push(...skuValues);
       params.push(like);
     }
 
@@ -198,10 +199,14 @@ export function createRefundsRouter(db) {
     const already = await refundedQtyByProduct(db, tid);
     const lines = items.map((it) => {
       const pid = Number(it.product_id);
+      const key = refundLineKey(it);
       const sold = Number(it.quantity) || 0;
-      const ref = already.get(pid) || 0;
+      const ref = already.get(key) || already.get(pid) || 0;
       return {
         product_id: pid,
+        unit_id: Number(it.unit_id ?? it.product_unit_id) || null,
+        unit_name: it.unit_name ?? null,
+        conversion_to_base: Math.max(0.0001, Number(it.conversion_to_base) || 1),
         name: it.name,
         price: Number(it.price) || 0,
         quantity_sold: sold,

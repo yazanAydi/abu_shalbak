@@ -12,8 +12,14 @@ export const ENTITY_TYPES = {
   supplier: { table: "suppliers", column: "supplier_code" },
 };
 
-/** Canonical width for a numeric رقم المنتج stored in products.sku. */
+/**
+ * Max digit length of a رقم المنتج. Longer digit strings are barcodes, not numbers.
+ * Stored values are the plain integer text (`1`, `2`, `10`) with no leading zeros.
+ */
 export const PRODUCT_SKU_LENGTH = 11;
+
+/** Temporary unique prefix used while swapping SKUs so the unique index cannot collide. */
+const RENUMBER_TEMP_PREFIX = "__renum_";
 
 /**
  * Parse a positive integer from digits only. Rejects scientific notation
@@ -42,8 +48,9 @@ export function parseProductNumber(val) {
 }
 
 /**
- * Keep a product رقم as 11-digit zero-padded text when it is a real رقم.
- * Scientific notation and oversized digit strings are rejected (not rewritten).
+ * Canonical stored/display form of a رقم المنتج: the integer as text, no leading zeros.
+ * Accepts padded input (`00000000002`) and returns `2`. Scientific notation and
+ * oversized digit strings are rejected (not rewritten).
  * @param {unknown} code
  * @returns {string | null}
  */
@@ -52,9 +59,25 @@ export function formatProductSku(code) {
   const s = String(code).trim();
   if (!s) return null;
   const n = parseProductNumber(s);
-  if (n != null) return String(n).padStart(PRODUCT_SKU_LENGTH, "0");
+  if (n != null) return String(n);
   if (/^\d+$/.test(s) || /[eE]/.test(s)) return null;
   return s;
+}
+
+/**
+ * Values that may be stored for the same رقم (unpadded now, padded historically).
+ * Use for exact-match search/conflict so leftover 11-digit rows still resolve.
+ * @param {unknown} code
+ * @returns {string[]}
+ */
+export function productSkuLookupValues(code) {
+  const formatted = formatProductSku(code);
+  if (!formatted) return [];
+  const n = parseProductNumber(formatted);
+  if (n == null) return [formatted];
+  const unpadded = String(n);
+  const padded = unpadded.padStart(PRODUCT_SKU_LENGTH, "0");
+  return padded === unpadded ? [unpadded] : [unpadded, padded];
 }
 
 /**
@@ -221,13 +244,10 @@ export async function assignEntityCodeIfMissing(db, entityType, rowId) {
   );
   if (!row) return null;
 
-  const existing = formatEntityCode(entityType, row.code);
-  if (existing) {
-    if (existing !== normalizeProvidedCode(row.code)) {
-      await db.run(`UPDATE ${meta.table} SET ${meta.column} = ? WHERE id = ?`, [existing, rowId]);
-    }
-    await reserveEntityCode(db, entityType, existing);
-    return existing;
+  const stored = normalizeProvidedCode(row.code);
+  if (stored) {
+    await reserveEntityCode(db, entityType, stored);
+    return stored;
   }
 
   const code = await nextEntityCode(db, entityType);
@@ -259,6 +279,8 @@ export async function backfillMissingEntityCodes(db) {
 
 /**
  * Replace every entity code with sequential 1..N ordered by id.
+ * Uses a temporary unique value first so the UNIQUE index cannot collide
+ * when an existing code equals another row's new number.
  * @param {object} db
  * @param {EntityType} entityType
  * @returns {Promise<number>} total rows renumbered
@@ -270,6 +292,13 @@ export async function renumberAllEntityCodes(db, entityType) {
   const rows = await db.all(`SELECT id FROM ${meta.table} ORDER BY id`);
 
   return withTransaction(db, async () => {
+    for (const row of rows) {
+      await db.run(`UPDATE ${meta.table} SET ${meta.column} = ? WHERE id = ?`, [
+        `${RENUMBER_TEMP_PREFIX}${row.id}`,
+        row.id,
+      ]);
+    }
+
     let seq = 0;
     for (const row of rows) {
       seq += 1;

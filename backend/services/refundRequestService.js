@@ -38,6 +38,10 @@ function lineKey(it) {
   return `${pid}:${uid}`;
 }
 
+export function refundLineKey(it) {
+  return lineKey(it);
+}
+
 function mergeItemsIntoMap(map, itemsJson) {
   const arr = parseItemsJson(itemsJson);
   if (!Array.isArray(arr)) return;

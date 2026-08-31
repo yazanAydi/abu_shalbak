@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess } from "../middleware/auth.js";
 import { getAppSettings } from "../utils/settings.js";
-import { formatProductSku, parseNumericCode } from "../utils/entityCodes.js";
+import { productSkuLookupValues } from "../utils/entityCodes.js";
 import { listUnreadRefundDecisions } from "../services/refundRequestService.js";
 
 async function loadQuickButtonProducts(db, settings) {
@@ -67,10 +67,10 @@ export function createPosRouter(db) {
       return res.json([]);
     }
     const like = `%${q}%`;
-    const skuNum = parseNumericCode(q);
-    const skuClause = skuNum != null ? " OR p.sku = ?" : "";
-    const params = skuNum != null
-      ? [like, like, like, like, formatProductSku(skuNum)]
+    const skuValues = productSkuLookupValues(q);
+    const skuClause = skuValues.length ? ` OR p.sku IN (${skuValues.map(() => "?").join(", ")})` : "";
+    const params = skuValues.length
+      ? [like, like, like, like, ...skuValues]
       : [like, like, like, like];
     const rows = await db.all(
       `SELECT DISTINCT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate,

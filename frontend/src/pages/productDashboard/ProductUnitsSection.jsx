@@ -21,8 +21,8 @@ function round2(n) {
 function findBaseUnit(units, excludeId) {
   const list = excludeId ? units.filter((u) => u.id !== excludeId) : units;
   return (
-    list.find((u) => u.is_default) ||
     list.find((u) => Number(u.conversion_to_base) === 1) ||
+    list.find((u) => u.is_default) ||
     list[0] ||
     null
   );
@@ -133,7 +133,7 @@ function UnitFormFields({
           )}
           <BarcodeStatusLine check={barcodeCheck} checking={barcodeChecking} />
         </FormField>
-        <FormField label="سعر البيع">
+        <FormField label="سعر البيع" hint="سعر هذه الوحدة للزبون — مستقل عن معامل التحويل">
           <Input
             type="number"
             step="0.01"
@@ -165,7 +165,7 @@ function UnitFormFields({
                     }));
                   }}
                 />
-                احسب من الحبة
+                احسب من {baseUnit.unit_name || "الوحدة الأساسية"}
               </label>
               {form.autoCost ? (
                 <span className="ui-field__hint">{costFromPieceHint(baseUnit, form.conversion_to_base)}</span>
@@ -173,16 +173,16 @@ function UnitFormFields({
             </>
           ) : null}
         </FormField>
-        <FormField label="معامل التحويل (حبات/وحدة)" className="ui-field--full">
+        <FormField label="معامل التحويل إلى الوحدة الأساسية" className="ui-field--full">
           <Input
             type="number"
-            step="1"
+            step="0.001"
             min="0.0001"
             value={form.conversion_to_base}
             onChange={(e) => setField("conversion_to_base", e.target.value)}
           />
           <span className="ui-field__hint">
-            1 {form.unit_name?.trim?.() || form.unit_name || "وحدة"} = {Number(form.conversion_to_base) || 1} حبة
+            1 {form.unit_name?.trim?.() || form.unit_name || "وحدة"} = {Number(form.conversion_to_base) || 1} {baseUnit?.unit_name || "وحدة أساسية"} — يحدد خصم المخزون فقط، وليس سعر البيع
           </span>
         </FormField>
       </div>
@@ -434,7 +434,10 @@ export default function ProductUnitsSection({ productId, onChanged }) {
         <p style={{ color: "var(--office-text-muted)", marginBottom: 0 }}>لا توجد وحدات.</p>
       ) : null}
       <ul className="product-barcodes-list">
-        {units.map((u) => (
+        {units.map((u) => {
+          const base = findBaseUnit(units, u.id);
+          const baseName = base?.unit_name || "وحدة";
+          return (
           <li key={u.id} className="product-unit-row">
             <div className="product-unit-row__main">
               <div className="product-unit-row__id">
@@ -443,7 +446,7 @@ export default function ProductUnitsSection({ productId, onChanged }) {
               </div>
               <div className="product-unit-row__meta">
                 <span>{ils(u.price)}</span>
-                <span>×{u.conversion_to_base} حبة</span>
+                <span>×{u.conversion_to_base} {baseName}</span>
                 {u.is_default ? (
                   <span className="product-barcodes-primary-badge">افتراضي</span>
                 ) : null}
@@ -494,7 +497,8 @@ export default function ProductUnitsSection({ productId, onChanged }) {
               </div>
             ) : null}
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       {!editId ? (

@@ -43,7 +43,7 @@ describe("entityCodes", () => {
   });
 
   test("ensureEntityCode keeps provided code or allocates next", async () => {
-    expect(await ensureEntityCode(ctx.db, "product", "99")).toBe("00000000099");
+    expect(await ensureEntityCode(ctx.db, "product", "99")).toBe("99");
     const before = await ctx.db.get(
       "SELECT last_seq FROM entity_code_sequences WHERE entity_type = 'product'"
     );
@@ -107,8 +107,32 @@ describe("entityCodes", () => {
 
     const rows = await ctx.db.all("SELECT id, sku FROM products ORDER BY id");
     rows.forEach((row, index) => {
-      expect(row.sku).toBe(String(index + 1).padStart(11, "0"));
+      expect(row.sku).toBe(String(index + 1));
     });
+  });
+
+  test("renumberAllEntityCodes uses a temp step so unique SKUs cannot collide", async () => {
+    const existing = await ctx.db.all("SELECT id FROM products ORDER BY id");
+    expect(existing.length).toBeGreaterThanOrEqual(2);
+
+    // Reverse 1..N so a naive in-place UPDATE to 1 would collide with the last row.
+    for (const row of existing) {
+      await ctx.db.run("UPDATE products SET sku = ? WHERE id = ?", [`__setup_${row.id}`, row.id]);
+    }
+    for (let i = 0; i < existing.length; i += 1) {
+      await ctx.db.run("UPDATE products SET sku = ? WHERE id = ?", [
+        String(existing.length - i),
+        existing[i].id,
+      ]);
+    }
+
+    const total = await renumberAllEntityCodes(ctx.db, "product");
+    expect(total).toBe(existing.length);
+
+    const rows = await ctx.db.all("SELECT id, sku FROM products ORDER BY id");
+    const skus = rows.map((row) => row.sku);
+    expect(skus).toEqual(rows.map((_, index) => String(index + 1)));
+    expect(new Set(skus).size).toBe(skus.length);
   });
 
   test("POST product without sku returns assigned code", async () => {

@@ -13,7 +13,7 @@ function mapLookupToCartProduct(data) {
   };
   const unitId = selectedUnit?.id ?? data.unit_id;
   const productId = product.id ?? data.id;
-  const weighed = Boolean(data.weighed ?? product.is_weighed);
+  const weighed = Boolean(data.weighed);
   const weight = weighed ? Number(data.weight ?? data.quantity) : null;
   const cartKey = weighed
     ? `${productId}-${unitId ?? "0"}-w-${weight ?? Date.now()}`
