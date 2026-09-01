@@ -8,10 +8,13 @@ export default function CategorySelect({
   onChange,
   disabled = false,
   emptyLabel = "بدون تصنيف",
+  categories: categoriesProp,
+  allowEmpty = true,
 }) {
-  const [categories, setCategories] = useState([]);
+  const [loaded, setLoaded] = useState([]);
 
   useEffect(() => {
+    if (categoriesProp !== undefined) return undefined;
     let cancelled = false;
     api
       .get("/api/products/categories", {
@@ -20,26 +23,27 @@ export default function CategorySelect({
       })
       .then(({ data }) => {
         if (cancelled) return;
-        setCategories(Array.isArray(data) ? data : []);
+        setLoaded(Array.isArray(data) ? data : []);
       })
       .catch(() => {
-        if (!cancelled) setCategories([]);
+        if (!cancelled) setLoaded([]);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [categoriesProp]);
 
+  const categories = categoriesProp !== undefined ? categoriesProp : loaded;
   const current = value || "";
   const known = new Set(categories.map((c) => c.name));
   const legacy = current && !known.has(current) ? current : null;
 
   return (
     <Select value={current} onChange={onChange} disabled={disabled}>
-      <option value="">{emptyLabel}</option>
+      {allowEmpty ? <option value="">{emptyLabel}</option> : null}
       {legacy ? <option value={legacy}>{legacy}</option> : null}
       {categories.map((c) => (
-        <option key={c.id} value={c.name}>
+        <option key={c.id ?? c.name} value={c.name}>
           {c.name}
         </option>
       ))}

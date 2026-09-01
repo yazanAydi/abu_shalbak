@@ -39,21 +39,16 @@
   padding: 1.5rem !important;
 }
 
-.qty-btns {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.qty-btn {
-  min-width: 36px;
-  height: 36px;
-  font-size: 1.1rem;
+.qty-input {
+  width: 4.5rem;
+  text-align: center;
+  padding: 0.35rem 0.4rem;
   border-radius: 6px;
   border: 1px solid #52525b;
   background: #27272a;
   color: inherit;
-  cursor: pointer;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
 }
 
 .remove-x {
@@ -93,7 +88,7 @@
   .cart-table td {
     border-color: #d4d4d8;
   }
-  .qty-btn {
+  .qty-input {
     background: #f4f4f5;
     border-color: #a1a1aa;
     color: #18181b;

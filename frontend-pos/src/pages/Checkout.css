@@ -13,32 +13,35 @@
 
 .pos-header-scan-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
-  align-items: start;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: center;
 }
 
 .pos-header-scan .barcode-input {
   width: 100%;
-  min-height: 42px;
-  font-size: 1.05rem;
-  padding: 0 0.85rem;
+  min-height: 54px;
+  height: 54px;
+  font-size: 1.2rem;
+  font-weight: 600;
+  padding: 0 0.95rem;
   border-radius: var(--pos-radius-sm);
-  border: 1px solid var(--pos-border-strong);
-  background: var(--pos-surface);
+  border: 2px solid #fff;
+  background: #fff;
   color: var(--pos-text);
   box-sizing: border-box;
   font-family: inherit;
 }
 
 .pos-header-scan .barcode-input::placeholder {
-  color: var(--pos-text-dim);
+  color: var(--pos-text-muted);
+  font-weight: 500;
 }
 
 .pos-header-scan .barcode-input:focus {
   outline: none;
-  border-color: var(--pos-accent);
-  box-shadow: 0 0 0 2px rgba(var(--pos-accent-rgb), 0.15);
+  border-color: var(--pos-checkout);
+  box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.45);
 }
 
 .pos-header-scan .barcode-label {
@@ -48,8 +51,8 @@
 .pos-header-scan .barcode-err {
   margin-top: 0.25rem;
   font-size: 0.8rem;
-  color: var(--pos-danger);
-  font-weight: 600;
+  color: #fecaca;
+  font-weight: 700;
 }
 
 .pos-product-search {
@@ -59,24 +62,25 @@
 .pos-product-search-input {
   width: 100%;
   min-height: 42px;
-  font-size: 0.95rem;
+  height: 42px;
+  font-size: 0.92rem;
   padding: 0 0.85rem;
   border-radius: var(--pos-radius-sm);
-  border: 1px solid var(--pos-border-strong);
-  background: var(--pos-surface);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.92);
   color: var(--pos-text);
   box-sizing: border-box;
   font-family: inherit;
 }
 
 .pos-product-search-input::placeholder {
-  color: var(--pos-text-dim);
+  color: var(--pos-text-muted);
 }
 
 .pos-product-search-input:focus {
   outline: none;
-  border-color: var(--pos-accent);
-  box-shadow: 0 0 0 2px rgba(var(--pos-accent-rgb), 0.15);
+  border-color: var(--pos-primary);
+  box-shadow: 0 0 0 3px rgba(var(--pos-accent-rgb), 0.22);
 }
 
 .pos-product-search-dropdown {
@@ -87,6 +91,21 @@
   z-index: 50;
   max-height: 240px;
   overflow-y: auto;
+  background: var(--pos-surface);
+  border: 1px solid var(--pos-border-strong);
+  border-radius: var(--pos-radius-sm);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  color: var(--pos-text);
+}
+
+.pos-product-search-dropdown li {
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  color: var(--pos-text);
+}
+
+.pos-product-search-dropdown li:hover {
+  background: rgba(var(--pos-accent-rgb), 0.1);
 }
 
 .pos-product-search-status {
@@ -113,6 +132,12 @@
   color: var(--pos-text);
 }
 
+.pos-unit-select:focus {
+  outline: none;
+  border-color: var(--pos-primary);
+  box-shadow: var(--pos-focus-ring);
+}
+
 .pos-col-unit {
   white-space: normal;
   word-break: break-word;
@@ -120,12 +145,13 @@
 
 .pos-suspended-banner {
   flex-shrink: 0;
-  padding: 0.3rem 0.75rem;
-  background: rgba(var(--pos-accent-rgb), 0.1);
-  color: var(--pos-text-muted);
-  font-size: 0.82rem;
+  padding: 0.35rem 0.75rem;
+  background: rgba(var(--pos-accent-rgb), 0.12);
+  color: var(--pos-text);
+  font-size: 0.85rem;
   font-weight: 600;
   text-align: center;
+  border-bottom: 1px solid var(--pos-border);
 }
 
 .pos-toolbar-btn--badge {
@@ -135,7 +161,7 @@
 .pos-toolbar-badge {
   margin-left: 0.35rem;
   font-weight: 700;
-  color: var(--pos-accent);
+  color: var(--pos-primary);
 }
 
 .pos-modal-panel--wide {

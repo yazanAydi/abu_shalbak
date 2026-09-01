@@ -80,7 +80,7 @@ export function printSupplierStatement(report) {
     .join("");
 
   const html = `<!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(report.report_title || "كشف حساب المورد")}</title>

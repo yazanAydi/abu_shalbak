@@ -27,6 +27,13 @@ export const OFFICE_NAV = [
     visible: (role) => isAdminRole(role),
   },
   {
+    path: "/product-organization",
+    label: "تنظيم المنتجات",
+    icon: "products",
+    section: "catalog",
+    visible: (role) => isAdminRole(role),
+  },
+  {
     path: "/customers",
     label: "العملاء",
     icon: "customers",
@@ -179,6 +186,20 @@ export const OFFICE_NAV = [
     visible: (role) => isAdminRole(role),
   },
   {
+    path: "/inventory-receipts",
+    label: "سند إدخال بضاعة",
+    icon: "inventory",
+    section: "invoices",
+    visible: (role) => isAdminRole(role),
+  },
+  {
+    path: "/inventory-issues",
+    label: "سند إخراج بضاعة",
+    icon: "inventory",
+    section: "invoices",
+    visible: (role) => isAdminRole(role),
+  },
+  {
     path: "/refunds",
     label: "الاسترجاعات",
     icon: "refunds",
@@ -263,6 +284,7 @@ export const NAV_SECTION_LABELS = {
 export const ROUTE_TITLES = {
   "/reports": "لوحة التحكم",
   "/manage-products": "إدارة المنتجات",
+  "/product-organization": "تنظيم المنتجات",
   "/manage-users": "إدارة الحسابات",
   "/finance": "المالية ودفعات الموردين",
   "/sales-reports": "تقارير المبيعات",
@@ -282,6 +304,10 @@ export const ROUTE_TITLES = {
   "/suppliers": "إدارة الموردين",
   "/purchases": "فتورة مشتريات",
   "/sales-invoices": "فتورة مبيعات",
+  "/inventory-receipts": "سند إدخال بضاعة",
+  "/inventory-receipts/new": "سند إدخال بضاعة",
+  "/inventory-issues": "سند إخراج بضاعة",
+  "/inventory-issues/new": "سند إخراج بضاعة",
   "/units": "الوحدات",
   "/categories": "التصنيفات",
   "/expenses": "المصروفات",

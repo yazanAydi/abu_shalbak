@@ -12,6 +12,11 @@ function escapeHtml(text) {
 }
 
 export const PRINT_BRANDING_CSS = `
+  html {
+    -webkit-locale: "en";
+    font-language-override: "eng";
+    font-feature-settings: "locl" 0;
+  }
   .print-branding {
     text-align: center;
     margin: 0 0 12px;

@@ -52,17 +52,38 @@
   background: rgba(var(--pos-accent-rgb), 0.1);
 }
 
+.rf-input:focus,
+.rf-table input:focus,
+.rf-reason input:focus,
+.rf-row select:focus {
+  outline: none;
+  border-color: var(--pos-primary);
+  box-shadow: var(--pos-focus-ring, 0 0 0 3px rgba(var(--pos-accent-rgb), 0.28));
+}
+
+.rf-btn:focus-visible {
+  outline: 2px solid var(--pos-primary);
+  outline-offset: 2px;
+}
+
 .rf-btn--primary,
 .rf-btn.primary {
   border: none;
-  background: var(--pos-accent-deep);
+  background: var(--pos-primary, var(--pos-accent-deep));
   color: #fff;
   font-weight: 700;
 }
 
 .rf-btn--primary:hover:not(:disabled),
 .rf-btn.primary:hover:not(:disabled) {
-  background: var(--pos-accent);
+  background: var(--pos-accent-strong);
+}
+
+.rf-btn--primary:disabled,
+.rf-btn.primary:disabled {
+  background: var(--pos-surface-2);
+  color: var(--pos-text-muted);
+  cursor: not-allowed;
 }
 
 .rf-err {
@@ -92,8 +113,8 @@
 }
 
 .rf-table th {
-  color: var(--pos-text-muted);
-  font-weight: 600;
+  color: var(--pos-text);
+  font-weight: 700;
 }
 
 .rf-table input {

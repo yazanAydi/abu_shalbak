@@ -136,6 +136,23 @@ function barcodeMatchesSku(barcode, sku) {
   return b != null && s != null && b === s;
 }
 
+function validateWeighedPackageFields(form) {
+  if (!form.is_weighed) return null;
+  const convEmpty = form.package_conversion === "" || form.package_conversion == null;
+  const priceEmpty = form.package_price === "" || form.package_price == null;
+  if (convEmpty && priceEmpty) return null;
+  if (convEmpty || priceEmpty) {
+    return "أدخل وزن الحبة وسعر الحبة معاً، أو اتركهما فارغين للبيع بالوزن فقط";
+  }
+  if (!Number.isFinite(Number(form.package_conversion)) || Number(form.package_conversion) <= 0) {
+    return "وزن الحبة غير صالح";
+  }
+  if (!Number.isFinite(Number(form.package_price)) || Number(form.package_price) <= 0) {
+    return "سعر الحبة غير صالح";
+  }
+  return null;
+}
+
 function formToPayload(form) {
   return {
     barcode: form.barcode.trim(),
@@ -156,14 +173,15 @@ function formToPayload(form) {
     ...(form.is_weighed
       ? {
           scale_code: form.scale_code?.trim() || null,
-          package_conversion:
-            form.package_conversion !== "" && Number.isFinite(Number(form.package_conversion))
-              ? Number(form.package_conversion)
-              : undefined,
-          package_price:
-            form.package_price !== "" && Number.isFinite(Number(form.package_price))
-              ? Number(form.package_price)
-              : undefined,
+          ...(form.package_conversion !== "" &&
+          form.package_price !== "" &&
+          Number.isFinite(Number(form.package_conversion)) &&
+          Number.isFinite(Number(form.package_price))
+            ? {
+                package_conversion: Number(form.package_conversion),
+                package_price: Number(form.package_price),
+              }
+            : {}),
         }
       : {}),
   };
@@ -181,13 +199,8 @@ function validateAddForm(form) {
   if (form.price === "" || !Number.isFinite(Number(form.price)) || Number(form.price) < 0) {
     return form.is_weighed ? "أدخل سعر الكغم" : "أدخل سعر بيع صالحاً";
   }
-  if (
-    form.is_weighed &&
-    form.package_conversion !== "" &&
-    (form.package_price === "" || !Number.isFinite(Number(form.package_price)) || Number(form.package_price) < 0)
-  ) {
-    return "أدخل سعر الحبة — مستقل عن سعر الكغم";
-  }
+  const packageErr = validateWeighedPackageFields(form);
+  if (packageErr) return packageErr;
   if (form.stock === "" || !Number.isFinite(Number(form.stock))) {
     return "أدخل مخزوناً صالحاً";
   }
@@ -819,7 +832,7 @@ export default function ProductManagement() {
                       })
                     }
                   />
-                  <span>يدعم البيع بالوزن من الميزان بالإضافة إلى بيع الحبة</span>
+                  <span>يُباع بالوزن من الميزان (كغم). اترك وزن الحبة وسعر الحبة فارغين للبيع بالوزن فقط</span>
                 </label>
               </FormField>
               {form.is_weighed ? (
@@ -834,7 +847,10 @@ export default function ProductManagement() {
                 </FormField>
               ) : null}
               {form.is_weighed ? (
-                <FormField label="وزن الحبة (كغم)" hint="اختياري — يحدد خصم المخزون فقط، وليس السعر">
+                <FormField
+                  label="وزن الحبة (كغم)"
+                  hint="اختياري مع سعر الحبة — اتركهما فارغين إذا كان المنتج يُباع من الميزان فقط. يحدد خصم المخزون وليس السعر"
+                >
                   <Input
                     type="number"
                     step="0.001"
@@ -848,7 +864,7 @@ export default function ProductManagement() {
               {form.is_weighed ? (
                 <FormField
                   label="سعر الحبة"
-                  hint="سعر بيع العبوة كاملة — لا يُحسب من سعر الكغم"
+                  hint="املأه مع وزن الحبة لإضافة بيع الحبة — مستقل عن سعر الكغم"
                 >
                   <Input
                     type="number"

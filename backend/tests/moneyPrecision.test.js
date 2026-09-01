@@ -1,4 +1,4 @@
-import { round2, sumMoney } from "../utils/money.js";
+import { round2, sumMoney, roundScaleSaleTotal } from "../utils/money.js";
 import { computeSaleTotals, computePurchaseInvoiceTotals, applyPurchaseDiscount } from "../utils/tax.js";
 
 /**
@@ -79,5 +79,41 @@ describe("Money precision", () => {
     expect(r.lines[0].line_net).toBe(50);
     expect(r.lines[0].line_vat).toBe(0);
     expect(r.total).toBe(50);
+  });
+
+  test("roundScaleSaleTotal half-up to whole shekels", () => {
+    const cases = [
+      [5.1, 5],
+      [5.4, 5],
+      [5.49, 5],
+      [5.5, 6],
+      [5.51, 6],
+      [5.6, 6],
+      [6.49, 6],
+      [6.5, 7],
+      [6.9, 7],
+    ];
+    for (const [raw, expected] of cases) {
+      expect(roundScaleSaleTotal(raw)).toBe(expected);
+    }
+  });
+
+  test("weighed KG line 0.93 × 6 charges 6 while qty stays 0.93", () => {
+    const r = computeSaleTotals(
+      [{ quantity: 0.93, unitPrice: 6, scaleWeighed: true }],
+      { tax_inclusive: false }
+    );
+    expect(r.lines[0].unitPrice).toBe(6);
+    expect(r.lines[0].quantity).toBeCloseTo(0.93, 3);
+    expect(r.lines[0].lineGross).toBe(6);
+    expect(r.total).toBe(6);
+  });
+
+  test("non-weighed lines keep round2", () => {
+    const r = computeSaleTotals(
+      [{ quantity: 1, unitPrice: 12.5, scaleWeighed: false }],
+      { tax_inclusive: false }
+    );
+    expect(r.total).toBe(12.5);
   });
 });

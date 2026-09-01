@@ -63,9 +63,11 @@ CAST(julianday(expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
 
 **Label formatting** (`formatDaysLabel` in `backend/utils/telegram.js`):
 
-- Negative days → `منتهي (X يوم)` (already expired)
+- Negative days → `منتهي منذ يوم` / `يومين` / `X أيام` / `X يوماً` (already expired)
 - Zero → `ينتهي اليوم`
-- Positive → `X يوم`
+- Positive → `ينتهي خلال …` with the same Arabic day plural
+
+Telegram alerts send **HTML** (`parse_mode: HTML`): bold product name, `<code>` for `DD/MM/YYYY` dates and barcodes. Items are grouped by urgency (expired, today, upcoming) as multi-line cards. Messages over ~4096 characters split on blank lines; continuation parts start with `تتمة — تنبيه صلاحية`.
 
 ---
 
@@ -87,8 +89,8 @@ flowchart TD
     LoadDays["Read threshold:\nstore expiry_alert_days\n→ fallback TELEGRAM_EXPIRY_DAYS\n→ default 7"]
     Fetch["fetchNearExpiryItems(db, days)\nproducts + product_batches"]
     EmptyCheck{"Any items?"}
-    BuildMsg["buildExpiryAlertMessages()\nArabic summary, chunk to 4096 chars"]
-    SendTG["sendExpiryAlertMessages()\nTelegram sendMessage API"]
+    BuildMsg["buildExpiryAlertMessages()\nHTML cards, chunk to 4096 chars"]
+    SendTG["sendExpiryAlertMessages()\nTelegram sendMessage HTML"]
   end
 
   subgraph output [Output]

@@ -31,11 +31,13 @@ import {
   WEIGHED_BASE_UNIT_NAME,
   checkUnitBarcodeAvailability,
   deleteProductUnit,
+  disableWeighedPackageUnit,
   ensureWeighedProductUnits,
   formatProductUnit,
   getDefaultUnit,
   loadUnitsCatalog,
   loadUnitsForProduct,
+  renameProductDisplayUnit,
   syncProductFromDefaultUnit,
   upsertProductUnit,
   withScaleCode,
@@ -209,10 +211,34 @@ function parsePackageConversion(raw) {
 function parsePackagePrice(raw) {
   if (raw === undefined || raw === null || raw === "") return { provided: false, value: undefined };
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) {
+  if (!Number.isFinite(n) || n <= 0) {
     return { provided: true, error: "سعر الحبة غير صالح" };
   }
   return { provided: true, value: n };
+}
+
+const PACKAGE_PAIR_ERROR = "أدخل وزن الحبة وسعر الحبة معاً، أو اتركهما فارغين";
+
+/**
+ * Type A: both package fields omitted/empty → KG only.
+ * Type B: both conversion > 0 and price > 0 → كغم + حبة.
+ * One-sided → 400.
+ * `omit` means the client did not send either key (PUT: leave existing pack).
+ */
+function parseWeighedPackagePair(body) {
+  const src = body && typeof body === "object" ? body : {};
+  const hasConv = Object.prototype.hasOwnProperty.call(src, "package_conversion");
+  const hasPrice = Object.prototype.hasOwnProperty.call(src, "package_price");
+  if (!hasConv && !hasPrice) return { mode: "omit" };
+  if (hasConv !== hasPrice) return { error: PACKAGE_PAIR_ERROR };
+
+  const convParsed = parsePackageConversion(src.package_conversion);
+  const priceParsed = parsePackagePrice(src.package_price);
+  if (convParsed.error) return { error: convParsed.error };
+  if (priceParsed.error) return { error: priceParsed.error };
+  if (!convParsed.provided && !priceParsed.provided) return { mode: "none" };
+  if (convParsed.provided !== priceParsed.provided) return { error: PACKAGE_PAIR_ERROR };
+  return { mode: "both", conversion: convParsed.value, price: priceParsed.value };
 }
 
 async function assertScaleCodeAvailable(db, scaleCode, productId, excludeUnitId = null) {
@@ -308,6 +334,17 @@ async function applyProductMetadataPatch(db, req, id, body) {
     if (b.unit !== undefined || (b.is_weighed !== undefined && isWeighed)) {
       if (unitForWeighed) await ensureUnitName(db, unitForWeighed);
       setCol("unit", unitForWeighed);
+    }
+    if (
+      b.unit !== undefined &&
+      !isWeighed &&
+      Number(live.is_weighed) !== 1
+    ) {
+      await renameProductDisplayUnit(db, Number(id), {
+        currentUnit: live.unit,
+        nextUnit: unitForWeighed,
+        isWeighed: false,
+      });
     }
 
     if (b.expiry_date !== undefined) setCol("expiry_date", b.expiry_date || null);
@@ -436,10 +473,8 @@ async function applyProductMetadataPatch(db, req, id, body) {
 
     const scaleParsed = parseScaleCodeInput(b.scale_code);
     if (scaleParsed.error) throw httpError(400, scaleParsed.error);
-    const packParsed = parsePackageConversion(b.package_conversion);
-    if (packParsed.error) throw httpError(400, packParsed.error);
-    const packPriceParsed = parsePackagePrice(b.package_price);
-    if (packPriceParsed.error) throw httpError(400, packPriceParsed.error);
+    const packPair = parseWeighedPackagePair(b);
+    if (packPair.error) throw httpError(400, packPair.error);
 
     if (isWeighed) {
       const kgRow = await db.get(
@@ -454,21 +489,24 @@ async function applyProductMetadataPatch(db, req, id, body) {
         scaleParsed.value &&
         barcode &&
         scaleParsed.value === barcode &&
-        packParsed.provided
+        packPair.mode === "both"
       ) {
         throw httpError(400, "رمز الميزان يجب أن يختلف عن باركود الحبة");
       }
       const turnedOn = b.is_weighed !== undefined && isWeighed && Number(live.is_weighed) !== 1;
-      if (turnedOn || scaleParsed.provided || packParsed.provided || packPriceParsed.provided) {
+      if (turnedOn || scaleParsed.provided || packPair.mode !== "omit") {
         await ensureWeighedProductUnits(db, Number(id), {
           productBarcode: barcode,
           scaleCode: scaleParsed.provided ? scaleParsed.value : undefined,
           kgPrice: price,
           kgCost: cost,
-          packageConversion: packParsed.provided ? packParsed.value : undefined,
+          packageConversion: packPair.mode === "both" ? packPair.conversion : undefined,
           packageUnitName: b.package_unit_name,
-          packagePrice: packPriceParsed.provided ? packPriceParsed.value : undefined,
+          packagePrice: packPair.mode === "both" ? packPair.price : undefined,
         });
+        if (packPair.mode === "none") {
+          await disableWeighedPackageUnit(db, Number(id));
+        }
       }
     }
 
@@ -480,7 +518,7 @@ async function applyProductMetadataPatch(db, req, id, body) {
         newPrice: price,
         reason: b.reason != null && String(b.reason).trim() !== "" ? String(b.reason).trim() : "تعديل المنتج",
       });
-    } else if (sets.length || scaleParsed.provided || packParsed.provided || packPriceParsed.provided) {
+    } else if (sets.length || scaleParsed.provided || packPair.mode !== "omit") {
       await logAudit(db, req, AUDIT_ACTIONS.PRODUCT_UPDATE, "products", id, live, updated);
     }
     return withScaleCode(db, updated);
@@ -491,6 +529,63 @@ function inventoryScopeClause(scope, alias) {
   if (!scope) return { sql: "", params: [] };
   const col = alias ? `${alias}.inventory_scope` : "inventory_scope";
   return { sql: ` AND COALESCE(${col}, 'retail') = ?`, params: [scope] };
+}
+
+/**
+ * Admin catalogue filters for the paginated GET /products list.
+ * POS `search`/`q` mode is handled separately and must stay unchanged.
+ * @param {Record<string, unknown>} query
+ * @param {string} [alias]
+ */
+function adminCatalogFilters(query, alias = "") {
+  const col = (name) => (alias ? `${alias}.${name}` : name);
+  let sql = "";
+  const params = [];
+  let needsBarcodeJoin = false;
+
+  const category = String(query.category ?? "").trim();
+  if (category) {
+    sql += ` AND ${col("category")} = ?`;
+    params.push(category);
+  }
+
+  const unit = String(query.unit ?? "").trim();
+  if (unit) {
+    sql += ` AND ${col("unit")} = ?`;
+    params.push(unit);
+  }
+
+  const activeRaw = query.is_active;
+  if (activeRaw === "0" || activeRaw === "1" || activeRaw === 0 || activeRaw === 1) {
+    sql += ` AND COALESCE(${col("is_active")}, 1) = ?`;
+    params.push(Number(activeRaw));
+  }
+
+  const catalogSearch = String(query.catalog_search ?? "").trim();
+  if (catalogSearch) {
+    needsBarcodeJoin = true;
+    const like = `%${catalogSearch}%`;
+    const likeLower = `%${catalogSearch.toLowerCase()}%`;
+    const skuValues = productSkuLookupValues(catalogSearch);
+    const parts = [
+      `LOWER(${col("name")}) LIKE ?`,
+      `CAST(${col("barcode")} AS TEXT) LIKE ?`,
+    ];
+    const searchParams = [likeLower, like];
+    if (skuValues.length) {
+      parts.push(`${col("sku")} IN (${skuValues.map(() => "?").join(", ")})`);
+      searchParams.push(...skuValues);
+    } else {
+      parts.push(`CAST(${col("sku")} AS TEXT) LIKE ?`);
+      searchParams.push(like);
+    }
+    parts.push("pb.barcode LIKE ?");
+    searchParams.push(like);
+    sql += ` AND (${parts.join(" OR ")})`;
+    params.push(...searchParams);
+  }
+
+  return { sql, params, needsBarcodeJoin };
 }
 
 export async function searchProducts(db, rawQuery, options = {}) {
@@ -664,16 +759,29 @@ export function createProductsRouter(db) {
       DEFAULT_PRODUCT_PAGE_SIZE,
       MAX_PRODUCT_PAGE_SIZE
     );
-    let whereSql = `WHERE 1=1${scopeSql}`;
-    const params = [...scopeParams];
+    const needsJoin = String(req.query.catalog_search ?? "").trim() !== "";
+    const alias = needsJoin ? "p" : "";
+    const catalogFilters = adminCatalogFilters(req.query, alias);
+    const scoped = needsJoin ? inventoryScopeClause(scope, "p") : { sql: scopeSql, params: scopeParams };
+    const reviewCol = alias ? "p.needs_review" : "needs_review";
+    const skuCol = alias ? "p.sku" : "sku";
+    const idCol = alias ? "p.id" : "id";
+    let whereSql = `WHERE 1=1${scoped.sql}${catalogFilters.sql}`;
+    const params = [...scoped.params, ...catalogFilters.params];
     if (req.query.needs_review === "1" || req.query.needs_review === "true") {
-      whereSql += " AND COALESCE(needs_review, 0) = 1";
+      whereSql += ` AND COALESCE(${reviewCol}, 0) = 1`;
     }
-    const countRow = await db.get(`SELECT COUNT(*) AS total FROM products ${whereSql}`, params);
-    const rows = await db.all(
-      `SELECT ${PRODUCT_LIST_SELECT} FROM products ${whereSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
-    );
+    const fromSql = needsJoin
+      ? "FROM products p LEFT JOIN product_barcodes pb ON pb.product_id = p.id"
+      : "FROM products";
+    const countSql = needsJoin
+      ? `SELECT COUNT(DISTINCT p.id) AS total ${fromSql} ${whereSql}`
+      : `SELECT COUNT(*) AS total ${fromSql} ${whereSql}`;
+    const selectSql = needsJoin
+      ? `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P} ${fromSql} ${whereSql} ORDER BY CAST(${skuCol} AS INTEGER) ASC, ${idCol} ASC LIMIT ? OFFSET ?`
+      : `SELECT ${PRODUCT_LIST_SELECT} ${fromSql} ${whereSql} ORDER BY CAST(${skuCol} AS INTEGER) ASC, ${idCol} ASC LIMIT ? OFFSET ?`;
+    const countRow = await db.get(countSql, params);
+    const rows = await db.all(selectSql, [...params, limit, offset]);
     return res.json({
       items: rows,
       total: Number(countRow?.total) || 0,
@@ -912,19 +1020,15 @@ export function createProductsRouter(db) {
     if (scaleParsed.error) {
       return res.status(400).json({ error: scaleParsed.error });
     }
-    const packParsed = parsePackageConversion(req.body?.package_conversion);
-    if (packParsed.error) {
-      return res.status(400).json({ error: packParsed.error });
-    }
-    const packPriceParsed = parsePackagePrice(req.body?.package_price);
-    if (packPriceParsed.error) {
-      return res.status(400).json({ error: packPriceParsed.error });
+    const packPair = parseWeighedPackagePair(req.body || {});
+    if (isWeighed && packPair.error) {
+      return res.status(400).json({ error: packPair.error });
     }
     if (
       isWeighed &&
       scaleParsed.value &&
       scaleParsed.value === resolvedBarcode &&
-      packParsed.provided
+      packPair.mode === "both"
     ) {
       return res.status(400).json({ error: "رمز الميزان يجب أن يختلف عن باركود الحبة" });
     }
@@ -992,9 +1096,9 @@ export function createProductsRouter(db) {
             scaleCode: scaleParsed.provided ? scaleParsed.value : undefined,
             kgPrice: finalPrice,
             kgCost: c,
-            packageConversion: packParsed.provided ? packParsed.value : undefined,
+            packageConversion: packPair.mode === "both" ? packPair.conversion : undefined,
             packageUnitName: req.body?.package_unit_name || DEFAULT_PACKAGE_UNIT_NAME,
-            packagePrice: packPriceParsed.provided ? packPriceParsed.value : undefined,
+            packagePrice: packPair.mode === "both" ? packPair.price : undefined,
           });
         } else {
           await upsertProductUnit(db, info.lastID, {
@@ -1571,9 +1675,23 @@ export function createProductsRouter(db) {
     const rows = await db.all(
       `SELECT l.id, l.movement_type, l.quantity_delta, l.qty_before, l.qty_after,
               l.reference_type, l.reference_id, l.notes, l.created_at,
-              u.username AS user_name
+              u.username AS user_name,
+              CASE
+                WHEN l.reference_type = 'inventory_receipt'
+                  THEN 'سند إدخال بضاعة #' || d.document_number
+                WHEN l.reference_type = 'inventory_issue'
+                  THEN 'سند إخراج بضاعة #' || d.document_number
+                WHEN l.reference_type = 'inventory_document' AND d.document_type = 'receipt'
+                  THEN 'سند إدخال بضاعة #' || d.document_number
+                WHEN l.reference_type = 'inventory_document' AND d.document_type = 'issue'
+                  THEN 'سند إخراج بضاعة #' || d.document_number
+                ELSE NULL
+              END AS reference_label
        FROM inventory_ledger l
        LEFT JOIN users u ON u.id = l.user_id
+       LEFT JOIN inventory_documents d
+         ON d.id = l.reference_id
+        AND l.reference_type IN ('inventory_document', 'inventory_receipt', 'inventory_issue')
        WHERE l.product_id = ?
        ORDER BY l.created_at DESC, l.id DESC
        LIMIT ? OFFSET ?`,

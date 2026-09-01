@@ -22,6 +22,12 @@ export const MOVEMENT_LABELS = {
   expiry_writeoff: "إتلاف صلاحية",
 };
 
+export const REFERENCE_TYPE_LABELS = {
+  inventory_receipt: "سند إدخال بضاعة",
+  inventory_issue: "سند إخراج بضاعة",
+  inventory_document: "سند مخزون",
+};
+
 export const MOVEMENT_TONE = {
   sale: "red",
   refund: "green",

@@ -1,7 +1,7 @@
 import { StatusBadge } from "../../components/ui";
 import { num, dateTime } from "../../utils/format";
 import { useProductTab } from "./useProductTab";
-import { TabState, movementLabel, MOVEMENT_TONE } from "./shared";
+import { TabState, movementLabel, MOVEMENT_TONE, REFERENCE_TYPE_LABELS } from "./shared";
 
 export default function InventoryHistoryTab({ productId, weighed = false }) {
   const { data, loading, error } = useProductTab(`/api/products/${productId}/inventory-history`);
@@ -28,7 +28,7 @@ export default function InventoryHistoryTab({ productId, weighed = false }) {
                 <tr key={r.id}>
                   <td>{dateTime(r.created_at)}</td>
                   <td><StatusBadge tone={MOVEMENT_TONE[r.movement_type] || "neutral"} noDot>{movementLabel(r.movement_type)}</StatusBadge></td>
-                  <td>{r.reference_type ? `${r.reference_type} #${r.reference_id ?? "—"}` : (r.notes || "—")}</td>
+                  <td>{r.reference_label || r.notes || (r.reference_type ? `${REFERENCE_TYPE_LABELS[r.reference_type] || r.reference_type} #${r.reference_id ?? "—"}` : "—")}</td>
                   <td className="num" style={{ color: delta < 0 ? "var(--office-danger, #dc2626)" : "var(--office-success, #16a34a)" }}>
                     {delta > 0 ? `+${num(delta, weighed ? 3 : 0)}` : num(delta, weighed ? 3 : 0)}
                   </td>

@@ -1,4 +1,4 @@
-﻿/* Ø£Ø¨Ùˆ Ø´Ù„Ø¨Ùƒ â€” office (admin) ERP theme: soft canvas + white cards + teal accent */
+/* أبو شلبك — office (admin) ERP theme: soft canvas + white cards + teal accent */
 :root {
   /* Neutral ramp */
   --slate-50: #f8fafc;
@@ -311,7 +311,7 @@
 }
 
 .dashboard-top-products-qty::after {
-  content: " Ù‚Ø·Ø¹Ø©";
+  content: " قطعة";
 }
 
 .dashboard-top-products-revenue {

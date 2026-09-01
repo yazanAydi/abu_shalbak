@@ -13,13 +13,14 @@ export function validate(schema, source = "body") {
       next();
     } catch (err) {
       if (err instanceof ZodError) {
-        const first = err.errors[0];
+        const issues = err.issues ?? err.errors ?? [];
+        const first = issues[0];
         const msg = first?.message || "بيانات غير صالحة";
         return res.status(400).json({
           success: false,
           error: msg,
           code: "VALIDATION_ERROR",
-          details: err.errors,
+          details: issues,
         });
       }
       next(err);

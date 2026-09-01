@@ -4,11 +4,18 @@
   --pos-font: "Cairo", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
 }
 
+/* Western digits (0123456789) even when Windows/Chrome locale is Arabic. */
+html {
+  -webkit-locale: "en";
+  font-language-override: "eng";
+  font-feature-settings: "locl" 0;
+}
+
 body {
   margin: 0;
   font-family: var(--pos-font);
-  background: #f4f6f9;
-  color: #1e293b;
+  background: #e8edf3;
+  color: #0f172a;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
 }
@@ -17,38 +24,13 @@ code {
   font-size: 0.9em;
 }
 
-/* Quantity stepper — hide native number spinners */
-.qty-stepper {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-.qty-stepper input[type="number"] {
-  width: 5rem;
-  text-align: center;
+/* Hide native number input spin buttons */
+input[type="number"] {
   -moz-appearance: textfield;
+  appearance: textfield;
 }
-.qty-stepper input[type="number"]::-webkit-outer-spin-button,
-.qty-stepper input[type="number"]::-webkit-inner-spin-button {
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
-}
-.qty-stepper-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.75rem;
-  height: 1.75rem;
-  padding: 0;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  background: #fff;
-  color: inherit;
-  cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
-}
-.qty-stepper-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }

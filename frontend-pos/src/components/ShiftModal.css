@@ -25,8 +25,8 @@
   padding: 1.35rem;
   border-radius: 12px;
   background: var(--pos-surface, #ffffff);
-  color: var(--pos-text, #1e293b);
-  border: 1px solid var(--pos-border, #e2e8f0);
+  color: var(--pos-text, #1f2937);
+  border: 1px solid var(--pos-border, #d9dee5);
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.15);
 }
 
@@ -34,6 +34,7 @@
   margin: 0 0 1rem;
   font-size: 1.3rem;
   font-weight: 800;
+  color: var(--pos-text, #1f2937);
 }
 
 .shift-modal-label {
@@ -43,7 +44,7 @@
   margin-bottom: 0.85rem;
   font-size: 0.95rem;
   font-weight: 600;
-  color: var(--pos-text-muted, #64748b);
+  color: var(--pos-text, #1f2937);
 }
 
 .shift-modal-label .shift-modal-input,
@@ -69,24 +70,24 @@
   padding: 0.6rem 0.75rem;
   min-height: 48px;
   border-radius: 8px;
-  border: 1px solid var(--pos-border-strong, #cbd5e1);
-  background: var(--pos-bg, #f4f6f9);
-  color: var(--pos-text, #1e293b);
+  border: 1px solid var(--pos-border-strong, #c5cdd6);
+  background: var(--pos-bg, #f5f6f8);
+  color: var(--pos-text, #1f2937);
   font-size: 1.05rem;
   font-family: inherit;
   box-sizing: border-box;
 }
 
 .shift-modal-input--readonly {
-  background: var(--pos-surface-2, #f1f5f9);
+  background: var(--pos-surface-2, #eef1f5);
   color: var(--pos-text-muted, #64748b);
 }
 
 .shift-modal-input:focus,
 .shift-modal-textarea:focus {
   outline: none;
-  border-color: var(--pos-accent, #14b8a6);
-  box-shadow: 0 0 0 3px rgba(var(--pos-accent-rgb, 15, 118, 110), 0.2);
+  border-color: var(--pos-primary, #1e3a5f);
+  box-shadow: var(--pos-focus-ring, 0 0 0 3px rgba(var(--pos-accent-rgb, 30, 58, 95), 0.35));
 }
 
 .shift-modal-textarea {
@@ -101,7 +102,7 @@
   min-height: 52px;
   border-radius: 8px;
   border: none;
-  background: var(--pos-accent-deep, #0d9488);
+  background: var(--pos-primary, #1e3a5f);
   color: #fff;
   font-size: 1.05rem;
   font-weight: 700;
@@ -110,11 +111,17 @@
 }
 
 .shift-modal-primary:hover:not(:disabled) {
-  background: var(--pos-accent, #14b8a6);
+  background: var(--pos-accent-strong, #152a46);
+}
+
+.shift-modal-primary:focus-visible {
+  outline: 3px solid rgba(var(--pos-accent-rgb, 30, 58, 95), 0.4);
+  outline-offset: 2px;
 }
 
 .shift-modal-primary:disabled {
-  opacity: 0.6;
+  background: var(--pos-surface-2, #eef1f5);
+  color: var(--pos-text-muted, #64748b);
   cursor: not-allowed;
 }
 
@@ -123,13 +130,22 @@
   padding: 0.75rem 1rem;
   min-height: 48px;
   border-radius: 8px;
-  border: 1px solid var(--pos-border-strong, #cbd5e1);
-  background: var(--pos-surface-2, #f1f5f9);
-  color: inherit;
+  border: 1px solid var(--pos-border-strong, #c5cdd6);
+  background: var(--pos-surface, #ffffff);
+  color: var(--pos-text, #1f2937);
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
+}
+
+.shift-modal-secondary:hover:not(:disabled) {
+  background: var(--pos-surface-2, #eef1f5);
+}
+
+.shift-modal-secondary:focus-visible {
+  outline: 2px solid var(--pos-primary, #1e3a5f);
+  outline-offset: 2px;
 }
 
 .shift-modal-actions {
@@ -176,6 +192,7 @@
 .shift-modal-meta {
   margin: 0 0 0.5rem;
   font-size: 0.95rem;
+  color: var(--pos-text, #1f2937);
 }
 
 .shift-gate-overlay {
@@ -192,7 +209,7 @@
 .shift-gate-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(15, 23, 42, 0.5);
+  background: rgba(15, 23, 42, 0.45);
 }
 
 .shift-gate-card-wrap {

@@ -115,6 +115,68 @@ export const inventoryAdjustmentSchema = z.object({
   notes: z.string().max(500).optional().nullable(),
 });
 
+const optionalPositiveInt = z.preprocess(
+  (v) => (v == null || v === "" ? undefined : v),
+  z.coerce.number().int().positive().optional()
+);
+
+const inventoryDocumentItemSchema = z
+  .object({
+    product_id: z.coerce.number({ invalid_type_error: "المنتج غير موجود" }).int().positive({
+      message: "المنتج غير موجود",
+    }),
+    product_unit_id: optionalPositiveInt,
+    unit_id: optionalPositiveInt,
+    quantity: z.coerce.number({ invalid_type_error: "الكمية يجب أن تكون أكبر من صفر" }).positive({
+      message: "الكمية يجب أن تكون أكبر من صفر",
+    }),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.product_unit_id && !data.unit_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "الوحدة مطلوبة",
+        path: ["product_unit_id"],
+      });
+    }
+  });
+
+function inventoryDocumentCreateSchema(reasonCodes) {
+  return z.object({
+    document_date: z.preprocess(
+      (v) => (v == null || String(v).trim() === "" ? undefined : String(v).trim()),
+      z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional()
+    ),
+    reason: z.enum(reasonCodes, {
+      errorMap: () => ({ message: "سبب غير صالح" }),
+    }),
+    notes: z.preprocess(
+      (v) => (v == null || String(v).trim() === "" ? null : String(v).trim()),
+      z.string().max(2000).nullable().optional()
+    ),
+    store_id: z.coerce.number().int().positive().optional(),
+    items: z.array(inventoryDocumentItemSchema).min(1, "يجب إضافة صنف واحد على الأقل"),
+  });
+}
+
+export const inventoryReceiptCreateSchema = inventoryDocumentCreateSchema([
+  "opening",
+  "correction",
+  "free",
+  "branch_return",
+  "other",
+]);
+
+export const inventoryIssueCreateSchema = inventoryDocumentCreateSchema([
+  "damaged",
+  "internal",
+  "samples",
+  "giveaway",
+  "transfer",
+  "correction",
+  "other",
+]);
+
 const SETTINGS_KEYS = new Set([
   "store_name",
   "store_name_ar",

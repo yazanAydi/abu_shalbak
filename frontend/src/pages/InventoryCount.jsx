@@ -43,7 +43,7 @@ export default function InventoryCount({ embedded = false }) {
   const loadSessions = useCallback(async () => {
     try {
       const { data } = await api.get("/api/inventory/counts", { headers: getAuthHeaders() });
-      setSessions(data);
+      setSessions(Array.isArray(data) ? data : []);
     } catch {
       setError("تعذّر تحميل جلسات الجرد");
     } finally {
@@ -105,6 +105,30 @@ export default function InventoryCount({ embedded = false }) {
     }
   }
 
+  const hasOpenSession =
+    activeSession?.status === "open" || sessions.some((s) => s.status === "open");
+
+  async function zeroAllStock() {
+    const extra = hasOpenSession
+      ? "\n\nيوجد جلسة جرد مفتوحة. ترحيل تلك الجلسة بعد التصفير قد يغيّر المخزون مرة أخرى."
+      : "";
+    if (!window.confirm(`هل تريد تصفير كمية كل المنتجات؟ لا يمكن التراجع عن هذه الخطوة.${extra}`)) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setMsg(null);
+    try {
+      const { data } = await api.post("/api/inventory/zero-all-stock", {}, { headers: getAuthHeaders() });
+      const zeroed = data?.products_zeroed ?? 0;
+      setMsg(`تم تصفير كميات ${zeroed} منتج`);
+    } catch (e) {
+      setError(e.response?.data?.error || "فشل تصفير الكميات");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const reportConfig = useMemo(() => {
     if (activeSession) {
       return {
@@ -138,6 +162,9 @@ export default function InventoryCount({ embedded = false }) {
                 rows={reportConfig.rows}
                 filename={reportConfig.filename}
               />
+              <button className="btn-danger" onClick={zeroAllStock} disabled={saving}>
+                تصفير كل الكميات
+              </button>
               {activeSession.status === "open" && (
                 <button className="btn-danger" onClick={() => postSession(activeSession)} disabled={saving}>
                   ترحيل الجرد
@@ -210,6 +237,9 @@ export default function InventoryCount({ embedded = false }) {
               disabled={loading}
             />
             <button className="btn-primary" onClick={openNew}>+ فتح جلسة جرد جديدة</button>
+            <button className="btn-danger" onClick={zeroAllStock} disabled={saving}>
+              تصفير كل الكميات
+            </button>
           </div>
           {loading ? (
             <p>جاري التحميل…</p>

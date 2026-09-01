@@ -208,65 +208,194 @@ export async function sendRefundApprovalMessage({
 }
 
 const TELEGRAM_MAX_TEXT = 4096;
+const EXPIRY_CONTINUATION_HEADER = "تتمة — تنبيه صلاحية";
 
-function chunkLines(lines, maxLen = TELEGRAM_MAX_TEXT - 50) {
-  const chunks = [];
-  let current = "";
-  for (const line of lines) {
-    const next = current ? `${current}\n${line}` : line;
-    if (next.length > maxLen && current) {
-      chunks.push(current);
-      current = line;
-    } else {
-      current = next;
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks;
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatExpiryDateDisplay(ymd) {
+  const m = String(ymd || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return String(ymd || "").trim();
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+function arabicDayCountPhrase(n) {
+  const abs = Math.abs(Math.trunc(Number(n) || 0));
+  if (abs === 1) return "يوم";
+  if (abs === 2) return "يومين";
+  if (abs >= 3 && abs <= 10) return `${abs} أيام`;
+  return `${abs} يوماً`;
 }
 
 function formatDaysLabel(days) {
-  if (days < 0) return `منتهي (${Math.abs(days)} يوم)`;
-  if (days === 0) return "ينتهي اليوم";
-  return `${days} يوم`;
+  const d = Number(days);
+  if (!Number.isFinite(d)) return "";
+  if (d < 0) return `منتهي منذ ${arabicDayCountPhrase(Math.abs(d))}`;
+  if (d === 0) return "ينتهي اليوم";
+  return `ينتهي خلال ${arabicDayCountPhrase(d)}`;
+}
+
+function splitLinesIntoBlocks(lines) {
+  const blocks = [];
+  let buf = [];
+  for (const line of lines) {
+    if (line === "") {
+      if (buf.length) {
+        blocks.push(buf.join("\n"));
+        buf = [];
+      }
+    } else {
+      buf.push(line);
+    }
+  }
+  if (buf.length) blocks.push(buf.join("\n"));
+  return blocks;
+}
+
+/** Pack text blocks (blank-line separated) into Telegram-sized chunks. Continuation chunks get a short header. */
+function chunkByBlankLines(lines, maxLen = TELEGRAM_MAX_TEXT - 50, continuationHeader = EXPIRY_CONTINUATION_HEADER) {
+  const blocks = splitLinesIntoBlocks(lines);
+  const chunks = [];
+  let current = "";
+  let isFirst = true;
+
+  const maxForCurrent = () => (isFirst ? maxLen : maxLen - continuationHeader.length - 2);
+
+  const commit = () => {
+    if (!current) return;
+    chunks.push(isFirst ? current : `${continuationHeader}\n\n${current}`);
+    current = "";
+    isFirst = false;
+  };
+
+  const appendBlock = (block) => {
+    const next = current ? `${current}\n\n${block}` : block;
+    if (next.length <= maxForCurrent()) {
+      current = next;
+      return;
+    }
+    commit();
+    if (block.length <= maxForCurrent()) {
+      current = block;
+      return;
+    }
+    for (const line of String(block).split("\n")) {
+      const lineNext = current ? `${current}\n${line}` : line;
+      if (lineNext.length > maxForCurrent() && current) {
+        commit();
+        current = line;
+      } else {
+        current = lineNext;
+      }
+    }
+  };
+
+  for (const block of blocks) appendBlock(block);
+  commit();
+  return chunks;
+}
+
+function splitByUrgency(items) {
+  const expired = [];
+  const today = [];
+  const upcoming = [];
+  for (const item of items) {
+    const d = Number(item.days_until_expiry);
+    if (d < 0) expired.push(item);
+    else if (d === 0) today.push(item);
+    else upcoming.push(item);
+  }
+  return { expired, today, upcoming };
+}
+
+function formatProductCard(r) {
+  const lines = [`<b>${escapeHtml(r.name || "")}</b>`];
+  const date = formatExpiryDateDisplay(r.expiry_date);
+  if (date) lines.push(`التاريخ: <code>${escapeHtml(date)}</code>`);
+  const status = formatDaysLabel(r.days_until_expiry);
+  if (status) lines.push(`الحالة: ${escapeHtml(status)}`);
+  if (r.stock != null && r.stock !== "") lines.push(`المخزون: ${escapeHtml(r.stock)}`);
+  const barcode = String(r.barcode || "").trim();
+  if (barcode) lines.push(`الباركود: <code>${escapeHtml(barcode)}</code>`);
+  return lines;
+}
+
+function formatBatchCard(r) {
+  const lines = [`<b>${escapeHtml(r.product_name || "")}</b>`];
+  const date = formatExpiryDateDisplay(r.expiry_date);
+  if (date) lines.push(`التاريخ: <code>${escapeHtml(date)}</code>`);
+  const status = formatDaysLabel(r.days_until_expiry);
+  if (status) lines.push(`الحالة: ${escapeHtml(status)}`);
+  if (r.quantity != null && r.quantity !== "") lines.push(`الكمية: ${escapeHtml(r.quantity)}`);
+  const batchNo = String(r.batch_no || "").trim();
+  if (batchNo) lines.push(`الدفعة: ${escapeHtml(batchNo)}`);
+  const barcode = String(r.barcode || "").trim();
+  if (barcode) lines.push(`الباركود: <code>${escapeHtml(barcode)}</code>`);
+  return lines;
+}
+
+function pushUrgencyGroups(lines, items, formatItem) {
+  const { expired, today, upcoming } = splitByUrgency(items);
+  const groups = [
+    { title: `منتهي (${expired.length})`, items: expired },
+    { title: `ينتهي اليوم (${today.length})`, items: today },
+    { title: `ينتهي قريباً (${upcoming.length})`, items: upcoming },
+  ];
+  for (const group of groups) {
+    if (!group.items.length) continue;
+    lines.push(group.title);
+    lines.push("");
+    for (const item of group.items) {
+      lines.push(...formatItem(item));
+      lines.push("");
+    }
+  }
 }
 
 export function buildExpiryAlertMessages({ products, batches }, daysThreshold, options = {}) {
+  const productList = Array.isArray(products) ? products : [];
+  const batchList = Array.isArray(batches) ? batches : [];
+  if (!productList.length && !batchList.length) return [];
+
   const header =
     options.title ??
     `⚠️ تنبيه صلاحية — أصناف تنتهي خلال ${daysThreshold} يوم`;
   const lines = [header, ""];
 
-  if (products.length) {
-    lines.push(`📦 أصناف (${products.length}):`);
-    for (const r of products) {
-      lines.push(
-        `• ${r.name}${r.barcode ? ` (${r.barcode})` : ""} — ${formatDaysLabel(r.days_until_expiry)} — ${r.expiry_date} — مخزون ${r.stock}`
-      );
-    }
+  const countParts = [];
+  if (productList.length) countParts.push(`${productList.length} صنف`);
+  if (batchList.length) countParts.push(`${batchList.length} دفعة`);
+  lines.push(countParts.join(" · "));
+  lines.push("");
+
+  if (productList.length) {
+    lines.push(`📦 أصناف (${productList.length}):`);
     lines.push("");
+    pushUrgencyGroups(lines, productList, formatProductCard);
   }
 
-  if (batches.length) {
-    lines.push(`🏷️ دفعات (${batches.length}):`);
-    for (const r of batches) {
-      const batch = r.batch_no ? ` دفعة ${r.batch_no}` : "";
-      lines.push(
-        `• ${r.product_name}${batch} — ${formatDaysLabel(r.days_until_expiry)} — ${r.expiry_date} — كمية ${r.quantity}`
-      );
-    }
+  if (batchList.length) {
+    lines.push(`🏷️ دفعات (${batchList.length}):`);
+    lines.push("");
+    pushUrgencyGroups(lines, batchList, formatBatchCard);
   }
 
-  if (!products.length && !batches.length) return [];
-
-  return chunkLines(lines);
+  return chunkByBlankLines(lines);
 }
 
 export async function sendExpiryAlertMessages(messages) {
   const { token, chatId } = expiryBotConfig();
   const ids = [];
   for (const text of messages) {
-    const result = await telegramRequest("sendMessage", { chat_id: chatId, text: String(text) }, token);
+    const result = await telegramRequest(
+      "sendMessage",
+      { chat_id: chatId, text: String(text), parse_mode: "HTML" },
+      token
+    );
     ids.push(String(result.message_id));
   }
   return ids;

@@ -93,13 +93,21 @@ function dirtyProductPayload(form, product) {
   if (form.is_weighed) {
     const scale = form.scale_code?.trim() || null;
     if (!sameText(scale, product.scale_code || null)) payload.scale_code = scale;
-    const conv = form.package_conversion === "" ? null : Number(form.package_conversion);
-    if (!sameNumber(conv, product.package_conversion) && conv != null && Number.isFinite(conv)) {
-      payload.package_conversion = conv;
-    }
-    const pkgPrice = form.package_price === "" ? null : Number(form.package_price);
-    if (!sameNumber(pkgPrice, product.package_price) && pkgPrice != null && Number.isFinite(pkgPrice)) {
-      payload.package_price = pkgPrice;
+    const convEmpty = form.package_conversion === "" || form.package_conversion == null;
+    const priceEmpty = form.package_price === "" || form.package_price == null;
+    const hadPackage = product.package_conversion != null || product.package_price != null;
+    if (convEmpty && priceEmpty) {
+      if (hadPackage) {
+        payload.package_conversion = null;
+        payload.package_price = null;
+      }
+    } else if (!convEmpty && !priceEmpty) {
+      const conv = Number(form.package_conversion);
+      const pkgPrice = Number(form.package_price);
+      if (!sameNumber(conv, product.package_conversion) || !sameNumber(pkgPrice, product.package_price)) {
+        payload.package_conversion = conv;
+        payload.package_price = pkgPrice;
+      }
     }
   }
   return payload;
@@ -141,13 +149,21 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
       setErr(form.is_weighed ? "أدخل سعر الكغم" : "أدخل سعر بيع صالحاً");
       return;
     }
-    if (
-      form.is_weighed &&
-      form.package_conversion !== "" &&
-      (form.package_price === "" || !Number.isFinite(Number(form.package_price)) || Number(form.package_price) < 0)
-    ) {
-      setErr("أدخل سعر الحبة — مستقل عن سعر الكغم");
-      return;
+    if (form.is_weighed) {
+      const convEmpty = form.package_conversion === "" || form.package_conversion == null;
+      const priceEmpty = form.package_price === "" || form.package_price == null;
+      if (convEmpty !== priceEmpty) {
+        setErr("أدخل وزن الحبة وسعر الحبة معاً، أو اتركهما فارغين للبيع بالوزن فقط");
+        return;
+      }
+      if (!convEmpty && (!Number.isFinite(Number(form.package_conversion)) || Number(form.package_conversion) <= 0)) {
+        setErr("وزن الحبة غير صالح");
+        return;
+      }
+      if (!priceEmpty && (!Number.isFinite(Number(form.package_price)) || Number(form.package_price) <= 0)) {
+        setErr("سعر الحبة غير صالح");
+        return;
+      }
     }
 
     const payload = dirtyProductPayload(form, product);
@@ -233,7 +249,7 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
                 })
               }
             />
-            <span>يدعم البيع بالوزن من الميزان بالإضافة إلى بيع الحبة</span>
+            <span>يُباع بالوزن من الميزان (كغم). اترك وزن الحبة وسعر الحبة فارغين للبيع بالوزن فقط</span>
           </label>
         </FormField>
         {form.is_weighed ? (
@@ -248,7 +264,10 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
           </FormField>
         ) : null}
         {form.is_weighed ? (
-          <FormField label="وزن الحبة (كغم)" hint="يحدد خصم المخزون فقط — ليس سعر البيع">
+          <FormField
+            label="وزن الحبة (كغم)"
+            hint="اختياري مع سعر الحبة — اتركهما فارغين للبيع بالوزن فقط. يحدد خصم المخزون وليس السعر"
+          >
             <Input
               type="number"
               step="0.001"
@@ -260,7 +279,7 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
           </FormField>
         ) : null}
         {form.is_weighed ? (
-          <FormField label="سعر الحبة" hint="سعر بيع العبوة كاملة — مستقل عن سعر الكغم">
+          <FormField label="سعر الحبة" hint="املأه مع وزن الحبة لإضافة بيع الحبة — مستقل عن سعر الكغم">
             <Input
               type="number"
               step="0.01"

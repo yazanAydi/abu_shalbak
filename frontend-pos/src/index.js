@@ -7,6 +7,8 @@ import { BrowserRouter } from "react-router-dom";
 import "./components/ui/ui.css";
 import { ToastProvider } from "./components/ui/Toast";
 import "./index.css";
+import "./utils/disableNumberInputSpin";
+import "./utils/forceLatinDigits";
 import App from "./App";
 
 const root = ReactDOM.createRoot(document.getElementById("root"));

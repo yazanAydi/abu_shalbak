@@ -3,7 +3,7 @@ import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
 import { round2, computePurchaseInvoiceTotals, applyPurchaseDiscount } from "../utils/tax.js";
 import { recordMovement } from "../utils/inventory.js";
 import { getAppSettings } from "../utils/settings.js";
-import { getDefaultUnit } from "../utils/productUnits.js";
+import { getDefaultUnit, toBaseQuantity } from "../utils/productUnits.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { withTransaction } from "../utils/dbTx.js";
@@ -89,7 +89,7 @@ async function normalizeItems(db, items) {
     const unit = await resolvePurchaseUnit(db, pid, rawUnitId);
     const discountPct = Math.min(100, Math.max(0, Number(it.discount_pct) || 0));
     const bonusQty = Math.max(0, Number(it.bonus_quantity) || 0);
-    const baseQuantity = round6((qty + bonusQty) * unit.conversion);
+    const baseQuantity = toBaseQuantity(qty + bonusQty, unit.conversion);
     // unit_cost = cost per entered unit (display); base_unit_cost = cost per base
     // unit (used for weighted-average cost + inventory ledger at posting).
     const unitCost = round6(totalCost / qty);

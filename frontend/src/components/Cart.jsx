@@ -32,25 +32,19 @@ export default function Cart({ cartItems, onQuantityChange, onRemoveItem }) {
                 <tr key={it.id}>
                   <td className="col-name">{it.name}</td>
                   <td className="col-qty">
-                    <div className="qty-btns">
-                      <button
-                        type="button"
-                        className="qty-btn"
-                        onClick={() =>
-                          onQuantityChange(it.id, Math.max(1, it.quantity - 1))
-                        }
-                      >
-                        −
-                      </button>
-                      <span className="qty-val">{it.quantity}</span>
-                      <button
-                        type="button"
-                        className="qty-btn"
-                        onClick={() => onQuantityChange(it.id, it.quantity + 1)}
-                      >
-                        +
-                      </button>
-                    </div>
+                    <input
+                      type="number"
+                      className="qty-input"
+                      min={1}
+                      step="any"
+                      value={it.quantity}
+                      aria-label="الكمية"
+                      onChange={(e) => {
+                        const next = Number(e.target.value);
+                        if (!(next > 0)) return;
+                        onQuantityChange(it.id, next);
+                      }}
+                    />
                   </td>
                   <td className="col-price">{ils(it.price)}</td>
                   <td className="col-sub">{ils(it.subtotal)}</td>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { lookupProductByBarcode } from "../utils/barcode";
 import { searchProductsApi } from "../utils/productSearch";
+import { displayProductSku } from "../utils/entityCodeDisplay";
 import CameraBarcodeButton from "./barcode/CameraBarcodeButton";
 import { Icon } from "./ui";
 import "./barcode/barcode-scanner.css";
@@ -11,6 +12,7 @@ export default function ProductPicker({
   placeholder = "ابحث عن منتج بالاسم أو الباركود…",
   enableCamera = true,
   scope = "retail",
+  showIdentity = false,
 }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
@@ -120,8 +122,9 @@ export default function ProductPicker({
                       marginInlineStart: 8,
                     }}
                   >
-                    {p.matched_barcode || p.barcode} · مخزون {p.stock} · كلفة{" "}
-                    {Number(p.cost).toFixed(2)}
+                    {showIdentity
+                      ? `الرقم ${displayProductSku(p.sku)} · الباركود ${p.matched_barcode || p.barcode || "—"}`
+                      : `${p.matched_barcode || p.barcode} · مخزون ${p.stock} · كلفة ${Number(p.cost).toFixed(2)}`}
                   </span>
                 </li>
               ))}

@@ -1,8 +1,8 @@
 import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
-import { computeSaleTotals, productTaxRate, round2 } from "../utils/tax.js";
+import { computeSaleTotals, productTaxRate, round2, roundScaleSaleTotal } from "../utils/tax.js";
 import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js";
-import { ensureDefaultProductUnit } from "../utils/productUnits.js";
+import { ensureDefaultProductUnit, isWeighedBaseUnit } from "../utils/productUnits.js";
 
 function normalizeNote(note) {
   if (note == null) return null;
@@ -80,6 +80,9 @@ async function normalizeSuspendLine(db, line, settings) {
   const scannedBarcode =
     line.scanned_barcode != null ? String(line.scanned_barcode).trim() || null : null;
   const taxRate = productTaxRate(p, settings);
+  const scaleWeighed = isWeighedBaseUnit(unit, Number(p.is_weighed) === 1);
+  const rawTotal = round2(qty * dbPrice);
+  const totalPrice = scaleWeighed ? roundScaleSaleTotal(rawTotal) : rawTotal;
 
   return {
     product_id: productId,
@@ -89,11 +92,12 @@ async function normalizeSuspendLine(db, line, settings) {
     barcode_snapshot: unit.barcode || p.barcode || null,
     quantity: qty,
     unit_price_snapshot: dbPrice,
-    total_price: round2(qty * dbPrice),
+    total_price: totalPrice,
     conversion_to_base: conversionToBase,
     tax_rate_snapshot: taxRate,
     scanned_barcode_snapshot: scannedBarcode,
     category: p.category,
+    scaleWeighed,
   };
 }
 
@@ -135,6 +139,7 @@ export async function createSuspendedSale(db, { cashierId, note, items }) {
     quantity: L.quantity,
     unitPrice: L.unit_price_snapshot,
     taxRate: L.tax_rate_snapshot,
+    scaleWeighed: Boolean(L.scaleWeighed),
   }));
   const { subtotal, tax } = computeSaleTotals(taxLines, settings);
   const grossTotal = round2(subtotal + tax);
@@ -224,6 +229,7 @@ export async function updateSuspendedSale(db, id, cashierId, { items, note }) {
     quantity: L.quantity,
     unitPrice: L.unit_price_snapshot,
     taxRate: L.tax_rate_snapshot,
+    scaleWeighed: Boolean(L.scaleWeighed),
   }));
   const { subtotal, tax } = computeSaleTotals(taxLines, settings);
   const grossTotal = round2(subtotal + tax);

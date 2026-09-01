@@ -157,6 +157,48 @@ export function createInventoryRouter(db) {
     res.json({ success: true });
   });
 
+  // ───── Zero all product stock (from الجرد) ─────
+
+  router.post("/zero-all-stock", requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+      const toZero = await db.all(
+        "SELECT id, stock FROM products WHERE COALESCE(stock, 0) != 0"
+      );
+      const skippedRow = await db.get(
+        "SELECT COUNT(*) AS n FROM products WHERE COALESCE(stock, 0) = 0"
+      );
+      const skipped = Number(skippedRow?.n) || 0;
+
+      await withTransaction(db, async () => {
+        for (const p of toZero) {
+          const stock = Number(p.stock) || 0;
+          if (stock === 0) continue;
+          await applyStockDelta(db, p.id, -stock, {
+            movementType: "count",
+            referenceType: "zero_all_stock",
+            userId: req.user.id,
+            notes: "تصفير كل الكميات",
+          });
+        }
+      });
+
+      const productsZeroed = toZero.length;
+      await logAudit(
+        db,
+        req,
+        AUDIT_ACTIONS.INVENTORY_COUNT,
+        "products",
+        null,
+        null,
+        { products_zeroed: productsZeroed, skipped }
+      );
+
+      res.json({ products_zeroed: productsZeroed, skipped });
+    } catch (e) {
+      return next(e);
+    }
+  });
+
   // ───── Expiry Reports ─────
 
   router.get("/expiry", requireAuth, requireExpiry, async (req, res) => {

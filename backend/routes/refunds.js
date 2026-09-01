@@ -55,8 +55,8 @@ function buildReceiptHtml(refund, originalTx, cashierName, approverName) {
   const logoHtml = logoSrc
     ? `<img src="${logoSrc}" alt="" style="display:block;margin:0 auto 8px;max-width:180px;max-height:100px;object-fit:contain" />`
     : "";
-  return `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"/><title>إيصال استرجاع #${refund.id}</title>
-<style>body{font-family:system-ui,sans-serif;padding:1.2rem;max-width:480px;margin:auto} .brand{text-align:center;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #ccc} .brand .name{font-weight:700;font-size:1.1rem;margin:0 0 2px} .brand .sub{margin:0;font-size:0.85rem;color:#444} table{width:100%;border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px;text-align:right} .sig{margin-top:2rem;border-top:1px solid #333;padding-top:8px}</style></head><body>
+  return `<!DOCTYPE html><html lang="ar-u-nu-latn" dir="rtl"><head><meta charset="utf-8"/><title>إيصال استرجاع #${refund.id}</title>
+<style>html{-webkit-locale:"en";font-language-override:"eng";font-feature-settings:"locl" 0}body{font-family:system-ui,sans-serif;padding:1.2rem;max-width:480px;margin:auto} .brand{text-align:center;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #ccc} .brand .name{font-weight:700;font-size:1.1rem;margin:0 0 2px} .brand .sub{margin:0;font-size:0.85rem;color:#444} table{width:100%;border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px;text-align:right} .sig{margin-top:2rem;border-top:1px solid #333;padding-top:8px}</style></head><body>
 <div class="brand">
 ${logoHtml}
 <p class="name">${escapeHtml(STORE_NAME_AR)}</p>

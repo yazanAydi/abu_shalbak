@@ -11,6 +11,7 @@ import "./App.css";
 
 const DailyReport = lazy(() => import("./pages/DailyReport"));
 const ProductManagement = lazy(() => import("./pages/ProductManagement"));
+const ProductOrganization = lazy(() => import("./pages/ProductOrganization"));
 const ProductDashboard = lazy(() => import("./pages/ProductDashboard"));
 const UserManagement = lazy(() => import("./pages/UserManagement"));
 const SupplierFinance = lazy(() => import("./pages/SupplierFinance"));
@@ -30,6 +31,9 @@ const SupplierManagement = lazy(() => import("./pages/SupplierManagement"));
 const SupplierStatement = lazy(() => import("./pages/SupplierStatement"));
 const Purchases = lazy(() => import("./pages/Purchases"));
 const SalesInvoices = lazy(() => import("./pages/SalesInvoices"));
+const InventoryDocumentsList = lazy(() => import("./pages/inventoryDocuments/InventoryDocumentsList"));
+const InventoryDocumentForm = lazy(() => import("./pages/inventoryDocuments/InventoryDocumentForm"));
+const InventoryDocumentView = lazy(() => import("./pages/inventoryDocuments/InventoryDocumentView"));
 const UnitsManagement = lazy(() => import("./pages/UnitsManagement"));
 const CategoriesManagement = lazy(() => import("./pages/CategoriesManagement"));
 const Expenses = lazy(() => import("./pages/Expenses"));
@@ -107,6 +111,14 @@ function App() {
             element={
               <OfficeRoute adminOnly>
                 <ProductManagement />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/product-organization"
+            element={
+              <OfficeRoute adminOnly>
+                <ProductOrganization />
               </OfficeRoute>
             }
           />
@@ -292,6 +304,54 @@ function App() {
             element={
               <OfficeRoute adminOnly>
                 <SalesInvoices />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/inventory-receipts"
+            element={
+              <OfficeRoute adminOnly>
+                <InventoryDocumentsList docType="receipt" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/inventory-receipts/new"
+            element={
+              <OfficeRoute adminOnly>
+                <InventoryDocumentForm docType="receipt" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/inventory-receipts/:id"
+            element={
+              <OfficeRoute adminOnly>
+                <InventoryDocumentView docType="receipt" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/inventory-issues"
+            element={
+              <OfficeRoute adminOnly>
+                <InventoryDocumentsList docType="issue" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/inventory-issues/new"
+            element={
+              <OfficeRoute adminOnly>
+                <InventoryDocumentForm docType="issue" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/inventory-issues/:id"
+            element={
+              <OfficeRoute adminOnly>
+                <InventoryDocumentView docType="issue" />
               </OfficeRoute>
             }
           />

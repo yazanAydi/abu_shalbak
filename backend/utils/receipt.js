@@ -1,6 +1,38 @@
 import { getStoreLogoDataUri, STORE_NAME_AR, STORE_PHONE } from "./storeBranding.js";
+import { round2, roundScaleSaleTotal } from "./money.js";
 
 const LINE = 48;
+
+/**
+ * Reprint line totals from stored sale rows. Prefer transaction_items.line_gross;
+ * if missing, round KG lines to whole shekels and leave others at round2(qty × price).
+ * @param {object[]} itemsJson
+ * @param {object[]} [storedItems]
+ */
+export function mapSaleItemsToReceiptLines(itemsJson, storedItems = []) {
+  const items = Array.isArray(itemsJson) ? itemsJson : [];
+  const stored = Array.isArray(storedItems) ? storedItems : [];
+  return items.map((it, i) => {
+    const row = stored[i];
+    const qty = Number(it.quantity) || 0;
+    const price = Number(it.price) || 0;
+    const unitName = it.unit_name || row?.unit_name || "";
+    let lineTotal;
+    if (row?.line_gross != null && Number.isFinite(Number(row.line_gross))) {
+      lineTotal = round2(Number(row.line_gross));
+    } else {
+      const raw = round2(qty * price);
+      lineTotal = unitName === "كغم" ? roundScaleSaleTotal(raw) : raw;
+    }
+    return {
+      name: it.name || `صنف ${it.product_id}`,
+      quantity: qty,
+      price,
+      lineTotal,
+      weighed: unitName === "كغم",
+    };
+  });
+}
 
 function escapeHtml(s) {
   return String(s ?? "")
@@ -134,6 +166,7 @@ function buildPaymentSection(opts) {
 }
 
 const RECEIPT_HTML_CSS = `
+  html { -webkit-locale: "en"; font-language-override: "eng"; font-feature-settings: "locl" 0; }
   body { margin: 0; padding: 12px; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; }
   .receipt { max-width: 384px; margin: 0 auto; }
   .logo-wrap { text-align: center; margin-bottom: 8px; }
@@ -190,7 +223,7 @@ export function buildReceiptHtml(opts) {
   const paymentHtml = paymentLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
 
   return `<!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <title>إيصال</title>

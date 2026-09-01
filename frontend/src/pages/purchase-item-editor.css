@@ -42,26 +42,6 @@
   font-size: 0.85rem;
 }
 
-.purchase-item-editor .qty-stepper {
-  width: 100%;
-  min-width: 0;
-}
-
-.purchase-item-editor .qty-stepper input[type="number"] {
-  width: 2.75rem;
-  min-width: 0;
-  flex: 1 1 auto;
-  padding: 0.35rem 0.2rem;
-  font-size: 0.85rem;
-}
-
-.purchase-item-editor .qty-stepper-btn {
-  width: 1.45rem;
-  height: 1.45rem;
-  flex-shrink: 0;
-  font-size: 0.9rem;
-}
-
 .purchase-item-editor .purchase-item-editor__meta {
   font-size: 0.68rem;
   color: var(--office-panel-muted);

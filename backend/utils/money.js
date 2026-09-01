@@ -16,6 +16,17 @@ export function round2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 }
 
+/**
+ * Whole-shekel half-up rounding for weighed KG POS line totals only.
+ * `round2` first so 5.499999 / 5.50 follow the documented cases, then
+ * Math.floor(n + 0.5): 5.49 → 5, 5.5 → 6.
+ */
+export function roundScaleSaleTotal(amount) {
+  const n = round2(amount);
+  if (!Number.isFinite(n)) return 0;
+  return Math.floor(n + 0.5);
+}
+
 /** Sum an array of money values, rounding the running total each step. */
 export function sumMoney(values) {
   let total = 0;

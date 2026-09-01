@@ -10,6 +10,19 @@ export const WEIGHED_BASE_UNIT_NAME = "كغم";
 export const DEFAULT_PACKAGE_UNIT_NAME = "حبة";
 
 /**
+ * Convert a quantity in a sold/purchased unit into base-unit quantity
+ * (typically KG). Shared by POS checkout, purchases, and goods-in/out.
+ * @param {number} qty
+ * @param {number} conversion
+ */
+export function toBaseQuantity(qty, conversion) {
+  const q = Number(qty);
+  const c = Number(conversion);
+  if (!Number.isFinite(q) || !Number.isFinite(c)) return 0;
+  return Math.round(q * c * 1e6) / 1e6;
+}
+
+/**
  * True when this sold unit is the kg/base line of a weighed product
  * (fractional qty, price per kg). Package units on the same product are false,
  * even when conversion_to_base is 1 (1 حبة = 1 KG).
@@ -58,7 +71,7 @@ export function resolveScaleCode(product, units) {
  * @param {object[]} units
  */
 export function resolvePackageUnit(units) {
-  const list = Array.isArray(units) ? units : [];
+  const list = (Array.isArray(units) ? units : []).filter((u) => u.sale_enabled !== false);
   return (
     list.find((u) => String(u.unit_name || "") === DEFAULT_PACKAGE_UNIT_NAME) ||
     list.find((u) => Number(u.conversion_to_base) > 1) ||
@@ -132,6 +145,73 @@ export async function loadUnitsForProduct(db, productId) {
     [productId]
   );
   return rows.map(formatProductUnit);
+}
+
+/**
+ * Rename the display/base unit label without changing conversions, default
+ * flags, barcodes, prices, or deleting sibling units.
+ *
+ * Weighed products stay on كغم. If another unit on the same product already
+ * has the new name, reject so the admin uses the units editor instead.
+ *
+ * @param {object} db
+ * @param {number} productId
+ * @param {{ currentUnit?: string|null, nextUnit?: string|null, isWeighed?: boolean|number }} [opts]
+ * @returns {Promise<{ unit: string|null, renamed: boolean }>}
+ */
+export async function renameProductDisplayUnit(db, productId, opts = {}) {
+  const isWeighed = Number(opts.isWeighed) === 1 || opts.isWeighed === true;
+  if (isWeighed) {
+    return { unit: WEIGHED_BASE_UNIT_NAME, renamed: false };
+  }
+
+  const nextRaw = opts.nextUnit;
+  const nextName =
+    nextRaw == null || String(nextRaw).trim() === ""
+      ? null
+      : normalizeUnitName(nextRaw);
+
+  if (!nextName) {
+    return { unit: null, renamed: false };
+  }
+
+  await ensureUnitName(db, nextName);
+
+  const units = await loadUnitsForProduct(db, productId);
+  if (!units.length) {
+    return { unit: nextName, renamed: false };
+  }
+
+  const currentRaw = opts.currentUnit;
+  const currentUnit =
+    currentRaw == null || String(currentRaw).trim() === ""
+      ? null
+      : normalizeUnitName(currentRaw);
+
+  const target =
+    (currentUnit && units.find((u) => u.unit_name === currentUnit)) ||
+    units.find((u) => u.is_default) ||
+    units[0];
+
+  if (!target) {
+    return { unit: nextName, renamed: false };
+  }
+  if (target.unit_name === nextName) {
+    return { unit: nextName, renamed: false };
+  }
+
+  const collision = units.find((u) => Number(u.id) !== Number(target.id) && u.unit_name === nextName);
+  if (collision) {
+    const err = new Error("لا يمكن تغيير الوحدة لأن المنتج يملك هذه الوحدة مسبقاً");
+    err.status = 409;
+    throw err;
+  }
+
+  await db.run(
+    "UPDATE product_units SET unit_name = ?, updated_at = datetime('now') WHERE id = ?",
+    [nextName, target.id]
+  );
+  return { unit: nextName, renamed: true };
 }
 
 /**
@@ -585,8 +665,15 @@ export async function ensureWeighedProductUnits(db, productId, opts = {}) {
     [productId, WEIGHED_BASE_UNIT_NAME]
   );
 
-  let packageConversion = Number(opts.packageConversion);
-  let hasPackage = Number.isFinite(packageConversion) && packageConversion > 0;
+  const packageConversion = Number(opts.packageConversion);
+  const packagePriceNum = Number(opts.packagePrice);
+  const hasPackage =
+    Number.isFinite(packageConversion) &&
+    packageConversion > 0 &&
+    opts.packagePrice != null &&
+    opts.packagePrice !== "" &&
+    Number.isFinite(packagePriceNum) &&
+    packagePriceNum > 0;
 
   let kgBarcode;
   if (opts.scaleCode !== undefined) {
@@ -619,24 +706,10 @@ export async function ensureWeighedProductUnits(db, productId, opts = {}) {
     [productId, pkgName]
   );
 
-  if (!hasPackage && opts.packagePrice != null) {
-    packageConversion = existingPack
-      ? Number(existingPack.conversion_to_base) || 1
-      : 1;
-    hasPackage = true;
-  }
-
   if (!hasPackage) return;
 
   // Selling prices are independent of conversion. Conversion only drives inventory.
-  let pkgPrice;
-  if (opts.packagePrice != null && opts.packagePrice !== "") {
-    pkgPrice = round2(Number(opts.packagePrice) || 0);
-  } else if (existingPack) {
-    pkgPrice = round2(Number(existingPack.price) || 0);
-  } else {
-    pkgPrice = 0;
-  }
+  const pkgPrice = round2(packagePriceNum);
   const pkgCost = opts.packageCost != null
     ? round2(Number(opts.packageCost) || 0)
     : existingPack
@@ -796,6 +869,71 @@ export async function ensureDefaultProductUnit(db, productId) {
     conversion_to_base: 1,
     is_default: true,
   });
+}
+
+const PRODUCT_UNIT_REF_TABLES = [
+  ["transaction_items", "product_unit_id"],
+  ["purchase_invoice_items", "product_unit_id"],
+  ["purchase_order_items", "product_unit_id"],
+  ["purchase_return_items", "product_unit_id"],
+  ["inventory_document_items", "product_unit_id"],
+  ["sales_invoice_items", "product_unit_id"],
+  ["suspended_sale_items", "product_unit_id"],
+  ["promotions", "product_unit_id"],
+];
+
+/**
+ * @param {object} db
+ * @param {number} unitId
+ */
+export async function productUnitIsReferenced(db, unitId) {
+  const id = Number(unitId);
+  if (!id) return false;
+  for (const [table, col] of PRODUCT_UNIT_REF_TABLES) {
+    const row = await db.get(`SELECT 1 AS ok FROM ${table} WHERE ${col} = ? LIMIT 1`, [id]);
+    if (row) return true;
+  }
+  return false;
+}
+
+/**
+ * Remove or disable the حبة unit when a dual-sale weighed product is saved as KG-only.
+ * Hard-delete only when no history rows reference the unit.
+ * @param {object} db
+ * @param {number} productId
+ */
+export async function disableWeighedPackageUnit(db, productId) {
+  const pack = await db.get(
+    `SELECT * FROM product_units WHERE product_id = ? AND unit_name = ?`,
+    [productId, DEFAULT_PACKAGE_UNIT_NAME]
+  );
+  if (!pack) return { disabled: false, deleted: false };
+
+  if (await productUnitIsReferenced(db, pack.id)) {
+    await db.run(
+      `UPDATE product_units
+       SET sale_enabled = 0, purchase_enabled = 0, barcode = NULL, is_default_purchase = 0,
+           updated_at = datetime('now')
+       WHERE id = ?`,
+      [pack.id]
+    );
+    await db.run("DELETE FROM product_unit_barcodes WHERE product_unit_id = ?", [pack.id]);
+  } else {
+    await deleteProductUnit(db, productId, pack.id);
+    await db.run(
+      `UPDATE product_units SET is_default_purchase = 1, updated_at = datetime('now')
+       WHERE product_id = ? AND unit_name = ?`,
+      [productId, WEIGHED_BASE_UNIT_NAME]
+    );
+    return { disabled: true, deleted: true };
+  }
+
+  await db.run(
+    `UPDATE product_units SET is_default_purchase = 1, updated_at = datetime('now')
+     WHERE product_id = ? AND unit_name = ?`,
+    [productId, WEIGHED_BASE_UNIT_NAME]
+  );
+  return { disabled: true, deleted: false };
 }
 
 /**

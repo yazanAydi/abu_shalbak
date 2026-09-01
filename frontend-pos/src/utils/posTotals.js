@@ -1,7 +1,24 @@
 import { computeCartDiscount } from "./promotions.js";
+import { isKgSoldUnit } from "./cartProduct.js";
 
 export function round2(n) {
   return Math.round(Number(n) * 100) / 100;
+}
+
+/** Same two-step whole-shekel half-up as backend roundScaleSaleTotal. */
+export function roundScaleSaleTotal(amount) {
+  const n = round2(amount);
+  if (!Number.isFinite(n)) return 0;
+  return Math.floor(n + 0.5);
+}
+
+function isKgCartLine(item) {
+  if (!item) return false;
+  if (isKgSoldUnit(item)) return true;
+  const units = item.availableUnits || [];
+  const selected =
+    units.find((u) => Number(u.id) === Number(item.unitId ?? item.unit_id)) || null;
+  return isKgSoldUnit(selected) || Boolean(item.weighed);
 }
 
 export function productTaxRate(_product, _settings) {
@@ -49,7 +66,8 @@ export function buildCartLineDiscounts(cartItems, promos) {
  * Deal-adjusted line total for cart display (e.g. 2 for ₪15 shows ₪15, not shelf gross).
  */
 export function computeDealLineTotal(cartItem, promos) {
-  const lineGross = round2(Number(cartItem.subtotal) || Number(cartItem.price) * Number(cartItem.quantity));
+  const raw = round2(Number(cartItem.subtotal) || Number(cartItem.price) * Number(cartItem.quantity));
+  const lineGross = isKgCartLine(cartItem) ? roundScaleSaleTotal(raw) : raw;
   if (!Array.isArray(promos) || !promos.length) return lineGross;
 
   const lines = buildPromoLines([cartItem]);
@@ -58,7 +76,8 @@ export function computeDealLineTotal(cartItem, promos) {
     (sum, entry) => round2(sum + (Number(entry.discount) || 0)),
     0
   );
-  return round2(Math.max(0, lineGross - lineDiscount));
+  const afterPromo = round2(Math.max(0, lineGross - lineDiscount));
+  return isKgCartLine(cartItem) ? roundScaleSaleTotal(afterPromo) : afterPromo;
 }
 
 /**
@@ -75,7 +94,8 @@ export function estimateCartTotals(cartItems, settings, promos) {
   for (const it of cartItems) {
     const qty = Math.max(0, Number(it.quantity) || 0);
     const unitPrice = round2(Number(it.price) || 0);
-    subtotal = round2(subtotal + qty * unitPrice);
+    const raw = round2(qty * unitPrice);
+    subtotal = round2(subtotal + (isKgCartLine(it) ? roundScaleSaleTotal(raw) : raw));
   }
 
   const tax = 0;

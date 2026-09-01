@@ -5,7 +5,7 @@ import {
   login,
   authHeader,
 } from "./helpers.js";
-import { findKgUnit, isWeighedBaseUnit } from "../utils/productUnits.js";
+import { findKgUnit, isWeighedBaseUnit, toBaseQuantity } from "../utils/productUnits.js";
 
 describe("product is_weighed (scale product)", () => {
   let ctx;
@@ -197,8 +197,44 @@ describe("product is_weighed (scale product)", () => {
     expect(dup.status).toBe(409);
   });
 
-  test("omitting package_price does not derive it from KG price × conversion", async () => {
+  test("Type A: no package fields creates KG only", async () => {
+    const barcode = "6284444444444";
     const res = await request(ctx.app)
+      .post("/api/v1/products")
+      .set(authHeader(adminToken))
+      .send({
+        barcode,
+        name: "جبنة بيضاء",
+        price: 18,
+        stock: 0,
+        is_weighed: true,
+        scale_code: "2100011",
+      });
+    expect(res.status).toBe(201);
+    const row = unwrap(res);
+    expect(Number(row.is_weighed)).toBe(1);
+    expect(row.package_price).toBeNull();
+    expect(row.package_conversion).toBeNull();
+
+    const units = unwrap(
+      await request(ctx.app).get(`/api/v1/products/${row.id}/units`).set(authHeader(adminToken))
+    ).units;
+    expect(units.filter((u) => u.sale_enabled !== false)).toHaveLength(1);
+    expect(units.some((u) => u.unit_name === "كغم")).toBe(true);
+    expect(units.some((u) => u.unit_name === "حبة" && u.sale_enabled !== false)).toBe(false);
+
+    const lookup = await request(ctx.app)
+      .get("/api/v1/products/lookup")
+      .query({ barcode })
+      .set(authHeader(adminToken));
+    expect(lookup.status).toBe(200);
+    const body = unwrap(lookup);
+    expect(body.availableUnits.length).toBe(1);
+    expect(body.availableUnits[0].unit_name).toBe("كغم");
+  });
+
+  test("one-sided package fields are rejected with 400", async () => {
+    const convOnly = await request(ctx.app)
       .post("/api/v1/products")
       .set(authHeader(adminToken))
       .send({
@@ -210,17 +246,64 @@ describe("product is_weighed (scale product)", () => {
         scale_code: "2100066",
         package_conversion: 2,
       });
-    expect(res.status).toBe(201);
-    const row = unwrap(res);
-    expect(Number(row.package_price)).toBe(0);
+    expect(convOnly.status).toBe(400);
+
+    const priceOnly = await request(ctx.app)
+      .post("/api/v1/products")
+      .set(authHeader(adminToken))
+      .send({
+        barcode: "6253333333334",
+        name: "مرتديلا بدون وزن حبة",
+        price: 25,
+        stock: 0,
+        is_weighed: true,
+        scale_code: "2100067",
+        package_price: 12,
+      });
+    expect(priceOnly.status).toBe(400);
+  });
+
+  test("clearing both package fields disables the حبة unit", async () => {
+    const created = await request(ctx.app)
+      .post("/api/v1/products")
+      .set(authHeader(adminToken))
+      .send({
+        barcode: "6257777777777",
+        name: "مرتديلا ثم وزن فقط",
+        price: 8,
+        stock: 0,
+        is_weighed: true,
+        scale_code: "2100081",
+        package_conversion: 2,
+        package_price: 12,
+      });
+    expect(created.status).toBe(201);
+    const id = unwrap(created).id;
+
+    const cleared = await request(ctx.app)
+      .put(`/api/v1/products/${id}`)
+      .set(authHeader(adminToken))
+      .send({ package_conversion: null, package_price: null });
+    expect(cleared.status).toBe(200);
+    expect(unwrap(cleared).package_price).toBeNull();
+    expect(unwrap(cleared).package_conversion).toBeNull();
+
     const units = unwrap(
-      await request(ctx.app)
-        .get(`/api/v1/products/${row.id}/units`)
-        .set(authHeader(adminToken))
+      await request(ctx.app).get(`/api/v1/products/${id}/units`).set(authHeader(adminToken))
     ).units;
     const pack = units.find((u) => u.unit_name === "حبة");
-    expect(Number(pack.price)).toBe(0);
-    expect(Number(pack.price)).not.toBe(50);
+    if (pack) {
+      expect(pack.sale_enabled).toBe(false);
+      expect(pack.purchase_enabled).toBe(false);
+    }
+    const lookup = unwrap(
+      await request(ctx.app)
+        .get("/api/v1/products/lookup")
+        .query({ barcode: "6257777777777" })
+        .set(authHeader(adminToken))
+    );
+    expect(lookup.availableUnits.every((u) => u.unit_name !== "حبة" || u.sale_enabled === false)).toBe(true);
+    expect(lookup.availableUnits.filter((u) => u.sale_enabled !== false)).toHaveLength(1);
   });
 
   test("findKgUnit does not treat a 1 KG package as the deli unit", () => {
@@ -231,5 +314,11 @@ describe("product is_weighed (scale product)", () => {
     expect(findKgUnit([pack])).toBeNull();
     expect(isWeighedBaseUnit(pack, true)).toBe(false);
     expect(isWeighedBaseUnit(kg, true)).toBe(true);
+  });
+
+  test("toBaseQuantity matches qty × conversion", () => {
+    expect(toBaseQuantity(4, 2)).toBe(8);
+    expect(toBaseQuantity(0.5, 1)).toBe(0.5);
+    expect(toBaseQuantity(2, 3.2)).toBeCloseTo(6.4, 6);
   });
 });

@@ -92,7 +92,7 @@ function openPrintWindow(title, bodyHtml) {
     return;
   }
   const html = `<!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(title)}</title>

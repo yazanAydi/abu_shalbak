@@ -1,32 +1,30 @@
-﻿/* POS login â€” light retail theme */
-:root {
+/* POS login — scoped so tokens do not leak onto checkout :root */
+.login-page {
   --office-font: "Cairo", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
-  --office-bg: #f4f6f9;
+  --office-bg: #e8edf3;
   --office-surface: #ffffff;
-  --office-border: #e2e8f0;
-  --office-text: #1e293b;
-  --office-text-muted: #64748b;
-  --office-accent: #14b8a6;
-  --office-accent-hover: #0f766e;
+  --office-border: #c5cdd8;
+  --office-text: #0f172a;
+  --office-text-muted: #334155;
+  --office-accent: #1e3a5f;
+  --office-accent-hover: #152a46;
   --office-danger: #dc2626;
   --office-danger-soft: rgba(220, 38, 38, 0.08);
   --office-radius: 14px;
   --office-radius-sm: 8px;
   --office-shadow: 0 12px 40px rgba(15, 23, 42, 0.1);
-}
-
-.login-page {
   min-height: 100vh;
   display: flex;
   flex-direction: row-reverse;
   font-family: var(--office-font);
   background: var(--office-bg);
+  color: var(--office-text);
 }
 
 .login-brand {
   flex: 1;
   min-width: 280px;
-  background: linear-gradient(145deg, #0f1419 0%, #134e4a 40%, #0f766e 70%, #14b8a6 100%);
+  background: #1e3a5f;
   color: #fff;
   display: flex;
   flex-direction: column;
@@ -115,21 +113,22 @@
   background: var(--office-bg);
   color: var(--office-text);
   font-family: inherit;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .login-input::placeholder {
-  color: #64748b;
+  color: #334155;
 }
 
 .login-input:focus {
   outline: none;
   border-color: var(--office-accent);
-  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.28);
+  box-shadow: 0 0 0 3px rgba(30, 58, 95, 0.35);
 }
 
 .login-input:disabled {
-  opacity: 0.6;
+  background: #eef1f5;
+  color: var(--office-text-muted);
+  cursor: not-allowed;
 }
 
 .login-error {
@@ -149,25 +148,26 @@
   font-size: 1.1rem;
   font-weight: 700;
   color: #fff;
-  background: var(--office-accent-hover);
+  background: var(--office-accent);
   border: none;
   border-radius: var(--office-radius-sm);
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s ease, transform 0.05s ease;
   margin-top: 0.25rem;
 }
 
 .login-btn:not(:disabled):hover {
-  background: var(--office-accent);
+  background: var(--office-accent-hover);
 }
 
-.login-btn:active:not(:disabled) {
-  transform: translateY(1px);
+.login-btn:focus-visible {
+  outline: 3px solid rgba(30, 58, 95, 0.4);
+  outline-offset: 2px;
 }
 
 .login-btn:disabled {
-  opacity: 0.45;
+  background: #eef1f5;
+  color: #64748b;
   cursor: not-allowed;
 }
 

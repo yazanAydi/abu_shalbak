@@ -230,7 +230,6 @@ export default function Checkout() {
   const changeQuantity = useCallback((cartKey, newQty) => {
     if (!(Number(newQty) > 0)) return;
     dispatch({ type: "CHANGE_QTY", cartKey, newQty });
-    focusBarcodeInput();
   }, []);
 
   const changeUnit = useCallback((cartKey, unitId) => {
@@ -660,7 +659,7 @@ export default function Checkout() {
 
       <footer className="pos-footer">
         <div className="pos-toolbar">
-          <button type="button" className="pos-toolbar-btn" onClick={requestClearCart}>
+          <button type="button" className="pos-toolbar-btn pos-toolbar-btn--danger" onClick={requestClearCart}>
             مسح السلة
           </button>
           <button

@@ -16,7 +16,7 @@ import {
 } from "../utils/salePayments.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { round2 } from "../utils/money.js";
-import { buildReceiptPayload } from "../utils/receipt.js";
+import { buildReceiptPayload, mapSaleItemsToReceiptLines } from "../utils/receipt.js";
 import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
 
@@ -618,12 +618,12 @@ export function createShiftsRouter(db) {
       const payments = await loadSalePayments(db, tid);
       const settings = await getAppSettings(db);
 
-      const lines = (Array.isArray(items) ? items : []).map((it) => ({
-        name: it.name || `صنف ${it.product_id}`,
-        quantity: Number(it.quantity) || 0,
-        price: Number(it.price) || 0,
-        lineTotal: (Number(it.quantity) || 0) * (Number(it.price) || 0),
-      }));
+      const storedItems = await db.all(
+        `SELECT line_gross, unit_name, quantity, unit_price
+         FROM transaction_items WHERE transaction_id = ? ORDER BY id`,
+        [tid]
+      );
+      const lines = mapSaleItemsToReceiptLines(items, storedItems);
 
       const { receipt_text, receipt_html } = buildReceiptPayload({
         transactionId: tid,

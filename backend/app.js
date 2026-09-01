@@ -20,6 +20,7 @@ import { createTelegramRouter } from "./routes/telegram.js";
 import { createShiftsRouter } from "./routes/shifts.js";
 import { createSettingsRouter } from "./routes/settings.js";
 import { createInventoryRouter } from "./routes/inventory.js";
+import { createInventoryDocumentsRouter, createInventoryDocumentPrintRouter } from "./routes/inventoryDocuments.js";
 import { createCustomersRouter } from "./routes/customers.js";
 import { createBanksRouter } from "./routes/banks.js";
 import { createVouchersRouter } from "./routes/vouchers.js";
@@ -111,6 +112,9 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/shifts", createShiftsRouter(db));
   router.use("/settings", createSettingsRouter(db));
   router.use("/inventory", createInventoryRouter(db));
+  router.use("/inventory-receipts", createInventoryDocumentsRouter(db, "receipt"));
+  router.use("/inventory-issues", createInventoryDocumentsRouter(db, "issue"));
+  router.use("/inventory-documents", createInventoryDocumentPrintRouter(db));
   router.use("/customers", createCustomersRouter(db));
   router.use("/banks", createBanksRouter(db));
   router.use("/vouchers", createVouchersRouter(db));

@@ -70,14 +70,14 @@ async function executeCheckoutSaleCore(db, params) {
     const transactionId = ins.lastID;
 
     const preDiscountGross = round2(
-      normalized.reduce((s, L) => s + round2(L.price * L.quantity), 0)
+      detailed.reduce((s, d) => s + round2(Number(d.lineGross) || 0), 0)
     );
     let discountAllocated = 0;
 
     for (let i = 0; i < normalized.length; i++) {
       const L = normalized[i];
       const d = detailed[i];
-      const lineGross = round2(L.price * L.quantity);
+      const lineGross = round2(Number(d?.lineGross) || 0);
       let lineDiscount = 0;
       if (discount > 0 && preDiscountGross > 0) {
         if (i === normalized.length - 1) {

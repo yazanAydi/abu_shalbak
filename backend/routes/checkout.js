@@ -8,7 +8,7 @@ import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
 import { checkoutSchema } from "../middleware/schemas.js";
-import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost, isWeighedBaseUnit } from "../utils/productUnits.js";
+import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost, isWeighedBaseUnit, toBaseQuantity } from "../utils/productUnits.js";
 import {
   resolveCheckoutPayments,
   loadSalePayments,
@@ -308,7 +308,7 @@ export function createCheckoutRouter(db) {
       } else {
         qty = Math.max(1, rawQty || 1);
       }
-      const stockDelta = qty * conversionToBase;
+      const stockDelta = toBaseQuantity(qty, conversionToBase);
 
       const lineName = snapshotRow ? snapshotRow.product_name_snapshot : p.name;
       const lineUnitName = snapshotRow ? snapshotRow.unit_name_snapshot : unit.unit_name;
@@ -340,8 +340,10 @@ export function createCheckoutRouter(db) {
       quantity: L.quantity,
       unitPrice: L.price,
       taxRate: L.taxRate,
+      scaleWeighed: Boolean(L.is_weighed),
     }));
-    const { subtotal, tax } = computeSaleTotals(taxLines, settings);
+    const saleTotals = computeSaleTotals(taxLines, settings);
+    const { subtotal, tax } = saleTotals;
     const grossTotal = round2(subtotal + tax);
 
     let discount = 0;
@@ -427,7 +429,7 @@ export function createCheckoutRouter(db) {
       });
     }
 
-    const detailed = computeSaleTotals(taxLines, settings).lines;
+    const detailed = saleTotals.lines;
 
     if (onAccountTotal > 0) {
       try {

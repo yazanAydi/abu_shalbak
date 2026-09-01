@@ -54,7 +54,7 @@ export function printReport({ title, subtitle, columns, rows, summary, meta }) {
 
   const metaLines = (meta || []).map((line) => `<p class="meta">${escapeHtml(line)}</p>`).join("");
   const html = `<!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(title)}</title>
@@ -157,7 +157,7 @@ export function printSummaryReport({ title, subtitle, sections, meta }) {
   const metaLines = (meta || []).map((line) => `<p class="meta">${escapeHtml(line)}</p>`).join("");
 
   const html = `<!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(title)}</title>

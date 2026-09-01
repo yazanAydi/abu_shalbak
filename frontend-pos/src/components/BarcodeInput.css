@@ -10,25 +10,27 @@
 
 .barcode-input {
   width: 100%;
-  height: 50px;
-  font-size: 1.25rem;
+  height: 54px;
+  font-size: 1.2rem;
+  font-weight: 600;
   padding: 0 12px;
-  border: 2px solid var(--pos-border-strong, #cbd5e1);
+  border: 2px solid var(--pos-border-strong, #9aa8b8);
   border-radius: var(--pos-radius-sm, 8px);
   background: var(--pos-surface, #fff);
-  color: var(--pos-text, #1e293b);
+  color: var(--pos-text, #0f172a);
   box-sizing: border-box;
   font-family: inherit;
 }
 
 .barcode-input::placeholder {
-  color: var(--pos-text-dim, #94a3b8);
+  color: var(--pos-text-muted, #334155);
+  font-weight: 500;
 }
 
 .barcode-input:focus {
   outline: none;
-  border-color: var(--pos-accent, #14b8a6);
-  box-shadow: 0 0 0 3px rgba(var(--pos-accent-rgb, 15, 118, 110), 0.2);
+  border-color: var(--pos-checkout, #ea580c);
+  box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.45);
 }
 
 .barcode-err {

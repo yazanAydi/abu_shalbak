@@ -12,11 +12,12 @@ function LiveClock() {
   }, []);
   return (
     <span className="pos-pill clock">
-      {now.toLocaleString("ar", {
+      {now.toLocaleString("ar-u-nu-latn", {
         timeZone: SHOP_TZ,
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
+        hourCycle: "h23",
       })}
     </span>
   );

@@ -952,6 +952,80 @@ async function migrateStockAdjustmentsTables(db) {
   `);
 }
 
+async function migrateInventoryDocumentsTables(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS inventory_documents (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_number  TEXT NOT NULL UNIQUE,
+      document_type    TEXT NOT NULL CHECK (document_type IN ('receipt','issue')),
+      document_date    TEXT NOT NULL DEFAULT (date('now')),
+      store_id         INTEGER NOT NULL DEFAULT 1,
+      reason           TEXT NOT NULL,
+      notes            TEXT,
+      status           TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('completed')),
+      created_by       INTEGER REFERENCES users(id),
+      created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS inventory_document_items (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_id            INTEGER NOT NULL REFERENCES inventory_documents(id),
+      product_id             INTEGER NOT NULL REFERENCES products(id),
+      product_unit_id        INTEGER REFERENCES product_units(id),
+      quantity               REAL NOT NULL,
+      conversion_to_base     REAL NOT NULL DEFAULT 1,
+      base_quantity          REAL NOT NULL,
+      product_name_snapshot  TEXT,
+      sku_snapshot           TEXT,
+      barcode_snapshot       TEXT,
+      unit_name_snapshot     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_inv_docs_type_date ON inventory_documents(document_type, document_date);
+    CREATE INDEX IF NOT EXISTS idx_inv_docs_created_by ON inventory_documents(created_by);
+    CREATE INDEX IF NOT EXISTS idx_inv_docs_status ON inventory_documents(status);
+    CREATE INDEX IF NOT EXISTS idx_inv_doc_items_doc ON inventory_document_items(document_id);
+    CREATE INDEX IF NOT EXISTS idx_inv_doc_items_product ON inventory_document_items(product_id);
+    CREATE TABLE IF NOT EXISTS inventory_document_sequences (
+      doc_type TEXT PRIMARY KEY CHECK (doc_type IN ('receipt','issue')),
+      last_seq INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  await db.run(
+    `INSERT INTO inventory_document_sequences (doc_type, last_seq) VALUES ('receipt', 0)
+     ON CONFLICT(doc_type) DO NOTHING`
+  );
+  await db.run(
+    `INSERT INTO inventory_document_sequences (doc_type, last_seq) VALUES ('issue', 0)
+     ON CONFLICT(doc_type) DO NOTHING`
+  );
+  try {
+    const recSeq = await db.get(
+      `SELECT last_seq FROM invoice_sequences WHERE name = 'inventory_receipt'`
+    );
+    const issSeq = await db.get(
+      `SELECT last_seq FROM invoice_sequences WHERE name = 'inventory_issue'`
+    );
+    if (Number(recSeq?.last_seq) > 0) {
+      await db.run(
+        `UPDATE inventory_document_sequences
+         SET last_seq = CASE WHEN last_seq < ? THEN ? ELSE last_seq END
+         WHERE doc_type = 'receipt'`,
+        [Number(recSeq.last_seq), Number(recSeq.last_seq)]
+      );
+    }
+    if (Number(issSeq?.last_seq) > 0) {
+      await db.run(
+        `UPDATE inventory_document_sequences
+         SET last_seq = CASE WHEN last_seq < ? THEN ? ELSE last_seq END
+         WHERE doc_type = 'issue'`,
+        [Number(issSeq.last_seq), Number(issSeq.last_seq)]
+      );
+    }
+  } catch {
+    /* invoice_sequences may be empty on a fresh DB */
+  }
+}
+
 async function migrateProductBatchesTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS product_batches (
@@ -2214,6 +2288,7 @@ export async function initDatabase(dbPath) {
   await migrateSalePaymentsCheckMethod(db);
   await migrateTransactionsChangeCurrency(db);
   await migrateSalesInvoicesTables(db);
+  await migrateInventoryDocumentsTables(db);
   await migrateSuspendedSalesTables(db);
 
   await seedUsers(db);
@@ -2240,7 +2315,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.08-one-open-shift";
+const SCHEMA_VERSION = "2026.09-inventory-documents";
 
 async function migratePerfIndexes(db) {
   await db.exec(`

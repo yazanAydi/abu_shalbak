@@ -5,6 +5,7 @@ import {
 } from "../utils/telegram.js";
 
 const POLL_TIMEOUT_SEC = 30;
+const ERROR_RETRY_MS = 100;
 
 export function isTelegramPollingEnabled() {
   return (
@@ -15,35 +16,32 @@ export function isTelegramPollingEnabled() {
 }
 
 /**
- * Long-poll Telegram getUpdates for all approval bots (localhost dev).
+ * Independent long-poll loops for approval bots. A failure in one bot does not
+ * block the others. Offsets are tracked per bot.kind.
+ *
+ * @param {object} db
+ * @param {{ kind: string, token: string }[]} bots
+ * @param {{ get?: typeof telegramGet, pollTimeoutSec?: number, errorRetryMs?: number }} [options]
+ * @returns {() => void} stop
  */
-export function startTelegramPolling(db) {
-  const bots = getApprovalBotPollConfigs();
-  if (!isTelegramPollingEnabled() || !bots.length) return null;
+export function startTelegramBotPollLoops(db, bots, options = {}) {
+  const get = options.get || telegramGet;
+  const pollTimeoutSec = options.pollTimeoutSec ?? POLL_TIMEOUT_SEC;
+  const errorRetryMs = options.errorRetryMs ?? ERROR_RETRY_MS;
 
   /** @type {Record<string, number>} */
   const offsets = {};
   let stopped = false;
 
-  (async () => {
-    for (const bot of bots) {
-      try {
-        await telegramGet("deleteWebhook", {}, bot.token);
-        console.log(`[telegram-poll] Cleared ${bot.kind} bot webhook (required for polling)`);
-      } catch (e) {
-        console.warn(`[telegram-poll] deleteWebhook (${bot.kind}):`, e.message);
-      }
-    }
-    console.log("[telegram-poll] Listening for approve/reject button presses…");
-
-    while (!stopped) {
-      for (const bot of bots) {
+  for (const bot of bots) {
+    void (async () => {
+      while (!stopped) {
         try {
-          const updates = await telegramGet(
+          const updates = await get(
             "getUpdates",
             {
               offset: offsets[bot.kind] || 0,
-              timeout: POLL_TIMEOUT_SEC,
+              timeout: pollTimeoutSec,
               allowed_updates: JSON.stringify(["callback_query"]),
             },
             bot.token
@@ -65,16 +63,45 @@ export function startTelegramPolling(db) {
         } catch (e) {
           if (!stopped) {
             console.error(`[telegram-poll] Error (${bot.kind}):`, e.message);
+            await new Promise((r) => setTimeout(r, errorRetryMs));
           }
         }
       }
-      if (!stopped) {
-        await new Promise((r) => setTimeout(r, 100));
+    })();
+  }
+
+  return () => {
+    stopped = true;
+  };
+}
+
+/**
+ * Long-poll Telegram getUpdates for all approval bots (localhost / LAN store).
+ */
+export function startTelegramPolling(db) {
+  const bots = getApprovalBotPollConfigs();
+  if (!isTelegramPollingEnabled() || !bots.length) return null;
+
+  let stopped = false;
+  /** @type {(() => void) | null} */
+  let stopLoops = null;
+
+  (async () => {
+    for (const bot of bots) {
+      try {
+        await telegramGet("deleteWebhook", {}, bot.token);
+        console.log(`[telegram-poll] Cleared ${bot.kind} bot webhook (required for polling)`);
+      } catch (e) {
+        console.warn(`[telegram-poll] deleteWebhook (${bot.kind}):`, e.message);
       }
     }
+    if (stopped) return;
+    console.log("[telegram-poll] Listening for approve/reject button presses…");
+    stopLoops = startTelegramBotPollLoops(db, bots);
   })();
 
   return () => {
     stopped = true;
+    stopLoops?.();
   };
 }

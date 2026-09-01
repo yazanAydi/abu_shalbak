@@ -35,7 +35,7 @@ export default function PosPaymentPanel({
         ) : null}
         <div className="pos-total-row pos-total-row--grand">
           <span>الإجمالي</span>
-          <span>{ils(total)}</span>
+          <span className="pos-total-amount">{ils(total)}</span>
         </div>
       </div>
 

@@ -71,7 +71,11 @@ describe("expiry alerts", () => {
     expect(messages.length).toBe(1);
     expect(messages[0]).toContain("تنبيه صلاحية");
     expect(messages[0]).toContain("حليب");
-    expect(messages[0]).toContain("3 يوم");
+    expect(messages[0]).toContain("ينتهي خلال 3 أيام");
+    expect(messages[0]).toContain("<b>حليب</b>");
+    expect(messages[0]).toContain("07/06/2026");
+    expect(messages[0]).toContain("المخزون: 12");
+    expect(messages[0]).toContain("<code>123</code>");
   });
 
   test("buildExpiryAlertMessages uses custom title for dairy alerts", () => {
@@ -196,6 +200,167 @@ describe("expiry alerts", () => {
     expect(messages[0]).toContain("لبن");
     expect(messages[1]).toContain("أصناف أخرى");
     expect(messages[1]).toContain("عصير");
+  });
+
+  test("buildExpiryAlertMessages groups by urgency and uses Arabic status labels", () => {
+    const messages = buildExpiryAlertMessages(
+      {
+        products: [
+          {
+            name: "حليب",
+            barcode: "123",
+            days_until_expiry: 3,
+            expiry_date: "2026-06-07",
+            stock: 12,
+          },
+          {
+            name: "زبادي",
+            barcode: "222",
+            days_until_expiry: -17,
+            expiry_date: "2026-05-15",
+            stock: 2,
+          },
+          {
+            name: "لبن",
+            barcode: "111",
+            days_until_expiry: 0,
+            expiry_date: "2026-06-01",
+            stock: 4,
+          },
+        ],
+        batches: [],
+      },
+      7
+    );
+    const text = messages[0];
+    expect(text).toContain("منتهي (1)");
+    expect(text).toContain("ينتهي اليوم (1)");
+    expect(text).toContain("ينتهي قريباً (1)");
+    expect(text).toContain("منتهي منذ 17 يوماً");
+    expect(text).toContain("ينتهي اليوم");
+    expect(text).toContain("ينتهي خلال 3 أيام");
+    expect(text.indexOf("زبادي")).toBeLessThan(text.indexOf("لبن"));
+    expect(text.indexOf("لبن")).toBeLessThan(text.indexOf("حليب"));
+  });
+
+  test("buildExpiryAlertMessages uses Arabic day plurals", () => {
+    const make = (days) =>
+      buildExpiryAlertMessages(
+        {
+          products: [
+            {
+              name: "صنف",
+              barcode: "1",
+              days_until_expiry: days,
+              expiry_date: "2026-06-07",
+              stock: 1,
+            },
+          ],
+          batches: [],
+        },
+        30
+      )[0];
+
+    expect(make(-1)).toContain("منتهي منذ يوم");
+    expect(make(-2)).toContain("منتهي منذ يومين");
+    expect(make(-5)).toContain("منتهي منذ 5 أيام");
+    expect(make(1)).toContain("ينتهي خلال يوم");
+    expect(make(2)).toContain("ينتهي خلال يومين");
+    expect(make(11)).toContain("ينتهي خلال 11 يوماً");
+  });
+
+  test("buildExpiryAlertMessages separates cards with a blank line", () => {
+    const text = buildExpiryAlertMessages(
+      {
+        products: [
+          {
+            name: "أول",
+            barcode: "111",
+            days_until_expiry: 4,
+            expiry_date: "2026-06-07",
+            stock: 1,
+          },
+          {
+            name: "ثاني",
+            barcode: "222",
+            days_until_expiry: 5,
+            expiry_date: "2026-06-08",
+            stock: 2,
+          },
+        ],
+        batches: [],
+      },
+      7
+    )[0];
+    expect(text).toContain("</code>\n\n<b>ثاني</b>");
+  });
+
+  test("buildExpiryAlertMessages escapes HTML in product names", () => {
+    const text = buildExpiryAlertMessages(
+      {
+        products: [
+          {
+            name: "حليب <خاص>",
+            barcode: "123",
+            days_until_expiry: 3,
+            expiry_date: "2026-06-07",
+            stock: 1,
+          },
+        ],
+        batches: [],
+      },
+      7
+    )[0];
+    expect(text).toContain("<b>حليب &lt;خاص&gt;</b>");
+    expect(text).not.toContain("<خاص>");
+  });
+
+  test("buildExpiryAlertMessages omits empty barcode and formats batches", () => {
+    const text = buildExpiryAlertMessages(
+      {
+        products: [
+          {
+            name: "بدون باركود",
+            barcode: "",
+            days_until_expiry: 3,
+            expiry_date: "2026-06-07",
+            stock: 1,
+          },
+        ],
+        batches: [
+          {
+            product_name: "جبنة",
+            batch_no: "B1",
+            barcode: "999",
+            days_until_expiry: 0,
+            expiry_date: "2026-09-01",
+            quantity: 8,
+          },
+        ],
+      },
+      7
+    )[0];
+    const productBlock = text.slice(0, text.indexOf("🏷️ دفعات"));
+    expect(productBlock).not.toContain("الباركود:");
+    expect(text).toContain("<b>جبنة</b>");
+    expect(text).toContain("الكمية: 8");
+    expect(text).toContain("الدفعة: B1");
+    expect(text).toContain("01/09/2026");
+  });
+
+  test("buildExpiryAlertMessages adds continuation header when splitting long lists", () => {
+    const products = Array.from({ length: 80 }, (_, i) => ({
+      name: `صنف اختبار رقم ${i + 1} مع اسم طويل حتى نتجاوز حد الرسالة في تيليجرام`,
+      barcode: `1234567890${String(i).padStart(3, "0")}`,
+      days_until_expiry: 4,
+      expiry_date: "2026-06-07",
+      stock: 1,
+    }));
+    const messages = buildExpiryAlertMessages({ products, batches: [] }, 7);
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages[0]).not.toContain("تتمة — تنبيه صلاحية");
+    expect(messages[1]).toMatch(/^تتمة — تنبيه صلاحية\n\n/);
+    expect(messages[1]).toContain("<b>");
   });
 
   test("sendExpiryAlert skips when expiry bot not configured", async () => {

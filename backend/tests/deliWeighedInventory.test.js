@@ -172,8 +172,41 @@ describe("deli dual-sale weighed inventory", () => {
       },
     ]);
     expect(res.status).toBe(201);
-    expect(unwrap(res).total).toBeCloseTo(12.5, 2);
+    expect(unwrap(res).total).toBe(13);
     expect(await stockOf(productA.id)).toBeCloseTo(before - 0.5, 3);
+  });
+
+  test("2b. 0.93 KG × 6 ₪ charges 6 and deducts 0.93 KG", async () => {
+    const p = await createDeliProduct({
+      barcode: "6250000000093",
+      name: "جبنة تقريب",
+      scale_code: "2100293",
+      price: 6,
+      package_conversion: 2,
+      package_price: 12,
+    });
+    await ctx.db.run("UPDATE products SET stock = 8 WHERE id = ?", [p.id]);
+    const res = await checkoutLines([
+      {
+        product_id: p.id,
+        unit_id: p.kgUnit.id,
+        quantity: 0.93,
+        price: 6,
+        scanned_barcode: "2100293009304",
+      },
+    ]);
+    expect(res.status).toBe(201);
+    const body = unwrap(res);
+    expect(body.total).toBe(6);
+    const item = await ctx.db.get(
+      "SELECT quantity, unit_price, line_gross, unit_name FROM transaction_items WHERE transaction_id = ?",
+      [body.transaction_id]
+    );
+    expect(item.unit_name).toBe("كغم");
+    expect(Number(item.unit_price)).toBe(6);
+    expect(Number(item.quantity)).toBeCloseTo(0.93, 3);
+    expect(Number(item.line_gross)).toBe(6);
+    expect(await stockOf(p.id)).toBeCloseTo(7.07, 3);
   });
 
   test("3. whole package sale of 1 حبة deducts 2 KG", async () => {
@@ -499,7 +532,7 @@ describe("deli dual-sale weighed inventory", () => {
     const putPack = await request(ctx.app)
       .put(`/api/v1/products/${mortadella.id}`)
       .set(authHeader(adminToken))
-      .send({ package_price: 15 });
+      .send({ package_conversion: 1, package_price: 15 });
     expect(putPack.status).toBe(200);
     expect(Number(unwrap(putPack).package_price)).toBe(15);
     expect(Number(unwrap(putPack).price)).toBe(7);
@@ -540,5 +573,27 @@ describe("deli dual-sale weighed inventory", () => {
     ]);
     expect(fracPack.status).toBe(400);
     expect(fracPack.body.code || unwrap(fracPack).code).toBe("INVALID_PACKAGE_QTY");
+  });
+
+  test("16. Type A scale barcode uses KG price and a single unit", async () => {
+    const cheese = await createDeliProduct({
+      barcode: "6255555555555",
+      name: "جبنة بيضاء ميزان",
+      scale_code: "2100091",
+      price: 20,
+    });
+    expect(cheese.packUnit).toBeUndefined();
+    const units = unwrap(
+      await request(ctx.app).get(`/api/v1/products/${cheese.id}/units`).set(authHeader(adminToken))
+    ).units;
+    expect(units.filter((u) => u.sale_enabled !== false).map((u) => u.unit_name)).toEqual(["كغم"]);
+
+    const scale = await buildBarcodeLookupResponse(ctx.db, "2100091002554");
+    expect(scale).not.toBeNull();
+    expect(scale.weighed).toBe(true);
+    expect(scale.weight).toBeCloseTo(0.255, 3);
+    expect(scale.unit_name).toBe("كغم");
+    expect(Number(scale.price)).toBe(20);
+    expect(scale.availableUnits.length).toBe(1);
   });
 });

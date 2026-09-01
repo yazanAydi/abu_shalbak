@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
 import { cartItemPromoKey, computeDealLineTotal } from "../../utils/posTotals";
 import { isKgSoldUnit } from "../../utils/cartProduct";
+import Icon from "../icons/Icon";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -100,7 +101,8 @@ function CartTableBody({
           {cartItems.length === 0 ? (
             <tr>
               <td colSpan={7} className="pos-cart-empty">
-                امسح باركوداً أو اضغط زراً سريعاً
+                <Icon name="purchases" size={28} className="pos-cart-empty-icon" />
+                <span>امسح باركوداً أو اضغط زراً سريعاً</span>
               </td>
             </tr>
           ) : (
@@ -111,8 +113,15 @@ function CartTableBody({
               const promoKey = cartItemPromoKey(it);
               const lineDiscount = Number(lineDiscounts?.[promoKey]) || 0;
               const lineTotal = computeDealLineTotal(it, activePromos);
+              const kgLine = isKgCartLine(it);
+              const rowClass = [
+                lineDiscount > 0 ? "pos-line--deal" : "",
+                kgLine ? "pos-line--weight" : "",
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined;
               return (
-                <tr key={key} data-cart-key={key} className={lineDiscount > 0 ? "pos-line--deal" : undefined}>
+                <tr key={key} data-cart-key={key} className={rowClass}>
                   <td>{i + 1}</td>
                   <td className="pos-col-name" title={it.name}>
                     {it.name}
@@ -139,35 +148,23 @@ function CartTableBody({
                     )}
                   </td>
                   <td className="pos-col-qty">
-                    {isKgCartLine(it) ? (
+                    {kgLine ? (
                       <span className="pos-qty-val pos-qty-val--weight">{formatQty(it)}</span>
                     ) : (
                       <div className="pos-qty-controls">
-                        <button
-                          type="button"
-                          className="pos-qty-btn"
-                          onMouseDown={preventButtonFocus}
-                          onClick={() => {
-                            onQuantityChange(key, Math.max(1, it.quantity - 1));
-                            focusBarcodeInput();
+                        <input
+                          type="number"
+                          className="pos-qty-input"
+                          min={1}
+                          step="any"
+                          value={it.quantity}
+                          aria-label="الكمية"
+                          onChange={(e) => {
+                            const next = Number(e.target.value);
+                            if (!(next > 0)) return;
+                            onQuantityChange(key, next);
                           }}
-                          aria-label="نقص"
-                        >
-                          −
-                        </button>
-                        <span className="pos-qty-val">{it.quantity}</span>
-                        <button
-                          type="button"
-                          className="pos-qty-btn"
-                          onMouseDown={preventButtonFocus}
-                          onClick={() => {
-                            onQuantityChange(key, it.quantity + 1);
-                            focusBarcodeInput();
-                          }}
-                          aria-label="زيادة"
-                        >
-                          +
-                        </button>
+                        />
                       </div>
                     )}
                   </td>

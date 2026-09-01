@@ -62,7 +62,7 @@ export function printReceipt(receiptOrPayload, options = {}) {
         ? `<div style="text-align:center;margin-bottom:8px"><img src="${escapeHtml(logoSrc)}" alt="" style="display:inline-block;max-width:180px;max-height:100px;object-fit:contain" /></div>`
         : "";
       win.document.write(
-        `<!DOCTYPE html><html lang="ar" dir="rtl"><head><title>إيصال</title></head><body style="margin:0;padding:12px;background:#fff;color:#000;display:flex;justify-content:center"><div style="max-width:384px;width:100%">${logoHtml}<pre style="font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre;margin:0">${escapeHtml(text)}</pre></div></body></html>`
+        `<!DOCTYPE html><html lang="ar-u-nu-latn" dir="rtl"><head><title>إيصال</title><style>html{-webkit-locale:"en";font-language-override:"eng";font-feature-settings:"locl" 0}</style></head><body style="margin:0;padding:12px;background:#fff;color:#000;display:flex;justify-content:center"><div style="max-width:384px;width:100%">${logoHtml}<pre style="font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre;margin:0">${escapeHtml(text)}</pre></div></body></html>`
       );
     }
     win.document.close();
