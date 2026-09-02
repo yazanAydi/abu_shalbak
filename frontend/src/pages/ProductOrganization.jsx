@@ -23,6 +23,11 @@ import {
   buildOrganizationListParams,
 } from "./productOrganization/buildListParams";
 import {
+  MISSING_CATALOG_FILTER,
+  NO_UNIT_LABEL,
+  UNCATEGORIZED_LABEL,
+} from "../utils/productCatalogLabels";
+import {
   ROW_SAVE,
   applySuccessfulPatch,
   errorLabel,
@@ -218,7 +223,7 @@ export default function ProductOrganization() {
               value={weighed ? "كغم" : p.unit || ""}
               names={unitNames}
               disabled={weighed}
-              emptyLabel="اختر الوحدة"
+              emptyLabel={NO_UNIT_LABEL}
               onChange={(e) => patchProduct(p, "unit", e.target.value)}
             />
           );
@@ -231,7 +236,7 @@ export default function ProductOrganization() {
           <CategorySelect
             value={p.category || ""}
             categories={categories}
-            emptyLabel="بدون تصنيف"
+            emptyLabel={UNCATEGORIZED_LABEL}
             onChange={(e) => patchProduct(p, "category", e.target.value)}
           />
         ),
@@ -299,6 +304,8 @@ export default function ProductOrganization() {
               value={unitFilter}
               names={unitNames}
               emptyLabel="كل الوحدات"
+              missingValue={MISSING_CATALOG_FILTER}
+              missingLabel={NO_UNIT_LABEL}
               onChange={(e) => {
                 setUnitFilter(e.target.value);
                 setOffset(0);
@@ -310,6 +317,8 @@ export default function ProductOrganization() {
               value={categoryFilter}
               categories={categories}
               emptyLabel="كل التصنيفات"
+              missingValue={MISSING_CATALOG_FILTER}
+              missingLabel={UNCATEGORIZED_LABEL}
               onChange={(e) => {
                 setCategoryFilter(e.target.value);
                 setOffset(0);

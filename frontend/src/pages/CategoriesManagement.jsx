@@ -89,10 +89,10 @@ export default function CategoriesManagement() {
   async function remove(row) {
     if (!window.confirm(`حذف التصنيف «${row.name}»؟`)) return;
     try {
-      const { data } = await api.delete(`/api/products/categories/${row.id}`, {
+      await api.delete(`/api/products/categories/${row.id}`, {
         headers: getAuthHeaders(),
       });
-      toast.success(data?.deactivated ? "التصنيف مستخدم — تم تعطيله" : "تم الحذف");
+      toast.success("تم الحذف");
       load();
     } catch (e) {
       toast.error(e.response?.data?.error || e.message || "فشل الحذف");

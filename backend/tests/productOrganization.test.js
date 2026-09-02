@@ -422,4 +422,39 @@ describe("product organization (category/unit)", () => {
     expect(Array.isArray(posRows)).toBe(true);
     expect(posRows.some((p) => p.id === dairyPiece.id)).toBe(true);
   });
+
+  test("admin list filters missing category and unit with __none__", async () => {
+    const noCat = await createProduct({
+      barcode: "8800110020",
+      name: "بدون تصنيف تنظيم",
+      category: "ألبان-تنظيم-ناقص",
+      unit: "حبة",
+    });
+    const noUnit = await createProduct({
+      barcode: "8800110021",
+      name: "بدون وحدة تنظيم",
+      category: "لحوم-تنظيم-ناقص",
+      unit: "كيس",
+    });
+    await ctx.db.run("UPDATE products SET category = NULL WHERE id = ?", [noCat.id]);
+    await ctx.db.run("UPDATE products SET unit = NULL, is_weighed = 0 WHERE id = ?", [noUnit.id]);
+
+    const byMissingCat = unwrap(
+      await request(ctx.app)
+        .get("/api/v1/products")
+        .query({ category: "__none__", limit: 50 })
+        .set(authHeader(adminToken))
+    );
+    expect(byMissingCat.items.map((p) => p.id)).toEqual(expect.arrayContaining([noCat.id]));
+    expect(byMissingCat.items.some((p) => p.id === noUnit.id)).toBe(false);
+
+    const byMissingUnit = unwrap(
+      await request(ctx.app)
+        .get("/api/v1/products")
+        .query({ unit: "__none__", limit: 50 })
+        .set(authHeader(adminToken))
+    );
+    expect(byMissingUnit.items.map((p) => p.id)).toEqual(expect.arrayContaining([noUnit.id]));
+    expect(byMissingUnit.items.some((p) => p.id === noCat.id)).toBe(false);
+  });
 });

@@ -6,6 +6,7 @@ import {
   authHeader,
 } from "./helpers.js";
 import { CANONICAL_UNIT_NAMES } from "../utils/unitNames.js";
+import { seedUnitNamesCatalog } from "../utils/unitNameCatalog.js";
 
 function unwrapData(body) {
   return body?.data ?? body;
@@ -31,6 +32,7 @@ describe("unit name catalog", () => {
       .get("/api/v1/products/unit-names")
       .set(authHeader(adminToken));
     expect(res.status).toBe(200);
+    expect(String(res.headers["cache-control"] || "")).toMatch(/no-store/i);
     const names = unwrapData(res.body).map((r) => r.name);
     expect(names).toEqual(expect.arrayContaining(CANONICAL_UNIT_NAMES));
   });
@@ -90,18 +92,61 @@ describe("unit name catalog", () => {
     expect(unit.unit_name).toBe("ربطة خاصة");
   });
 
-  test("delete deactivates when used", async () => {
+  test("delete unassigns products.unit and removes the catalog row", async () => {
     const created = await request(ctx.app)
       .post("/api/v1/products/unit-names")
       .set(authHeader(adminToken))
       .send({ name: "مستخدم" });
     const id = unwrapData(created.body).id;
-    await ctx.db.run("UPDATE products SET unit = 'مستخدم' WHERE id = ?", [ctx.productId]);
+    await ctx.db.run("UPDATE products SET unit = 'مستخدم', is_weighed = 0 WHERE id = ?", [
+      ctx.productId,
+    ]);
 
-    const deactivate = await request(ctx.app)
+    const removed = await request(ctx.app)
       .delete(`/api/v1/products/unit-names/${id}`)
       .set(authHeader(adminToken));
-    expect(deactivate.status).toBe(200);
-    expect(unwrapData(deactivate.body).deactivated).toBe(true);
+    expect(removed.status).toBe(200);
+    expect(unwrapData(removed.body).success).toBe(true);
+
+    const gone = await ctx.db.get("SELECT * FROM unit_names WHERE id = ?", [id]);
+    expect(gone).toBeUndefined();
+    const product = await ctx.db.get("SELECT unit FROM products WHERE id = ?", [ctx.productId]);
+    expect(product.unit).toBeNull();
+  });
+
+  test("delete leaves weighed products on كغم", async () => {
+    const kg = await ctx.db.get("SELECT * FROM unit_names WHERE name = ?", ["كغم"]);
+    expect(kg).toBeTruthy();
+    await ctx.db.run("UPDATE products SET unit = 'كغم', is_weighed = 1 WHERE id = ?", [
+      ctx.productId,
+    ]);
+
+    const removed = await request(ctx.app)
+      .delete(`/api/v1/products/unit-names/${kg.id}`)
+      .set(authHeader(adminToken));
+    expect(removed.status).toBe(200);
+
+    const gone = await ctx.db.get("SELECT * FROM unit_names WHERE id = ?", [kg.id]);
+    expect(gone).toBeUndefined();
+    const product = await ctx.db.get("SELECT unit, is_weighed FROM products WHERE id = ?", [
+      ctx.productId,
+    ]);
+    expect(product.unit).toBe("كغم");
+    expect(Number(product.is_weighed)).toBe(1);
+  });
+
+  test("seed after delete does not resurrect a canonical name", async () => {
+    const pack = await ctx.db.get("SELECT * FROM unit_names WHERE name = ?", ["بكيت"]);
+    expect(pack).toBeTruthy();
+    await ctx.db.run("UPDATE products SET unit = NULL WHERE unit = ?", ["بكيت"]);
+
+    const del = await request(ctx.app)
+      .delete(`/api/v1/products/unit-names/${pack.id}`)
+      .set(authHeader(adminToken));
+    expect(del.status).toBe(200);
+
+    await seedUnitNamesCatalog(ctx.db);
+    const back = await ctx.db.get("SELECT * FROM unit_names WHERE name = ?", ["بكيت"]);
+    expect(back).toBeUndefined();
   });
 });

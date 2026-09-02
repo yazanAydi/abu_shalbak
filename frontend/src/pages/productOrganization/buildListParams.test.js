@@ -1,4 +1,5 @@
 import { buildOrganizationListParams, PRODUCT_ORG_PAGE_SIZE } from "./buildListParams";
+import { MISSING_CATALOG_FILTER } from "../../utils/productCatalogLabels";
 
 describe("buildOrganizationListParams", () => {
   test("defaults to paginated catalogue without POS search", () => {
@@ -47,6 +48,20 @@ describe("buildOrganizationListParams", () => {
       limit: PRODUCT_ORG_PAGE_SIZE,
       offset: 0,
       is_active: 0,
+    });
+  });
+
+  test("passes missing category and unit sentinel through", () => {
+    expect(
+      buildOrganizationListParams({
+        unit: MISSING_CATALOG_FILTER,
+        category: MISSING_CATALOG_FILTER,
+      })
+    ).toEqual({
+      limit: PRODUCT_ORG_PAGE_SIZE,
+      offset: 0,
+      unit: MISSING_CATALOG_FILTER,
+      category: MISSING_CATALOG_FILTER,
     });
   });
 });

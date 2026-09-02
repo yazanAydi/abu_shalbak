@@ -64,12 +64,14 @@ export async function listProductCategories(db, { activeOnly = false } = {}) {
 }
 
 export async function seedProductCategoriesFromProducts(db) {
+  const countRow = await db.get("SELECT COUNT(*) AS n FROM product_categories");
+  const empty = (countRow?.n || 0) === 0;
   const rows = await db.all(
     `SELECT DISTINCT TRIM(category) AS name FROM products
      WHERE category IS NOT NULL AND TRIM(category) != ''`
   );
   const names = new Set(rows.map((r) => r.name).filter(Boolean));
-  names.add(BAKERY_CATEGORY_NAME);
+  if (empty) names.add(BAKERY_CATEGORY_NAME);
   for (const name of names) {
     await db.run("INSERT OR IGNORE INTO product_categories (name) VALUES (?)", [name]);
   }
@@ -130,20 +132,12 @@ export async function updateProductCategory(db, id, { name, active } = {}) {
 export async function deleteProductCategory(db, id) {
   const ex = await db.get("SELECT * FROM product_categories WHERE id = ?", [id]);
   if (!ex) throw httpError(404, "غير موجود", "NOT_FOUND");
-  const usedProducts = await db.get(
-    "SELECT COUNT(*) AS n FROM products WHERE category = ?",
-    [ex.name]
-  );
-  const usedPromos = await db.get(
-    "SELECT COUNT(*) AS n FROM promotions WHERE category = ?",
-    [ex.name]
-  );
-  if ((usedProducts?.n || 0) > 0 || (usedPromos?.n || 0) > 0) {
-    await db.run("UPDATE product_categories SET active = 0 WHERE id = ?", [id]);
-    invalidateCategoryCache();
-    return { success: true, deactivated: true };
-  }
+  await db.run("UPDATE products SET category = NULL WHERE category = ?", [ex.name]);
+  const promoClear = await db.run("UPDATE promotions SET category = NULL WHERE category = ?", [
+    ex.name,
+  ]);
+  if ((promoClear.changes ?? 0) > 0) invalidatePromotionsCache();
   await db.run("DELETE FROM product_categories WHERE id = ?", [id]);
   invalidateCategoryCache();
-  return { success: true, deactivated: false };
+  return { success: true };
 }

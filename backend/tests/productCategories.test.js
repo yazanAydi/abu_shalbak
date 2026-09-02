@@ -5,6 +5,7 @@ import {
   login,
   authHeader,
 } from "./helpers.js";
+import { seedProductCategoriesFromProducts } from "../utils/productCategories.js";
 
 function unwrapData(body) {
   return body?.data ?? body;
@@ -30,6 +31,7 @@ describe("product categories", () => {
       .get("/api/v1/products/categories")
       .set(authHeader(adminToken));
     expect(res.status).toBe(200);
+    expect(String(res.headers["cache-control"] || "")).toMatch(/no-store/i);
     const rows = unwrapData(res.body);
     const names = rows.map((r) => r.name);
     expect(names).toEqual(expect.arrayContaining(["Beverages", "Bakery", "مواد مخبز"]));
@@ -89,32 +91,60 @@ describe("product categories", () => {
     expect(promo.category).toBe("مشتقات الألبان");
   });
 
-  test("delete deactivates when used and removes when unused", async () => {
+  test("delete unassigns products and promotions then removes the row", async () => {
     const used = await request(ctx.app)
       .post("/api/v1/products/categories")
       .set(authHeader(adminToken))
       .send({ name: "مستخدم" });
     const usedId = unwrapData(used.body).id;
     await ctx.db.run("UPDATE products SET category = 'مستخدم' WHERE id = ?", [ctx.productId]);
+    await ctx.db.run(
+      `INSERT INTO promotions (name, offer_type, category, discount_value, active)
+       VALUES ('خصم مستخدم', 'percentage', 'مستخدم', 10, 1)`
+    );
 
-    const deactivate = await request(ctx.app)
+    const removed = await request(ctx.app)
       .delete(`/api/v1/products/categories/${usedId}`)
       .set(authHeader(adminToken));
-    expect(deactivate.status).toBe(200);
-    expect(unwrapData(deactivate.body).deactivated).toBe(true);
+    expect(removed.status).toBe(200);
+    expect(unwrapData(removed.body).success).toBe(true);
+
+    const gone = await ctx.db.get("SELECT * FROM product_categories WHERE id = ?", [usedId]);
+    expect(gone).toBeUndefined();
+    const product = await ctx.db.get("SELECT category FROM products WHERE id = ?", [ctx.productId]);
+    expect(product.category).toBeNull();
+    const promo = await ctx.db.get("SELECT category FROM promotions WHERE name = 'خصم مستخدم'");
+    expect(promo.category).toBeNull();
 
     const unused = await request(ctx.app)
       .post("/api/v1/products/categories")
       .set(authHeader(adminToken))
       .send({ name: "غير مستخدم" });
     const unusedId = unwrapData(unused.body).id;
-    const removed = await request(ctx.app)
+    const unusedRemoved = await request(ctx.app)
       .delete(`/api/v1/products/categories/${unusedId}`)
       .set(authHeader(adminToken));
-    expect(removed.status).toBe(200);
-    expect(unwrapData(removed.body).deactivated).toBe(false);
+    expect(unusedRemoved.status).toBe(200);
+    const unusedGone = await ctx.db.get("SELECT * FROM product_categories WHERE id = ?", [
+      unusedId,
+    ]);
+    expect(unusedGone).toBeUndefined();
+  });
 
-    const gone = await ctx.db.get("SELECT * FROM product_categories WHERE id = ?", [unusedId]);
-    expect(gone).toBeUndefined();
+  test("seed after delete does not resurrect bakery when unused", async () => {
+    const bakery = await ctx.db.get("SELECT * FROM product_categories WHERE name = ?", [
+      "مواد مخبز",
+    ]);
+    expect(bakery).toBeTruthy();
+    const del = await request(ctx.app)
+      .delete(`/api/v1/products/categories/${bakery.id}`)
+      .set(authHeader(adminToken));
+    expect(del.status).toBe(200);
+
+    await seedProductCategoriesFromProducts(ctx.db);
+    const back = await ctx.db.get("SELECT * FROM product_categories WHERE name = ?", [
+      "مواد مخبز",
+    ]);
+    expect(back).toBeUndefined();
   });
 });

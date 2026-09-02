@@ -7,9 +7,11 @@ export default function UnitNameSelect({
   value = "",
   onChange,
   disabled = false,
-  emptyLabel = "اختر الوحدة",
+  emptyLabel = "منغير وحدة",
   names: namesProp,
   allowEmpty = true,
+  missingValue,
+  missingLabel,
 }) {
   const [loaded, setLoaded] = useState([]);
 
@@ -36,11 +38,13 @@ export default function UnitNameSelect({
   const names = namesProp !== undefined ? namesProp : loaded;
   const current = value || "";
   const known = new Set(names.map((c) => c.name));
-  const legacy = current && !known.has(current) ? current : null;
+  const legacy =
+    current && current !== missingValue && !known.has(current) ? current : null;
 
   return (
     <Select value={current} onChange={onChange} disabled={disabled}>
       {allowEmpty ? <option value="">{emptyLabel}</option> : null}
+      {missingValue ? <option value={missingValue}>{missingLabel}</option> : null}
       {legacy ? <option value={legacy}>{legacy}</option> : null}
       {names.map((c) => (
         <option key={c.id ?? c.name} value={c.name}>

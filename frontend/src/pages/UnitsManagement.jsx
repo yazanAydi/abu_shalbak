@@ -120,10 +120,10 @@ export default function UnitsManagement() {
   async function removeUnitName(row) {
     if (!window.confirm(`حذف اسم الوحدة «${row.name}»؟`)) return;
     try {
-      const { data } = await api.delete(`/api/products/unit-names/${row.id}`, {
+      await api.delete(`/api/products/unit-names/${row.id}`, {
         headers: getAuthHeaders(),
       });
-      toast.success(data?.deactivated ? "الاسم مستخدم — تم تعطيله" : "تم الحذف");
+      toast.success("تم الحذف");
       loadUnitNames();
     } catch (e) {
       toast.error(e.response?.data?.error || e.message || "فشل الحذف");

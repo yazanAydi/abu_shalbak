@@ -14,6 +14,7 @@ import {
 } from "../components/ui";
 import { ils, num, formatStockWithUnit } from "../utils/format";
 import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
+import { NO_UNIT_LABEL, UNCATEGORIZED_LABEL } from "../utils/productCatalogLabels";
 import ChangePriceModal from "./productDashboard/ChangePriceModal";
 import EditProductModal from "./productDashboard/EditProductModal";
 import "./ProductDashboard.css";
@@ -191,8 +192,8 @@ export default function ProductDashboard() {
                 {product?.barcode_count > 1 ? ` (+${product.barcode_count - 1})` : ""}
               </span>
               <span className="pd-chip">الرقم: {displayProductSku(product?.sku)}</span>
-              {product?.category ? <span className="pd-chip">التصنيف: {product.category}</span> : null}
-              {product?.unit ? <span className="pd-chip">الوحدة: {product.unit}</span> : null}
+              <span className="pd-chip">التصنيف: {product?.category || UNCATEGORIZED_LABEL}</span>
+              <span className="pd-chip">الوحدة: {product?.unit || NO_UNIT_LABEL}</span>
               {product?.scale_code ? <span className="pd-chip">رمز الميزان: {product.scale_code}</span> : null}
               {Number(product?.is_weighed) === 1 && product?.package_conversion != null ? (
                 <span className="pd-chip">وزن الحبة: {product.package_conversion} كغم</span>

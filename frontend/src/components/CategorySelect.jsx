@@ -7,9 +7,11 @@ export default function CategorySelect({
   value = "",
   onChange,
   disabled = false,
-  emptyLabel = "بدون تصنيف",
+  emptyLabel = "غير مصنف",
   categories: categoriesProp,
   allowEmpty = true,
+  missingValue,
+  missingLabel,
 }) {
   const [loaded, setLoaded] = useState([]);
 
@@ -36,11 +38,13 @@ export default function CategorySelect({
   const categories = categoriesProp !== undefined ? categoriesProp : loaded;
   const current = value || "";
   const known = new Set(categories.map((c) => c.name));
-  const legacy = current && !known.has(current) ? current : null;
+  const legacy =
+    current && current !== missingValue && !known.has(current) ? current : null;
 
   return (
     <Select value={current} onChange={onChange} disabled={disabled}>
       {allowEmpty ? <option value="">{emptyLabel}</option> : null}
+      {missingValue ? <option value={missingValue}>{missingLabel}</option> : null}
       {legacy ? <option value={legacy}>{legacy}</option> : null}
       {categories.map((c) => (
         <option key={c.id ?? c.name} value={c.name}>

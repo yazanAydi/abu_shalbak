@@ -65,7 +65,7 @@ import {
 } from "../utils/unitNameCatalog.js";
 import { round2 } from "../utils/money.js";
 import { withTransaction } from "../utils/dbTx.js";
-import { sendCachedJson } from "../utils/httpCache.js";
+import { MISSING_CATALOG_FILTER } from "../utils/catalogMissingFilter.js";
 
 function clampProductStock(raw) {
   const n = Number(raw);
@@ -544,13 +544,17 @@ function adminCatalogFilters(query, alias = "") {
   let needsBarcodeJoin = false;
 
   const category = String(query.category ?? "").trim();
-  if (category) {
+  if (category === MISSING_CATALOG_FILTER) {
+    sql += ` AND (${col("category")} IS NULL OR TRIM(${col("category")}) = '')`;
+  } else if (category) {
     sql += ` AND ${col("category")} = ?`;
     params.push(category);
   }
 
   const unit = String(query.unit ?? "").trim();
-  if (unit) {
+  if (unit === MISSING_CATALOG_FILTER) {
+    sql += ` AND (${col("unit")} IS NULL OR TRIM(${col("unit")}) = '')`;
+  } else if (unit) {
     sql += ` AND ${col("unit")} = ?`;
     params.push(unit);
   }
@@ -815,7 +819,8 @@ export function createProductsRouter(db) {
       req.query.active === "1" ||
       req.query.active === "true" ||
       String(req.query.active || "").toLowerCase() === "yes";
-    return sendCachedJson(req, res, await listProductCategories(db, { activeOnly }), { maxAgeSec: 60 });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(await listProductCategories(db, { activeOnly }));
   });
 
   router.post("/categories", requireAuth, requireAdmin, async (req, res) => {
@@ -852,7 +857,8 @@ export function createProductsRouter(db) {
       req.query.active === "1" ||
       req.query.active === "true" ||
       String(req.query.active || "").toLowerCase() === "yes";
-    return sendCachedJson(req, res, await listUnitNames(db, { activeOnly }), { maxAgeSec: 60 });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(await listUnitNames(db, { activeOnly }));
   });
 
   router.post("/unit-names", requireAuth, requireAdmin, async (req, res) => {

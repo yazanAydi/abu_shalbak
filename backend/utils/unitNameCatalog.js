@@ -49,17 +49,11 @@ export async function listUnitNames(db, { activeOnly = false } = {}) {
 }
 
 export async function seedUnitNamesCatalog(db) {
-  const names = new Set(CANONICAL_UNIT_NAMES);
-  try {
-    const fromUnits = await db.all(
-      `SELECT DISTINCT TRIM(unit_name) AS name FROM product_units
-       WHERE unit_name IS NOT NULL AND TRIM(unit_name) != ''`
-    );
-    for (const row of fromUnits) {
-      if (row.name) names.add(row.name);
-    }
-  } catch {
-    /* product_units may not exist yet */
+  const countRow = await db.get("SELECT COUNT(*) AS n FROM unit_names");
+  const empty = (countRow?.n || 0) === 0;
+  const names = new Set();
+  if (empty) {
+    for (const name of CANONICAL_UNIT_NAMES) names.add(name);
   }
   try {
     const fromProducts = await db.all(
@@ -71,6 +65,19 @@ export async function seedUnitNamesCatalog(db) {
     }
   } catch {
     /* products.unit may not exist yet */
+  }
+  if (empty) {
+    try {
+      const fromUnits = await db.all(
+        `SELECT DISTINCT TRIM(unit_name) AS name FROM product_units
+         WHERE unit_name IS NOT NULL AND TRIM(unit_name) != ''`
+      );
+      for (const row of fromUnits) {
+        if (row.name) names.add(row.name);
+      }
+    } catch {
+      /* product_units may not exist yet */
+    }
   }
   for (const name of names) {
     await db.run("INSERT OR IGNORE INTO unit_names (name) VALUES (?)", [name]);
@@ -125,20 +132,11 @@ export async function updateUnitName(db, id, { name, active } = {}) {
 export async function deleteUnitName(db, id) {
   const ex = await db.get("SELECT * FROM unit_names WHERE id = ?", [id]);
   if (!ex) throw httpError(404, "غير موجود", "NOT_FOUND");
-  const usedUnits = await db.get(
-    "SELECT COUNT(*) AS n FROM product_units WHERE unit_name = ?",
+  await db.run(
+    "UPDATE products SET unit = NULL WHERE unit = ? AND COALESCE(is_weighed, 0) = 0",
     [ex.name]
   );
-  const usedProducts = await db.get(
-    "SELECT COUNT(*) AS n FROM products WHERE unit = ?",
-    [ex.name]
-  );
-  if ((usedUnits?.n || 0) > 0 || (usedProducts?.n || 0) > 0) {
-    await db.run("UPDATE unit_names SET active = 0 WHERE id = ?", [id]);
-    invalidateUnitNameCache();
-    return { success: true, deactivated: true };
-  }
   await db.run("DELETE FROM unit_names WHERE id = ?", [id]);
   invalidateUnitNameCache();
-  return { success: true, deactivated: false };
+  return { success: true };
 }

@@ -1,5 +1,6 @@
 import { Card, CardBody, StatCard, StatusBadge } from "../../components/ui";
 import { ils, num, dateOnly, formatStockWithUnit } from "../../utils/format";
+import { NO_UNIT_LABEL, UNCATEGORIZED_LABEL } from "../../utils/productCatalogLabels";
 import { displayProductBarcode, displayProductSku } from "../../utils/entityCodeDisplay";
 import { useProductTab } from "./useProductTab";
 import { TabState, expiryBadge } from "./shared";
@@ -31,8 +32,8 @@ export default function OverviewTab({ productId }) {
                   {data.basic.name_en ? <div><dt>الاسم (EN)</dt><dd>{data.basic.name_en}</dd></div> : null}
                   <div><dt>الباركود</dt><dd>{displayProductBarcode(data.basic)}</dd></div>
                   <div><dt>الرقم</dt><dd>{displayProductSku(data.basic.sku)}</dd></div>
-                  <div><dt>التصنيف</dt><dd>{data.basic.category || "—"}</dd></div>
-                  <div><dt>الوحدة</dt><dd>{data.basic.unit || "—"}</dd></div>
+                  <div><dt>التصنيف</dt><dd>{data.basic.category || UNCATEGORIZED_LABEL}</dd></div>
+                  <div><dt>الوحدة</dt><dd>{data.basic.unit || NO_UNIT_LABEL}</dd></div>
                   {Number(data.basic.is_weighed) === 1 ? (
                     <div><dt>رمز الميزان</dt><dd>{data.basic.scale_code || "—"}</dd></div>
                   ) : null}

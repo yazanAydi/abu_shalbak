@@ -112,6 +112,7 @@ function UnitFormFields({
         <FormField label={unitLabel}>
           <UnitNameSelect
             value={form.unit_name}
+            emptyLabel="اختر الوحدة"
             onChange={(e) => setField("unit_name", e.target.value)}
           />
         </FormField>

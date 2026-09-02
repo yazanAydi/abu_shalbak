@@ -872,7 +872,7 @@ export default function ProductManagement() {
                     min="0"
                     value={form.package_price}
                     onChange={(e) => setForm({ ...form, package_price: e.target.value })}
-                    placeholder="12.00"
+                    placeholder="0.00"
                   />
                 </FormField>
               ) : null}
