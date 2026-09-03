@@ -52,6 +52,26 @@ Set-ItemProperty -Path $policyPath -Name "DeveloperToolsAvailability" -Type DWor
 
   Restart Edge after setting the policy. Development machines stay unchanged so you can still open DevTools manually while coding.
 
+## Receipt printer (silent print)
+
+Checkout sends the receipt to the **Windows API process**, which prints to the default printer with no Chrome dialog. This works from a normal browser tab (including `http://127.0.0.1:3002/pos`) as long as the API runs on the **same Windows PC** as the printer (`npm start` / `production:start`, not Linux Docker).
+
+- [ ] Install the thermal / receipt printer driver on the PC that runs the API
+- [ ] Settings → Bluetooth & devices → Printers & scanners → set that printer as **Default**
+- [ ] Confirm it is not Print to PDF, XPS, OneNote, or Fax — those open a save dialog instead of a receipt
+- [ ] Optional: set `RECEIPT_PRINTER=Exact Printer Name` in the API env if the default is wrong
+- [ ] Complete a test sale — paper should come out with **no** print preview
+
+If the default printer is still Print to PDF, the sale succeeds and an Arabic alert explains the printer problem; Chrome preview should not appear.
+
+**Docker / Linux API:** the server cannot reach the cashier’s USB printer. Use the shortcut so Edge/Chrome auto-confirms print on the cashier PC:
+
+```powershell
+.\scripts\open-pos-silent-print.ps1 -Url http://SERVER_IP:3000/pos -CreateShortcut
+```
+
+Dev shortcut: `.\scripts\open-pos-silent-print.ps1 -Url http://127.0.0.1:3002/pos -CreateShortcut`
+
 ## Network
 
 - [ ] Windows Firewall: allow inbound TCP on port 5000 from LAN subnet
@@ -68,6 +88,6 @@ Set-ItemProperty -Path $policyPath -Name "DeveloperToolsAvailability" -Type DWor
 ## Post-deploy smoke test
 
 1. Admin login → product list loads
-2. Cashier login → start shift → scan barcode → complete sale → receipt prints
+2. Cashier login → start shift → scan barcode → complete sale → receipt prints with no preview (Windows API + default receipt printer)
 3. Admin → reports today matches sale total
 4. Refund request → approve in admin → cashier sees notification

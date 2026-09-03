@@ -37,6 +37,26 @@ export function deriveTotalCost(unitCost, qty) {
   return formatCostInput(Number(unitCost) * q);
 }
 
+/**
+ * Effective (post-discount) cost per entered purchase unit.
+ * `unit_cost` stays pre-discount list cost; this is display-only.
+ */
+export function deriveEffectiveUnitCost(payableTotal, qty) {
+  const q = Number(qty) || 0;
+  if (q <= 0 || payableTotal === "" || payableTotal == null) return "";
+  return formatCostInput(Number(payableTotal) / q);
+}
+
+/** كغم purchase qty may be fractional; other units use integer step in the UI. */
+export function purchaseQtyStepForUnit(unit) {
+  const name = String(unit?.unit_name || "");
+  return name === "كغم" ? "any" : "1";
+}
+
+export function lineHasPurchaseDiscount(discountPct) {
+  return (Number(discountPct) || 0) > 0;
+}
+
 function resolveVatRate(vatRateField, defaultTaxRate) {
   if (vatRateField !== "" && vatRateField != null && vatRateField !== undefined) {
     return Math.max(0, Number(vatRateField) / 100);

@@ -46,6 +46,8 @@ import {
 
 import { pickExportColumns } from "../utils/reportExport";
 
+import useAuthUser from "../hooks/useAuthUser";
+import { isAdminRole } from "../utils/roles";
 import HesabatiImportCard from "../components/HesabatiImportCard";
 import HesabatiStatementModal from "../components/HesabatiStatementModal";
 import StatementHistoryImportModal from "../components/StatementHistoryImportModal";
@@ -99,6 +101,9 @@ const emptyForm = {
 export default function CustomerManagement() {
 
   const toast = useToast();
+
+  // Balance/statement imports write history and stay admin-only.
+  const canImport = isAdminRole(useAuthUser()?.role);
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -545,7 +550,9 @@ export default function CustomerManagement() {
         <div className="ui-table__actions">
 
           <Button variant="ghost" size="sm" icon="finance" onClick={() => openStatementReport(c)}>عرض التقرير</Button>
-          <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportCustomer(c)}>استيراد كشف قديم</Button>
+          {canImport ? (
+            <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportCustomer(c)}>استيراد كشف قديم</Button>
+          ) : null}
           <Button variant="ghost" size="sm" icon="vouchers" onClick={() => openLedger(c)}>حركات النظام</Button>
 
           <Button variant="ghost" size="sm" icon="edit" onClick={() => startEdit(c)}>تعديل</Button>
@@ -744,6 +751,7 @@ export default function CustomerManagement() {
 
         <>
 
+          {canImport ? (
           <HesabatiImportCard
 
             title={`استيراد أرصدة — ${activeGroup?.label_ar || "العملاء"}`}
@@ -761,6 +769,7 @@ export default function CustomerManagement() {
             onSuccess={() => load(search, activeGroup?.id)}
 
           />
+          ) : null}
 
 
 

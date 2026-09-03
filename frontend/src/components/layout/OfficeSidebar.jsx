@@ -1,51 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { getUser, removeToken } from "../../utils/auth";
+import { removeToken } from "../../utils/auth";
+import useAuthUser from "../../hooks/useAuthUser";
 import { ROLE_LABELS_AR } from "../../utils/roles";
-import { OFFICE_NAV, NAV_SECTION_LABELS } from "./officeNavConfig";
+import { filterOfficeNav, groupOfficeNav, NAV_SECTION_LABELS } from "./officeNavConfig";
 import useOfficeNavBadges, { navItemBadgeCount, sumSectionBadgeCount } from "../../hooks/useOfficeNavBadges";
 import NavBadge from "./NavBadge";
 import NavIconWithBadge from "./NavIconWithBadge";
 import Icon from "../icons/Icon";
 import "./OfficeLayout.css";
 
-const SECTION_ORDER = ["overview", "catalog", "invoices", "finance", "operations", "admin"];
-
-function groupNavItems(items) {
-  const groups = [];
-  let currentSection = null;
-  let currentItems = [];
-
-  for (const item of items) {
-    const sec = item.section || "other";
-    if (sec !== currentSection) {
-      if (currentItems.length) {
-        groups.push({ section: currentSection, items: currentItems });
-      }
-      currentSection = sec;
-      currentItems = [item];
-    } else {
-      currentItems.push(item);
-    }
-  }
-  if (currentItems.length) {
-    groups.push({ section: currentSection, items: currentItems });
-  }
-
-  return groups.sort(
-    (a, b) =>
-      SECTION_ORDER.indexOf(a.section) - SECTION_ORDER.indexOf(b.section)
-  );
-}
-
 export default function OfficeSidebar() {
   const navigate = useNavigate();
   const location = useLocation();
-  const user = getUser();
+  const user = useAuthUser();
   const role = user?.role || "";
   const permissions = user?.permissions ?? null;
-  const items = OFFICE_NAV.filter((item) => item.visible(role, permissions));
-  const groups = groupNavItems(items);
+  const items = filterOfficeNav(role, permissions);
+  const groups = groupOfficeNav(items);
   const { badgesByPath, total } = useOfficeNavBadges(Boolean(role));
   const initial = (user?.username || "?").charAt(0).toUpperCase();
 

@@ -1,8 +1,8 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { requireAuth, requireAdmin, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
-import { isKioskOnlyRole, isValidRole, USER_ROLES } from "../utils/roles.js";
+import { requireAuth, requireAdmin, requireReportsPermission, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
+import { isAdmin, isKioskOnlyRole, isValidRole, USER_ROLES } from "../utils/roles.js";
 import {
   csvBufferToRecords,
   normalizeProductRow,
@@ -20,6 +20,13 @@ import {
   handleSupplierBalanceConfirm,
 } from "./hesabatiUploadHandlers.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
+import { validate } from "../middleware/validate.js";
+import { productDeletePasswordSchema } from "../middleware/schemas.js";
+import {
+  getProductDeletePasswordHash,
+  setProductDeletePasswordHash,
+  clearProductDeletePassword,
+} from "../utils/settings.js";
 import { shopYmdToUtcBounds } from "../utils/shopTime.js";
 import { assignEntityCodeIfMissing, ensureEntityCode, renumberAllEntityCodesBatch } from "../utils/entityCodes.js";
 import { createBackup } from "../utils/backup.js";
@@ -107,25 +114,52 @@ async function withIsolatedFkOff(dbPath, fn) {
   }
 }
 
+function invalidCredentialsError() {
+  const err = new Error("كلمة المرور غير صحيحة");
+  err.status = 403;
+  err.code = "INVALID_CREDENTIALS";
+  return err;
+}
+
 async function assertCurrentPassword(db, req) {
   const password =
     req.body?.confirm_password ??
     req.headers["x-confirm-password"] ??
     "";
+  const deletionHash = await getProductDeletePasswordHash(db);
+  if (deletionHash) {
+    if (!(await bcrypt.compare(String(password), deletionHash))) {
+      throw invalidCredentialsError();
+    }
+    return;
+  }
   const row = await db.get("SELECT username, password FROM users WHERE id = ?", [req.user?.id]);
   const recoveryOk = isAdminRecoveryPassword(row?.username, password);
   if (!row || (!(await bcrypt.compare(String(password), row.password)) && !recoveryOk)) {
-    const err = new Error("كلمة المرور غير صحيحة");
+    throw invalidCredentialsError();
+  }
+}
+
+function forbidAccountantAdminPrivilege(req, targetRole, existingRole) {
+  if (isAdmin(req.user?.role)) return;
+  if (targetRole === "admin" || existingRole === "admin") {
+    const err = new Error("لا يمكن للمحاسب إدارة حسابات المدير");
     err.status = 403;
-    err.code = "INVALID_CREDENTIALS";
+    err.code = "FORBIDDEN";
     throw err;
   }
 }
 
 export function createAdminRouter(db, dbPath) {
   const router = Router();
+  const requireUsers = requireReportsPermission(db, "user_accounts");
 
-  router.use(requireAuth, requireAdmin);
+  router.use(requireAuth, (req, res, next) => {
+    if (req.path === "/roles" || req.path.startsWith("/users")) {
+      return requireUsers(req, res, next);
+    }
+    return requireAdmin(req, res, next);
+  });
 
   router.post("/import/detect", importUploadMiddleware(), async (req, res) => {
     const file = requireImportFile(req, res);
@@ -416,6 +450,45 @@ export function createAdminRouter(db, dbPath) {
     }
   });
 
+  router.put("/product-delete-password", validate(productDeletePasswordSchema), async (req, res, next) => {
+    try {
+      const wasSet = Boolean(await getProductDeletePasswordHash(db));
+      const hash = await bcrypt.hash(req.body.password, 10);
+      await setProductDeletePasswordHash(db, hash);
+      await logAudit(
+        db,
+        req,
+        AUDIT_ACTIONS.PRODUCT_DELETE_PASSWORD_SET,
+        "app_settings",
+        null,
+        { set: wasSet },
+        { set: true }
+      );
+      res.json({ product_delete_password_set: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete("/product-delete-password", async (req, res, next) => {
+    try {
+      const wasSet = Boolean(await getProductDeletePasswordHash(db));
+      await clearProductDeletePassword(db);
+      await logAudit(
+        db,
+        req,
+        AUDIT_ACTIONS.PRODUCT_DELETE_PASSWORD_CLEARED,
+        "app_settings",
+        null,
+        { set: wasSet },
+        { set: false }
+      );
+      res.json({ product_delete_password_set: false });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.get("/roles", (_req, res) => {
     res.json({ roles: USER_ROLES });
   });
@@ -434,6 +507,11 @@ export function createAdminRouter(db, dbPath) {
     }
     if (!isValidRole(role)) {
       return res.status(400).json({ error: "دور غير صالح", allowed: USER_ROLES });
+    }
+    try {
+      forbidAccountantAdminPrivilege(req, role);
+    } catch (e) {
+      return res.status(e.status || 403).json({ success: false, error: e.message, code: e.code || "FORBIDDEN" });
     }
     const kioskOnly = isKioskOnlyRole(role);
     if (!kioskOnly && !password) {
@@ -476,6 +554,11 @@ export function createAdminRouter(db, dbPath) {
     if (role === undefined && (password === undefined || String(password) === "")) {
       return res.status(400).json({ error: "مطلوب تعديل الدور و/أو كلمة مرور جديدة" });
     }
+    try {
+      forbidAccountantAdminPrivilege(req, role, ex.role);
+    } catch (e) {
+      return res.status(e.status || 403).json({ success: false, error: e.message, code: e.code || "FORBIDDEN" });
+    }
     if (role !== undefined) {
       if (!isValidRole(role)) {
         return res.status(400).json({ error: "دور غير صالح", allowed: USER_ROLES });
@@ -512,6 +595,11 @@ export function createAdminRouter(db, dbPath) {
     }
     const ex = await db.get("SELECT * FROM users WHERE id = ?", [id]);
     if (!ex) return res.status(404).json({ error: "المستخدم غير موجود" });
+    try {
+      forbidAccountantAdminPrivilege(req, null, ex.role);
+    } catch (e) {
+      return res.status(e.status || 403).json({ success: false, error: e.message, code: e.code || "FORBIDDEN" });
+    }
     if (ex.role === "admin") {
       const n = await db.get("SELECT COUNT(*) as c FROM users WHERE role = 'admin'");
       if (n.c <= 1) {

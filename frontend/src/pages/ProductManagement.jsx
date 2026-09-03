@@ -2,6 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react
 import { useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import useAuthUser from "../hooks/useAuthUser";
+import { isAdminRole } from "../utils/roles";
 import { searchProductsApi } from "../utils/productSearch";
 import { ils, formatStockWithUnit } from "../utils/format";
 import {
@@ -212,6 +214,9 @@ const PRODUCT_PAGE_SIZE = 200;
 export default function ProductManagement() {
   const toast = useToast();
   const navigate = useNavigate();
+  // Deleting products and bulk-importing them stay admin-only, even for an
+  // accountant who was granted the products page.
+  const canAdminProducts = isAdminRole(useAuthUser()?.role);
   const [products, setProducts] = useState([]);
   const [productsTotal, setProductsTotal] = useState(0);
   const [searchResults, setSearchResults] = useState(null);
@@ -712,13 +717,15 @@ export default function ProductManagement() {
           <SecondaryButton size="sm" type="button" onClick={() => toggleActive(p)}>
             {Number(p.is_active) === 0 ? "تفعيل" : "إيقاف"}
           </SecondaryButton>
-          <DangerButton size="sm" type="button" onClick={() => requestDelete("single", [p.id])}>
-            حذف
-          </DangerButton>
+          {canAdminProducts ? (
+            <DangerButton size="sm" type="button" onClick={() => requestDelete("single", [p.id])}>
+              حذف
+            </DangerButton>
+          ) : null}
         </div>
       ),
     },
-  ], [allVisibleSelected, selectedIds, navigate]);
+  ], [allVisibleSelected, selectedIds, navigate, canAdminProducts]);
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
@@ -749,6 +756,7 @@ export default function ProductManagement() {
         }
       />
 
+      {canAdminProducts ? (
       <Card>
         <CardBody>
           <h2 className="dashboard-section-title">رفع منتجات (CSV أو Excel)</h2>
@@ -771,6 +779,7 @@ export default function ProductManagement() {
           ) : null}
         </CardBody>
       </Card>
+      ) : null}
 
       <Card>
         <CardBody>
@@ -969,13 +978,15 @@ export default function ProductManagement() {
               />
               يحتاج مراجعة فقط
             </label>
-            <DangerButton
-              type="button"
-              disabled={selectedIds.size === 0}
-              onClick={() => requestDelete("bulk", [...selectedIds])}
-            >
-              حذف المحدد ({selectedIds.size})
-            </DangerButton>
+            {canAdminProducts ? (
+              <DangerButton
+                type="button"
+                disabled={selectedIds.size === 0}
+                onClick={() => requestDelete("bulk", [...selectedIds])}
+              >
+                حذف المحدد ({selectedIds.size})
+              </DangerButton>
+            ) : null}
           </div>
           <DataTable
             columns={columns}
@@ -1071,7 +1082,7 @@ export default function ProductManagement() {
             confirmDelete();
           }}
         >
-          <FormField label="كلمة مرور المسؤول" required>
+          <FormField label="كلمة مرور الحذف" required>
             <Input
               type="password"
               value={pw}

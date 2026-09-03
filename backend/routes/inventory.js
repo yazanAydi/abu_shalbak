@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireReportsPermission, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { recordMovement, applyStockDelta } from "../utils/inventory.js";
 import { round2 } from "../utils/tax.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
@@ -18,12 +18,13 @@ const ADJ_MOVEMENT = {
 
 export function createInventoryRouter(db) {
   const router = Router();
-  const requireReports = requireRoles("admin", "accountant");
   const requireExpiry = requireReportsPermission(db, "expiry");
+  const requireStockCount = requireReportsPermission(db, "stock_count");
+  const requireStockOrBakery = requireAnyReportsPermission(db, "stock_count", "bakery_supplies");
 
   // ───── Stock Count Sessions ─────
 
-  router.get("/counts", requireAuth, requireReports, async (req, res) => {
+  router.get("/counts", requireAuth, requireStockCount, async (req, res) => {
     const rows = await db.all(
       `SELECT sc.*, u.username as created_by_name
        FROM stock_count_sessions sc
@@ -33,7 +34,7 @@ export function createInventoryRouter(db) {
     res.json(rows);
   });
 
-  router.post("/counts", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/counts", requireAuth, requireStockCount, async (req, res) => {
     const open = await db.get(
       "SELECT id FROM stock_count_sessions WHERE status = 'open' LIMIT 1"
     );
@@ -52,7 +53,7 @@ export function createInventoryRouter(db) {
     res.status(201).json(row);
   });
 
-  router.get("/counts/:id", requireAuth, requireReports, async (req, res) => {
+  router.get("/counts/:id", requireAuth, requireStockCount, async (req, res) => {
     const session = await db.get("SELECT * FROM stock_count_sessions WHERE id = ?", [req.params.id]);
     if (!session) return res.status(404).json({ error: "الجلسة غير موجودة", code: "NOT_FOUND" });
     const lines = await db.all(
@@ -66,7 +67,11 @@ export function createInventoryRouter(db) {
     res.json({ ...session, lines });
   });
 
-  router.post("/counts/:id/lines", requireAuth, requireRoles("admin", "accountant", "shelves_employee"), async (req, res, next) => {
+  router.post("/counts/:id/lines", requireAuth, (req, res, next) => {
+    // Shelf employees scan counts on the floor; office roles need the stock-count permission.
+    if (req.user?.role === "shelves_employee") return next();
+    return requireStockCount(req, res, next);
+  }, async (req, res, next) => {
     const session = await db.get("SELECT * FROM stock_count_sessions WHERE id = ?", [req.params.id]);
     if (!session) return res.status(404).json({ error: "الجلسة غير موجودة", code: "NOT_FOUND" });
     if (session.status !== "open") {
@@ -108,7 +113,7 @@ export function createInventoryRouter(db) {
     res.json({ ...updated, lines });
   });
 
-  router.post("/counts/:id/post", requireAuth, requireAdmin, async (req, res, next) => {
+  router.post("/counts/:id/post", requireAuth, requireStockCount, async (req, res, next) => {
     const session = await db.get("SELECT * FROM stock_count_sessions WHERE id = ?", [req.params.id]);
     if (!session) return res.status(404).json({ error: "الجلسة غير موجودة", code: "NOT_FOUND" });
     if (session.status !== "open") {
@@ -147,7 +152,7 @@ export function createInventoryRouter(db) {
     res.json(updated);
   });
 
-  router.delete("/counts/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/counts/:id", requireAuth, requireStockCount, async (req, res) => {
     const session = await db.get("SELECT * FROM stock_count_sessions WHERE id = ?", [req.params.id]);
     if (!session) return res.status(404).json({ error: "الجلسة غير موجودة", code: "NOT_FOUND" });
     if (session.status === "posted") {
@@ -218,7 +223,7 @@ export function createInventoryRouter(db) {
 
   // ───── Stock Adjustments ─────
 
-  router.get("/adjustments", requireAuth, requireReports, async (_req, res) => {
+  router.get("/adjustments", requireAuth, requireStockOrBakery, async (_req, res) => {
     const rows = await db.all(
       `SELECT a.*, u.username AS created_by_name,
               (SELECT COUNT(*) FROM stock_adjustment_items ai WHERE ai.adjustment_id = a.id) AS item_count
@@ -228,7 +233,7 @@ export function createInventoryRouter(db) {
     res.json(rows);
   });
 
-  router.get("/adjustments/:id", requireAuth, requireReports, async (req, res) => {
+  router.get("/adjustments/:id", requireAuth, requireStockOrBakery, async (req, res) => {
     const adj = await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [req.params.id]);
     if (!adj) return res.status(404).json({ error: "التسوية غير موجودة", code: "NOT_FOUND" });
     const items = await db.all(
@@ -239,7 +244,7 @@ export function createInventoryRouter(db) {
     res.json({ ...adj, items });
   });
 
-  router.post("/adjustments", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/adjustments", requireAuth, requireStockOrBakery, async (req, res) => {
     const { adjustment_type, adjustment_date, notes, items, post } = req.body || {};
     if (!ADJ_TYPES.includes(adjustment_type)) {
       return res.status(400).json({ error: "نوع التسوية غير صالح", code: "VALIDATION_ERROR" });
@@ -298,7 +303,7 @@ export function createInventoryRouter(db) {
     }
   });
 
-  router.post("/adjustments/:id/post", requireAuth, requireAdmin, async (req, res, next) => {
+  router.post("/adjustments/:id/post", requireAuth, requireStockOrBakery, async (req, res, next) => {
     const adj = await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [req.params.id]);
     if (!adj) return res.status(404).json({ error: "التسوية غير موجودة", code: "NOT_FOUND" });
     if (adj.status === "posted") return res.status(400).json({ error: "مرحّلة بالفعل", code: "ALREADY_POSTED" });
@@ -324,7 +329,7 @@ export function createInventoryRouter(db) {
     }
   });
 
-  router.put("/adjustments/:id", requireAuth, requireAdmin, async (req, res, next) => {
+  router.put("/adjustments/:id", requireAuth, requireStockOrBakery, async (req, res, next) => {
     const adj = await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [req.params.id]);
     if (!adj) return res.status(404).json({ error: "التسوية غير موجودة", code: "NOT_FOUND" });
     if (adj.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل تسوية مرحّلة", code: "ALREADY_POSTED" });
@@ -367,7 +372,7 @@ export function createInventoryRouter(db) {
     }
   });
 
-  router.delete("/adjustments/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/adjustments/:id", requireAuth, requireStockOrBakery, async (req, res) => {
     const adj = await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [req.params.id]);
     if (!adj) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     if (adj.status === "posted") return res.status(400).json({ error: "لا يمكن حذف تسوية مرحّلة", code: "ALREADY_POSTED" });
@@ -377,7 +382,7 @@ export function createInventoryRouter(db) {
 
   // ───── Movement ledger ─────
 
-  router.get("/movements", requireAuth, requireReports, async (req, res) => {
+  router.get("/movements", requireAuth, requireStockOrBakery, async (req, res) => {
     const { product_id, type, from, to, scope } = req.query;
     let sql = `SELECT m.*, p.name AS product_name, p.barcode, u.username AS created_by_name
                FROM inventory_movements m
@@ -398,7 +403,7 @@ export function createInventoryRouter(db) {
 
   // ───── Product batches (batch + expiry tracking) ─────
 
-  router.get("/batches", requireAuth, requireReports, async (req, res) => {
+  router.get("/batches", requireAuth, requireStockOrBakery, async (req, res) => {
     const { product_id } = req.query;
     let sql = `SELECT b.*, p.name AS product_name, p.barcode,
                  CAST(julianday(b.expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
@@ -409,7 +414,7 @@ export function createInventoryRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.post("/batches", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/batches", requireAuth, requireStockOrBakery, async (req, res) => {
     const { product_id, batch_no, expiry_date, quantity, cost, notes } = req.body || {};
     const pid = Number(product_id);
     if (!pid) return res.status(400).json({ error: "المنتج مطلوب", code: "VALIDATION_ERROR" });
@@ -422,7 +427,7 @@ export function createInventoryRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM product_batches WHERE id = ?", [ins.lastID]));
   });
 
-  router.delete("/batches/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/batches/:id", requireAuth, requireStockOrBakery, async (req, res) => {
     const info = await db.run("DELETE FROM product_batches WHERE id = ?", [req.params.id]);
     if (info.changes === 0) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     res.json({ success: true });
@@ -461,7 +466,7 @@ export function createInventoryRouter(db) {
   // Negative stock is allowed by design (selling below zero is permitted).
   // This report lets managers see which products were oversold so they can
   // reconcile/restock. It does NOT block or clamp anything.
-  router.get("/negative-stock", requireAuth, requireReports, async (req, res) => {
+  router.get("/negative-stock", requireAuth, requireStockCount, async (req, res) => {
     const rows = await db.all(
       `SELECT id, barcode, name, unit, stock, category
        FROM products WHERE COALESCE(stock, 0) < 0 ORDER BY stock ASC, name${listLimitSql(req.query, 500).sql}`

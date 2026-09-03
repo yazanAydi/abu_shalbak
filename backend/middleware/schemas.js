@@ -108,6 +108,10 @@ export const changePasswordSchema = z.object({
   new_password: z.string().min(6).max(100),
 });
 
+export const productDeletePasswordSchema = z.object({
+  password: z.string().min(6, "كلمة المرور يجب أن تكون 6 أحرف على الأقل").max(100),
+});
+
 export const inventoryAdjustmentSchema = z.object({
   product_id: z.number().int().positive(),
   quantity: z.number(),

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import {
   createSalesInvoiceDraft,
@@ -7,12 +7,11 @@ import {
   postSalesInvoice,
 } from "../services/salesInvoiceService.js";
 
-const requireReports = requireRoles("admin", "accountant");
-
 export function createSalesRouter(db) {
   const router = Router();
+  const requireSalesInvoices = requireReportsPermission(db, "sales_invoices");
 
-  router.get("/invoices", requireAuth, requireReports, async (req, res) => {
+  router.get("/invoices", requireAuth, requireSalesInvoices, async (req, res) => {
     const { customer_id, status } = req.query;
     let sql = `SELECT si.*, c.name AS customer_name FROM sales_invoices si
                JOIN customers c ON c.id = si.customer_id WHERE 1=1`;
@@ -29,7 +28,7 @@ export function createSalesRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.get("/invoices/:id", requireAuth, requireReports, async (req, res) => {
+  router.get("/invoices/:id", requireAuth, requireSalesInvoices, async (req, res) => {
     const inv = await db.get(
       `SELECT si.*, c.name AS customer_name FROM sales_invoices si
        JOIN customers c ON c.id = si.customer_id WHERE si.id = ?`,
@@ -47,7 +46,7 @@ export function createSalesRouter(db) {
     res.json({ ...inv, items, payments });
   });
 
-  router.post("/invoices", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/invoices", requireAuth, requireSalesInvoices, async (req, res) => {
     try {
       const result = await createSalesInvoiceDraft(db, req.body, req.user.id);
       if (result.error) return res.status(result.status).json({ error: result.error, code: "VALIDATION_ERROR" });
@@ -57,7 +56,7 @@ export function createSalesRouter(db) {
     }
   });
 
-  router.put("/invoices/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.put("/invoices/:id", requireAuth, requireSalesInvoices, async (req, res) => {
     try {
       const result = await updateSalesInvoiceDraft(db, req.params.id, req.body);
       if (result.error) return res.status(result.status).json({ error: result.error, code: result.status === 404 ? "NOT_FOUND" : "VALIDATION_ERROR" });
@@ -67,7 +66,7 @@ export function createSalesRouter(db) {
     }
   });
 
-  router.post("/invoices/:id/post", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/invoices/:id/post", requireAuth, requireSalesInvoices, async (req, res) => {
     try {
       const result = await postSalesInvoice(db, req.params.id, req.body, req.user.id);
       if (result.error) {
@@ -80,7 +79,7 @@ export function createSalesRouter(db) {
     }
   });
 
-  router.delete("/invoices/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/invoices/:id", requireAuth, requireSalesInvoices, async (req, res) => {
     const inv = await db.get("SELECT * FROM sales_invoices WHERE id = ?", [req.params.id]);
     if (!inv) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     if (inv.status === "posted") return res.status(400).json({ error: "لا يمكن حذف فاتورة مرحّلة", code: "ALREADY_POSTED" });

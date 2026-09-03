@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requirePosAccess } from "../middleware/auth.js";
+import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { getActivePromotions, computeCartDiscount, invalidatePromotionsCache } from "../utils/promotions.js";
 import { round2 } from "../utils/money.js";
 
@@ -92,10 +92,11 @@ function normalizePromoBody(b, ex = null) {
 
 export function createMarketingRouter(db) {
   const router = Router();
+  const requireMarketing = requireReportsPermission(db, "marketing");
 
   // ════════════ Campaigns ════════════
 
-  router.get("/campaigns", requireAuth, async (_req, res) => {
+  router.get("/campaigns", requireAuth, requireMarketing, async (_req, res) => {
     const rows = await db.all(
       `SELECT c.*, (SELECT COUNT(*) FROM promotions p WHERE p.campaign_id = c.id) AS promotion_count
        FROM campaigns c ORDER BY c.created_at DESC`
@@ -103,7 +104,7 @@ export function createMarketingRouter(db) {
     res.json(rows);
   });
 
-  router.post("/campaigns", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/campaigns", requireAuth, requireMarketing, async (req, res) => {
     const { name, description, start_date, end_date, active } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ error: "اسم الحملة مطلوب", code: "VALIDATION_ERROR" });
     const ins = await db.run(
@@ -115,7 +116,7 @@ export function createMarketingRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM campaigns WHERE id = ?", [ins.lastID]));
   });
 
-  router.put("/campaigns/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.put("/campaigns/:id", requireAuth, requireMarketing, async (req, res) => {
     const ex = await db.get("SELECT * FROM campaigns WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "غير موجودة", code: "NOT_FOUND" });
     const b = req.body || {};
@@ -134,7 +135,7 @@ export function createMarketingRouter(db) {
     res.json(await db.get("SELECT * FROM campaigns WHERE id = ?", [req.params.id]));
   });
 
-  router.delete("/campaigns/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/campaigns/:id", requireAuth, requireMarketing, async (req, res) => {
     await db.run("DELETE FROM campaigns WHERE id = ?", [req.params.id]);
     onPromotionsDataChanged();
     res.json({ success: true });
@@ -142,7 +143,7 @@ export function createMarketingRouter(db) {
 
   // ════════════ Promotions ════════════
 
-  router.get("/promotions", requireAuth, async (_req, res) => {
+  router.get("/promotions", requireAuth, requireMarketing, async (_req, res) => {
     const rows = await db.all(
       `SELECT pr.*, c.name AS campaign_name, p.name AS product_name, pu.unit_name
        FROM promotions pr
@@ -154,7 +155,7 @@ export function createMarketingRouter(db) {
     res.json(rows);
   });
 
-  router.post("/promotions", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/promotions", requireAuth, requireMarketing, async (req, res) => {
     const b = req.body || {};
     if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: "اسم العرض مطلوب", code: "VALIDATION_ERROR" });
     if (!b.product_id && !b.category) return res.status(400).json({ error: "حدّد منتجاً أو فئة", code: "VALIDATION_ERROR" });
@@ -209,7 +210,7 @@ export function createMarketingRouter(db) {
     });
   });
 
-  router.put("/promotions/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.put("/promotions/:id", requireAuth, requireMarketing, async (req, res) => {
     const ex = await db.get("SELECT * FROM promotions WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
 
@@ -266,7 +267,7 @@ export function createMarketingRouter(db) {
     });
   });
 
-  router.delete("/promotions/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/promotions/:id", requireAuth, requireMarketing, async (req, res) => {
     await db.run("DELETE FROM promotions WHERE id = ?", [req.params.id]);
     onPromotionsDataChanged();
     res.json({ success: true });

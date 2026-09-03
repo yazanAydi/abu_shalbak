@@ -12,6 +12,8 @@ import { displayEntityCode, displayListRowNumber } from "../utils/entityCodeDisp
 import { supplierBalanceView, SUPPLIER_BALANCE_SUMMARY_LABELS } from "../utils/supplierBalanceDisplay";
 import HesabatiStatementModal from "../components/HesabatiStatementModal";
 import StatementHistoryImportModal from "../components/StatementHistoryImportModal";
+import useAuthUser from "../hooks/useAuthUser";
+import { isAdminRole } from "../utils/roles";
 import SupplierPurchaseItemsView from "../components/SupplierPurchaseItemsView";
 
 function renderSupplierBalance(systemBalance) {
@@ -31,6 +33,8 @@ const emptyForm = {
 export default function SupplierManagement() {
   const toast = useToast();
   const navigate = useNavigate();
+  // Statement-history imports write history and stay admin-only.
+  const canImport = isAdminRole(useAuthUser()?.role);
   const [tab, setTab] = useState("list");
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -144,7 +148,9 @@ export default function SupplierManagement() {
           <Button variant="ghost" size="sm" icon="finance" onClick={() => navigate(`/suppliers/${s.id}/statement`)}>كشف الحساب</Button>
           <Button variant="ghost" size="sm" icon="finance" onClick={() => openStatementReport(s)}>عرض التقرير</Button>
           <Button variant="ghost" size="sm" icon="products" onClick={() => setPurchasesSupplier(s)}>المنتجات المشتراة</Button>
-          <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportSupplier(s)}>استيراد كشف قديم</Button>
+          {canImport ? (
+            <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportSupplier(s)}>استيراد كشف قديم</Button>
+          ) : null}
           <Button variant="ghost" size="sm" icon="vouchers" onClick={() => openLedger(s)}>حركات النظام</Button>
           <Button variant="ghost" size="sm" icon="edit" onClick={() => startEdit(s)}>تعديل</Button>
           <Button variant="ghost" size="sm" icon="trash" onClick={() => remove(s)} />

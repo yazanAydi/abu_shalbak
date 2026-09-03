@@ -27,6 +27,7 @@ export const SETTING_KEYS = {
   pos_shortcut_hold_cart: "pos_shortcut_hold_cart",
   pos_shortcut_suspended_carts: "pos_shortcut_suspended_carts",
   accountant_permissions: "accountant_permissions",
+  product_delete_password: "product_delete_password",
 };
 
 const MAX_POS_FAVORITES = 24;
@@ -383,9 +384,38 @@ export async function getAppSettings(db) {
       SETTING_KEYS.accountant_permissions,
       map[SETTING_KEYS.accountant_permissions]
     ),
+    product_delete_password_set: Boolean(
+      String(map[SETTING_KEYS.product_delete_password] ?? "").trim()
+    ),
   };
   cacheSet(CACHE_KEYS.SETTINGS, settings);
   return cacheClone(settings);
+}
+
+export async function getProductDeletePasswordHash(db) {
+  const row = await db.get("SELECT value FROM app_settings WHERE key = ?", [
+    SETTING_KEYS.product_delete_password,
+  ]);
+  const hash = String(row?.value ?? "").trim();
+  return hash || null;
+}
+
+export async function setProductDeletePasswordHash(db, hash) {
+  const value = String(hash ?? "").trim();
+  if (!value) {
+    throw new Error("تجزئة كلمة مرور الحذف مطلوبة");
+  }
+  await db.run(
+    `INSERT INTO app_settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [SETTING_KEYS.product_delete_password, value]
+  );
+  cacheInvalidate(CACHE_KEYS.SETTINGS);
+}
+
+export async function clearProductDeletePassword(db) {
+  await db.run("DELETE FROM app_settings WHERE key = ?", [SETTING_KEYS.product_delete_password]);
+  cacheInvalidate(CACHE_KEYS.SETTINGS);
 }
 
 export async function updateAppSettings(db, patch) {

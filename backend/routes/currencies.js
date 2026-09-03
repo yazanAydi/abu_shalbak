@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { listCurrencies, getCurrencyById, invalidateCurrencyCache, round2Rate } from "../utils/currencies.js";
 import { sendCachedJson } from "../utils/httpCache.js";
@@ -8,6 +8,7 @@ import { withTransaction } from "../utils/dbTx.js";
 
 export function createCurrenciesRouter(db) {
   const router = Router();
+  const requireCurrencies = requireReportsPermission(db, "currencies");
 
   // Enabled currencies for POS / cashier use.
   router.get("/", requireAuth, async (req, res, next) => {
@@ -20,7 +21,7 @@ export function createCurrenciesRouter(db) {
   });
 
   // Full list (including disabled) for the admin settings page.
-  router.get("/all", requireAuth, requireAdmin, async (req, res, next) => {
+  router.get("/all", requireAuth, requireCurrencies, async (req, res, next) => {
     try {
       const currencies = await listCurrencies(db, { enabledOnly: false });
       return sendCachedJson(req, res, { currencies }, { maxAgeSec: 30 });
@@ -29,7 +30,7 @@ export function createCurrenciesRouter(db) {
     }
   });
 
-  router.patch("/:id", requireAuth, requireAdmin, async (req, res, next) => {
+  router.patch("/:id", requireAuth, requireCurrencies, async (req, res, next) => {
     try {
       const id = Number(req.params.id);
       const before = await getCurrencyById(db, id);

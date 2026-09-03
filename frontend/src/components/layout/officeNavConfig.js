@@ -3,10 +3,15 @@ import { hasAccountantPermission } from "../../utils/accountantPermissions";
 
 /** @typedef {{ path: string, label: string, icon: string, section?: string, badgePath?: string, permissionKey?: string, visible: (role: string, permissions?: Record<string, boolean>|null) => boolean }} NavItem */
 
-function canSeeReportPage(role, permissions, permissionKey) {
+function canSeeNavItem(role, permissions, permissionKey) {
+  if (isAdminRole(role)) return true;
   if (!canViewReports(role)) return false;
-  if (!permissionKey) return true;
+  if (!permissionKey) return false;
   return hasAccountantPermission(role, permissions, permissionKey);
+}
+
+function navVisible(permissionKey) {
+  return (role, permissions) => canSeeNavItem(role, permissions, permissionKey);
 }
 
 /** @type {NavItem[]} */
@@ -17,70 +22,81 @@ export const OFFICE_NAV = [
     icon: "dashboard",
     section: "overview",
     permissionKey: "dashboard",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "dashboard"),
+    visible: navVisible("dashboard"),
   },
   {
     path: "/manage-products",
     label: "المنتجات",
     icon: "products",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "products",
+    visible: navVisible("products"),
   },
   {
     path: "/product-organization",
     label: "تنظيم المنتجات",
     icon: "products",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "product_organization",
+    visible: navVisible("product_organization"),
   },
   {
     path: "/customers",
     label: "العملاء",
     icon: "customers",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "customers",
+    visible: navVisible("customers"),
   },
   {
     path: "/suppliers",
     label: "الموردون",
     icon: "suppliers",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "suppliers",
+    visible: navVisible("suppliers"),
   },
   {
     path: "/units",
     label: "الوحدات",
     icon: "products",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "units",
+    visible: navVisible("units"),
   },
   {
     path: "/categories",
     label: "التصنيفات",
     icon: "products",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "categories",
+    visible: navVisible("categories"),
   },
   {
     path: "/inventory",
     label: "جرد المخزون",
     icon: "inventory",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    badgePath: "/inventory",
+    permissionKey: "stock_count",
+    visible: navVisible("stock_count"),
   },
   {
     path: "/bakery-supplies",
     label: "مواد المخبز",
     icon: "inventory",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    badgePath: "/bakery-supplies",
+    permissionKey: "bakery_supplies",
+    visible: navVisible("bakery_supplies"),
   },
   {
     path: "/warehouses",
     label: "المستودعات",
     icon: "warehouses",
     section: "catalog",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "warehouses",
+    visible: navVisible("warehouses"),
   },
   {
     path: "/expiry",
@@ -89,7 +105,7 @@ export const OFFICE_NAV = [
     section: "catalog",
     badgePath: "/expiry",
     permissionKey: "expiry",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "expiry"),
+    visible: navVisible("expiry"),
   },
   {
     path: "/finance",
@@ -97,7 +113,7 @@ export const OFFICE_NAV = [
     icon: "finance",
     section: "finance",
     permissionKey: "finance",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "finance"),
+    visible: navVisible("finance"),
   },
   {
     path: "/expenses",
@@ -105,7 +121,7 @@ export const OFFICE_NAV = [
     icon: "expenses",
     section: "finance",
     permissionKey: "expenses",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "expenses"),
+    visible: navVisible("expenses"),
   },
   {
     path: "/sales-reports",
@@ -113,7 +129,7 @@ export const OFFICE_NAV = [
     icon: "finance",
     section: "finance",
     permissionKey: "sales_reports",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "sales_reports"),
+    visible: navVisible("sales_reports"),
   },
   {
     path: "/shift-audit",
@@ -122,7 +138,7 @@ export const OFFICE_NAV = [
     section: "finance",
     badgePath: "/shift-audit",
     permissionKey: "shift_audit",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "shift_audit"),
+    visible: navVisible("shift_audit"),
   },
   {
     path: "/sales-by-price",
@@ -130,7 +146,7 @@ export const OFFICE_NAV = [
     icon: "finance",
     section: "finance",
     permissionKey: "sales_by_price",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "sales_by_price"),
+    visible: navVisible("sales_by_price"),
   },
   {
     path: "/banks",
@@ -138,7 +154,7 @@ export const OFFICE_NAV = [
     icon: "banks",
     section: "finance",
     permissionKey: "banks",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "banks"),
+    visible: navVisible("banks"),
   },
   {
     path: "/account-statement",
@@ -146,7 +162,7 @@ export const OFFICE_NAV = [
     icon: "vouchers",
     section: "finance",
     permissionKey: "account_statement",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "account_statement"),
+    visible: navVisible("account_statement"),
   },
   {
     path: "/import-supplier-balances",
@@ -161,7 +177,7 @@ export const OFFICE_NAV = [
     icon: "vouchers",
     section: "invoices",
     permissionKey: "vouchers",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "vouchers"),
+    visible: navVisible("vouchers"),
   },
   {
     path: "/vouchers/payment",
@@ -169,35 +185,39 @@ export const OFFICE_NAV = [
     icon: "vouchers",
     section: "invoices",
     permissionKey: "vouchers",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "vouchers"),
+    visible: navVisible("vouchers"),
   },
   {
     path: "/purchases",
     label: "فتورة مشتريات",
     icon: "purchases",
     section: "invoices",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "purchases",
+    visible: navVisible("purchases"),
   },
   {
     path: "/sales-invoices",
     label: "فتورة مبيعات",
     icon: "customers",
     section: "invoices",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "sales_invoices",
+    visible: navVisible("sales_invoices"),
   },
   {
     path: "/inventory-receipts",
     label: "سند إدخال بضاعة",
     icon: "inventory",
     section: "invoices",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "inventory_receipts",
+    visible: navVisible("inventory_receipts"),
   },
   {
     path: "/inventory-issues",
     label: "سند إخراج بضاعة",
     icon: "inventory",
     section: "invoices",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "inventory_issues",
+    visible: navVisible("inventory_issues"),
   },
   {
     path: "/refunds",
@@ -205,7 +225,7 @@ export const OFFICE_NAV = [
     icon: "refunds",
     section: "operations",
     permissionKey: "refunds",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "refunds"),
+    visible: navVisible("refunds"),
   },
   {
     path: "/refund-approvals",
@@ -214,7 +234,7 @@ export const OFFICE_NAV = [
     section: "operations",
     badgePath: "/refund-approvals",
     permissionKey: "refund_approvals",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "refund_approvals"),
+    visible: navVisible("refund_approvals"),
   },
   {
     path: "/on-account-approvals",
@@ -223,7 +243,7 @@ export const OFFICE_NAV = [
     section: "operations",
     badgePath: "/on-account-approvals",
     permissionKey: "on_account_approvals",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "on_account_approvals"),
+    visible: navVisible("on_account_approvals"),
   },
   {
     path: "/advance-approvals",
@@ -232,21 +252,31 @@ export const OFFICE_NAV = [
     section: "operations",
     badgePath: "/advance-approvals",
     permissionKey: "advance_approvals",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "advance_approvals"),
+    visible: navVisible("advance_approvals"),
   },
   {
     path: "/marketing",
     label: "التسويق",
     icon: "marketing",
     section: "operations",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "marketing",
+    visible: navVisible("marketing"),
+  },
+  {
+    path: "/deliveries",
+    label: "التوصيل",
+    icon: "deliveries",
+    section: "operations",
+    permissionKey: "deliveries",
+    visible: navVisible("deliveries"),
   },
   {
     path: "/manage-users",
     label: "الحسابات",
     icon: "users",
     section: "admin",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "user_accounts",
+    visible: navVisible("user_accounts"),
   },
   {
     path: "/cashier-payroll",
@@ -254,21 +284,31 @@ export const OFFICE_NAV = [
     icon: "shifts",
     section: "admin",
     permissionKey: "employee_payroll",
-    visible: (role, permissions) => canSeeReportPage(role, permissions, "employee_payroll"),
+    visible: navVisible("employee_payroll"),
   },
   {
     path: "/settings",
     label: "الإعدادات",
     icon: "settings",
     section: "admin",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "store_settings",
+    visible: navVisible("store_settings"),
   },
   {
     path: "/settings/currency",
     label: "العملات",
     icon: "settings",
     section: "admin",
-    visible: (role) => isAdminRole(role),
+    permissionKey: "currencies",
+    visible: navVisible("currencies"),
+  },
+  {
+    path: "/permissions",
+    label: "الصلاحيات",
+    icon: "settings",
+    section: "admin",
+    permissionKey: "permissions",
+    visible: navVisible("permissions"),
   },
 ];
 
@@ -280,6 +320,66 @@ export const NAV_SECTION_LABELS = {
   operations: "العمليات",
   admin: "الإدارة",
 };
+
+export const SECTION_ORDER = ["overview", "catalog", "invoices", "finance", "operations", "admin"];
+
+export function filterOfficeNav(role, permissions) {
+  return OFFICE_NAV.filter((item) => item.visible(role, permissions));
+}
+
+export function groupOfficeNav(items) {
+  const groups = [];
+  let currentSection = null;
+  let currentItems = [];
+
+  for (const item of items) {
+    const sec = item.section || "other";
+    if (sec !== currentSection) {
+      if (currentItems.length) {
+        groups.push({ section: currentSection, items: currentItems });
+      }
+      currentSection = sec;
+      currentItems = [item];
+    } else {
+      currentItems.push(item);
+    }
+  }
+  if (currentItems.length) {
+    groups.push({ section: currentSection, items: currentItems });
+  }
+
+  return groups.sort(
+    (a, b) => SECTION_ORDER.indexOf(a.section) - SECTION_ORDER.indexOf(b.section)
+  );
+}
+
+/**
+ * Permission settings topics derived from Office nav (one row per unique permissionKey).
+ */
+export function permissionTopicsFromNav() {
+  const seen = new Set();
+  /** @type {Record<string, { id: string, labelAr: string, features: { key: string, labelAr: string }[] }>} */
+  const bySection = {};
+
+  for (const item of OFFICE_NAV) {
+    if (!item.permissionKey || seen.has(item.permissionKey)) continue;
+    seen.add(item.permissionKey);
+    const section = item.section || "other";
+    if (!bySection[section]) {
+      bySection[section] = {
+        id: section,
+        labelAr: NAV_SECTION_LABELS[section] || section,
+        features: [],
+      };
+    }
+    bySection[section].features.push({
+      key: item.permissionKey,
+      labelAr: item.label,
+    });
+  }
+
+  return SECTION_ORDER.map((id) => bySection[id]).filter(Boolean);
+}
 
 export const ROUTE_TITLES = {
   "/reports": "لوحة التحكم",
@@ -296,6 +396,7 @@ export const ROUTE_TITLES = {
   "/advance-approvals": "موافقات السلف",
   "/settings": "إعدادات المتجر",
   "/settings/currency": "إعدادات العملات",
+  "/permissions": "الصلاحيات",
   "/inventory": "جرد المخزون",
   "/bakery-supplies": "مواد المخبز",
   "/expiry": "تقارير الصلاحية",
@@ -324,6 +425,16 @@ export const ROUTE_TITLES = {
 /** Map route paths to permission keys for route guards. */
 export const ROUTE_PERMISSION_KEYS = {
   "/reports": "dashboard",
+  "/manage-products": "products",
+  "/product-organization": "product_organization",
+  "/products/:id": "products",
+  "/customers": "customers",
+  "/suppliers": "suppliers",
+  "/units": "units",
+  "/categories": "categories",
+  "/inventory": "stock_count",
+  "/bakery-supplies": "bakery_supplies",
+  "/warehouses": "warehouses",
   "/finance": "finance",
   "/sales-reports": "sales_reports",
   "/shift-audit": "shift_audit",
@@ -340,5 +451,14 @@ export const ROUTE_PERMISSION_KEYS = {
   "/account-statement": "account_statement",
   "/vouchers/receipt": "vouchers",
   "/vouchers/payment": "vouchers",
+  "/purchases": "purchases",
+  "/sales-invoices": "sales_invoices",
+  "/inventory-receipts": "inventory_receipts",
+  "/inventory-issues": "inventory_issues",
+  "/marketing": "marketing",
+  "/manage-users": "user_accounts",
+  "/settings": "store_settings",
+  "/settings/currency": "currencies",
+  "/permissions": "permissions",
   "/suppliers/:supplierId/statement": "account_statement",
 };

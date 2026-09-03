@@ -6,6 +6,8 @@ import {
   login,
   authHeader,
 } from "./helpers.js";
+import { updateAppSettings, SETTING_KEYS } from "../utils/settings.js";
+import { defaultAccountantPermissions } from "../utils/accountantPermissions.js";
 
 describe("inventory documents (goods-in / goods-out)", () => {
   let ctx;
@@ -31,6 +33,15 @@ describe("inventory documents (goods-in / goods-out)", () => {
 
   function unwrap(res) {
     return res.body?.data ?? res.body;
+  }
+
+  async function setAccountantPermissions(overrides) {
+    await updateAppSettings(ctx.db, {
+      [SETTING_KEYS.accountant_permissions]: {
+        ...defaultAccountantPermissions(),
+        ...overrides,
+      },
+    });
   }
 
   async function stockOf(productId) {
@@ -289,18 +300,37 @@ describe("inventory documents (goods-in / goods-out)", () => {
     expect(printRes.text).not.toContain("فاتورة مبيعات");
   });
 
-  test("accountant can read but not post; cashier cannot post", async () => {
-    const list = await request(ctx.app)
-      .get("/api/v1/inventory-receipts")
-      .set(authHeader(accountantToken));
-    expect(list.status).toBe(200);
-
+  test("accountant needs the inventory_receipts permission; cashier can never post", async () => {
     const p = await createWeighed({
       barcode: "6291000000007",
       name: "صلاحيات سند",
       scale_code: "2100207",
       price: 4,
     });
+
+    await setAccountantPermissions({ inventory_receipts: false });
+
+    const deniedList = await request(ctx.app)
+      .get("/api/v1/inventory-receipts")
+      .set(authHeader(accountantToken));
+    expect(deniedList.status).toBe(403);
+
+    const deniedPost = await request(ctx.app)
+      .post("/api/v1/inventory-receipts")
+      .set(authHeader(accountantToken))
+      .send({
+        reason: "opening",
+        items: [{ product_id: p.id, product_unit_id: p.kgUnit.id, quantity: 1 }],
+      });
+    expect(deniedPost.status).toBe(403);
+
+    await setAccountantPermissions({ inventory_receipts: true });
+
+    const list = await request(ctx.app)
+      .get("/api/v1/inventory-receipts")
+      .set(authHeader(accountantToken));
+    expect(list.status).toBe(200);
+
     const acctPost = await request(ctx.app)
       .post("/api/v1/inventory-receipts")
       .set(authHeader(accountantToken))
@@ -308,7 +338,7 @@ describe("inventory documents (goods-in / goods-out)", () => {
         reason: "opening",
         items: [{ product_id: p.id, product_unit_id: p.kgUnit.id, quantity: 1 }],
       });
-    expect(acctPost.status).toBe(403);
+    expect(acctPost.status).toBe(201);
 
     const cashierPost = await request(ctx.app)
       .post("/api/v1/inventory-receipts")

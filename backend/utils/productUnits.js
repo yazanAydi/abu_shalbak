@@ -98,15 +98,45 @@ export async function withScaleCode(db, product) {
 }
 
 /**
- * Cost of the sold unit. A blank/zero pack cost must not fall back to the
- * single-piece product cost — scale the base cost by conversion_to_base.
+ * Derive the cost of one unit from the authoritative base cost (products.cost)
+ * and the unit's conversion factor.
+ *
+ * products.cost is ALWAYS the source of truth (cost per base unit, e.g. ₪4/kg).
+ * product_units.cost is treated as a display cache only and must never be used
+ * for COGS calculations.
+ *
+ * @param {number} baseCost  products.cost — cost per base unit
+ * @param {number} conversion  unit.conversion_to_base
+ * @returns {number}
+ */
+export function derivedUnitCost(baseCost, conversion) {
+  const base = Number(baseCost) || 0;
+  const conv = Math.max(0.0001, Number(conversion) || 1);
+  return round2(base * conv);
+}
+
+/**
+ * Cost of the sold unit, always derived from products.cost × conversion_to_base.
+ * product_units.cost is NOT used — it may be stale.
+ *
+ * Example: products.cost = ₪4/kg, حبة conversion = 2.5 → ₪10/piece.
  */
 export function resolveSoldUnitCost(unit, product) {
-  const unitCost = Number(unit?.cost);
-  if (Number.isFinite(unitCost) && unitCost > 0) return round2(unitCost);
   const baseCost = Number(product?.cost) || 0;
-  const conversion = Math.max(0.0001, Number(unit?.conversion_to_base) || 1);
-  return round2(baseCost * conversion);
+  const conversion = Number(unit?.conversion_to_base) || 1;
+  return derivedUnitCost(baseCost, conversion);
+}
+
+/**
+ * True when the sold unit is a KG unit (unit_name === "كغم").
+ * This is the gate for allowing fractional quantities at checkout,
+ * independently of whether the product is flagged is_weighed.
+ *
+ * @param {object | null | undefined} unit
+ * @returns {boolean}
+ */
+export function isKgUnit(unit) {
+  return String(unit?.unit_name || "") === WEIGHED_BASE_UNIT_NAME;
 }
 
 /**
@@ -459,7 +489,7 @@ export async function syncProductFromDefaultUnit(db, productId) {
     : null;
 
   const product = await db.get(
-    "SELECT id, barcode, is_weighed FROM products WHERE id = ?",
+    "SELECT id, barcode, is_weighed, cost FROM products WHERE id = ?",
     [productId]
   );
   const productBarcode = product?.barcode != null ? String(product.barcode).trim() : "";
@@ -469,18 +499,20 @@ export async function syncProductFromDefaultUnit(db, productId) {
     Boolean(unitBarcode) &&
     productBarcode !== unitBarcode;
 
+  // IMPORTANT: We sync selling price (unit.price) from the default unit.
+  // We do NOT sync cost from the unit — products.cost is the authoritative
+  // base cost, and product_units.cost is only a display cache derived from it.
+  // Writing unit.cost back to products.cost would corrupt WAC with a stale value.
+
   if (keepProductBarcode) {
     await db.run(
-      `UPDATE products SET price = ?, cost = ?, updated_at = datetime('now') WHERE id = ?`,
-      [round2(unit.price), round2(unit.cost), productId]
+      `UPDATE products SET price = ?, updated_at = datetime('now') WHERE id = ?`,
+      [round2(unit.price), productId]
     );
-    return;
-  }
-
-  if (unitBarcode) {
+  } else if (unitBarcode) {
     await db.run(
-      `UPDATE products SET barcode = ?, price = ?, cost = ?, updated_at = datetime('now') WHERE id = ?`,
-      [unitBarcode, round2(unit.price), round2(unit.cost), productId]
+      `UPDATE products SET barcode = ?, price = ?, updated_at = datetime('now') WHERE id = ?`,
+      [unitBarcode, round2(unit.price), productId]
     );
 
     const existingPb = await db.get(
@@ -500,13 +532,44 @@ export async function syncProductFromDefaultUnit(db, productId) {
         existingPb.id,
       ]);
     }
-    return;
+  } else {
+    await db.run(
+      `UPDATE products SET price = ?, updated_at = datetime('now') WHERE id = ?`,
+      [round2(unit.price), productId]
+    );
   }
 
-  await db.run(
-    `UPDATE products SET price = ?, cost = ?, updated_at = datetime('now') WHERE id = ?`,
-    [round2(unit.price), round2(unit.cost), productId]
+  // Refresh the unit-cost cache (base → units direction only).
+  // The current products.cost may not have changed here, but if called after a
+  // WAC update (purchase post) the cached unit costs become consistent with it.
+  await refreshUnitCostCache(db, productId);
+}
+
+/**
+ * Refresh product_units.cost for all units of a product from the authoritative
+ * products.cost (base cost per base unit × conversion_to_base).
+ *
+ * This is a ONE-WAY cache refresh: base cost → derived unit costs.
+ * It must never run in the reverse direction.
+ *
+ * @param {object} db
+ * @param {number} productId
+ */
+export async function refreshUnitCostCache(db, productId) {
+  const product = await db.get("SELECT cost FROM products WHERE id = ?", [productId]);
+  if (!product) return;
+  const baseCost = Number(product.cost) || 0;
+  const units = await db.all(
+    "SELECT id, conversion_to_base FROM product_units WHERE product_id = ?",
+    [productId]
   );
+  for (const u of units) {
+    const cached = derivedUnitCost(baseCost, u.conversion_to_base);
+    await db.run(
+      "UPDATE product_units SET cost = ?, updated_at = datetime('now') WHERE id = ?",
+      [cached, u.id]
+    );
+  }
 }
 
 /**

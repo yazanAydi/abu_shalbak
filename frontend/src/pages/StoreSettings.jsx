@@ -8,6 +8,7 @@ import {
   CardBody,
   PrimaryButton,
   SecondaryButton,
+  DangerButton,
   SearchInput,
   Select,
   Modal,
@@ -21,9 +22,8 @@ import {
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import "../components/barcode/barcode-scanner.css";
 import { STORE_LOGO_PATH, resolveStoreLogoUrl } from "../utils/storeBranding";
-import AccountantPermissionsPanel from "../components/AccountantPermissionsPanel";
-import { defaultAccountantPermissions } from "../utils/accountantPermissions";
-
+import useAuthUser from "../hooks/useAuthUser";
+import { isAdminRole } from "../utils/roles";
 const LABELS = {
   business_day_cutoff_hour: "ساعة بداية اليوم (0–23)",
   receipt_show_cashier: "إظهار اسم الكاشير في الإيصال",
@@ -41,6 +41,9 @@ const MAX_QUICK_BUTTONS = 48;
 
 export default function StoreSettings() {
   const toast = useToast();
+  // The product-delete password is an admin safeguard, so an accountant with
+  // the settings page granted must not be able to change it.
+  const user = useAuthUser();
   const [settings, setSettings] = useState(null);
   const [form, setForm] = useState({});
   const [quickCategories, setQuickCategories] = useState([]);
@@ -57,6 +60,10 @@ export default function StoreSettings() {
   const [sendingExpiryAlert, setSendingExpiryAlert] = useState(false);
   const [msg, setMsg] = useState(null);
   const [error, setError] = useState(null);
+  const [deletePasswordSet, setDeletePasswordSet] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deletePasswordConfirm, setDeletePasswordConfirm] = useState("");
+  const [deletePasswordSaving, setDeletePasswordSaving] = useState(false);
 
   useEffect(() => {
     api
@@ -64,6 +71,7 @@ export default function StoreSettings() {
       .then(async (settingsRes) => {
         const data = settingsRes.data;
         setSettings(data);
+        setDeletePasswordSet(!!data.product_delete_password_set);
         setForm({
           default_tax_rate: data.default_tax_rate,
           tax_inclusive: data.tax_inclusive,
@@ -77,7 +85,6 @@ export default function StoreSettings() {
           expiry_alert_days_dairy: data.expiry_alert_days_dairy ?? 3,
           pos_shortcut_hold_cart: data.pos_shortcut_hold_cart ?? "",
           pos_shortcut_suspended_carts: data.pos_shortcut_suspended_carts ?? "",
-          accountant_permissions: data.accountant_permissions ?? defaultAccountantPermissions(),
         });
         const categories = Array.isArray(data.pos_quick_categories)
           ? data.pos_quick_categories
@@ -230,17 +237,15 @@ export default function StoreSettings() {
         expiry_dairy_categories: dairyCategories,
         pos_quick_categories: quickCategories,
         pos_quick_buttons: quickButtons,
-        accountant_permissions: form.accountant_permissions,
       };
       const { data } = await api.patch("/api/settings", patch, { headers: getAuthHeaders() });
       setSettings(data);
+      if (typeof data.product_delete_password_set === "boolean") {
+        setDeletePasswordSet(data.product_delete_password_set);
+      }
       setQuickCategories(data.pos_quick_categories || quickCategories);
       setDairyCategories(data.expiry_dairy_categories || dairyCategories);
       setQuickButtons(data.pos_quick_buttons || quickButtons);
-      setForm((prev) => ({
-        ...prev,
-        accountant_permissions: data.accountant_permissions ?? prev.accountant_permissions,
-      }));
       setMsg("تم الحفظ بنجاح");
       toast.success("تم الحفظ بنجاح");
     } catch (e) {
@@ -279,6 +284,54 @@ export default function StoreSettings() {
       toast.error(e.response?.data?.error || "فشل إرسال التنبيه");
     } finally {
       setSendingExpiryAlert(false);
+    }
+  }
+
+  async function saveDeletePassword() {
+    const password = deletePassword.trim();
+    const confirm = deletePasswordConfirm.trim();
+    if (password.length < 6) {
+      toast.error("كلمة المرور يجب أن تكون 6 أحرف على الأقل");
+      return;
+    }
+    if (password !== confirm) {
+      toast.error("كلمتا المرور غير متطابقتين");
+      return;
+    }
+    setDeletePasswordSaving(true);
+    try {
+      const { data } = await api.put(
+        "/api/admin/product-delete-password",
+        { password },
+        { headers: getAuthHeaders() }
+      );
+      setDeletePasswordSet(!!data?.product_delete_password_set);
+      setDeletePassword("");
+      setDeletePasswordConfirm("");
+      toast.success(deletePasswordSet ? "تم تغيير كلمة مرور الحذف" : "تم حفظ كلمة مرور الحذف");
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "تعذّر حفظ كلمة المرور");
+    } finally {
+      setDeletePasswordSaving(false);
+    }
+  }
+
+  async function clearDeletePassword() {
+    const ok = window.confirm(
+      "سيتم حذف كلمة مرور الحذف، وسيُطلب بعدها كلمة مرور حساب المسؤول عند حذف منتج. متابعة؟"
+    );
+    if (!ok) return;
+    setDeletePasswordSaving(true);
+    try {
+      await api.delete("/api/admin/product-delete-password", { headers: getAuthHeaders() });
+      setDeletePasswordSet(false);
+      setDeletePassword("");
+      setDeletePasswordConfirm("");
+      toast.success("تم حذف كلمة مرور الحذف");
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "تعذّر حذف كلمة المرور");
+    } finally {
+      setDeletePasswordSaving(false);
     }
   }
 
@@ -456,17 +509,6 @@ export default function StoreSettings() {
               </PrimaryButton>
             </div>
 
-          <SectionTitle>صلاحيات المحاسب</SectionTitle>
-          <p className="settings-favorites-hint">
-            اختر الصفحات والميزات التي يمكن لجميع حسابات المحاسب الوصول إليها في لوحة الإدارة.
-          </p>
-          <AccountantPermissionsPanel
-            value={form.accountant_permissions}
-            onChange={(accountant_permissions) =>
-              setForm((prev) => ({ ...prev, accountant_permissions }))
-            }
-          />
-
           <SectionTitle>اختصارات نقطة البيع</SectionTitle>
           <p className="settings-favorites-hint">
             لا تستخدم مفاتيح محجوزة للمتصفح مثل F12 أو Ctrl+Shift+I — تفتح أدوات المطوّر أو صفحات المتصفح.
@@ -573,6 +615,61 @@ export default function StoreSettings() {
         </CardBody>
         </Card>
       )}
+
+      {settings && isAdminRole(user?.role) ? (
+        <Card>
+          <CardBody>
+            <SectionTitle>كلمة مرور حذف المنتجات</SectionTitle>
+            <p className="settings-favorites-hint">
+              {deletePasswordSet
+                ? "كلمة المرور معيّنة. حذف منتج يتطلب هذه الكلمة وليس كلمة مرور حساب المسؤول."
+                : "غير معيّنة. حذف منتج يتطلب كلمة مرور حساب المسؤول."}
+            </p>
+            <FormGrid>
+              <FormField label="كلمة المرور الجديدة" required>
+                <Input
+                  type="password"
+                  value={deletePassword}
+                  onChange={(e) => setDeletePassword(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="6 أحرف على الأقل"
+                />
+              </FormField>
+              <FormField label="تأكيد كلمة المرور" required>
+                <Input
+                  type="password"
+                  value={deletePasswordConfirm}
+                  onChange={(e) => setDeletePasswordConfirm(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="أعد إدخال كلمة المرور"
+                />
+              </FormField>
+            </FormGrid>
+            <div className="ui-toolbar" style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              <PrimaryButton
+                type="button"
+                disabled={deletePasswordSaving}
+                onClick={saveDeletePassword}
+              >
+                {deletePasswordSaving
+                  ? "جاري الحفظ…"
+                  : deletePasswordSet
+                    ? "تغيير"
+                    : "حفظ"}
+              </PrimaryButton>
+              {deletePasswordSet ? (
+                <DangerButton
+                  type="button"
+                  disabled={deletePasswordSaving}
+                  onClick={clearDeletePassword}
+                >
+                  حذف كلمة المرور
+                </DangerButton>
+              ) : null}
+            </div>
+          </CardBody>
+        </Card>
+      ) : null}
 
       <Modal
         open={!!pendingProduct}

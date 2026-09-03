@@ -9,6 +9,7 @@ export default function QtyStepper({
   onFocus,
   min,
   max,
+  step = "any",
   className = "",
   style,
   disabled = false,
@@ -25,7 +26,7 @@ export default function QtyStepper({
   return (
     <input
       type="number"
-      step="any"
+      step={step}
       min={min}
       max={max}
       value={value}

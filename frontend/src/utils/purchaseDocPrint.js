@@ -1,6 +1,6 @@
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
-import { formatDiscountPercent, formatTaxRatePercent } from "./purchaseTotals";
+import { deriveEffectiveUnitCost, formatDiscountPercent, formatTaxRatePercent, lineHasPurchaseDiscount } from "./purchaseTotals";
 import { dateOnly, formatDateTimeShopAr } from "./format";
 const STATUS_LABEL = {
   draft: "مسودة",
@@ -80,6 +80,7 @@ export function printPurchaseDoc(doc, which, store = {}) {
         <td class="num">${money(it.total_cost)}</td>
         <td class="num">${it.discount_pct ? `${it.discount_pct}%` : "—"}</td>
         <td class="num">${money(it.unit_cost)}</td>
+        <td class="num">${lineHasPurchaseDiscount(it.discount_pct) ? money(deriveEffectiveUnitCost(it.line_total, it.quantity) || 0) : "—"}</td>
         <td class="num">${money(it.line_total)}</td>
       </tr>`
     )
@@ -140,10 +141,10 @@ export function printPurchaseDoc(doc, which, store = {}) {
   <table>
     <thead>
       <tr>
-        <th class="num">#</th><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th class="num">الكمية</th><th class="num">بونص</th><th class="num">كمية الأساس</th><th class="num">إجمالي الكلفة</th><th class="num">خصم</th><th class="num">كلفة الوحدة</th><th class="num">الإجمالي</th>
+        <th class="num">#</th><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th class="num">الكمية</th><th class="num">بونص</th><th class="num">كمية الأساس</th><th class="num">إجمالي الكلفة</th><th class="num">خصم</th><th class="num">كلفة الوحدة</th><th class="num">الكلفة الفعلية</th><th class="num">الإجمالي</th>
       </tr>
     </thead>
-    <tbody>${bodyRows || `<tr><td colspan="11" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
+    <tbody>${bodyRows || `<tr><td colspan="12" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
   <table class="totals">${totalsRows}</table>
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}

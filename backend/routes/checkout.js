@@ -8,7 +8,7 @@ import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
 import { checkoutSchema } from "../middleware/schemas.js";
-import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost, isWeighedBaseUnit, toBaseQuantity } from "../utils/productUnits.js";
+import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost, isWeighedBaseUnit, isKgUnit, toBaseQuantity } from "../utils/productUnits.js";
 import {
   resolveCheckoutPayments,
   loadSalePayments,
@@ -226,10 +226,8 @@ export function createCheckoutRouter(db) {
         if (Math.abs(livePrice - round2(Number(unit.price))) > 0.009) {
           unit.price = livePrice;
         }
-        const liveCost = round2(Number(p.cost) || 0);
-        if (liveCost !== round2(Number(unit.cost) || 0)) {
-          unit.cost = liveCost;
-        }
+        // unit.cost is no longer the COGS source — resolveSoldUnitCost always derives
+        // from products.cost × conversion_to_base. No need to patch unit.cost here.
       }
 
       const dbPrice = round2(Number(unit.price));
@@ -285,9 +283,15 @@ export function createCheckoutRouter(db) {
       const unitForQty = snapshotRow
         ? { unit_name: snapshotRow.unit_name_snapshot, conversion_to_base: conversionToBase }
         : unit;
+      // isWeightLine: true when product is is_weighed=1 AND sold as كغم.
+      // Used for whole-shekel scale rounding only — NOT for qty gate.
       const isWeightLine = isWeighedBaseUnit(unitForQty, isWeighed);
+      // isKgSale: true whenever the sold unit is كغم regardless of is_weighed.
+      // This is the gate for allowing fractional quantities.
+      const isKgSale = isKgUnit(unitForQty);
       let qty;
-      if (isWeightLine) {
+      if (isKgSale) {
+        // KG unit: fractional quantities always allowed (0.255, 0.5, 1.25…).
         if (!Number.isFinite(rawQty) || rawQty <= 0) {
           return res.status(400).json({
             error: "كمية الوزن غير صالحة",
@@ -297,6 +301,7 @@ export function createCheckoutRouter(db) {
         }
         qty = rawQty;
       } else if (isWeighed) {
+        // Weighed product but sold as a package unit (حبة): integer only.
         if (!Number.isFinite(rawQty) || rawQty < 1 || Math.abs(rawQty - Math.round(rawQty)) > 1e-9) {
           return res.status(400).json({
             error: "كمية الحبة غير صالحة",

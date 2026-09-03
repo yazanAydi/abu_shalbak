@@ -800,7 +800,7 @@ async function migratePurchasesTables(db) {
  * Multi-unit purchasing: snapshot the chosen unit + conversion on each purchase
  * line so historical documents stay accurate even if the unit's conversion is
  * edited later. `quantity` remains the quantity entered in the chosen unit;
- * `base_quantity` is the derived amount applied to stock (quantity x conversion).
+ * `base_quantity` is (quantity + bonus_quantity) × conversion, applied to stock.
  */
 async function migratePurchaseItemsProductUnit(db) {
   const cols = [
@@ -1464,9 +1464,9 @@ async function migrateInventoryLedgerTable(db) {
         'manual_adjustment','warehouse_transfer_in','warehouse_transfer_out',
         'stock_count_correction','expiry_writeoff'
       )),
-      quantity_delta INTEGER NOT NULL,
-      qty_before     INTEGER,
-      qty_after      INTEGER,
+      quantity_delta REAL NOT NULL,
+      qty_before     REAL,
+      qty_after      REAL,
       reference_type TEXT,
       reference_id   INTEGER,
       notes          TEXT,
@@ -1478,6 +1478,73 @@ async function migrateInventoryLedgerTable(db) {
     CREATE INDEX IF NOT EXISTS idx_inv_ledger_ref ON inventory_ledger(reference_type, reference_id);
     CREATE INDEX IF NOT EXISTS idx_inv_ledger_created ON inventory_ledger(created_at);
   `);
+}
+
+function sqliteIdent(name) {
+  return `"${String(name).replace(/"/g, "")}"`;
+}
+
+function columnSqlFromPragma(col, typeOverride) {
+  if (col.name === "id") return "id INTEGER PRIMARY KEY AUTOINCREMENT";
+  const type = typeOverride || col.type || "TEXT";
+  let def = `${sqliteIdent(col.name)} ${type}`;
+  if (Number(col.notnull) === 1) def += " NOT NULL";
+  if (col.dflt_value !== null && col.dflt_value !== undefined) {
+    const raw = String(col.dflt_value);
+    const wrapped = raw.includes("(") && !raw.trim().startsWith("(") ? `(${raw})` : raw;
+    def += ` DEFAULT ${wrapped}`;
+  }
+  return def;
+}
+
+/**
+ * Rebuild a table so inventory quantity columns are REAL (fractional KG).
+ * SQLite ignores type affinity for existing values; this only updates declared
+ * types for tooling and future schema readers. IDs/counters are not changed.
+ */
+async function rebuildQuantityColumnTypes(db, table, typeOverrides) {
+  const ALLOWED = { products: true, inventory_ledger: true };
+  if (!ALLOWED[table]) throw new Error(`rebuildQuantityColumnTypes: invalid table ${table}`);
+  const info = await db.all(`PRAGMA table_info(${table})`);
+  if (!info.length) return;
+  let needs = false;
+  for (const [col, typ] of Object.entries(typeOverrides)) {
+    const row = info.find((c) => c.name === col);
+    if (row && String(row.type || "").toUpperCase() !== String(typ).toUpperCase()) {
+      needs = true;
+    }
+  }
+  if (!needs) return;
+
+  const indexRows = await db.all(
+    `SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`,
+    [table]
+  );
+  const indexSql = indexRows.map((r) => r.sql).filter(Boolean).join(";\n");
+
+  const colDefs = info.map((c) => columnSqlFromPragma(c, typeOverrides[c.name] || null));
+  const cols = info.map((c) => sqliteIdent(c.name)).join(", ");
+  const tmp = `${table}_qty_real`;
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE ${tmp} (
+      ${colDefs.join(",\n      ")}
+    );
+    INSERT INTO ${tmp} (${cols}) SELECT ${cols} FROM ${table};
+    DROP TABLE ${table};
+    ALTER TABLE ${tmp} RENAME TO ${table};
+    ${indexSql ? `${indexSql};` : ""}
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+async function migrateFractionalInventoryQuantityTypes(db) {
+  await rebuildQuantityColumnTypes(db, "products", { stock: "REAL" });
+  await rebuildQuantityColumnTypes(db, "inventory_ledger", {
+    quantity_delta: "REAL",
+    qty_before: "REAL",
+    qty_after: "REAL",
+  });
 }
 
 async function migrateEntityCodeSequencesTable(db) {
@@ -2093,7 +2160,7 @@ export async function initDatabase(dbPath) {
       price REAL NOT NULL DEFAULT 0,
       cost REAL NOT NULL DEFAULT 0,
       category TEXT,
-      stock INTEGER NOT NULL DEFAULT 0,
+      stock REAL NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -2290,6 +2357,7 @@ export async function initDatabase(dbPath) {
   await migrateSalesInvoicesTables(db);
   await migrateInventoryDocumentsTables(db);
   await migrateSuspendedSalesTables(db);
+  await migrateFractionalInventoryQuantityTypes(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);

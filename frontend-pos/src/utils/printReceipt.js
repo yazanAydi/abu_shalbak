@@ -1,5 +1,7 @@
-import { resolveStoreLogoUrl } from "./storeBranding";
+import api from "../apiClient";
+import { getAuthHeaders } from "./auth";
 import { printDocumentWhenReady } from "./printDocument";
+import { resolveStoreLogoUrl } from "./storeBranding";
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -19,26 +21,22 @@ function injectFrontendLogo(html, logoUrl) {
 
 function normalizeReceiptInput(receiptOrPayload, options = {}) {
   if (typeof receiptOrPayload === "string") {
-    return { text: receiptOrPayload, html: options.html || null };
+    return { text: receiptOrPayload, html: options.html || null, transactionId: null };
   }
   if (receiptOrPayload && typeof receiptOrPayload === "object") {
+    const transactionId = Number(
+      receiptOrPayload.transaction_id || receiptOrPayload.transactionId || receiptOrPayload.id
+    );
     return {
       text: receiptOrPayload.receipt_text || null,
       html: receiptOrPayload.receipt_html || options.html || null,
+      transactionId: Number.isFinite(transactionId) && transactionId > 0 ? transactionId : null,
     };
   }
-  return { text: null, html: options.html || null };
+  return { text: null, html: options.html || null, transactionId: null };
 }
 
-/**
- * Print receipt without blocking the caller (thermal-friendly).
- * @param {string|{ receipt_text?: string, receipt_html?: string }} receiptOrPayload
- * @param {{ logoUrl?: string, html?: string }} [options]
- */
-export function printReceipt(receiptOrPayload, options = {}) {
-  const { text, html } = normalizeReceiptInput(receiptOrPayload, options);
-  if (!html && !text) return;
-
+function browserPrint(text, html, options = {}) {
   setTimeout(() => {
     const iframe = document.createElement("iframe");
     iframe.setAttribute("aria-hidden", "true");
@@ -75,4 +73,36 @@ export function printReceipt(receiptOrPayload, options = {}) {
     printDocumentWhenReady(win.document, { onAfterPrint: cleanup });
     setTimeout(cleanup, 15000);
   }, 0);
+}
+
+/**
+ * Print a sale receipt. On Windows (API on the cashier PC) this sends the job
+ * to the default printer with no Chrome dialog. Browser print is only used when
+ * the server cannot silent-print (Linux/Docker).
+ * @param {string|{ receipt_text?: string, receipt_html?: string, transaction_id?: number }} receiptOrPayload
+ * @param {{ logoUrl?: string, html?: string }} [options]
+ */
+export async function printReceipt(receiptOrPayload, options = {}) {
+  const { text, html, transactionId } = normalizeReceiptInput(receiptOrPayload, options);
+  if (!html && !text) return;
+
+  if (transactionId) {
+    try {
+      await api.post(
+        "/api/print-receipt/silent",
+        { transaction_id: transactionId },
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+      return;
+    } catch (e) {
+      if (e.response?.status === 501) {
+        browserPrint(text, html, options);
+        return;
+      }
+      window.alert(e.response?.data?.error || e.message || "فشلت طباعة الإيصال");
+      return;
+    }
+  }
+
+  browserPrint(text, html, options);
 }

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import XLSX from "xlsx";
-import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { getAccountStatement, parseStatementDate } from "../utils/accountStatementService.js";
 import { importUploadMiddleware } from "../utils/importUpload.js";
@@ -35,9 +35,11 @@ const MOVEMENT_TYPE_AR = {
 export function createSuppliersRouter(db) {
   const requireFinance = requireReportsPermission(db, "finance");
   const requireAccountStatement = requireReportsPermission(db, "account_statement");
+  const requireSuppliers = requireReportsPermission(db, "suppliers");
+  const requireSuppliersOrFinance = requireAnyReportsPermission(db, "suppliers", "finance", "purchases", "account_statement");
   const router = Router();
 
-  router.get("/", requireAuth, requireFinance, async (req, res) => {
+  router.get("/", requireAuth, requireSuppliersOrFinance, async (req, res) => {
     const { q } = req.query;
     let rows;
     if (q) {
@@ -92,13 +94,13 @@ export function createSuppliersRouter(db) {
     createStatementHistoryConfirmHandler(db, "supplier")
   );
 
-  router.get("/:id", requireAuth, requireFinance, async (req, res) => {
+  router.get("/:id", requireAuth, requireSuppliersOrFinance, async (req, res) => {
     const row = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!row) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     res.json(row);
   });
 
-  router.post("/", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/", requireAuth, requireSuppliers, async (req, res) => {
     const b = req.body || {};
     const name = b.name ? String(b.name).trim() : "";
     if (!name) return res.status(400).json({ error: "اسم المورد مطلوب", code: "VALIDATION_ERROR" });
@@ -124,7 +126,7 @@ export function createSuppliersRouter(db) {
     res.status(201).json(row);
   });
 
-  router.put("/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.put("/:id", requireAuth, requireSuppliers, async (req, res) => {
     const ex = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const b = req.body || {};
@@ -144,7 +146,7 @@ export function createSuppliersRouter(db) {
     res.json(row);
   });
 
-  router.delete("/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/:id", requireAuth, requireSuppliers, async (req, res) => {
     const ex = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     if (Math.abs(Number(ex.balance) || 0) > 0.009) {

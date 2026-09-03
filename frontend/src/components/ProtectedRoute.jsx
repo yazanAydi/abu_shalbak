@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import api from "../apiClient";
-import { getToken, getUser, removeToken, setUser } from "../utils/auth";
+import { getToken, getUser, removeToken, setUser, subscribeUser } from "../utils/auth";
 import {
   canLoginOffice,
   canViewReports,
@@ -61,8 +61,12 @@ export default function ProtectedRoute({
     }
 
     verify();
+    const unsubscribe = subscribeUser((next) => {
+      if (!cancelled && next) setUserState(next);
+    });
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [requireOffice]);
 

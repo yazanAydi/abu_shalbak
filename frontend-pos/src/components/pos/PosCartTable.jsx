@@ -148,8 +148,26 @@ function CartTableBody({
                     )}
                   </td>
                   <td className="pos-col-qty">
-                    {kgLine ? (
+                    {kgLine && it.weighed ? (
+                      // Scale-printed weight barcode: qty is fixed by the label — read-only.
                       <span className="pos-qty-val pos-qty-val--weight">{formatQty(it)}</span>
+                    ) : kgLine ? (
+                      // KG unit added manually (not from scale label): cashier can type fractional qty.
+                      <div className="pos-qty-controls">
+                        <input
+                          type="number"
+                          className="pos-qty-input pos-qty-input--kg"
+                          min={0.001}
+                          step="0.001"
+                          value={it.quantity}
+                          aria-label="الكمية (كغم)"
+                          onChange={(e) => {
+                            const next = Number(e.target.value);
+                            if (!(next > 0)) return;
+                            onQuantityChange(key, next);
+                          }}
+                        />
+                      </div>
                     ) : (
                       <div className="pos-qty-controls">
                         <input

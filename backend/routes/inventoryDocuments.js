@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireRoles } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
 import {
   inventoryReceiptCreateSchema,
@@ -15,7 +15,6 @@ import { reasonsForType } from "../utils/inventoryDocumentReasons.js";
 import { buildInventoryDocumentPrintHtml } from "../utils/inventoryDocumentPrintHtml.js";
 import { STORE_NAME_AR } from "../utils/storeBranding.js";
 
-const requireRead = requireRoles("admin", "accountant");
 
 function sendPrintHtml(res, doc) {
   const html = buildInventoryDocumentPrintHtml(doc, { store_name_ar: STORE_NAME_AR });
@@ -25,10 +24,14 @@ function sendPrintHtml(res, doc) {
 
 export function createInventoryDocumentsRouter(db, documentType) {
   const router = Router();
+  const requireDoc = requireReportsPermission(
+    db,
+    documentType === "issue" ? "inventory_issues" : "inventory_receipts"
+  );
   const createSchema =
     documentType === "issue" ? inventoryIssueCreateSchema : inventoryReceiptCreateSchema;
 
-  router.get("/", requireAuth, requireRead, async (req, res, next) => {
+  router.get("/", requireAuth, requireDoc, async (req, res, next) => {
     try {
       const rows = await listInventoryDocuments(db, documentType, req.query);
       res.json(rows);
@@ -37,11 +40,11 @@ export function createInventoryDocumentsRouter(db, documentType) {
     }
   });
 
-  router.get("/reasons", requireAuth, requireRead, (_req, res) => {
+  router.get("/reasons", requireAuth, requireDoc, (_req, res) => {
     res.json(reasonsForType(documentType));
   });
 
-  router.get("/:id/print", requireAuth, requireRead, async (req, res, next) => {
+  router.get("/:id/print", requireAuth, requireDoc, async (req, res, next) => {
     try {
       const doc = await getInventoryDocument(db, documentType, req.params.id);
       if (!doc) {
@@ -53,7 +56,7 @@ export function createInventoryDocumentsRouter(db, documentType) {
     }
   });
 
-  router.get("/:id", requireAuth, requireRead, async (req, res, next) => {
+  router.get("/:id", requireAuth, requireDoc, async (req, res, next) => {
     try {
       const doc = await getInventoryDocument(db, documentType, req.params.id);
       if (!doc) {
@@ -65,7 +68,7 @@ export function createInventoryDocumentsRouter(db, documentType) {
     }
   });
 
-  router.post("/", requireAuth, requireAdmin, validate(createSchema), async (req, res, next) => {
+  router.post("/", requireAuth, requireDoc, validate(createSchema), async (req, res, next) => {
     try {
       const doc = await createInventoryDocument(db, req, documentType, req.body);
       res.status(201).json(doc);
@@ -80,7 +83,8 @@ export function createInventoryDocumentsRouter(db, documentType) {
 /** Print by id regardless of receipt vs issue: GET /inventory-documents/:id/print */
 export function createInventoryDocumentPrintRouter(db) {
   const router = Router();
-  router.get("/:id/print", requireAuth, requireRead, async (req, res, next) => {
+  const requireDocPrint = requireAnyReportsPermission(db, "inventory_receipts", "inventory_issues");
+  router.get("/:id/print", requireAuth, requireDocPrint, async (req, res, next) => {
     try {
       const doc = await getInventoryDocumentById(db, req.params.id);
       if (!doc) {

@@ -1,6 +1,6 @@
 import { round2, applyPurchaseDiscount, computeSaleTotals, productTaxRate } from "../utils/tax.js";
 import { getAppSettings } from "../utils/settings.js";
-import { getDefaultUnit } from "../utils/productUnits.js";
+import { getDefaultUnit, derivedUnitCost } from "../utils/productUnits.js";
 import { recordMovement } from "../utils/inventory.js";
 import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { resolveInvoicePayments, insertSalePayments } from "../utils/salePayments.js";
@@ -102,7 +102,9 @@ export async function normalizeSaleItems(db, items) {
       payableGross,
       barcode: product.barcode,
       name: product.name,
-      cost: Number(product.cost) || 0,
+      // Sold-unit cost derived from base cost × conversion (never stale unit.cost).
+      // This is what gets written to transaction_items.unit_cost_at_sale.
+      cost: derivedUnitCost(Number(product.cost) || 0, unit.conversion),
     });
   }
   return out;
@@ -275,7 +277,9 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
 
     for (const it of items) {
       const stockDelta = it.base_quantity != null ? Number(it.base_quantity) : Number(it.quantity) || 0;
-      const grossProfit = round2((Number(it.line_net) || 0) - (Number(it.cost) || 0) * stockDelta);
+      // it.cost = sold-unit cost (products.cost × conversion_to_base).
+      // gross_profit = line revenue - (sold-unit cost × sold-unit quantity).
+      const grossProfit = round2((Number(it.line_net) || 0) - (Number(it.cost) || 0) * Number(it.quantity));
       await db.run(
         `INSERT INTO transaction_items
            (transaction_id, product_id, barcode, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,

@@ -1,46 +1,41 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { SecondaryButton } from "./ui";
+import { defaultAccountantPermissions } from "../utils/accountantPermissions";
 import {
-  ACCOUNTANT_PERMISSION_TOPICS,
-  allAccountantPermissionKeys,
-  defaultAccountantPermissions,
-} from "../utils/accountantPermissions";
+  setAllEnabled,
+  setTopicEnabled,
+  toggleFeature,
+  topicSummary as summarizeTopic,
+} from "./accountantPermissionsState";
+import { permissionTopicsFromNav } from "./layout/officeNavConfig";
 import "./AccountantPermissionsPanel.css";
 
-export default function AccountantPermissionsPanel({ value, onChange }) {
+export default function AccountantPermissionsPanel({ value, onChange, readOnly = false }) {
+  const topics = useMemo(() => permissionTopicsFromNav(), []);
   const permissions = value || defaultAccountantPermissions();
   const [openTopics, setOpenTopics] = useState(() =>
-    Object.fromEntries(ACCOUNTANT_PERMISSION_TOPICS.map((t) => [t.id, true]))
+    Object.fromEntries(topics.map((t) => [t.id, true]))
   );
 
   function setPermission(key, enabled) {
-    onChange({ ...permissions, [key]: enabled });
+    if (readOnly) return;
+    onChange(toggleFeature(permissions, key, enabled));
   }
 
   function setTopicPermissions(topicId, enabled) {
-    const topic = ACCOUNTANT_PERMISSION_TOPICS.find((t) => t.id === topicId);
+    if (readOnly) return;
+    const topic = topics.find((t) => t.id === topicId);
     if (!topic) return;
-    const next = { ...permissions };
-    for (const feature of topic.features) {
-      next[feature.key] = enabled;
-    }
-    onChange(next);
+    onChange(setTopicEnabled(permissions, topic, enabled));
   }
 
   function setAllPermissions(enabled) {
-    onChange(defaultAccountantPermissions());
-    if (!enabled) {
-      const cleared = {};
-      for (const key of allAccountantPermissionKeys()) {
-        cleared[key] = false;
-      }
-      onChange(cleared);
-    }
+    if (readOnly) return;
+    onChange(setAllEnabled(enabled));
   }
 
   function topicSummary(topic) {
-    const enabled = topic.features.filter((f) => permissions[f.key]).length;
-    return `${enabled}/${topic.features.length}`;
+    return summarizeTopic(permissions, topic);
   }
 
   function toggleTopic(topicId) {
@@ -49,17 +44,19 @@ export default function AccountantPermissionsPanel({ value, onChange }) {
 
   return (
     <div className="acct-perms">
-      <div className="acct-perms__toolbar">
-        <SecondaryButton type="button" onClick={() => setAllPermissions(true)}>
-          تحديد الكل
-        </SecondaryButton>
-        <SecondaryButton type="button" onClick={() => setAllPermissions(false)}>
-          إلغاء الكل
-        </SecondaryButton>
-      </div>
+      {readOnly ? null : (
+        <div className="acct-perms__toolbar">
+          <SecondaryButton type="button" onClick={() => setAllPermissions(true)}>
+            تحديد الكل
+          </SecondaryButton>
+          <SecondaryButton type="button" onClick={() => setAllPermissions(false)}>
+            إلغاء الكل
+          </SecondaryButton>
+        </div>
+      )}
 
       <div className="acct-perms__topics">
-        {ACCOUNTANT_PERMISSION_TOPICS.map((topic) => {
+        {topics.map((topic) => {
           const isOpen = openTopics[topic.id];
           return (
             <div key={topic.id} className="acct-perms__topic">
@@ -78,22 +75,24 @@ export default function AccountantPermissionsPanel({ value, onChange }) {
 
               {isOpen ? (
                 <div className="acct-perms__topic-body">
-                  <div className="acct-perms__topic-actions">
-                    <button
-                      type="button"
-                      className="acct-perms__link-btn"
-                      onClick={() => setTopicPermissions(topic.id, true)}
-                    >
-                      تحديد الكل
-                    </button>
-                    <button
-                      type="button"
-                      className="acct-perms__link-btn"
-                      onClick={() => setTopicPermissions(topic.id, false)}
-                    >
-                      إلغاء الكل
-                    </button>
-                  </div>
+                  {readOnly ? null : (
+                    <div className="acct-perms__topic-actions">
+                      <button
+                        type="button"
+                        className="acct-perms__link-btn"
+                        onClick={() => setTopicPermissions(topic.id, true)}
+                      >
+                        تحديد الكل
+                      </button>
+                      <button
+                        type="button"
+                        className="acct-perms__link-btn"
+                        onClick={() => setTopicPermissions(topic.id, false)}
+                      >
+                        إلغاء الكل
+                      </button>
+                    </div>
+                  )}
                   <ul className="acct-perms__features">
                     {topic.features.map((feature) => (
                       <li key={feature.key}>
@@ -101,6 +100,7 @@ export default function AccountantPermissionsPanel({ value, onChange }) {
                           <input
                             type="checkbox"
                             checked={!!permissions[feature.key]}
+                            disabled={readOnly}
                             onChange={(e) => setPermission(feature.key, e.target.checked)}
                           />
                           <span>{feature.labelAr}</span>

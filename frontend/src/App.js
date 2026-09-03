@@ -22,6 +22,7 @@ const OnAccountApprovals = lazy(() => import("./pages/OnAccountApprovals"));
 const AdvanceApprovals = lazy(() => import("./pages/AdvanceApprovals"));
 const StoreSettings = lazy(() => import("./pages/StoreSettings"));
 const CurrencySettings = lazy(() => import("./pages/CurrencySettings"));
+const AccountantPermissions = lazy(() => import("./pages/AccountantPermissions"));
 const Inventory = lazy(() => import("./pages/Inventory"));
 const BakerySupplies = lazy(() => import("./pages/BakerySupplies"));
 const ExpiryReports = lazy(() => import("./pages/ExpiryReports"));
@@ -109,7 +110,7 @@ function App() {
           <Route
             path="/manage-products"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="products">
                 <ProductManagement />
               </OfficeRoute>
             }
@@ -117,7 +118,7 @@ function App() {
           <Route
             path="/product-organization"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="product_organization">
                 <ProductOrganization />
               </OfficeRoute>
             }
@@ -125,7 +126,7 @@ function App() {
           <Route
             path="/products/:id"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="products">
                 <ProductDashboard />
               </OfficeRoute>
             }
@@ -133,7 +134,7 @@ function App() {
           <Route
             path="/manage-users"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="user_accounts">
                 <UserManagement />
               </OfficeRoute>
             }
@@ -205,7 +206,7 @@ function App() {
           <Route
             path="/settings"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="store_settings">
                 <StoreSettings />
               </OfficeRoute>
             }
@@ -213,15 +214,23 @@ function App() {
           <Route
             path="/settings/currency"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="currencies">
                 <CurrencySettings />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/permissions"
+            element={
+              <OfficeRoute requirePermission="permissions">
+                <AccountantPermissions />
               </OfficeRoute>
             }
           />
           <Route
             path="/units"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="units">
                 <UnitsManagement />
               </OfficeRoute>
             }
@@ -229,7 +238,7 @@ function App() {
           <Route
             path="/categories"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="categories">
                 <CategoriesManagement />
               </OfficeRoute>
             }
@@ -238,7 +247,7 @@ function App() {
           <Route
             path="/inventory"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="stock_count">
                 <Inventory />
               </OfficeRoute>
             }
@@ -246,7 +255,7 @@ function App() {
           <Route
             path="/bakery-supplies"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="bakery_supplies">
                 <BakerySupplies />
               </OfficeRoute>
             }
@@ -270,7 +279,7 @@ function App() {
           <Route
             path="/customers"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="customers">
                 <CustomerManagement />
               </OfficeRoute>
             }
@@ -278,7 +287,7 @@ function App() {
           <Route
             path="/suppliers"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="suppliers">
                 <SupplierManagement />
               </OfficeRoute>
             }
@@ -294,7 +303,7 @@ function App() {
           <Route
             path="/purchases"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="purchases">
                 <Purchases />
               </OfficeRoute>
             }
@@ -302,7 +311,7 @@ function App() {
           <Route
             path="/sales-invoices"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="sales_invoices">
                 <SalesInvoices />
               </OfficeRoute>
             }
@@ -310,7 +319,7 @@ function App() {
           <Route
             path="/inventory-receipts"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="inventory_receipts">
                 <InventoryDocumentsList docType="receipt" />
               </OfficeRoute>
             }
@@ -318,7 +327,7 @@ function App() {
           <Route
             path="/inventory-receipts/new"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="inventory_receipts">
                 <InventoryDocumentForm docType="receipt" />
               </OfficeRoute>
             }
@@ -326,7 +335,7 @@ function App() {
           <Route
             path="/inventory-receipts/:id"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="inventory_receipts">
                 <InventoryDocumentView docType="receipt" />
               </OfficeRoute>
             }
@@ -334,7 +343,7 @@ function App() {
           <Route
             path="/inventory-issues"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="inventory_issues">
                 <InventoryDocumentsList docType="issue" />
               </OfficeRoute>
             }
@@ -342,7 +351,7 @@ function App() {
           <Route
             path="/inventory-issues/new"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="inventory_issues">
                 <InventoryDocumentForm docType="issue" />
               </OfficeRoute>
             }
@@ -350,7 +359,7 @@ function App() {
           <Route
             path="/inventory-issues/:id"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="inventory_issues">
                 <InventoryDocumentView docType="issue" />
               </OfficeRoute>
             }
@@ -374,7 +383,7 @@ function App() {
           <Route
             path="/marketing"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="marketing">
                 <Marketing />
               </OfficeRoute>
             }
@@ -382,7 +391,7 @@ function App() {
           <Route
             path="/warehouses"
             element={
-              <OfficeRoute adminOnly>
+              <OfficeRoute requirePermission="warehouses">
                 <Warehouses />
               </OfficeRoute>
             }

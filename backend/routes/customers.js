@@ -159,6 +159,7 @@ async function resolveBalanceGroupFilter(db, req) {
 export function createCustomersRouter(db) {
   const requireFinance = requireReportsPermission(db, "finance");
   const requireAccountStatement = requireReportsPermission(db, "account_statement");
+  const requireCustomers = requireReportsPermission(db, "customers");
 
   const router = Router();
 
@@ -244,7 +245,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.post("/meta/balance-groups", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/meta/balance-groups", requireAuth, requireCustomers, async (req, res) => {
 
     const label_ar = String(req.body?.label_ar || "").trim();
 
@@ -278,7 +279,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.put("/meta/balance-groups/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.put("/meta/balance-groups/:id", requireAuth, requireCustomers, async (req, res) => {
 
     const existing = await getBalanceGroupById(db, req.params.id);
 
@@ -320,7 +321,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.delete("/meta/balance-groups/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/meta/balance-groups/:id", requireAuth, requireCustomers, async (req, res) => {
 
     const existing = await getBalanceGroupById(db, req.params.id);
 
@@ -496,7 +497,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.post("/", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/", requireAuth, requireCustomers, async (req, res) => {
 
     const {
 
@@ -580,7 +581,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.put("/:id", requireAuth, requireAdmin, async (req, res, next) => {
+  router.put("/:id", requireAuth, requireCustomers, async (req, res, next) => {
     try {
       const row = await applyCustomerMetadataPatch(db, req.params.id, req.body || {});
       res.json(row);
@@ -592,7 +593,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.delete("/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/:id", requireAuth, requireCustomers, async (req, res) => {
 
     const existing = await db.get("SELECT * FROM customers WHERE id = ?", [req.params.id]);
 
@@ -713,7 +714,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.post("/:id/payment", requireAuth, requireAdmin, async (req, res, next) => {
+  router.post("/:id/payment", requireAuth, requireCustomers, async (req, res, next) => {
     const amount = Number(req.body?.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ error: "المبلغ غير صالح", code: "VALIDATION_ERROR" });

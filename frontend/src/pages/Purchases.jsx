@@ -16,7 +16,7 @@ import { pickExportColumns } from "../utils/reportExport";
 import { printPurchaseDoc } from "../utils/purchaseDocPrint";
 import QtyStepper from "../components/QtyStepper";
 import { handleEnterNavKeyDown } from "../utils/focusNavigation";
-import { computePurchaseEditorTotals, computePurchaseLinePayable, computePurchaseLineVat, computePurchaseSimpleTotal, deriveTotalCost, deriveUnitCost, formatCostInput, formatDiscountPercent, formatTaxRatePercent } from "../utils/purchaseTotals";
+import { computePurchaseEditorTotals, computePurchaseLinePayable, computePurchaseLineVat, computePurchaseSimpleTotal, deriveEffectiveUnitCost, deriveTotalCost, deriveUnitCost, formatCostInput, formatDiscountPercent, formatTaxRatePercent, lineHasPurchaseDiscount, purchaseQtyStepForUnit } from "../utils/purchaseTotals";
 import "./purchase-item-editor.css";
 
 const STATUS_TONE = { draft: "neutral", posted: "green", confirmed: "blue", received: "green", cancelled: "red" };
@@ -284,6 +284,9 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                 ? computePurchaseLineVat(it.total_cost, it.discount_pct, "", defaultTaxRate)
                 : null;
               const linePayable = !withVat ? computePurchaseLinePayable(it.total_cost, it.discount_pct) : null;
+              const payable = lineVat ? lineVat.lineTotal : linePayable ? linePayable.payable : totalNum;
+              const effectiveUnitCost = deriveEffectiveUnitCost(payable, qtyNum);
+              const showEffective = lineHasPurchaseDiscount(it.discount_pct) && effectiveUnitCost !== "";
               const units = Array.isArray(it.units) ? it.units : [];
               const purchasable = units.filter((u) => u.purchase_enabled !== false);
               const selectable = purchasable.length ? purchasable : units;
@@ -316,9 +319,10 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                 </td>
                 <td>
                   <input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.unit_cost ?? ""} onFocus={selectInputOnFocus} onChange={(e) => updateUnitCost(i, e.target.value)} onBlur={() => handleUnitCostBlur(i)} />
+                  {showEffective ? <div className="purchase-item-editor__meta">الكلفة الفعلية {ils(effectiveUnitCost)}</div> : null}
                 </td>
                 <td>
-                  <QtyStepper className="ui-input" min={0} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
+                  <QtyStepper className="ui-input" min={0} step={purchaseQtyStepForUnit(selectedUnit)} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
                   {conv > 1 && qtyNum > 0 ? <div className="purchase-item-editor__meta">= {fmtQty(baseQty)} {itemBaseUnitName(it)}</div> : null}
                   {suggestion ? (
                     <button
@@ -332,7 +336,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                 </td>
                 <td><input className="ui-input" type="number" min="0" max="100" step="0.1" placeholder="0" value={it.discount_pct ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "discount_pct", e.target.value)} /></td>
                 <td>
-                  <QtyStepper className="ui-input" min={0} value={it.bonus_quantity ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "bonus_quantity", e.target.value)} />
+                  <QtyStepper className="ui-input" min={0} step={purchaseQtyStepForUnit(selectedUnit)} value={it.bonus_quantity ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "bonus_quantity", e.target.value)} />
                   {bonusNum > 0 ? (
                     <div className="purchase-item-editor__meta purchase-item-editor__meta--accent">
                       + {fmtQty(bonusNum)} بونص{stockBaseQty > baseQty ? ` = ${fmtQty(stockBaseQty)} ${itemBaseUnitName(it)}` : ""}
@@ -713,6 +717,17 @@ export default function Purchases() {
                 { key: "discount_pct", header: "خصم %", align: "left", render: (it) => (it.discount_pct ? `${it.discount_pct}%` : "—") },
                 { key: "bonus_quantity", header: "بونص", align: "left", render: (it) => (it.bonus_quantity ? fmtQty(it.bonus_quantity) : "—") },
                 { key: "unit_cost", header: "كلفة الوحدة", align: "left", className: "num", render: (it) => ils(it.unit_cost) },
+                {
+                  key: "effective_unit_cost",
+                  header: "الكلفة الفعلية",
+                  align: "left",
+                  className: "num",
+                  render: (it) => {
+                    const effective = deriveEffectiveUnitCost(it.line_total, it.quantity);
+                    if (!lineHasPurchaseDiscount(it.discount_pct) || effective === "") return "—";
+                    return ils(effective);
+                  },
+                },
                 { key: "line_total", header: "الإجمالي", align: "left", className: "num", render: (it) => ils(it.line_total) },
               ]}
               rows={detail.doc.items || []}

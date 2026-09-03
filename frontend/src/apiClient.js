@@ -111,7 +111,9 @@ export function clearApiCache() {
 function invalidateCacheForWrite(url) {
   const path = String(url || "");
   const keys = [];
-  if (path.includes("/settings")) keys.push("/api/settings");
+  if (path.includes("/settings") || path.includes("product-delete-password")) {
+    keys.push("/api/settings");
+  }
   if (path.includes("/currencies")) keys.push("/api/currencies");
   if (path.includes("/categories")) keys.push("/api/products/categories");
   if (path.includes("/unit-names")) keys.push("/api/products/unit-names");

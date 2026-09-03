@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import api from "../../apiClient";
-import { getAuthHeaders, getUser } from "../../utils/auth";
-import { isAdminRole } from "../../utils/roles";
+import { getAuthHeaders } from "../../utils/auth";
+import useAuthUser from "../../hooks/useAuthUser";
+import { hasAccountantPermission } from "../../utils/accountantPermissions";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useVisiblePoll } from "../../hooks/useVisiblePoll";
 import { OFFICE_NAV } from "./officeNavConfig";
@@ -28,7 +29,7 @@ const QUICK_PATHS = [
 
 export default function OfficeSideRail() {
   const railVisible = useMediaQuery(RAIL_VISIBLE_MEDIA);
-  const user = getUser();
+  const user = useAuthUser();
   const role = user?.role || "";
   const permissions = user?.permissions ?? null;
   const quickLinks = OFFICE_NAV.filter(
@@ -130,7 +131,7 @@ export default function OfficeSideRail() {
           </>
         )}
         <div className="office-side-rail-footer">
-          {displayTotal > 0 ? (
+          {displayTotal > 0 && hasAccountantPermission(role, permissions, "expiry") ? (
             <Link
               to={`/expiry?tab=lowstock&threshold=${LOW_STOCK_THRESHOLD}`}
               className="office-side-rail-action"
@@ -138,7 +139,7 @@ export default function OfficeSideRail() {
               عرض الكل ({displayTotal})
             </Link>
           ) : null}
-          {isAdminRole(role) ? (
+          {hasAccountantPermission(role, permissions, "products") ? (
             <Link to="/manage-products" className="office-side-rail-action">
               إدارة المنتجات
             </Link>
