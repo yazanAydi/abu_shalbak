@@ -1,4 +1,5 @@
 import { applyCartUnit, cartKeyFor, mapLookupToCartProduct } from "./cartProduct.js";
+import { round2 } from "./posTotals.js";
 import {
   createScanHistoryEntry,
   pushScanHistory,
@@ -37,7 +38,7 @@ export function checkoutReducer(state, action) {
             {
               ...mapped,
               quantity,
-              subtotal: quantity * price,
+              subtotal: round2(quantity * price),
             },
           ],
           scanHistory: pushScanHistory(state.scanHistory, scanEntry),
@@ -55,7 +56,7 @@ export function checkoutReducer(state, action) {
         const previousQty = row.quantity;
         const newQty = row.quantity + 1;
         row.quantity = newQty;
-        row.subtotal = newQty * row.price;
+        row.subtotal = round2(newQty * row.price);
         const cartItems = [...prev];
         cartItems[idx] = row;
         const scanEntry = createScanHistoryEntry(mapped.cartKey, previousQty, false);
@@ -78,7 +79,7 @@ export function checkoutReducer(state, action) {
           {
             ...mapped,
             quantity: 1,
-            subtotal: price,
+            subtotal: round2(price),
           },
         ],
         scanHistory: pushScanHistory(state.scanHistory, scanEntry),
@@ -117,7 +118,7 @@ export function checkoutReducer(state, action) {
       const next = [...prev];
       const row = { ...next[idx] };
       row.quantity = newQty;
-      row.subtotal = newQty * row.price;
+      row.subtotal = round2(newQty * row.price);
       next[idx] = row;
       return {
         ...state,
@@ -144,7 +145,7 @@ export function checkoutReducer(state, action) {
         const merged = [...state.cartItems];
         const target = { ...merged[existingIdx] };
         target.quantity += switched.quantity;
-        target.subtotal = target.quantity * Number(target.price);
+        target.subtotal = round2(target.quantity * Number(target.price));
         merged[existingIdx] = target;
         merged.splice(idx, 1);
         return { ...state, cartItems: merged, scanHistory: [], error: null, blockedScan: null };
@@ -175,7 +176,7 @@ export function checkoutReducer(state, action) {
         if (idx >= 0) {
           const existing = { ...merged[idx] };
           existing.quantity += row.quantity;
-          existing.subtotal = existing.quantity * existing.price;
+          existing.subtotal = round2(existing.quantity * existing.price);
           merged[idx] = existing;
         } else {
           merged.push({ ...row });

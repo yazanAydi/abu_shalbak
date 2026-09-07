@@ -311,13 +311,25 @@ a,
   width: 100%;
   box-sizing: border-box;
   padding: 0.55rem 0.8rem;
-  border: 1px solid var(--office-input-border);
+  border: 1.5px solid var(--office-input-border);
   border-radius: var(--office-radius-sm);
   font-size: 0.93rem;
   font-family: inherit;
   background: var(--office-input-bg);
   color: var(--office-panel-text);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ui-input::placeholder,
+.ui-select::placeholder,
+.ui-textarea::placeholder {
+  color: var(--office-input-placeholder, #64748b);
+  opacity: 1;
+}
+.ui-input:hover,
+.ui-select:hover,
+.ui-textarea:hover {
+  border-color: var(--slate-500, #64748b);
 }
 .ui-textarea { min-height: 80px; resize: vertical; }
 .ui-input:focus,
@@ -731,6 +743,34 @@ a,
   gap: 0.5rem;
   cursor: pointer;
   font-weight: 500;
+}
+
+.ui-check {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0;
+  accent-color: var(--office-accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.settings-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 1rem 1.75rem;
+  margin: 0.15rem 0 1.35rem;
+}
+
+.settings-check-row .ui-field {
+  align-items: center;
+  text-align: center;
+  min-width: 7.5rem;
+}
+
+.settings-check-row .ui-field__label {
+  text-align: center;
 }
 
 .ui-field--narrow {

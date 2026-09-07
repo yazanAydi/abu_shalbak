@@ -6,6 +6,7 @@ import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { resolveInvoicePayments, insertSalePayments } from "../utils/salePayments.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { partyBalanceForSalesInvoice } from "../utils/partyBalanceAroundMove.js";
 
 function round6(n) {
   return Math.round((Number(n) || 0) * 1e6) / 1e6;
@@ -156,6 +157,26 @@ async function insertInvoiceItems(db, invoiceId, lines) {
   }
 }
 
+export async function getSalesInvoiceDetail(db, invoiceId) {
+  const inv = await db.get(
+    `SELECT si.*, c.name AS customer_name FROM sales_invoices si
+     JOIN customers c ON c.id = si.customer_id WHERE si.id = ?`,
+    [invoiceId]
+  );
+  if (!inv) return null;
+  const items = await db.all(
+    `SELECT sii.*, p.name, p.barcode FROM sales_invoice_items sii
+     JOIN products p ON p.id = sii.product_id WHERE sii.invoice_id = ?`,
+    [inv.id]
+  );
+  const payments =
+    inv.status === "posted"
+      ? await db.all("SELECT * FROM sales_invoice_payments WHERE invoice_id = ? ORDER BY id", [inv.id])
+      : [];
+  const party_balance = await partyBalanceForSalesInvoice(db, inv);
+  return { ...inv, items, payments, party_balance };
+}
+
 export async function createSalesInvoiceDraft(db, body, userId) {
   const { customer_id, ref_text, invoice_date, notes, items } = body || {};
   const cid = Number(customer_id);
@@ -250,6 +271,7 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
     product_id: it.product_id,
     name: it.name,
     barcode: it.barcode,
+    sku: it.product?.sku ?? it.sku ?? null,
     quantity: it.quantity,
     price: it.unit_price,
     unit_name: it.unit_name,

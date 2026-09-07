@@ -6,11 +6,8 @@ import {
   fetchAllImportedStatementEntries,
   mergePartyAccountStatement,
 } from "./accountStatementMerge.js";
-import {
-  STORE_LICENSE_LINE,
-  STORE_NAME_AR,
-  STORE_PHONE,
-} from "./storeBranding.js";
+import { resolvePrintBranding } from "./storeBranding.js";
+import { getAppSettings } from "./settings.js";
 import { shopTodayYmd } from "./shopTime.js";
 
 /**
@@ -117,6 +114,8 @@ export async function getAccountStatement(db, opts) {
     ledger = await buildCustomerLedger(db, party, from, to);
   }
 
+  const settings = await getAppSettings(db);
+  const branding = resolvePrintBranding(settings);
   const importedHistory = await fetchAllImportedStatementEntries(db, normalizedType, partyId);
   const formatted =
     importedHistory.length > 0
@@ -127,10 +126,10 @@ export async function getAccountStatement(db, opts) {
           ledger,
           importedHistory,
           { from, to },
-          { storeName: STORE_NAME_AR }
+          { storeName: branding.name }
         )
       : formatHesabatiStatement(normalizedType, party, ledger, { from, to }, {
-          storeName: STORE_NAME_AR,
+          storeName: branding.name,
         });
 
   const movementRows = formatted.rows.filter((r) => r.ev_type !== "opening");
@@ -163,9 +162,16 @@ export async function getAccountStatement(db, opts) {
       : ledger.closing_balance;
 
   return {
-    store_name: STORE_NAME_AR,
-    store_phone: STORE_PHONE,
-    store_license: STORE_LICENSE_LINE,
+    store_name: branding.name,
+    store_phone: branding.phone,
+    store_license: branding.license,
+    store_address: branding.address,
+    receipt_logo_url: settings.receipt_logo_url || "",
+    print_show_logo: branding.showLogo,
+    print_show_name: branding.showName,
+    print_show_phone: branding.showPhone,
+    print_show_address: branding.showAddress,
+    print_show_license: branding.showLicense,
     party_type: normalizedType,
     report_title: normalizedType === "supplier" ? "كشف حساب مورد" : "كشف حساب عميل",
     party: formatted.party,

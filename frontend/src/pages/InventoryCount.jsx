@@ -3,7 +3,14 @@ import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import ProductPicker from "../components/ProductPicker";
 import QtyStepper from "../components/QtyStepper";
-import { ReportToolbar } from "../components/ui";
+import {
+  ReportToolbar,
+  Modal,
+  FormField,
+  Input,
+  DangerButton,
+  SecondaryButton,
+} from "../components/ui";
 
 const SESSION_COLUMNS = [
   { key: "id", header: "رقم" },
@@ -39,6 +46,10 @@ export default function InventoryCount({ embedded = false }) {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [zeroPasswordSet, setZeroPasswordSet] = useState(false);
+  const [zeroModalOpen, setZeroModalOpen] = useState(false);
+  const [zeroPassword, setZeroPassword] = useState("");
+  const [zeroPasswordError, setZeroPasswordError] = useState(null);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -52,6 +63,15 @@ export default function InventoryCount({ embedded = false }) {
   }, []);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  useEffect(() => {
+    api
+      .get("/api/settings", { headers: getAuthHeaders() })
+      .then(({ data }) => {
+        setZeroPasswordSet(!!data?.zero_all_stock_password_set);
+      })
+      .catch(() => {});
+  }, []);
 
   async function loadSession(id) {
     const { data } = await api.get(`/api/inventory/counts/${id}`, { headers: getAuthHeaders() });
@@ -108,22 +128,46 @@ export default function InventoryCount({ embedded = false }) {
   const hasOpenSession =
     activeSession?.status === "open" || sessions.some((s) => s.status === "open");
 
-  async function zeroAllStock() {
-    const extra = hasOpenSession
-      ? "\n\nيوجد جلسة جرد مفتوحة. ترحيل تلك الجلسة بعد التصفير قد يغيّر المخزون مرة أخرى."
-      : "";
-    if (!window.confirm(`هل تريد تصفير كمية كل المنتجات؟ لا يمكن التراجع عن هذه الخطوة.${extra}`)) {
+  function openZeroAllStock() {
+    setZeroPassword("");
+    setZeroPasswordError(null);
+    setZeroModalOpen(true);
+  }
+
+  function closeZeroAllStock() {
+    if (saving) return;
+    setZeroModalOpen(false);
+    setZeroPassword("");
+    setZeroPasswordError(null);
+  }
+
+  async function confirmZeroAllStock() {
+    if (zeroPasswordSet && !zeroPassword.trim()) {
+      setZeroPasswordError("أدخل كلمة المرور للمتابعة");
       return;
     }
     setSaving(true);
     setError(null);
     setMsg(null);
+    setZeroPasswordError(null);
     try {
-      const { data } = await api.post("/api/inventory/zero-all-stock", {}, { headers: getAuthHeaders() });
+      const headers = { ...getAuthHeaders() };
+      if (zeroPasswordSet) {
+        headers["X-Confirm-Password"] = zeroPassword;
+      }
+      const { data } = await api.post("/api/inventory/zero-all-stock", {}, { headers });
       const zeroed = data?.products_zeroed ?? 0;
       setMsg(`تم تصفير كميات ${zeroed} منتج`);
+      setZeroModalOpen(false);
+      setZeroPassword("");
     } catch (e) {
-      setError(e.response?.data?.error || "فشل تصفير الكميات");
+      const message = e.response?.data?.error || "فشل تصفير الكميات";
+      if (zeroPasswordSet) {
+        setZeroPasswordError(message);
+      } else {
+        setError(message);
+        setZeroModalOpen(false);
+      }
     } finally {
       setSaving(false);
     }
@@ -162,7 +206,7 @@ export default function InventoryCount({ embedded = false }) {
                 rows={reportConfig.rows}
                 filename={reportConfig.filename}
               />
-              <button className="btn-danger" onClick={zeroAllStock} disabled={saving}>
+              <button className="btn-danger" onClick={openZeroAllStock} disabled={saving}>
                 تصفير كل الكميات
               </button>
               {activeSession.status === "open" && (
@@ -237,7 +281,7 @@ export default function InventoryCount({ embedded = false }) {
               disabled={loading}
             />
             <button className="btn-primary" onClick={openNew}>+ فتح جلسة جرد جديدة</button>
-            <button className="btn-danger" onClick={zeroAllStock} disabled={saving}>
+            <button className="btn-danger" onClick={openZeroAllStock} disabled={saving}>
               تصفير كل الكميات
             </button>
           </div>
@@ -269,6 +313,54 @@ export default function InventoryCount({ embedded = false }) {
           )}
         </div>
       )}
+
+      <Modal
+        open={zeroModalOpen}
+        onClose={closeZeroAllStock}
+        title="تصفير كل الكميات"
+        footer={
+          <>
+            <SecondaryButton type="button" onClick={closeZeroAllStock} disabled={saving}>
+              إلغاء
+            </SecondaryButton>
+            <DangerButton type="button" onClick={confirmZeroAllStock} disabled={saving}>
+              {saving ? "جاري التصفير…" : "تأكيد التصفير"}
+            </DangerButton>
+          </>
+        }
+      >
+        <p style={{ marginTop: 0 }}>
+          هل تريد تصفير كمية كل المنتجات؟ لا يمكن التراجع عن هذه الخطوة.
+        </p>
+        {hasOpenSession ? (
+          <p>يوجد جلسة جرد مفتوحة. ترحيل تلك الجلسة بعد التصفير قد يغيّر المخزون مرة أخرى.</p>
+        ) : null}
+        {zeroPasswordSet ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              confirmZeroAllStock();
+            }}
+          >
+            <FormField label="كلمة مرور التصفير" required>
+              <Input
+                type="password"
+                value={zeroPassword}
+                autoFocus
+                onChange={(e) => {
+                  setZeroPassword(e.target.value);
+                  if (zeroPasswordError) setZeroPasswordError(null);
+                }}
+                placeholder="أدخل كلمة المرور للمتابعة"
+                autoComplete="current-password"
+              />
+            </FormField>
+          </form>
+        ) : null}
+        {zeroPasswordError ? (
+          <p style={{ color: "var(--office-danger)", marginTop: "0.5rem" }}>{zeroPasswordError}</p>
+        ) : null}
+      </Modal>
     </>
   );
 

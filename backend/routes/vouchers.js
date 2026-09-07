@@ -3,6 +3,29 @@ import { requireAuth, requireAdmin, requireReportsPermission } from "../middlewa
 import { round2 } from "../utils/tax.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { partyBalanceForVoucher } from "../utils/partyBalanceAroundMove.js";
+
+/** Apply party/bank balance effects and mark the voucher posted. Caller must be in a transaction. */
+async function applyVoucherPostEffects(db, voucher, lines) {
+  for (const L of lines) {
+    if (L.customer_id) {
+      const delta = voucher.voucher_type === "receipt" ? -L.amount_nis : L.amount_nis;
+      await db.run("UPDATE customers SET balance = balance + ? WHERE id = ?", [delta, L.customer_id]);
+    }
+    if (L.supplier_id) {
+      const delta = voucher.voucher_type === "receipt" ? L.amount_nis : -L.amount_nis;
+      await db.run("UPDATE suppliers SET balance = balance + ? WHERE id = ?", [delta, L.supplier_id]);
+    }
+    if (L.bank_account_id) {
+      const delta = voucher.voucher_type === "receipt" ? L.amount_nis : -L.amount_nis;
+      await db.run("UPDATE bank_accounts SET balance = balance + ? WHERE id = ?", [delta, L.bank_account_id]);
+    }
+  }
+  await db.run(
+    "UPDATE vouchers SET status = 'posted', posted_at = datetime('now') WHERE id = ?",
+    [voucher.id]
+  );
+}
 
 export function createVouchersRouter(db) {
   const router = Router();
@@ -10,7 +33,7 @@ export function createVouchersRouter(db) {
 
   // ───── Voucher list ─────
 
-  router.get("/", requireAuth, requireVouchers, async (req, res) => {
+  router.get("/", requireAuth, requireVouchers, async (req, res, next) => {
     const { type, status, from, to } = req.query;
     let sql = `SELECT v.*, u.username as recorded_by_name
                FROM vouchers v LEFT JOIN users u ON v.recorded_by_id = u.id
@@ -24,7 +47,7 @@ export function createVouchersRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.get("/:id", requireAuth, requireVouchers, async (req, res) => {
+  router.get("/:id", requireAuth, requireVouchers, async (req, res, next) => {
     const voucher = await db.get(
       `SELECT v.*, u.username as recorded_by_name
        FROM vouchers v LEFT JOIN users u ON v.recorded_by_id = u.id
@@ -40,7 +63,8 @@ export function createVouchersRouter(db) {
        WHERE vl.voucher_id = ? ORDER BY vl.id`,
       [voucher.id]
     );
-    res.json({ ...voucher, lines });
+    const party_balance = await partyBalanceForVoucher(db, voucher, lines);
+    res.json({ ...voucher, lines, party_balance });
   });
 
   // ───── Create draft voucher ─────
@@ -119,13 +143,13 @@ export function createVouchersRouter(db) {
       });
       res.status(201).json(created);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
   // ───── Update draft voucher ─────
 
-  router.put("/:id", requireAuth, requireVouchers, async (req, res) => {
+  router.put("/:id", requireAuth, requireVouchers, async (req, res, next) => {
     const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [req.params.id]);
     if (!voucher) return res.status(404).json({ error: "السند غير موجود", code: "NOT_FOUND" });
     if (voucher.status === "posted") {
@@ -194,13 +218,48 @@ export function createVouchersRouter(db) {
       });
       res.json(updated);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
+    }
+  });
+
+  // ───── Post all draft vouchers ─────
+
+  router.post("/post-all", requireAuth, requireAdmin, async (req, res, next) => {
+    const type = req.body?.type || req.query?.type;
+    if (type && !["receipt", "payment"].includes(type)) {
+      return res.status(400).json({
+        error: "نوع السند يجب أن يكون receipt أو payment",
+        code: "VALIDATION_ERROR",
+      });
+    }
+
+    try {
+      const result = await withTransaction(db, async () => {
+        let sql = "SELECT * FROM vouchers WHERE status = 'draft'";
+        const params = [];
+        if (type) {
+          sql += " AND voucher_type = ?";
+          params.push(type);
+        }
+        sql += " ORDER BY id";
+        const drafts = await db.all(sql, params);
+        const ids = [];
+        for (const voucher of drafts) {
+          const lines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucher.id]);
+          await applyVoucherPostEffects(db, voucher, lines);
+          ids.push(voucher.id);
+        }
+        return { posted_count: ids.length, ids };
+      });
+      res.json(result);
+    } catch (e) {
+      next(e);
     }
   });
 
   // ───── Post voucher (applies effects) ─────
 
-  router.post("/:id/post", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/:id/post", requireAuth, requireAdmin, async (req, res, next) => {
     const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [req.params.id]);
     if (!voucher) return res.status(404).json({ error: "السند غير موجود", code: "NOT_FOUND" });
     if (voucher.status === "posted") {
@@ -210,34 +269,15 @@ export function createVouchersRouter(db) {
 
     try {
       await withTransaction(db, async () => {
-        for (const L of lines) {
-          if (L.customer_id) {
-            const delta = voucher.voucher_type === "receipt" ? -L.amount_nis : L.amount_nis;
-            await db.run("UPDATE customers SET balance = balance + ? WHERE id = ?", [delta, L.customer_id]);
-          }
-          if (L.supplier_id && voucher.voucher_type === "payment") {
-            await db.run(
-              "UPDATE suppliers SET balance = balance - ? WHERE id = ?",
-              [L.amount_nis, L.supplier_id]
-            );
-          }
-          if (L.bank_account_id) {
-            const delta = voucher.voucher_type === "receipt" ? L.amount_nis : -L.amount_nis;
-            await db.run("UPDATE bank_accounts SET balance = balance + ? WHERE id = ?", [delta, L.bank_account_id]);
-          }
-        }
-        await db.run(
-          "UPDATE vouchers SET status = 'posted', posted_at = datetime('now') WHERE id = ?",
-          [voucher.id]
-        );
+        await applyVoucherPostEffects(db, voucher, lines);
       });
     } catch (e) {
-      return res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      return next(e);
     }
     res.json(await db.get("SELECT * FROM vouchers WHERE id = ?", [voucher.id]));
   });
 
-  router.delete("/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/:id", requireAuth, requireAdmin, async (req, res, next) => {
     const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [req.params.id]);
     if (!voucher) return res.status(404).json({ error: "السند غير موجود", code: "NOT_FOUND" });
     if (voucher.status === "posted") {

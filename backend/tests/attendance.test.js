@@ -99,6 +99,30 @@ describe("attendance", () => {
     expect(res.body.code).toBe("INVALID_KIOSK_KEY");
   });
 
+  test("admin can enroll a kiosk token and use it instead of the shared key", async () => {
+    const enroll = await request(ctx.app)
+      .post("/api/v1/attendance/kiosk/session")
+      .set(authHeader(adminToken))
+      .send({});
+    expect(enroll.status).toBe(201);
+    const token = unwrap(enroll.body).token;
+    expect(token).toBeTruthy();
+
+    const res = await request(ctx.app)
+      .get("/api/v1/attendance/kiosk/descriptors")
+      .set({ Authorization: `Bearer ${token}` });
+    expect(res.status).toBe(200);
+  });
+
+  test("cashier cannot enroll a kiosk device", async () => {
+    const cashierLogin = await login(ctx.app, "testcashier", "cashpass123", "pos");
+    const res = await request(ctx.app)
+      .post("/api/v1/attendance/kiosk/session")
+      .set(authHeader(cashierLogin.body.token))
+      .send({});
+    expect(res.status).toBe(403);
+  });
+
   test("enrollment saves descriptors via admin API", async () => {
     const desc = Array.from({ length: 128 }, (_, i) => (i + 1) * 0.001);
     const res = await request(ctx.app)

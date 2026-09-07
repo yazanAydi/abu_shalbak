@@ -7,7 +7,7 @@ function getBaseURL() {
     return String(env).trim().replace(/\/$/, "");
   }
   if (process.env.NODE_ENV === "development") {
-    return "http://127.0.0.1:5000";
+    return "http://127.0.0.1:5001";
   }
   return "";
 }
@@ -48,7 +48,7 @@ api.interceptors.response.use(
     if (e?.response?.status === 401) {
       clearApiCache();
       const url = String(e.config?.url || "");
-      if (!url.includes("/auth/login")) {
+      if (!url.includes("/auth/login") && !url.includes("/auth/change-password")) {
         removeToken();
         const loginPath = `${process.env.PUBLIC_URL || ""}/login`;
         const onLogin = window.location.pathname === loginPath || window.location.pathname.endsWith("/login");

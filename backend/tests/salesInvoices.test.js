@@ -132,6 +132,14 @@ describe("sales invoices", () => {
       (await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [customerId])).balance
     );
     expect(afterBal).toBeCloseTo(beforeBal + total / 2, 2);
+
+    const detail = await request(ctx.app)
+      .get(`/api/v1/sales/invoices/${inv.id}`)
+      .set(authHeader(adminToken));
+    expect(detail.status).toBe(200);
+    const row = unwrapData(detail.body);
+    expect(row.party_balance.before).toBeCloseTo(beforeBal, 2);
+    expect(row.party_balance.after).toBeCloseTo(afterBal, 2);
   });
 
   test("check payment requires bank name", async () => {
@@ -155,5 +163,138 @@ describe("sales invoices", () => {
       .set(authHeader(adminToken))
       .send({ payment_method: "check", bank_name: "بنك فلسطين", check_no: "123" });
     expect(ok.status).toBe(200);
+  });
+});
+
+describe("sales invoices post-all", () => {
+  let ctx;
+  let adminToken;
+  let cashierToken;
+  let customerId;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+    adminToken = (await login(ctx.app, "testadmin", "adminpass123")).body.token;
+    cashierToken = (await login(ctx.app, "testcashier", "cashpass123", "pos")).body.token;
+    const custIns = await ctx.db.run(
+      `INSERT INTO customers (name, customer_code, balance, opening_balance) VALUES ('Bulk Buyer', 'C-PA', 0, 0)`
+    );
+    customerId = custIns.lastID;
+    await ctx.db.run("UPDATE products SET stock = 50 WHERE id = ?", [ctx.productId]);
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  async function createDraft(quantity, totalPrice) {
+    const res = await request(ctx.app)
+      .post("/api/v1/sales/invoices")
+      .set(authHeader(adminToken))
+      .send({
+        customer_id: customerId,
+        invoice_date: "2026-09-07",
+        items: [{ product_id: ctx.productId, quantity, total_price: totalPrice }],
+      });
+    expect(res.status).toBe(201);
+    return unwrapData(res.body);
+  }
+
+  test("rejects without payment method", async () => {
+    const res = await request(ctx.app)
+      .post("/api/v1/sales/invoices/post-all")
+      .set(authHeader(adminToken))
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects cashier", async () => {
+    const res = await request(ctx.app)
+      .post("/api/v1/sales/invoices/post-all")
+      .set(authHeader(cashierToken))
+      .send({ payment_method: "cash" });
+    expect(res.status).toBe(403);
+  });
+
+  test("returns posted_count 0 when there is nothing to post", async () => {
+    const res = await request(ctx.app)
+      .post("/api/v1/sales/invoices/post-all")
+      .set(authHeader(adminToken))
+      .send({ payment_method: "cash" });
+    expect(res.status).toBe(200);
+    const body = unwrapData(res.body);
+    expect(body.posted_count).toBe(0);
+    expect(body.ids).toEqual([]);
+  });
+
+  test("posts multiple drafts with cash and decreases stock", async () => {
+    const a = await createDraft(2, 20);
+    const b = await createDraft(3, 30);
+    const beforeStock = Number(
+      (await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId])).stock
+    );
+
+    const res = await request(ctx.app)
+      .post("/api/v1/sales/invoices/post-all")
+      .set(authHeader(adminToken))
+      .send({ payment_method: "cash" });
+
+    expect(res.status).toBe(200);
+    const body = unwrapData(res.body);
+    expect(body.posted_count).toBe(2);
+    expect(body.ids).toEqual(expect.arrayContaining([a.id, b.id]));
+    expect(body.errors).toEqual([]);
+
+    const afterStock = Number(
+      (await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId])).stock
+    );
+    expect(afterStock).toBe(beforeStock - 5);
+
+    const postedA = await ctx.db.get("SELECT status FROM sales_invoices WHERE id = ?", [a.id]);
+    const postedB = await ctx.db.get("SELECT status FROM sales_invoices WHERE id = ?", [b.id]);
+    expect(postedA.status).toBe("posted");
+    expect(postedB.status).toBe("posted");
+  });
+
+  test("skips already-posted invoices", async () => {
+    const extra = await createDraft(1, 10);
+    const already = await createDraft(1, 10);
+    const postOne = await request(ctx.app)
+      .post(`/api/v1/sales/invoices/${already.id}/post`)
+      .set(authHeader(adminToken))
+      .send({ payment_method: "cash" });
+    expect(postOne.status).toBe(200);
+
+    const res = await request(ctx.app)
+      .post("/api/v1/sales/invoices/post-all")
+      .set(authHeader(adminToken))
+      .send({ payment_method: "cash" });
+
+    expect(res.status).toBe(200);
+    const body = unwrapData(res.body);
+    expect(body.posted_count).toBe(1);
+    expect(body.ids).toEqual([extra.id]);
+  });
+
+  test("posts what it can when one invoice lacks stock", async () => {
+    await ctx.db.run("UPDATE products SET stock = 1 WHERE id = ?", [ctx.productId]);
+    const okInv = await createDraft(1, 10);
+    const failInv = await createDraft(5, 50);
+
+    const res = await request(ctx.app)
+      .post("/api/v1/sales/invoices/post-all")
+      .set(authHeader(adminToken))
+      .send({ payment_method: "cash" });
+
+    expect(res.status).toBe(200);
+    const body = unwrapData(res.body);
+    expect(body.posted_count).toBe(1);
+    expect(body.ids).toEqual([okInv.id]);
+    expect(body.errors).toEqual([
+      expect.objectContaining({ id: failInv.id }),
+    ]);
+
+    const failRow = await ctx.db.get("SELECT status FROM sales_invoices WHERE id = ?", [failInv.id]);
+    expect(failRow.status).toBe("draft");
   });
 });

@@ -27,7 +27,7 @@ If sales were already recorded with a wrong clock, stop the store (`npm run stor
   - `PORT=5000`
   - `NODE_ENV=production`
   - `ALLOWED_ORIGINS=http://SERVER_IP:5000` (or Tailscale hostname)
-- [ ] Optional Telegram: `TELEGRAM_REFUND_BOT_TOKEN`, `TELEGRAM_REFUND_CHAT_ID`, `TELEGRAM_USE_POLLING=1`
+- [ ] Optional Telegram: `TELEGRAM_REFUND_BOT_TOKEN`, `TELEGRAM_REFUND_CHAT_ID`, `TELEGRAM_USE_POLLING=1`. Leave `TELEGRAM_MANAGER_USER_IDS` empty to allow any click in the manager chat; set it to a comma-separated list of Telegram user IDs to restrict approvers.
 - [ ] Build frontends: `npm run build` in `frontend/` and `frontend-pos/`
 - [ ] Start backend: `cd backend && npm start`
 - [ ] Confirm log line: `[db] Using database file: C:\...\supermarket.db`
@@ -54,23 +54,18 @@ Set-ItemProperty -Path $policyPath -Name "DeveloperToolsAvailability" -Type DWor
 
 ## Receipt printer (silent print)
 
-Checkout sends the receipt to the **Windows API process**, which prints to the default printer with no Chrome dialog. This works from a normal browser tab (including `http://127.0.0.1:3002/pos`) as long as the API runs on the **same Windows PC** as the printer (`npm start` / `production:start`, not Linux Docker).
+After ترحيل the POS calls `POST /api/v1/print-receipt/silent`. The **Windows API process** converts the receipt HTML and sends it to the configured printer. There is **no** Edge print preview on a working Windows till.
+
+This only works when the API runs on the **same Windows PC** as the USB/LAN receipt printer (`npm start` / `production:start`). A Linux Docker API cannot reach the till printer: the sale still saves, and the POS falls back to a browser print window when the API returns **501** (`SILENT_PRINT_UNSUPPORTED`). Other print errors still show an Arabic alert. Do not use `scripts/open-pos-silent-print.ps1` for POS — that kiosk shortcut no longer prints.
 
 - [ ] Install the thermal / receipt printer driver on the PC that runs the API
 - [ ] Settings → Bluetooth & devices → Printers & scanners → set that printer as **Default**
-- [ ] Confirm it is not Print to PDF, XPS, OneNote, or Fax — those open a save dialog instead of a receipt
+- [ ] Confirm it is not Print to PDF, XPS, OneNote, or Fax
 - [ ] Optional: set `RECEIPT_PRINTER=Exact Printer Name` in the API env if the default is wrong
 - [ ] Complete a test sale — paper should come out with **no** print preview
+- [ ] If printing fails, reprint with **طباعة الإيصال** — do not create a second sale
 
-If the default printer is still Print to PDF, the sale succeeds and an Arabic alert explains the printer problem; Chrome preview should not appear.
-
-**Docker / Linux API:** the server cannot reach the cashier’s USB printer. Use the shortcut so Edge/Chrome auto-confirms print on the cashier PC:
-
-```powershell
-.\scripts\open-pos-silent-print.ps1 -Url http://SERVER_IP:3000/pos -CreateShortcut
-```
-
-Dev shortcut: `.\scripts\open-pos-silent-print.ps1 -Url http://127.0.0.1:3002/pos -CreateShortcut`
+If the default printer is still Print to PDF, the sale succeeds and an Arabic alert explains the printer problem. Edge preview does not appear.
 
 ## Network
 

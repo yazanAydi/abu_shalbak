@@ -3,6 +3,7 @@ import {
   normalizeAccountantPermissions,
 } from "./accountantPermissions.js";
 import { CACHE_KEYS, cacheClone, cacheGet, cacheInvalidate, cacheSet } from "./cache.js";
+import { STORE_LICENSE_LINE, STORE_NAME_AR, STORE_PHONE } from "./storeBranding.js";
 
 export const OTHER_QUICK_CATEGORY = "أخرى";
 export const DEFAULT_QUICK_CATEGORIES = ["معجنات", "بيتزا", OTHER_QUICK_CATEGORY];
@@ -15,6 +16,15 @@ export const SETTING_KEYS = {
   receipt_show_tax: "receipt_show_tax",
   receipt_show_cashier: "receipt_show_cashier",
   receipt_logo_url: "receipt_logo_url",
+  store_name_ar: "store_name_ar",
+  store_phone: "store_phone",
+  store_address: "store_address",
+  store_license: "store_license",
+  print_show_logo: "print_show_logo",
+  print_show_name: "print_show_name",
+  print_show_phone: "print_show_phone",
+  print_show_address: "print_show_address",
+  print_show_license: "print_show_license",
   pos_favorite_product_ids: "pos_favorite_product_ids",
   pos_quick_categories: "pos_quick_categories",
   pos_quick_buttons: "pos_quick_buttons",
@@ -28,6 +38,7 @@ export const SETTING_KEYS = {
   pos_shortcut_suspended_carts: "pos_shortcut_suspended_carts",
   accountant_permissions: "accountant_permissions",
   product_delete_password: "product_delete_password",
+  zero_all_stock_password: "zero_all_stock_password",
 };
 
 const MAX_POS_FAVORITES = 24;
@@ -120,6 +131,15 @@ const DEFAULTS = {
   [SETTING_KEYS.receipt_show_tax]: true,
   [SETTING_KEYS.receipt_show_cashier]: true,
   [SETTING_KEYS.receipt_logo_url]: "",
+  [SETTING_KEYS.store_name_ar]: STORE_NAME_AR,
+  [SETTING_KEYS.store_phone]: STORE_PHONE,
+  [SETTING_KEYS.store_address]: "",
+  [SETTING_KEYS.store_license]: STORE_LICENSE_LINE,
+  [SETTING_KEYS.print_show_logo]: true,
+  [SETTING_KEYS.print_show_name]: true,
+  [SETTING_KEYS.print_show_phone]: true,
+  [SETTING_KEYS.print_show_address]: false,
+  [SETTING_KEYS.print_show_license]: true,
   [SETTING_KEYS.pos_favorite_product_ids]: [],
   [SETTING_KEYS.pos_quick_categories]: [...DEFAULT_QUICK_CATEGORIES],
   [SETTING_KEYS.pos_quick_buttons]: [],
@@ -275,6 +295,11 @@ function parseValue(key, raw, context = {}) {
     case SETTING_KEYS.tax_inclusive:
     case SETTING_KEYS.receipt_show_tax:
     case SETTING_KEYS.receipt_show_cashier:
+    case SETTING_KEYS.print_show_logo:
+    case SETTING_KEYS.print_show_name:
+    case SETTING_KEYS.print_show_phone:
+    case SETTING_KEYS.print_show_address:
+    case SETTING_KEYS.print_show_license:
       return raw === "1" || raw === "true" || raw === true;
     case SETTING_KEYS.business_day_cutoff_hour: {
       const h = Math.floor(Number(raw));
@@ -342,6 +367,15 @@ export async function getAppSettings(db) {
     receipt_show_tax: parseValue(SETTING_KEYS.receipt_show_tax, map[SETTING_KEYS.receipt_show_tax]),
     receipt_show_cashier: parseValue(SETTING_KEYS.receipt_show_cashier, map[SETTING_KEYS.receipt_show_cashier]),
     receipt_logo_url: parseValue(SETTING_KEYS.receipt_logo_url, map[SETTING_KEYS.receipt_logo_url]),
+    store_name_ar: parseValue(SETTING_KEYS.store_name_ar, map[SETTING_KEYS.store_name_ar]),
+    store_phone: parseValue(SETTING_KEYS.store_phone, map[SETTING_KEYS.store_phone]),
+    store_address: parseValue(SETTING_KEYS.store_address, map[SETTING_KEYS.store_address]),
+    store_license: parseValue(SETTING_KEYS.store_license, map[SETTING_KEYS.store_license]),
+    print_show_logo: parseValue(SETTING_KEYS.print_show_logo, map[SETTING_KEYS.print_show_logo]),
+    print_show_name: parseValue(SETTING_KEYS.print_show_name, map[SETTING_KEYS.print_show_name]),
+    print_show_phone: parseValue(SETTING_KEYS.print_show_phone, map[SETTING_KEYS.print_show_phone]),
+    print_show_address: parseValue(SETTING_KEYS.print_show_address, map[SETTING_KEYS.print_show_address]),
+    print_show_license: parseValue(SETTING_KEYS.print_show_license, map[SETTING_KEYS.print_show_license]),
     pos_favorite_product_ids,
     pos_quick_categories,
     pos_quick_buttons,
@@ -387,6 +421,9 @@ export async function getAppSettings(db) {
     product_delete_password_set: Boolean(
       String(map[SETTING_KEYS.product_delete_password] ?? "").trim()
     ),
+    zero_all_stock_password_set: Boolean(
+      String(map[SETTING_KEYS.zero_all_stock_password] ?? "").trim()
+    ),
   };
   cacheSet(CACHE_KEYS.SETTINGS, settings);
   return cacheClone(settings);
@@ -415,6 +452,32 @@ export async function setProductDeletePasswordHash(db, hash) {
 
 export async function clearProductDeletePassword(db) {
   await db.run("DELETE FROM app_settings WHERE key = ?", [SETTING_KEYS.product_delete_password]);
+  cacheInvalidate(CACHE_KEYS.SETTINGS);
+}
+
+export async function getZeroAllStockPasswordHash(db) {
+  const row = await db.get("SELECT value FROM app_settings WHERE key = ?", [
+    SETTING_KEYS.zero_all_stock_password,
+  ]);
+  const hash = String(row?.value ?? "").trim();
+  return hash || null;
+}
+
+export async function setZeroAllStockPasswordHash(db, hash) {
+  const value = String(hash ?? "").trim();
+  if (!value) {
+    throw new Error("تجزئة كلمة مرور تصفير الكميات مطلوبة");
+  }
+  await db.run(
+    `INSERT INTO app_settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [SETTING_KEYS.zero_all_stock_password, value]
+  );
+  cacheInvalidate(CACHE_KEYS.SETTINGS);
+}
+
+export async function clearZeroAllStockPassword(db) {
+  await db.run("DELETE FROM app_settings WHERE key = ?", [SETTING_KEYS.zero_all_stock_password]);
   cacheInvalidate(CACHE_KEYS.SETTINGS);
 }
 
@@ -465,7 +528,16 @@ export async function updateAppSettings(db, patch) {
     },
     [SETTING_KEYS.receipt_show_tax]: (v) => (v ? "1" : "0"),
     [SETTING_KEYS.receipt_show_cashier]: (v) => (v ? "1" : "0"),
-    [SETTING_KEYS.receipt_logo_url]: (v) => String(v ?? ""),
+    [SETTING_KEYS.receipt_logo_url]: (v) => String(v ?? "").trim().slice(0, 500),
+    [SETTING_KEYS.store_name_ar]: (v) => String(v ?? "").trim().slice(0, 120),
+    [SETTING_KEYS.store_phone]: (v) => String(v ?? "").trim().slice(0, 40),
+    [SETTING_KEYS.store_address]: (v) => String(v ?? "").trim().slice(0, 200),
+    [SETTING_KEYS.store_license]: (v) => String(v ?? "").trim().slice(0, 80),
+    [SETTING_KEYS.print_show_logo]: (v) => (v ? "1" : "0"),
+    [SETTING_KEYS.print_show_name]: (v) => (v ? "1" : "0"),
+    [SETTING_KEYS.print_show_phone]: (v) => (v ? "1" : "0"),
+    [SETTING_KEYS.print_show_address]: (v) => (v ? "1" : "0"),
+    [SETTING_KEYS.print_show_license]: (v) => (v ? "1" : "0"),
     [SETTING_KEYS.pos_favorite_product_ids]: (v) => {
       if (!Array.isArray(v)) throw new Error("أزرار الكاشير يجب أن تكون قائمة معرفات");
       if (v.length > MAX_POS_FAVORITES) {
@@ -539,6 +611,15 @@ export async function seedDefaultSettings(db) {
     [SETTING_KEYS.receipt_show_tax, "1"],
     [SETTING_KEYS.receipt_show_cashier, "1"],
     [SETTING_KEYS.receipt_logo_url, ""],
+    [SETTING_KEYS.store_name_ar, STORE_NAME_AR],
+    [SETTING_KEYS.store_phone, STORE_PHONE],
+    [SETTING_KEYS.store_address, ""],
+    [SETTING_KEYS.store_license, STORE_LICENSE_LINE],
+    [SETTING_KEYS.print_show_logo, "1"],
+    [SETTING_KEYS.print_show_name, "1"],
+    [SETTING_KEYS.print_show_phone, "1"],
+    [SETTING_KEYS.print_show_address, "0"],
+    [SETTING_KEYS.print_show_license, "1"],
     [SETTING_KEYS.pos_favorite_product_ids, "[]"],
     [SETTING_KEYS.pos_quick_categories, JSON.stringify(DEFAULT_QUICK_CATEGORIES)],
     [SETTING_KEYS.pos_quick_buttons, "[]"],

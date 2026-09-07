@@ -84,6 +84,7 @@ export default function Checkout() {
   const [payModalOpen, setPayModalOpen] = useState(false);
   const [clearCartOpen, setClearCartOpen] = useState(false);
   const [shiftLoading, setShiftLoading] = useState(true);
+  const [shiftLoadError, setShiftLoadError] = useState("");
   const [activeShift, setActiveShift] = useState(null);
   const [shiftTxCount, setShiftTxCount] = useState(0);
   const [suspendedCount, setSuspendedCount] = useState(0);
@@ -133,6 +134,7 @@ export default function Checkout() {
   );
 
   const idempotencyKeyRef = useRef(null);
+  const isSubmittingRef = useRef(false);
 
   const loadActivePromos = useCallback(() => {
     api
@@ -177,7 +179,7 @@ export default function Checkout() {
   const loadShift = useCallback(async () => {
     if (!posNeedsShift) {
       setShiftLoading(false);
-      return;
+      return null;
     }
     setShiftLoading(true);
     try {
@@ -187,10 +189,14 @@ export default function Checkout() {
       setActiveShift(data.shift);
       setShiftTxCount(Number(data.transactions_count) || 0);
       setSuspendedCount(Number(data.suspended_sales_count) || 0);
-    } catch {
+      setShiftLoadError("");
+      return data.shift || null;
+    } catch (e) {
       setActiveShift(null);
       setShiftTxCount(0);
       setSuspendedCount(0);
+      setShiftLoadError(extractApiError(e, "تعذّر تحميل الوردية"));
+      return null;
     } finally {
       setShiftLoading(false);
     }
@@ -329,7 +335,8 @@ export default function Checkout() {
   const completeSale = useCallback(
     async (paymentPayload = null) => {
       const pay = paymentPayload || { payment_method: selectedPayment };
-      if (!cartItems.length || !pay.payment_method || isLoading) return;
+      if (!cartItems.length || !pay.payment_method || isLoading || isSubmittingRef.current) return;
+      isSubmittingRef.current = true;
       if (pay.payment_method === "on_account" && !customerId) {
         dispatch({
           type: "CHECKOUT_ERROR",
@@ -394,6 +401,7 @@ export default function Checkout() {
         });
       } finally {
         setIsLoading(false);
+        isSubmittingRef.current = false;
       }
       if (receiptToPrint) {
         printReceipt(receiptToPrint);
@@ -444,7 +452,7 @@ export default function Checkout() {
   function handleCompleteClick() {
     if (!cartItems.length || !shiftReady || isLoading) return;
     dispatch({ type: "CLEAR_SALE_ERR" });
-    setSelectedPayment(null);
+    setSelectedPayment("cash");
     setCustomerId(null);
     setPayModalOpen(true);
   }
@@ -581,7 +589,7 @@ export default function Checkout() {
       }
 
       if (matchesShortcut(ev, shortcuts.completeSale.key)) {
-        if (!cartItems.length || !shiftReady || isLoading) return;
+        if (!cartItems.length || !shiftReady || isLoading || isSubmittingRef.current) return;
         ev.preventDefault();
         handleCompleteClickRef.current();
       }
@@ -617,6 +625,21 @@ export default function Checkout() {
 
   const canComplete = cartItems.length > 0 && !isLoading && shiftReady;
 
+  const goToLogin = useCallback(() => {
+    removeToken();
+    navigate("/login", { replace: true });
+  }, [navigate]);
+
+  function handleLogout() {
+    if (cartItems.length > 0) {
+      const ok = window.confirm(
+        "يوجد أصناف في السلة. هل تريد تسجيل الخروج؟ سيتم فقدان الفاتورة الحالية."
+      );
+      if (!ok) return;
+    }
+    goToLogin();
+  }
+
   return (
     <div className="pos-screen" dir="rtl" lang="ar">
       <PosHeader
@@ -625,6 +648,7 @@ export default function Checkout() {
         activeShift={activeShift}
         shiftTxCount={shiftTxCount}
         onEndShift={() => setEndShiftOpen(true)}
+        onLogout={handleLogout}
         onProductFound={addToCart}
       />
 
@@ -820,10 +844,7 @@ export default function Checkout() {
             suspendedCount={suspendedCount}
             open={endShiftOpen}
             onClose={() => setEndShiftOpen(false)}
-            onSuccess={() => {
-              removeToken();
-              navigate("/login", { replace: true });
-            }}
+            onSuccess={goToLogin}
           />
         ) : null}
       </Suspense>
@@ -845,7 +866,11 @@ export default function Checkout() {
         <div className="shift-gate-overlay" aria-live="polite">
           <div className="shift-gate-backdrop" />
           <div className="shift-gate-card-wrap">
-            <ShiftStart onSuccess={() => loadShift()} />
+            <ShiftStart
+              onSuccess={loadShift}
+              initialError={shiftLoadError}
+              onLogout={goToLogin}
+            />
           </div>
         </div>
       ) : null}

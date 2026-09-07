@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import api from "../apiClient";
+import api, { createAbortController } from "../apiClient";
 import { Link, useNavigate } from "react-router-dom";
 import { getAuthHeaders } from "../utils/auth";
 import {
@@ -7,7 +7,7 @@ import {
   buildDemoChartSeries,
 } from "../utils/dashboardHelpers";
 import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
-import { dateOnly } from "../utils/format";
+import { dateOnly, ils } from "../utils/format";
 import {
   TOP_PRODUCT_COLUMNS,
   buildDailySummaryItems,
@@ -39,8 +39,6 @@ const chartLoadingMessage = (
     جاري تحميل الرسم…
   </p>
 );
-
-const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 const LOW_STOCK_THRESHOLD = 5;
 const LOW_STOCK_WIDGET_LIMIT = 12;
@@ -127,13 +125,16 @@ export default function DailyReport() {
   const [nearExpiryTotal, setNearExpiryTotal] = useState(0);
   const [nearExpiryDays, setNearExpiryDays] = useState(7);
 
-  const fetchChartData = useCallback(async (period) => {
+  const dashboardAbortRef = useRef(null);
+  const dashboardReqRef = useRef(0);
+
+  const fetchChartData = useCallback(async (period, signal) => {
     const headers = getAuthHeaders();
     let days = [];
     let pointCount = 7;
 
     if (period === "rolling30") {
-      const { data } = await api.get("/api/reports/last-30-days", { headers });
+      const { data } = await api.get("/api/reports/last-30-days", { headers, signal });
       days = data?.days || [];
       pointCount = 30;
     } else if (period === "calendarMonth") {
@@ -141,12 +142,13 @@ export default function DailyReport() {
       const to = todayYmd();
       const { data } = await api.get("/api/reports/daily-series", {
         headers,
+        signal,
         params: { from, to },
       });
       days = data?.days || [];
       pointCount = Math.max(days.length, 1);
     } else {
-      const { data } = await api.get("/api/reports/last-7-days", { headers });
+      const { data } = await api.get("/api/reports/last-7-days", { headers, signal });
       days = data?.days || [];
       pointCount = 7;
     }
@@ -162,6 +164,11 @@ export default function DailyReport() {
   const loadDashboard = useCallback(
     async (opts = { initial: true }) => {
       const initial = opts.initial !== false;
+      dashboardAbortRef.current?.abort();
+      const ac = createAbortController();
+      dashboardAbortRef.current = ac;
+      const signal = ac.signal;
+      const reqId = ++dashboardReqRef.current;
       if (initial) {
         setLoading(true);
         setErr(null);
@@ -179,32 +186,33 @@ export default function DailyReport() {
         // Every request starts now so they still travel in parallel, but the
         // first paint waits only on the daily summary instead of on the slowest
         // of eight calls. The remaining panels fill in behind it.
-        const dailyPromise = api.get(`/api/reports/daily?date=${todayStr}`, { headers });
+        const dailyPromise = api.get(`/api/reports/daily?date=${todayStr}`, { headers, signal });
         const openShiftsPromise = api
-          .get("/api/shifts?status=open", { headers })
+          .get("/api/shifts?status=open", { headers, signal })
           .catch(() => ({ data: [] }));
         const closedShiftsPromise = api
-          .get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers })
+          .get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers, signal })
           .catch(() => ({ data: [] }));
         const lowStockPromise = api
           .get(
             `/api/reports/low-stock?threshold=${LOW_STOCK_THRESHOLD}&limit=${LOW_STOCK_WIDGET_LIMIT}`,
-            { headers }
+            { headers, signal }
           )
           .catch(() => ({ data: { products: [], total_count: 0, out_of_stock_count: 0 } }));
         const nearExpiryPromise = api
-          .get(`/api/reports/near-expiry?limit=${NEAR_EXPIRY_WIDGET_LIMIT}`, { headers })
+          .get(`/api/reports/near-expiry?limit=${NEAR_EXPIRY_WIDGET_LIMIT}`, { headers, signal })
           .catch(() => ({ data: { items: [], total_count: 0, days_threshold: 7 } }));
         const reconPromise = api
-          .get(`/api/finance/cash/reconciliation?date=${todayStr}`, { headers })
+          .get(`/api/finance/cash/reconciliation?date=${todayStr}`, { headers, signal })
           .then((r) => r.data)
           .catch(() => null);
-        const chartPromise = fetchChartData(chartPeriodRef.current).catch(() => ({
+        const chartPromise = fetchChartData(chartPeriodRef.current, signal).catch(() => ({
           series: [],
           isDemo: false,
         }));
 
         const dailyPayload = (await dailyPromise).data;
+        if (reqId !== dashboardReqRef.current) return;
         setDailyDetail(dailyPayload);
         setToday(mapDailyToTodaySummary(dailyPayload));
         setTopProducts(mapDailyTopProducts(dailyPayload));
@@ -221,6 +229,7 @@ export default function DailyReport() {
             chartPromise,
           ]);
 
+        if (reqId !== dashboardReqRef.current) return;
         applyChart(chartResult);
         setChartLoading(false);
 
@@ -258,6 +267,8 @@ export default function DailyReport() {
         setLastUpdated(new Date());
         setErr(null);
       } catch (e) {
+        if (e.code === "ERR_CANCELED" || e.name === "CanceledError") return;
+        if (reqId !== dashboardReqRef.current) return;
         if (initial) {
           setErr(e.response?.data?.error || e.message || "تعذّر التحميل");
         }
@@ -317,6 +328,7 @@ export default function DailyReport() {
 
   useEffect(() => {
     loadDashboard({ initial: true });
+    return () => dashboardAbortRef.current?.abort();
   }, [loadDashboard]);
 
   useEffect(() => {

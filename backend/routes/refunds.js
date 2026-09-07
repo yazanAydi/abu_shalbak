@@ -9,19 +9,20 @@ import {
   createRefundRequest,
   resolveRefundTargetShift,
 } from "../services/refundRequestService.js";
-import { buildSaleSummary } from "../utils/saleSummary.js";
+import { buildSaleSummaries } from "../utils/saleSummary.js";
 import {
   getStoreLogoDataUri,
-  STORE_LICENSE_LINE,
-  STORE_NAME_AR,
-  STORE_PHONE,
+  resolvePrintBranding,
 } from "../utils/storeBranding.js";
+import { getAppSettings } from "../utils/settings.js";
 import { nextCalendarYmd, shopTodayYmd } from "../utils/shopTime.js";
 import { round2 } from "../utils/money.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { productSkuLookupValues } from "../utils/entityCodes.js";
 import { HttpError } from "../utils/httpError.js";
 import { listLimitSql } from "../utils/listQuery.js";
+import { loadSalePayments } from "../utils/salePayments.js";
+import { partyBalanceForRefund } from "../utils/partyBalanceAroundMove.js";
 
 function requirePosOrReports(req, res, next) {
   const r = req.user?.role;
@@ -37,7 +38,12 @@ function requirePosOrReports(req, res, next) {
   return res.status(403).json({ error: "ممنوع" });
 }
 
-function buildReceiptHtml(refund, originalTx, cashierName, approverName) {
+function partyBalanceBlock(partyBalance) {
+  if (!partyBalance?.before_display || !partyBalance?.after_display) return "";
+  return `<div class="party-balance"><p><strong>الرصيد قبل:</strong> ${escapeHtml(partyBalance.before_display)}</p><p><strong>الرصيد بعد:</strong> ${escapeHtml(partyBalance.after_display)}</p></div>`;
+}
+
+function buildReceiptHtml(refund, originalTx, cashierName, approverName, settings = {}, partyBalance = null) {
   let items = [];
   try {
     items = JSON.parse(refund.items_json);
@@ -50,18 +56,24 @@ function buildReceiptHtml(refund, originalTx, cashierName, approverName) {
         `<tr><td>${escapeHtml(it.name || "")}</td><td>${it.quantity}</td><td>${round2(Number(it.price) || 0)}</td></tr>`
     )
     .join("");
-  const pm = refund.payment_method === "cash" ? "نقد" : "بطاقة";
+  const pm =
+    refund.payment_method === "cash"
+      ? "نقد"
+      : refund.payment_method === "on_account"
+        ? "ذمة"
+        : "بطاقة";
+  const branding = resolvePrintBranding(settings);
   const logoSrc = getStoreLogoDataUri();
   const logoHtml = logoSrc
     ? `<img src="${logoSrc}" alt="" style="display:block;margin:0 auto 8px;max-width:180px;max-height:100px;object-fit:contain" />`
     : "";
   return `<!DOCTYPE html><html lang="ar-u-nu-latn" dir="rtl"><head><meta charset="utf-8"/><title>إيصال استرجاع #${refund.id}</title>
-<style>html{-webkit-locale:"en";font-language-override:"eng";font-feature-settings:"locl" 0}body{font-family:system-ui,sans-serif;padding:1.2rem;max-width:480px;margin:auto} .brand{text-align:center;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #ccc} .brand .name{font-weight:700;font-size:1.1rem;margin:0 0 2px} .brand .sub{margin:0;font-size:0.85rem;color:#444} table{width:100%;border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px;text-align:right} .sig{margin-top:2rem;border-top:1px solid #333;padding-top:8px}</style></head><body>
+<style>html{-webkit-locale:"en";font-language-override:"eng";font-feature-settings:"locl" 0}body{font-family:system-ui,sans-serif;padding:1.2rem;max-width:480px;margin:auto} .brand{text-align:center;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #ccc} .brand .name{font-weight:700;font-size:1.1rem;margin:0 0 2px} .brand .sub{margin:0;font-size:0.85rem;color:#444} table{width:100%;border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px;text-align:right} .party-balance{margin:0.6rem 0} .party-balance p{margin:2px 0} .sig{margin-top:2rem;border-top:1px solid #333;padding-top:8px}</style></head><body>
 <div class="brand">
 ${logoHtml}
-<p class="name">${escapeHtml(STORE_NAME_AR)}</p>
-<p class="sub">${escapeHtml(STORE_PHONE)}</p>
-<p class="sub">${escapeHtml(STORE_LICENSE_LINE)}</p>
+<p class="name">${escapeHtml(branding.name)}</p>
+<p class="sub">${escapeHtml(branding.phone)}</p>
+<p class="sub">${escapeHtml(branding.license)}</p>
 </div>
 <h2>إيصال استرجاع #${refund.id}</h2>
 <p>الفاتورة الأصلية: #${refund.original_transaction_id}<br/>
@@ -71,6 +83,7 @@ ${logoHtml}
 الحالة: ${escapeHtml(refund.status || "")}</p>
 <table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>${lines}</tbody></table>
 <p><strong>الإجمالي: ${round2(Number(refund.total))}</strong></p>
+${partyBalanceBlock(partyBalance)}
 ${refund.reason ? `<p>السبب: ${escapeHtml(refund.reason)}</p>` : ""}
 <div class="sig">توقيع الموافقة: ${escapeHtml(approverName || "________________")}</div>
 <script>window.onload=function(){window.print()}</script>
@@ -177,10 +190,7 @@ export function createRefundsRouter(db) {
     params.push(limit);
 
     const rows = await db.all(sql, params);
-    const sales = [];
-    for (const tx of rows) {
-      sales.push(await buildSaleSummary(db, tx));
-    }
+    const sales = await buildSaleSummaries(db, rows);
     res.json({ sales });
   });
 
@@ -215,10 +225,13 @@ export function createRefundsRouter(db) {
       };
     });
     const cashier = await db.get("SELECT username FROM users WHERE id = ?", [tx.cashier_id]);
+    const payments = await loadSalePayments(db, tid);
+    const has_on_account = payments.some((l) => l.method === "on_account");
     res.json({
       transaction_id: tid,
       created_at: tx.created_at,
       payment_method: tx.payment_method,
+      has_on_account,
       subtotal: tx.subtotal,
       total: tx.total,
       cashier_username: cashier?.username || "",
@@ -232,8 +245,8 @@ export function createRefundsRouter(db) {
     if (!tid) {
       return res.status(400).json({ error: "مطلوب original_transaction_id" });
     }
-    if (payment_method !== "cash" && payment_method !== "visa") {
-      return res.status(400).json({ error: "طريقة الدفع يجب أن تكون نقداً أو بطاقة" });
+    if (payment_method !== "cash" && payment_method !== "visa" && payment_method !== "on_account") {
+      return res.status(400).json({ error: "طريقة الدفع يجب أن تكون نقداً أو بطاقة أو ذمة" });
     }
     if (!Array.isArray(lines) || lines.length === 0) {
       return res.status(400).json({ error: "مطلوب مصفوفة lines: { product_id, quantity }" });
@@ -262,10 +275,9 @@ export function createRefundsRouter(db) {
       });
     } catch (e) {
       if (e.status) {
-        return res.status(e.status).json({ error: e.message, max_returnable: e.max_returnable });
+        return res.status(e.status).json({ error: e.message, max_returnable: e.max_returnable, code: e.code });
       }
-      console.error(e);
-      res.status(500).json({ error: e.message || "فشل الاسترجاع" });
+      next(e);
     }
   });
 
@@ -431,7 +443,7 @@ export function createRefundsRouter(db) {
       }
     }
     sql += " ORDER BY r.created_at DESC, r.id DESC";
-    sql += listLimitSql(req.query).sql;
+    sql += listLimitSql(req.query, 300, req.user?.role).sql;
     const rows = await db.all(sql, params);
     res.json(rows);
   });
@@ -455,7 +467,9 @@ export function createRefundsRouter(db) {
       refund,
       originalTx,
       refund.cashier_username || "",
-      refund.approved_by_name || ""
+      refund.approved_by_name || "",
+      await getAppSettings(db),
+      await partyBalanceForRefund(db, refund, originalTx)
     );
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(html);

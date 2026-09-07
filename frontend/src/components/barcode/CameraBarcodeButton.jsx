@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from "react";
-import { Icon } from "../ui";
+import Icon from "../icons/Icon";
 import { supportsCamera } from "../../utils/barcode";
 import "./barcode-scanner.css";
 

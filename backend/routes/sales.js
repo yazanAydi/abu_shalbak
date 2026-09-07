@@ -5,6 +5,7 @@ import {
   createSalesInvoiceDraft,
   updateSalesInvoiceDraft,
   postSalesInvoice,
+  getSalesInvoiceDetail,
 } from "../services/salesInvoiceService.js";
 
 export function createSalesRouter(db) {
@@ -24,49 +25,72 @@ export function createSalesRouter(db) {
       sql += " AND si.status = ?";
       params.push(status);
     }
-    sql += ` ORDER BY si.created_at DESC${listLimitSql(req.query).sql}`;
+    sql += ` ORDER BY si.created_at DESC${listLimitSql(req.query, 300, req.user?.role).sql}`;
     res.json(await db.all(sql, params));
   });
 
   router.get("/invoices/:id", requireAuth, requireSalesInvoices, async (req, res) => {
-    const inv = await db.get(
-      `SELECT si.*, c.name AS customer_name FROM sales_invoices si
-       JOIN customers c ON c.id = si.customer_id WHERE si.id = ?`,
-      [req.params.id]
-    );
-    if (!inv) return res.status(404).json({ error: "الفاتورة غير موجودة", code: "NOT_FOUND" });
-    const items = await db.all(
-      `SELECT sii.*, p.name, p.barcode FROM sales_invoice_items sii
-       JOIN products p ON p.id = sii.product_id WHERE sii.invoice_id = ?`,
-      [inv.id]
-    );
-    const payments = inv.status === "posted"
-      ? await db.all("SELECT * FROM sales_invoice_payments WHERE invoice_id = ? ORDER BY id", [inv.id])
-      : [];
-    res.json({ ...inv, items, payments });
+    const detail = await getSalesInvoiceDetail(db, req.params.id);
+    if (!detail) return res.status(404).json({ error: "الفاتورة غير موجودة", code: "NOT_FOUND" });
+    res.json(detail);
   });
 
-  router.post("/invoices", requireAuth, requireSalesInvoices, async (req, res) => {
+  router.post("/invoices", requireAuth, requireSalesInvoices, async (req, res, next) => {
     try {
       const result = await createSalesInvoiceDraft(db, req.body, req.user.id);
       if (result.error) return res.status(result.status).json({ error: result.error, code: "VALIDATION_ERROR" });
       res.status(201).json(result.row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.put("/invoices/:id", requireAuth, requireSalesInvoices, async (req, res) => {
+  router.put("/invoices/:id", requireAuth, requireSalesInvoices, async (req, res, next) => {
     try {
       const result = await updateSalesInvoiceDraft(db, req.params.id, req.body);
       if (result.error) return res.status(result.status).json({ error: result.error, code: result.status === 404 ? "NOT_FOUND" : "VALIDATION_ERROR" });
       res.json(result.row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.post("/invoices/:id/post", requireAuth, requireSalesInvoices, async (req, res) => {
+  router.post("/invoices/post-all", requireAuth, requireSalesInvoices, async (req, res, next) => {
+    const body = req.body || {};
+    if (Array.isArray(body.payments)) {
+      return res.status(400).json({
+        error: "ترحيل الكل يدعم طريقة دفع واحدة لكل الفواتير",
+        code: "VALIDATION_ERROR",
+      });
+    }
+    if (!body.payment_method) {
+      return res.status(400).json({
+        error: "طريقة الدفع مطلوبة",
+        code: "VALIDATION_ERROR",
+      });
+    }
+
+    try {
+      const drafts = await db.all(
+        "SELECT id FROM sales_invoices WHERE status = 'draft' ORDER BY id"
+      );
+      const ids = [];
+      const errors = [];
+      for (const d of drafts) {
+        const result = await postSalesInvoice(db, d.id, body, req.user.id);
+        if (result.error) {
+          errors.push({ id: d.id, error: result.error });
+        } else {
+          ids.push(d.id);
+        }
+      }
+      res.json({ posted_count: ids.length, ids, errors });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/invoices/:id/post", requireAuth, requireSalesInvoices, async (req, res, next) => {
     try {
       const result = await postSalesInvoice(db, req.params.id, req.body, req.user.id);
       if (result.error) {
@@ -75,7 +99,7 @@ export function createSalesRouter(db) {
       }
       res.json(result.row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 

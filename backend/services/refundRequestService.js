@@ -12,7 +12,26 @@ import {
   sendRefundDecisionStatusMessage,
 } from "../utils/telegram.js";
 import { withTransaction } from "../utils/dbTx.js";
-import { computeExpectedBaseCash } from "../utils/salePayments.js";
+import { computeExpectedBaseCash, loadSalePayments } from "../utils/salePayments.js";
+
+export function assertRefundPaymentMethod(salePayments, paymentMethod) {
+  const hasOnAccount = (salePayments || []).some((l) => l.method === "on_account");
+  if (hasOnAccount) {
+    if (paymentMethod !== "on_account") {
+      const err = new Error("بيع على الذمة يُسترجع على حساب العميل فقط");
+      err.status = 400;
+      err.code = "REFUND_METHOD_MISMATCH";
+      throw err;
+    }
+    return;
+  }
+  if (paymentMethod !== "cash" && paymentMethod !== "visa") {
+    const err = new Error("طريقة الدفع يجب أن تكون نقداً أو بطاقة");
+    err.status = 400;
+    err.code = "REFUND_METHOD_MISMATCH";
+    throw err;
+  }
+}
 
 function refundedUnitPrice(orig, tx, origItems) {
   const qty = Number(orig.quantity) || 0;
@@ -56,24 +75,34 @@ function mergeItemsIntoMap(map, itemsJson) {
 
 /** Sum returned quantities per product from requests + legacy refunds */
 export async function refundedQtyByProduct(db, transactionId, excludeRequestId = null) {
-  const map = new Map();
-  const refundRows = await db.all(
-    "SELECT items_json FROM refunds WHERE original_transaction_id = ? AND status != 'rejected'",
-    [transactionId]
-  );
-  for (const row of refundRows) mergeItemsIntoMap(map, row.items_json);
+  const maps = await refundedQtyByTransactions(db, [transactionId], excludeRequestId);
+  return maps.get(Number(transactionId)) || new Map();
+}
 
+/** Batch refunded qty maps keyed by transaction id. */
+export async function refundedQtyByTransactions(db, transactionIds, excludeRequestId = null) {
+  const ids = [...new Set((transactionIds || []).map(Number).filter(Boolean))];
+  const out = new Map(ids.map((id) => [id, new Map()]));
+  if (ids.length === 0) return out;
+  const ph = ids.map(() => "?").join(",");
+  const refundRows = await db.all(
+    `SELECT original_transaction_id, items_json FROM refunds
+     WHERE original_transaction_id IN (${ph}) AND status != 'rejected'`,
+    ids
+  );
+  for (const row of refundRows) {
+    mergeItemsIntoMap(out.get(Number(row.original_transaction_id)), row.items_json);
+  }
   const requestRows = await db.all(
-    `SELECT id, items_json FROM refund_requests
-     WHERE transaction_id = ? AND status IN ('pending', 'approved')`,
-    [transactionId]
+    `SELECT id, transaction_id, items_json FROM refund_requests
+     WHERE transaction_id IN (${ph}) AND status IN ('pending', 'approved')`,
+    ids
   );
   for (const row of requestRows) {
     if (excludeRequestId && Number(row.id) === Number(excludeRequestId)) continue;
-    mergeItemsIntoMap(map, row.items_json);
+    mergeItemsIntoMap(out.get(Number(row.transaction_id)), row.items_json);
   }
-
-  return map;
+  return out;
 }
 
 /** Apply stock + cash movement (call only when approving) */
@@ -96,6 +125,31 @@ export async function applyApprovedRefundEffects(db, refund) {
         applyStock: true,
       });
     }
+  }
+  if (refund.payment_method === "on_account") {
+    const tx = await db.get(
+      "SELECT customer_id, total FROM transactions WHERE id = ?",
+      [refund.original_transaction_id]
+    );
+    const custId = Number(tx?.customer_id);
+    if (!custId) {
+      const err = new Error("لا يمكن استرجاع بيع الذمة: العميل غير موجود");
+      err.status = 400;
+      err.code = "CUSTOMER_REQUIRED";
+      throw err;
+    }
+    const payments = await loadSalePayments(db, refund.original_transaction_id);
+    const onAccountPaid = round2(
+      payments
+        .filter((l) => l.method === "on_account")
+        .reduce((s, l) => s + Number(l.nis_equivalent || 0), 0)
+    );
+    const saleTotal = round2(Number(tx.total) || 0);
+    const refundTotal = round2(Number(refund.total));
+    const credit =
+      saleTotal > 0 ? round2(refundTotal * (onAccountPaid / saleTotal)) : refundTotal;
+    await db.run("UPDATE customers SET balance = balance - ? WHERE id = ?", [credit, custId]);
+    return;
   }
   if (refund.payment_method === "cash" && refund.shift_id) {
     const total = round2(Number(refund.total));
@@ -164,35 +218,36 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
     const key = `${pid}:${unitId}`;
     const orig = origMap.get(key) || (unitId === 0 ? origMap.get(`${pid}:0`) : null);
     if (!orig && unitId === 0) {
-      let added = false;
-      for (const [k, v] of origMap.entries()) {
-        if (k.startsWith(`${pid}:`)) {
-          const cap = v.quantity - (refundedSoFar.get(k) || 0);
-          if (want <= cap) {
-            const unitPrice = refundedUnitPrice(v, tx, origItems);
-            refundLines.push({
-              product_id: pid,
-              unit_id: Number(k.split(":")[1]) || null,
-              barcode: v.barcode,
-              name: v.name,
-              unit_name: v.unit_name,
-              quantity: want,
-              price: unitPrice,
-              tax_rate: v.tax_rate,
-              conversion_to_base: v.conversion_to_base,
-              lineTotal: round2(want * unitPrice),
-            });
-            refundedSoFar.set(k, (refundedSoFar.get(k) || 0) + want);
-            added = true;
-            break;
-          }
-        }
-      }
-      if (!added) {
-        const err = new Error(`المنتج ${pid} ليس في البيع الأصلي`);
+      const productKeys = [...origMap.keys()].filter((k) => k.startsWith(`${pid}:`));
+      if (productKeys.length !== 1) {
+        const err = new Error(`حدد الوحدة للمنتج ${pid}`);
         err.status = 400;
+        err.code = "UNIT_REQUIRED";
         throw err;
       }
+      const onlyKey = productKeys[0];
+      const v = origMap.get(onlyKey);
+      const cap = v.quantity - (refundedSoFar.get(onlyKey) || 0);
+      if (want > cap) {
+        const err = new Error(`الكمية كبيرة جداً للمنتج ${pid}`);
+        err.status = 400;
+        err.max_returnable = cap;
+        throw err;
+      }
+      const unitPrice = refundedUnitPrice(v, tx, origItems);
+      refundLines.push({
+        product_id: pid,
+        unit_id: Number(onlyKey.split(":")[1]) || null,
+        barcode: v.barcode,
+        name: v.name,
+        unit_name: v.unit_name,
+        quantity: want,
+        price: unitPrice,
+        tax_rate: v.tax_rate,
+        conversion_to_base: v.conversion_to_base,
+        lineTotal: round2(want * unitPrice),
+      });
+      refundedSoFar.set(onlyKey, (refundedSoFar.get(onlyKey) || 0) + want);
       continue;
     }
     if (!orig) {
@@ -292,6 +347,9 @@ export async function createRefundRequest(db, params) {
     err.status = 400;
     throw err;
   }
+
+  const payments = await loadSalePayments(db, transactionId);
+  assertRefundPaymentMethod(payments, paymentMethod);
 
   const created = await withTransaction(db, async () => {
     const { subtotal, tax, total, itemsJson } = await buildRefundLines(db, transactionId, lines);
@@ -515,11 +573,15 @@ export async function approveRefundRequest(
     });
 
     const now = new Date().toISOString();
+    const origTx = await db.get(
+      "SELECT customer_id FROM transactions WHERE id = ?",
+      [request.transaction_id]
+    );
     const ins = await db.run(
       `INSERT INTO refunds (
         original_transaction_id, items_json, subtotal, tax, total, payment_method,
-        reason, cashier_id, shift_id, status, approved_at, approved_by_id, review_notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?)`,
+        reason, cashier_id, shift_id, status, approved_at, approved_by_id, review_notes, customer_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
       [
         request.transaction_id,
         request.items_json,
@@ -533,6 +595,7 @@ export async function approveRefundRequest(
         now,
         managerUser.id,
         reviewNotes ?? request.review_notes,
+        origTx?.customer_id ?? null,
       ]
     );
     const refundId = ins.lastID;

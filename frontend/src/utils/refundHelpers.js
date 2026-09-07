@@ -1,6 +1,6 @@
-/** @typedef {{ id: number, status?: string, total?: number, created_at?: string, approved_at?: string, rejected_at?: string, cashier_username?: string }} RefundRow */
+import { ils } from "./format";
 
-const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
+/** @typedef {{ id: number, status?: string, total?: number, created_at?: string, approved_at?: string, rejected_at?: string, cashier_username?: string }} RefundRow */
 
 const REASON_HINTS = {
   damaged: "تالف",

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { Select } from "./ui";
+import { Select } from "./ui/Field";
 
 export default function UnitNameSelect({
   value = "",

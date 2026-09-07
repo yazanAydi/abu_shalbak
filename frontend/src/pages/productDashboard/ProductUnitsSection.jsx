@@ -2,21 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
 import { normalizeBarcode } from "../../utils/barcode";
+import { displayProductSku } from "../../utils/entityCodeDisplay";
 import CameraBarcodeButton from "../../components/barcode/CameraBarcodeButton";
-import {
-  FormField,
-  Input,
-  PrimaryButton,
-  SecondaryButton,
-} from "../../components/ui";
+import { FormField, Input } from "../../components/ui/Field";
+import { PrimaryButton, SecondaryButton } from "../../components/ui/ActionButtons";
 import UnitNameSelect from "../../components/UnitNameSelect";
 import "./productBarcodes.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
-
-function round2(n) {
-  return Math.round((Number(n) || 0) * 100) / 100;
-}
 
 function findBaseUnit(units, excludeId) {
   const list = excludeId ? units.filter((u) => u.id !== excludeId) : units;
@@ -26,20 +19,6 @@ function findBaseUnit(units, excludeId) {
     list[0] ||
     null
   );
-}
-
-function autoCostFromBase(base, conversion) {
-  if (!base) return "";
-  const conv = Number(conversion);
-  if (!Number.isFinite(conv) || conv <= 0) return "";
-  return String(round2(Number(base.cost) * conv));
-}
-
-function costFromPieceHint(base, conversion) {
-  if (!base) return "";
-  const conv = Number(conversion) || 1;
-  const piece = Number(base.cost) || 0;
-  return `${conv} × ${ils(piece)} (${base.unit_name || "حبة"}) = ${ils(round2(piece * conv))}`;
 }
 
 const BARCODE_STATUS_COLOR = {
@@ -93,15 +72,13 @@ function UnitFormFields({
   form,
   setForm,
   unitLabel,
+  productSku,
   barcodeCheck,
   barcodeChecking,
   showCamera,
   showDefaultCheckbox,
-  showAutoCost,
   baseUnit,
 }) {
-  const autoOn = Boolean(form.autoCost) && Boolean(showAutoCost) && Boolean(baseUnit);
-
   function setField(key, value) {
     setForm((f) => ({ ...f, [key]: value }));
   }
@@ -116,7 +93,10 @@ function UnitFormFields({
             onChange={(e) => setField("unit_name", e.target.value)}
           />
         </FormField>
-        <FormField label="باركود">
+        <FormField label="الرقم" hint="رقم المنتج — مستقل عن باركود الوحدة">
+          <Input value={displayProductSku(productSku)} readOnly disabled />
+        </FormField>
+        <FormField label="باركود" className="ui-field--full">
           {showCamera ? (
             <div className="barcode-input-row">
               <Input
@@ -147,32 +127,8 @@ function UnitFormFields({
             type="number"
             step="0.01"
             value={form.cost}
-            readOnly={autoOn}
-            disabled={autoOn}
             onChange={(e) => setField("cost", e.target.value)}
           />
-          {showAutoCost && baseUnit ? (
-            <>
-              <label className="product-unit-form__auto">
-                <input
-                  type="checkbox"
-                  checked={Boolean(form.autoCost)}
-                  onChange={(e) => {
-                    const on = e.target.checked;
-                    setForm((f) => ({
-                      ...f,
-                      autoCost: on,
-                      cost: on ? autoCostFromBase(baseUnit, f.conversion_to_base) : f.cost,
-                    }));
-                  }}
-                />
-                احسب من {baseUnit.unit_name || "الوحدة الأساسية"}
-              </label>
-              {form.autoCost ? (
-                <span className="ui-field__hint">{costFromPieceHint(baseUnit, form.conversion_to_base)}</span>
-              ) : null}
-            </>
-          ) : null}
         </FormField>
         <FormField label="معامل التحويل إلى الوحدة الأساسية" className="ui-field--full">
           <Input
@@ -253,8 +209,9 @@ function BarcodeStatusLine({ check, checking }) {
 /**
  * @param {{ productId: number | null, onChanged?: () => void }} props
  */
-export default function ProductUnitsSection({ productId, onChanged }) {
+function ProductUnitsSection({ productId, onChanged }) {
   const [units, setUnits] = useState([]);
+  const [productSku, setProductSku] = useState(null);
   const [loading, setLoading] = useState(false);
   const [newUnit, setNewUnit] = useState({
     unit_name: "",
@@ -262,7 +219,6 @@ export default function ProductUnitsSection({ productId, onChanged }) {
     price: "",
     cost: "",
     conversion_to_base: "1",
-    autoCost: true,
     purchase_enabled: true,
     is_default_purchase: false,
     sale_enabled: true,
@@ -273,7 +229,6 @@ export default function ProductUnitsSection({ productId, onChanged }) {
   const [busy, setBusy] = useState(false);
 
   const baseUnit = useMemo(() => findBaseUnit(units), [units]);
-  const isEditingBase = editId != null && baseUnit?.id === editId;
 
   const addBarcodeCheck = useBarcodeCheck(productId, newUnit.barcode, null);
   const editBarcodeCheck = useBarcodeCheck(
@@ -285,6 +240,7 @@ export default function ProductUnitsSection({ productId, onChanged }) {
   const load = useCallback(async () => {
     if (!productId) {
       setUnits([]);
+      setProductSku(null);
       return;
     }
     setLoading(true);
@@ -293,6 +249,7 @@ export default function ProductUnitsSection({ productId, onChanged }) {
         headers: getAuthHeaders(),
       });
       setUnits(Array.isArray(data.units) ? data.units : []);
+      setProductSku(data.sku ?? null);
       setErr(null);
     } catch (e) {
       setErr(e.response?.data?.error || e.message);
@@ -304,18 +261,6 @@ export default function ProductUnitsSection({ productId, onChanged }) {
   useEffect(() => {
     load();
   }, [load]);
-
-  useEffect(() => {
-    if (!newUnit.autoCost || !baseUnit) return;
-    const next = autoCostFromBase(baseUnit, newUnit.conversion_to_base);
-    setNewUnit((u) => (u.cost === next ? u : { ...u, cost: next }));
-  }, [newUnit.autoCost, newUnit.conversion_to_base, baseUnit]);
-
-  useEffect(() => {
-    if (!editForm?.autoCost || isEditingBase || !baseUnit) return;
-    const next = autoCostFromBase(baseUnit, editForm.conversion_to_base);
-    setEditForm((f) => (f && f.cost === next ? f : { ...f, cost: next }));
-  }, [editForm?.autoCost, editForm?.conversion_to_base, baseUnit, isEditingBase]);
 
   async function addUnit() {
     if (!productId || addBarcodeCheck.blocked) return;
@@ -347,7 +292,6 @@ export default function ProductUnitsSection({ productId, onChanged }) {
         price: "",
         cost: "",
         conversion_to_base: "1",
-        autoCost: Boolean(baseUnit),
         purchase_enabled: true,
         is_default_purchase: false,
         sale_enabled: true,
@@ -373,7 +317,6 @@ export default function ProductUnitsSection({ productId, onChanged }) {
       purchase_enabled: unit.purchase_enabled !== false,
       is_default_purchase: unit.is_default_purchase === true,
       sale_enabled: unit.sale_enabled !== false,
-      autoCost: false,
     });
   }
 
@@ -429,7 +372,12 @@ export default function ProductUnitsSection({ productId, onChanged }) {
 
   return (
     <div className="product-barcodes-section" dir="rtl" lang="ar">
-      <h3 style={{ margin: 0, fontSize: "1rem" }}>وحدات البيع</h3>
+      <h3 style={{ margin: 0, fontSize: "1rem" }}>
+        وحدات البيع
+        <span style={{ fontWeight: 500, color: "var(--office-text-muted)", marginInlineStart: "0.5rem" }}>
+          الرقم {displayProductSku(productSku)}
+        </span>
+      </h3>
       {loading ? <p style={{ color: "var(--office-text-muted)" }}>جاري التحميل…</p> : null}
       {!loading && units.length === 0 ? (
         <p style={{ color: "var(--office-text-muted)", marginBottom: 0 }}>لا توجد وحدات.</p>
@@ -443,6 +391,7 @@ export default function ProductUnitsSection({ productId, onChanged }) {
             <div className="product-unit-row__main">
               <div className="product-unit-row__id">
                 <strong>{u.unit_name}</strong>
+                <span className="product-unit-row__sku">الرقم {displayProductSku(productSku)}</span>
                 <code>{u.barcode}</code>
               </div>
               <div className="product-unit-row__meta">
@@ -476,11 +425,11 @@ export default function ProductUnitsSection({ productId, onChanged }) {
                   form={editForm}
                   setForm={setEditForm}
                   unitLabel="الوحدة"
+                  productSku={productSku}
                   barcodeCheck={editBarcodeCheck.check}
                   barcodeChecking={editBarcodeCheck.checking}
                   showCamera={false}
                   showDefaultCheckbox
-                  showAutoCost={!isEditingBase}
                   baseUnit={baseUnit}
                 />
                 <div className="product-unit-form__actions">
@@ -508,11 +457,11 @@ export default function ProductUnitsSection({ productId, onChanged }) {
             form={newUnit}
             setForm={setNewUnit}
             unitLabel="وحدة جديدة"
+            productSku={productSku}
             barcodeCheck={addBarcodeCheck.check}
             barcodeChecking={addBarcodeCheck.checking}
             showCamera
             showDefaultCheckbox={false}
-            showAutoCost={Boolean(baseUnit)}
             baseUnit={baseUnit}
           />
           <div className="product-unit-form__actions">
@@ -535,3 +484,6 @@ export default function ProductUnitsSection({ productId, onChanged }) {
     </div>
   );
 }
+
+export { ProductUnitsSection };
+export default ProductUnitsSection;

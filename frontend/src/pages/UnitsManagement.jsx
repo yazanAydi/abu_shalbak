@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import ProductPicker from "../components/ProductPicker";
-import ProductUnitsSection from "./productDashboard/ProductUnitsSection";
+import { ProductUnitsSection } from "./productDashboard/ProductUnitsSection";
+import { displayProductSku } from "../utils/entityCodeDisplay";
 import {
   PageHeader,
   Card,
@@ -27,6 +28,7 @@ function normalizePicked(p) {
   return {
     id,
     name: product.name ?? p.name ?? "",
+    sku: product.sku ?? p.sku ?? null,
     stock: product.stock ?? p.stock ?? null,
   };
 }
@@ -152,6 +154,7 @@ export default function UnitsManagement() {
     setSelected({
       id: row.product_id,
       name: row.product_name,
+      sku: row.product_sku ?? null,
       stock: null,
     });
   }
@@ -161,6 +164,13 @@ export default function UnitsManagement() {
       key: "product_name",
       header: "المنتج",
       render: (row) => <strong>{row.product_name}</strong>,
+    },
+    {
+      key: "product_sku",
+      header: "الرقم",
+      className: "num",
+      value: (row) => displayProductSku(row.product_sku),
+      render: (row) => displayProductSku(row.product_sku),
     },
     {
       key: "product_barcode",
@@ -296,7 +306,18 @@ export default function UnitsManagement() {
                   marginBottom: "0.75rem",
                 }}
               >
-                <strong style={{ fontSize: "1.05rem" }}>{selected.name}</strong>
+                <strong style={{ fontSize: "1.05rem" }}>
+                  {selected.name}
+                  <span
+                    style={{
+                      fontWeight: 500,
+                      color: "var(--office-panel-muted)",
+                      marginInlineStart: "0.5rem",
+                    }}
+                  >
+                    الرقم {displayProductSku(selected.sku)}
+                  </span>
+                </strong>
                 {selected.stock != null ? (
                   <span style={{ color: "var(--office-panel-muted)" }}>
                     المخزون الحالي: {selected.stock} (بوحدة الأساس)
@@ -327,7 +348,7 @@ export default function UnitsManagement() {
               <Input
                 value={catalogSearch}
                 onChange={(e) => setCatalogSearch(e.target.value)}
-                placeholder="اسم المنتج أو الباركود…"
+                placeholder="اسم المنتج أو الرقم أو الباركود…"
               />
             </FormField>
           </div>

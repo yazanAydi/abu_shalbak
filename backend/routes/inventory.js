@@ -1,4 +1,5 @@
-import { Router } from "express";
+import bcrypt from "bcrypt";
+import { createSafeRouter } from "../utils/asyncHandler.js";
 import { requireAuth, requireAdmin, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { recordMovement, applyStockDelta } from "../utils/inventory.js";
 import { round2 } from "../utils/tax.js";
@@ -6,6 +7,8 @@ import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { listLimitSql } from "../utils/listQuery.js";
+import { getZeroAllStockPasswordHash } from "../utils/settings.js";
+import { forbidden } from "../utils/httpError.js";
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
 // Maps adjustment type -> ledger movement_type and sign of stock change.
 const ADJ_MOVEMENT = {
@@ -17,7 +20,7 @@ const ADJ_MOVEMENT = {
 };
 
 export function createInventoryRouter(db) {
-  const router = Router();
+  const router = createSafeRouter();
   const requireExpiry = requireReportsPermission(db, "expiry");
   const requireStockCount = requireReportsPermission(db, "stock_count");
   const requireStockOrBakery = requireAnyReportsPermission(db, "stock_count", "bakery_supplies");
@@ -127,9 +130,16 @@ export function createInventoryRouter(db) {
     try {
       await withTransaction(db, async () => {
         for (const L of lines) {
-          const variance = Number(L.variance) || 0;
-          if (variance !== 0) {
-            await applyStockDelta(db, L.product_id, variance, {
+          const live = await db.get("SELECT stock FROM products WHERE id = ?", [L.product_id]);
+          const liveStock = Number(live?.stock) || 0;
+          const counted = Number(L.counted_qty);
+          const delta = counted - liveStock;
+          await db.run(
+            "UPDATE stock_count_lines SET system_qty = ?, variance = ? WHERE id = ?",
+            [liveStock, delta, L.id]
+          );
+          if (delta !== 0) {
+            await applyStockDelta(db, L.product_id, delta, {
               movementType: "count",
               referenceType: "stock_count_session",
               referenceId: session.id,
@@ -166,28 +176,36 @@ export function createInventoryRouter(db) {
 
   router.post("/zero-all-stock", requireAuth, requireAdmin, async (req, res, next) => {
     try {
-      const toZero = await db.all(
-        "SELECT id, stock FROM products WHERE COALESCE(stock, 0) != 0"
-      );
-      const skippedRow = await db.get(
-        "SELECT COUNT(*) AS n FROM products WHERE COALESCE(stock, 0) = 0"
-      );
-      const skipped = Number(skippedRow?.n) || 0;
+      const hash = await getZeroAllStockPasswordHash(db);
+      if (hash) {
+        const password =
+          req.body?.confirm_password ??
+          req.headers["x-confirm-password"] ??
+          "";
+        if (!(await bcrypt.compare(String(password), hash))) {
+          throw forbidden("كلمة المرور غير صحيحة", "INVALID_CREDENTIALS");
+        }
+      }
 
+      let productsZeroed = 0;
+      let skipped = 0;
       await withTransaction(db, async () => {
-        for (const p of toZero) {
+        const products = await db.all("SELECT id, stock FROM products");
+        for (const p of products) {
           const stock = Number(p.stock) || 0;
-          if (stock === 0) continue;
+          if (stock === 0) {
+            skipped += 1;
+            continue;
+          }
           await applyStockDelta(db, p.id, -stock, {
             movementType: "count",
             referenceType: "zero_all_stock",
             userId: req.user.id,
             notes: "تصفير كل الكميات",
           });
+          productsZeroed += 1;
         }
       });
-
-      const productsZeroed = toZero.length;
       await logAudit(
         db,
         req,
@@ -384,10 +402,13 @@ export function createInventoryRouter(db) {
 
   router.get("/movements", requireAuth, requireStockOrBakery, async (req, res) => {
     const { product_id, type, from, to, scope } = req.query;
-    let sql = `SELECT m.*, p.name AS product_name, p.barcode, u.username AS created_by_name
-               FROM inventory_movements m
+    let sql = `SELECT m.id, m.product_id, m.movement_type, m.quantity_delta AS quantity,
+                      m.qty_before, m.qty_after, m.reference_type AS ref_type, m.reference_id AS ref_id,
+                      m.notes, m.user_id AS created_by, m.created_at,
+                      p.name AS product_name, p.barcode, u.username AS created_by_name
+               FROM inventory_ledger m
                JOIN products p ON p.id = m.product_id
-               LEFT JOIN users u ON u.id = m.created_by WHERE 1=1`;
+               LEFT JOIN users u ON u.id = m.user_id WHERE 1=1`;
     const params = [];
     if (product_id) { sql += " AND m.product_id = ?"; params.push(Number(product_id)); }
     if (type) { sql += " AND m.movement_type = ?"; params.push(type); }

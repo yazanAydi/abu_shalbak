@@ -131,6 +131,40 @@ describe("Zero all product stock", () => {
     expect(afterZeroLedger.n).toBe(beforeZeroLedger.n);
   });
 
+  test("stock-count post uses live stock so a sale between count and post is not double-applied", async () => {
+    await ctx.db.run("UPDATE products SET stock = 10 WHERE id = ?", [ctx.productId]);
+    const create = await request(ctx.app)
+      .post("/api/v1/inventory/counts")
+      .set(authHeader(adminToken))
+      .send({ notes: "live-stock post" });
+    expect(create.status).toBe(201);
+    const sessionId = (create.body.data ?? create.body).id;
+
+    const lineRes = await request(ctx.app)
+      .post(`/api/v1/inventory/counts/${sessionId}/lines`)
+      .set(authHeader(adminToken))
+      .send({ product_id: ctx.productId, counted_qty: 8 });
+    expect(lineRes.status).toBe(200);
+
+    await ctx.db.run("UPDATE products SET stock = 9 WHERE id = ?", [ctx.productId]);
+
+    const postRes = await request(ctx.app)
+      .post(`/api/v1/inventory/counts/${sessionId}/post`)
+      .set(authHeader(adminToken));
+    expect(postRes.status).toBe(200);
+
+    const after = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
+    expect(Number(after.stock)).toBe(8);
+
+    const postedLine = await ctx.db.get(
+      "SELECT system_qty, counted_qty, variance FROM stock_count_lines WHERE session_id = ? AND product_id = ?",
+      [sessionId, ctx.productId]
+    );
+    expect(Number(postedLine.system_qty)).toBe(9);
+    expect(Number(postedLine.counted_qty)).toBe(8);
+    expect(Number(postedLine.variance)).toBe(-1);
+  });
+
   test("cashier cannot zero all stock", async () => {
     const res = await request(ctx.app)
       .post("/api/v1/inventory/zero-all-stock")

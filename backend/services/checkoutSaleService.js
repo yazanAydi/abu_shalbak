@@ -45,6 +45,19 @@ async function executeCheckoutSaleCore(db, params) {
     if (dup) return { replayTxId: dup.id };
   }
 
+  if (shiftId) {
+    const openShift = await db.get(
+      "SELECT id FROM cashier_shifts WHERE id = ? AND status = 'open'",
+      [shiftId]
+    );
+    if (!openShift) {
+      const err = new Error("الوردية أُغلقت — أعد المحاولة بعد فتح وردية");
+      err.status = 409;
+      err.code = "SHIFT_CLOSED";
+      throw err;
+    }
+  }
+
   const receiptNumber = await nextReceiptNumber(db, 1);
 
     const ins = await db.run(

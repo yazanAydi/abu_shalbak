@@ -78,7 +78,18 @@ export function printAccountStatement(report, partyType) {
   </style>
 </head>
 <body>
-  ${buildPrintBrandingHtml()}
+  ${buildPrintBrandingHtml({
+    store_name_ar: report.store_name || report.store_name_ar,
+    store_phone: report.store_phone,
+    store_license: report.store_license,
+    store_address: report.store_address,
+    receipt_logo_url: report.receipt_logo_url,
+    print_show_logo: report.print_show_logo,
+    print_show_name: report.print_show_name,
+    print_show_phone: report.print_show_phone,
+    print_show_address: report.print_show_address,
+    print_show_license: report.print_show_license,
+  })}
   <h1>${escapeHtml(report.report_title || "كشف حساب")}</h1>
   <p class="meta"><strong>${partyLabel}:</strong> ${escapeHtml(report.party?.name)}</p>
   <p class="meta"><strong>الفترة:</strong> ${escapeHtml(range)}</p>

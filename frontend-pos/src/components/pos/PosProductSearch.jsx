@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createAbortController } from "../../apiClient";
 import { searchProductsApi } from "../../utils/productSearch";
 import { lookupProductByBarcode } from "../../utils/barcode";
 import { mapLookupToCartProduct } from "../../utils/cartProduct";
@@ -10,6 +11,7 @@ export default function PosProductSearch({ onProductFound }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const searchReqRef = useRef(0);
 
   useEffect(() => {
     const q = query.trim();
@@ -20,18 +22,26 @@ export default function PosProductSearch({ onProductFound }) {
     }
 
     setLoading(true);
+    const ac = createAbortController();
+    const reqId = ++searchReqRef.current;
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchProductsApi(q, { limit: 15 });
+        const rows = await searchProductsApi(q, { limit: 15, signal: ac.signal });
+        if (reqId !== searchReqRef.current) return;
         setResults(rows);
-      } catch {
+      } catch (e) {
+        if (e.code === "ERR_CANCELED" || e.name === "CanceledError") return;
+        if (reqId !== searchReqRef.current) return;
         setResults([]);
       } finally {
-        setLoading(false);
+        if (reqId === searchReqRef.current) setLoading(false);
       }
     }, 300);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      ac.abort();
+    };
   }, [query]);
 
   async function pickProduct(product) {

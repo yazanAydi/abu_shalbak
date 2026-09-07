@@ -1,4 +1,5 @@
-import { getStoreLogoDataUri, STORE_NAME_AR, STORE_PHONE } from "./storeBranding.js";
+import { getStoreLogoDataUri, resolvePrintBranding, STORE_NAME_AR, STORE_PHONE } from "./storeBranding.js";
+import { formatProductSku } from "./entityCodes.js";
 import { round2, roundScaleSaleTotal } from "./money.js";
 
 const LINE = 48;
@@ -26,6 +27,7 @@ export function mapSaleItemsToReceiptLines(itemsJson, storedItems = []) {
     }
     return {
       name: it.name || `صنف ${it.product_id}`,
+      sku: formatProductSku(it.sku ?? row?.sku ?? row?.product_sku),
       quantity: qty,
       price,
       lineTotal,
@@ -34,12 +36,65 @@ export function mapSaleItemsToReceiptLines(itemsJson, storedItems = []) {
   });
 }
 
+export function receiptSkuLabel(sku) {
+  return formatProductSku(sku) || "—";
+}
+
+/** transaction_items plus live رقم المنتج for reprints. */
+export const RECEIPT_STORED_ITEMS_SQL = `
+  SELECT ti.line_gross, ti.unit_name, ti.quantity, ti.unit_price, p.sku
+  FROM transaction_items ti
+  LEFT JOIN products p ON p.id = ti.product_id
+  WHERE ti.transaction_id = ?
+  ORDER BY ti.id
+`;
+
 function escapeHtml(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function brandingFromSettings(settings) {
+  const name = String(settings?.store_name_ar || settings?.store_name || "").trim();
+  const phone = String(settings?.store_phone || "").trim();
+  return {
+    name: name || STORE_NAME_AR,
+    phone: phone || STORE_PHONE,
+  };
+}
+
+function invoiceNumber(opts) {
+  const n = String(opts?.receiptNumber || opts?.receipt_number || "").trim();
+  if (n) return n;
+  return String(opts?.transactionId ?? "");
+}
+
+function soldToLabel(opts) {
+  if (opts?.paymentMethod === "on_account") {
+    const name = String(opts.customerName || opts.customer_name || "").trim();
+    return name || "ذمة";
+  }
+  if (opts?.paymentMethod === "cash") return "نقدي";
+  if (opts?.paymentMethod === "visa") return "فيزا";
+  if (opts?.paymentMethod === "mixed") return "مختلط";
+  return methodLabel(opts?.paymentMethod) || "نقدي";
+}
+
+function splitTimestamp(ts) {
+  const raw = String(ts || "").trim();
+  const [datePart, ...rest] = raw.split(/\s+/);
+  return { date: datePart || raw, time: rest.join(" ") || "" };
+}
+
+function formatQtySum(lines) {
+  const list = Array.isArray(lines) ? lines : [];
+  const sum = list.reduce((s, L) => s + (Number(L.quantity) || 0), 0);
+  if (list.some((L) => L.weighed)) return sum.toFixed(3);
+  if (Number.isInteger(sum)) return String(sum);
+  return String(sum);
 }
 
 function padCenter(s, w) {
@@ -94,6 +149,16 @@ function foreignAmount(p) {
   const sym = p.symbol || "";
   const original = Number(p.original_amount ?? p.amount) || 0;
   return `${sym}${original.toFixed(2)}`;
+}
+
+function partyBalanceFromOpts(opts) {
+  return opts?.partyBalance || opts?.party_balance || null;
+}
+
+function buildPartyBalanceLines(opts) {
+  const pb = partyBalanceFromOpts(opts);
+  if (!pb?.before_display || !pb?.after_display) return [];
+  return [`الرصيد قبل: ${pb.before_display}`, `الرصيد بعد: ${pb.after_display}`];
 }
 
 function buildPaymentSection(opts) {
@@ -165,29 +230,70 @@ function buildPaymentSection(opts) {
   return [`الدفع: ${payLabel}`];
 }
 
-const RECEIPT_HTML_CSS = `
+/** Thermal roll width. Chromium print-to-pdf needs an explicit height, not `auto`. */
+const RECEIPT_PAGE_WIDTH_MM = 80;
+const RECEIPT_HEIGHT_MIN_MM = 70;
+const RECEIPT_HEIGHT_MAX_MM = 400;
+
+/**
+ * Estimate printed slip height so Edge --print-to-pdf does not emit a full A4 page.
+ * @param {object} opts same shape as buildReceiptHtml
+ */
+export function estimateReceiptPageHeightMm(opts) {
+  const settings = opts?.settings || {};
+  const showTax = settings.receipt_show_tax !== false && Number(opts?.tax) > 0;
+  const showCashier = settings.receipt_show_cashier !== false && Boolean(opts?.cashierName);
+  const items = Array.isArray(opts?.lines) ? opts.lines.length : 0;
+  const paymentLines = buildPaymentSection(opts || {}).length;
+
+  const headerMm = 58 + (showCashier ? 10 : 0);
+  const itemsMm = 12 + items * 7;
+  const totalsMm = 18 + (showTax ? 5 : 0);
+  const paymentMm = 6 + paymentLines * 5;
+  const partyBalance = opts?.partyBalance || opts?.party_balance;
+  const balanceMm = partyBalance?.before_display ? 12 : 0;
+  const footerMm = 16;
+  const thanksAndCutterMm = 12;
+  const raw = headerMm + itemsMm + totalsMm + paymentMm + balanceMm + footerMm + thanksAndCutterMm;
+  return Math.min(RECEIPT_HEIGHT_MAX_MM, Math.max(RECEIPT_HEIGHT_MIN_MM, Math.round(raw)));
+}
+
+function receiptHtmlCss(heightMm) {
+  return `
+  @page { size: ${RECEIPT_PAGE_WIDTH_MM}mm ${heightMm}mm; margin: 0; }
   html { -webkit-locale: "en"; font-language-override: "eng"; font-feature-settings: "locl" 0; }
-  body { margin: 0; padding: 12px; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; }
-  .receipt { max-width: 384px; margin: 0 auto; }
-  .logo-wrap { text-align: center; margin-bottom: 8px; }
-  .logo-wrap img { max-width: 180px; max-height: 100px; object-fit: contain; }
+  html, body { width: ${RECEIPT_PAGE_WIDTH_MM}mm; margin: 0; padding: 2mm 3mm 3mm; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; }
+  .receipt { width: 74mm; max-width: 74mm; margin: 0; }
+  .logo-wrap { text-align: center; margin-bottom: 3px; }
+  .logo-wrap img { max-width: 96px; max-height: 48px; object-fit: contain; }
   .center { text-align: center; }
-  .sep { border: none; border-top: 2px solid #000; margin: 8px 0; }
-  .sep-thin { border: none; border-top: 1px solid #000; margin: 6px 0; }
-  .meta { margin: 2px 0; }
+  .header-box { display: grid; grid-template-columns: 1fr 1fr 1fr; border: 1px solid #000; border-radius: 4px; margin: 4px 0 3px; overflow: hidden; }
+  .header-box > div { padding: 3px 4px; border-inline-start: 1px solid #000; }
+  .header-box > div:first-child { border-inline-start: none; }
+  .header-title { font-weight: 700; }
+  .header-title .copy { font-weight: 400; display: block; }
+  .header-no { text-align: center; }
+  .meta-row { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-bottom: 3px; }
+  .meta-cell { border: 1px solid #000; border-radius: 4px; padding: 3px 5px; }
   table.items { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.items th, table.items td { padding: 4px 3px; vertical-align: top; }
-  table.items th { font-weight: 700; border-bottom: 1px solid #000; }
-  table.items .col-name { width: 46%; text-align: right; word-break: break-word; }
-  table.items .col-num { width: 18%; text-align: center; direction: ltr; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .totals { width: 100%; margin-top: 4px; }
-  .totals td { padding: 2px 0; }
-  .totals .label { text-align: right; }
-  .totals .amount { text-align: left; direction: ltr; font-variant-numeric: tabular-nums; white-space: nowrap; width: 5em; }
-  .payment { margin-top: 6px; }
-  .payment div { margin: 2px 0; }
-  .thanks { text-align: center; margin: 8px 0; font-weight: 600; }
+  table.items th, table.items td { padding: 2px 2px; border: 1px solid #000; vertical-align: top; }
+  table.items th { font-weight: 700; }
+  table.items .col-idx { width: 7%; text-align: center; }
+  table.items .col-sku { width: 12%; text-align: center; direction: ltr; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.items .col-name { width: 30%; text-align: right; word-break: break-word; }
+  table.items .col-num { width: 17%; text-align: center; direction: ltr; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.items tfoot td { font-weight: 700; }
+  .pay-box { text-align: center; border: 1px solid #000; border-radius: 6px; padding: 6px 4px; margin: 5px auto 4px; font-size: 14px; font-weight: 700; width: 88%; }
+  .foot-box { border: 1px solid #000; border-radius: 4px; padding: 3px 6px; margin: 3px 0; display: inline-block; min-width: 55%; }
+  .foot-box div { margin: 1px 0; }
+  .tax-line { margin: 2px 0; }
+  .payment { margin-top: 3px; }
+  .payment div { margin: 1px 0; }
+  .party-balance { margin-top: 3px; }
+  .party-balance div { margin: 1px 0; }
+  .thanks { text-align: center; margin: 4px 0 0; font-weight: 600; }
 `;
+}
 
 /**
  * @param {object} opts same shape as buildReceiptText
@@ -197,16 +303,27 @@ export function buildReceiptHtml(opts) {
   const showTax = settings.receipt_show_tax !== false;
   const showCashier = settings.receipt_show_cashier !== false;
   const paymentLines = buildPaymentSection(opts);
+  const pageHeightMm = estimateReceiptPageHeightMm(opts);
+  const brand = brandingFromSettings(settings);
+  const printBrand = resolvePrintBranding(settings);
+  const { date, time } = splitTimestamp(opts.timestamp);
+  const invNo = invoiceNumber(opts);
 
   const logoSrc = getStoreLogoDataUri();
   const logoHtml = logoSrc
     ? `<div class="logo-wrap"><img src="${escapeHtml(logoSrc)}" alt="" /></div>`
     : "";
 
+  const licenseHtml = printBrand.showLicense
+    ? `<div>${escapeHtml(printBrand.license)}</div>`
+    : `<div></div>`;
+
   const itemRows = (opts.lines || [])
-    .map((L) => {
+    .map((L, i) => {
       const name = L.name.length > 40 ? `${L.name.slice(0, 37)}...` : L.name;
       return `<tr>
+        <td class="col-idx">${i + 1}</td>
+        <td class="col-sku">${escapeHtml(receiptSkuLabel(L.sku))}</td>
         <td class="col-name">${escapeHtml(name)}</td>
         <td class="col-num">${escapeHtml(formatReceiptQty(L))}</td>
         <td class="col-num">${escapeHtml(formatReceiptPrice(L))}</td>
@@ -215,52 +332,76 @@ export function buildReceiptHtml(opts) {
     })
     .join("");
 
-  const taxRow =
+  const taxHtml =
     showTax && opts.tax > 0
-      ? `<tr><td class="label">ضريبة القيمة المضافة:</td><td class="amount">${escapeHtml(Number(opts.tax).toFixed(2))}</td></tr>`
+      ? `<div class="tax-line">ضريبة القيمة المضافة: ${escapeHtml(Number(opts.tax).toFixed(2))}</div>`
       : "";
 
   const paymentHtml = paymentLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
+  const balanceLines = buildPartyBalanceLines(opts);
+  const balanceHtml = balanceLines.length
+    ? `<div class="party-balance">${balanceLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>`
+    : "";
+
+  const cashierBlock =
+    showCashier && opts.cashierName
+      ? `<div>المستخدم: ${escapeHtml(opts.cashierName)}</div>
+      <div>الصندوق: ${escapeHtml(opts.cashierName)}</div>`
+      : "";
 
   return `<!DOCTYPE html>
 <html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <title>إيصال</title>
-  <style>${RECEIPT_HTML_CSS}</style>
+  <style>${receiptHtmlCss(pageHeightMm)}</style>
 </head>
 <body>
   <div class="receipt">
     ${logoHtml}
-    <div class="center"><strong>${escapeHtml(STORE_NAME_AR)}</strong></div>
-    <div class="center">${escapeHtml(STORE_PHONE)}</div>
-    <div class="center">إيصال بيع</div>
-    <hr class="sep" />
-    <div class="meta">التاريخ: ${escapeHtml(opts.timestamp)}</div>
-    ${showCashier && opts.cashierName ? `<div class="meta">الكاشير: ${escapeHtml(opts.cashierName)}</div>` : ""}
-    <div class="meta">رقم الإيصال: ${escapeHtml(opts.transactionId)}</div>
+    <div class="center"><strong>${escapeHtml(brand.name)}</strong></div>
+    <div class="center">${escapeHtml(brand.phone)}</div>
+    <div class="header-box">
+      ${licenseHtml}
+      <div class="header-no">الرقم : ${escapeHtml(invNo)}</div>
+      <div class="header-title">فاتورة مبيعات ضريبية<span class="copy">نسخة أصلية</span></div>
+    </div>
+    <div class="meta-row">
+      <div class="meta-cell">إلى : ${escapeHtml(soldToLabel(opts))}</div>
+      <div class="meta-cell">${escapeHtml(date)}</div>
+    </div>
     <table class="items">
       <thead>
         <tr>
-          <th class="col-name">الصنف</th>
+          <th class="col-idx">#</th>
+          <th class="col-sku">الرقم</th>
+          <th class="col-name">الاسم</th>
           <th class="col-num">الكمية</th>
           <th class="col-num">السعر</th>
           <th class="col-num">المجموع</th>
         </tr>
       </thead>
       <tbody>${itemRows}</tbody>
+      <tfoot>
+        <tr>
+          <td></td>
+          <td></td>
+          <td class="col-name">المجموع الكلي</td>
+          <td class="col-num">${escapeHtml(formatQtySum(opts.lines))}</td>
+          <td></td>
+          <td class="col-num">${escapeHtml(Number(opts.total).toFixed(2))}</td>
+        </tr>
+      </tfoot>
     </table>
-    <hr class="sep-thin" />
-    <table class="totals">
-      <tr><td class="label">المجموع الفرعي:</td><td class="amount">${escapeHtml(Number(opts.subtotal).toFixed(2))}</td></tr>
-      ${taxRow}
-      <tr><td class="label"><strong>الإجمالي:</strong></td><td class="amount"><strong>${escapeHtml(Number(opts.total).toFixed(2))}</strong></td></tr>
-    </table>
-    <hr class="sep" />
+    <div class="pay-box">المبلغ للدفع ${escapeHtml(Number(opts.total).toFixed(2))} شيقل</div>
+    <div class="foot-box">
+      <div>الوقت: ${escapeHtml(time)}</div>
+      ${cashierBlock}
+    </div>
+    ${taxHtml}
     <div class="payment">${paymentHtml}</div>
-    <hr class="sep" />
+    ${balanceHtml}
     <div class="thanks">شكراً لزيارتكم</div>
-    <hr class="sep" />
   </div>
 </body>
 </html>`;
@@ -273,52 +414,67 @@ export function buildReceiptText(opts) {
   const settings = opts.settings || {};
   const showTax = settings.receipt_show_tax !== false;
   const showCashier = settings.receipt_show_cashier !== false;
+  const printBrand = resolvePrintBranding(settings);
+  const { date, time } = splitTimestamp(opts.timestamp);
+  const invNo = invoiceNumber(opts);
 
   const sep = "═".repeat(LINE);
   const thin = "─".repeat(LINE);
   const paymentLines = buildPaymentSection(opts);
+  const balanceLines = buildPartyBalanceLines(opts);
 
+  const brand = brandingFromSettings(settings);
   const lines = [
     sep,
-    padCenter(STORE_NAME_AR, LINE),
-    padCenter(STORE_PHONE, LINE),
-    padCenter("إيصال بيع", LINE),
-    sep,
-    `التاريخ: ${opts.timestamp}`,
+    padCenter(brand.name, LINE),
+    padCenter(brand.phone, LINE),
   ];
 
-  if (showCashier && opts.cashierName) {
-    lines.push(`الكاشير: ${opts.cashierName}`);
+  if (printBrand.showLicense) {
+    lines.push(padCenter(printBrand.license, LINE));
   }
-  lines.push(`رقم الإيصال: ${opts.transactionId}`, "");
+
   lines.push(
-    `${padRight("الصنف", 22)}${padLeft("الكمية", 5)} ${padLeft("السعر", 8)} ${padLeft("المجموع", 10)}`,
+    padCenter("فاتورة مبيعات ضريبية", LINE),
+    padCenter("نسخة أصلية", LINE),
+    sep,
+    `الرقم : ${invNo}`,
+    `إلى : ${soldToLabel(opts)}`,
+    `التاريخ: ${date}`,
+    ""
+  );
+
+  lines.push(
+    `${padRight("الرقم", 6)}${padRight("الاسم", 16)}${padLeft("الكمية", 5)} ${padLeft("السعر", 8)} ${padLeft("المجموع", 10)}`,
     thin
   );
 
   for (const L of opts.lines) {
-    const name = L.name.length > 20 ? L.name.slice(0, 17) + "..." : L.name;
+    const name = L.name.length > 14 ? L.name.slice(0, 11) + "..." : L.name;
+    const sku = receiptSkuLabel(L.sku);
     lines.push(
-      `${padRight(name, 22)}${padLeft(formatReceiptQty(L), 5)} ${padLeft(formatReceiptPrice(L), 8)} ${padLeft(L.lineTotal.toFixed(2), 10)}`
+      `${padRight(sku, 6)}${padRight(name, 16)}${padLeft(formatReceiptQty(L), 5)} ${padLeft(formatReceiptPrice(L), 8)} ${padLeft(L.lineTotal.toFixed(2), 10)}`
     );
   }
 
-  lines.push(thin);
-  lines.push(`${padRight("المجموع الفرعي:", 34)}${padLeft(opts.subtotal.toFixed(2), 10)}`);
+  lines.push(
+    thin,
+    `${padRight("المجموع الكلي:", 34)}${padLeft(opts.total.toFixed(2), 10)}`,
+    sep,
+    padCenter(`المبلغ للدفع ${Number(opts.total).toFixed(2)} شيقل`, LINE),
+    sep,
+    `الوقت: ${time}`
+  );
+
+  if (showCashier && opts.cashierName) {
+    lines.push(`المستخدم: ${opts.cashierName}`, `الصندوق: ${opts.cashierName}`);
+  }
 
   if (showTax && opts.tax > 0) {
     lines.push(`${padRight("ضريبة القيمة المضافة:", 34)}${padLeft(opts.tax.toFixed(2), 10)}`);
   }
 
-  lines.push(
-    thin,
-    `${padRight("الإجمالي:", 34)}${padLeft(opts.total.toFixed(2), 10)}`,
-    sep,
-    ...paymentLines,
-    sep,
-    padRight("شكراً لزيارتكم", LINE),
-    sep
-  );
+  lines.push(sep, ...paymentLines, ...balanceLines, sep, padRight("شكراً لزيارتكم", LINE), sep);
 
   return lines.join("\n");
 }

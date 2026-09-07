@@ -4,7 +4,7 @@ import { getAuthHeaders } from "../utils/auth";
 import { formatRefundReason, ils, statusLabelAr } from "../utils/refundHelpers";
 import "./RefundsManagement.css";
 
-const PM = { cash: "نقد", visa: "بطاقة" };
+const PM = { cash: "نقد", visa: "بطاقة", on_account: "ذمة" };
 
 /**
  * @param {object} props

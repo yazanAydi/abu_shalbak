@@ -139,8 +139,19 @@
   font-family: inherit;
 }
 
+.shift-modal-card .shift-modal-secondary {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
 .shift-modal-secondary:hover:not(:disabled) {
   background: var(--pos-surface-2, #eef1f5);
+}
+
+.shift-modal-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .shift-modal-secondary:focus-visible {

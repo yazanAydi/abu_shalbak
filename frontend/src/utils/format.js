@@ -1,5 +1,9 @@
 import { SHOP_TZ, shopTodayYmd } from "./shopTime.js";
 
+export function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
 export function ils(n) {
   const v = Number(n ?? 0);
   return `₪${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

@@ -3,13 +3,12 @@
  *
  * IMPORTANT — source of truth: `inventory_ledger` (see inventoryLedger.js) is
  * the authoritative stock history and the ONLY place that mutates
- * `products.stock`. The `inventory_movements` table written here is a
- * SECONDARY/legacy analytics log; it never changes stock on its own.
+ * `products.stock`. The legacy `inventory_movements` table is read-only
+ * history and is no longer written by new operations.
  *
- * `recordMovement` writes one `inventory_movements` row and, when
- * `applyStock` is true, applies the stock delta exactly once through the
- * ledger (`applyStockDelta` → `addLedgerEntry`). So a single sale produces
- * exactly one stock delta, one ledger row, and one movements row.
+ * `recordMovement` applies the stock delta through the ledger when
+ * `applyStock` is true (`applyStockDelta` → `addLedgerEntry`). A single sale
+ * produces exactly one stock delta and one ledger row.
  *
  * `quantity` is SIGNED: positive adds to stock, negative removes from stock.
  * These helpers assume the caller already opened a DB transaction (BEGIN).
@@ -105,23 +104,6 @@ export async function recordMovement(
   if (!pid || !Number.isFinite(qty) || qty === 0) return null;
   const type = MOVEMENT_TYPES.includes(movementType) ? movementType : "correction";
 
-  const ins = await db.run(
-    `INSERT INTO inventory_movements
-       (product_id, movement_type, quantity, unit_cost, warehouse_id, ref_type, ref_id, notes, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      pid,
-      type,
-      qty,
-      unitCost != null ? Number(unitCost) : null,
-      warehouseId != null ? Number(warehouseId) : null,
-      refType,
-      refId != null ? Number(refId) : null,
-      notes,
-      userId != null ? Number(userId) : null,
-    ]
-  );
-
   if (applyStock) {
     await applyStockDelta(db, pid, qty, {
       movementType: type,
@@ -131,5 +113,5 @@ export async function recordMovement(
       notes,
     });
   }
-  return ins.lastID;
+  return null;
 }

@@ -8,6 +8,7 @@ import {
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 import { sendExpiryAlert } from "../services/expiryAlertService.js";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { timingSafeStringEqual } from "../utils/kioskToken.js";
 
 const webhookLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -19,9 +20,16 @@ const webhookLimiter = rateLimit({
 export function createTelegramRouter(db) {
   const router = Router();
 
+  function telegramSecretOk(expected, req) {
+    if (!expected) return false;
+    const header = req.headers["x-telegram-bot-api-secret-token"];
+    if (header && timingSafeStringEqual(header, expected)) return true;
+    return Boolean(req.params.secret && timingSafeStringEqual(req.params.secret, expected));
+  }
+
   router.post("/webhook/:secret", webhookLimiter, async (req, res) => {
     const expected = getRefundWebhookSecret();
-    if (!expected || req.params.secret !== expected) {
+    if (!telegramSecretOk(expected, req)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     await handleTelegramUpdate(db, req.body || {});
@@ -30,7 +38,7 @@ export function createTelegramRouter(db) {
 
   router.post("/webhook/zimma/:secret", webhookLimiter, async (req, res) => {
     const expected = getZimmaWebhookSecret();
-    if (!expected || req.params.secret !== expected) {
+    if (!telegramSecretOk(expected, req)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     await handleTelegramUpdate(db, req.body || {});
@@ -39,7 +47,7 @@ export function createTelegramRouter(db) {
 
   router.post("/webhook/sulaf/:secret", webhookLimiter, async (req, res) => {
     const expected = getSulafWebhookSecret();
-    if (!expected || req.params.secret !== expected) {
+    if (!telegramSecretOk(expected, req)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     await handleTelegramUpdate(db, req.body || {});

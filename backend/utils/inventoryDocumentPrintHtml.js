@@ -1,4 +1,4 @@
-import { getStoreLogoDataUri, STORE_NAME_AR, STORE_PHONE, STORE_LICENSE_LINE } from "./storeBranding.js";
+import { getStoreLogoDataUri, resolvePrintBranding } from "./storeBranding.js";
 import { documentTypeTitleAr, reasonLabelAr } from "./inventoryDocumentReasons.js";
 
 function escapeHtml(text) {
@@ -20,13 +20,21 @@ function fmtQty(n) {
  * @param {object} doc
  * @param {object} [store]
  */
-export function buildInventoryDocumentPrintHtml(doc, store = {}) {
+export function buildInventoryDocumentPrintHtml(doc, store = {}, extras = {}) {
   const title = documentTypeTitleAr(doc.document_type);
   const docNo = doc.document_number ?? doc.id;
-  const storeName = store.store_name_ar || store.store_name || STORE_NAME_AR;
+  const branding = resolvePrintBranding(store);
+  const storeName = branding.name;
   const reason = doc.reason_label || reasonLabelAr(doc.document_type, doc.reason);
   const items = Array.isArray(doc.items) ? doc.items : [];
-  const logo = getStoreLogoDataUri();
+  const logo = branding.showLogo ? getStoreLogoDataUri() : "";
+  const brandingLines = [
+    logo ? `<img src="${logo}" alt="" />` : "",
+    branding.showName ? `<div><strong>${escapeHtml(branding.name)}</strong></div>` : "",
+    branding.showPhone ? `<div>${escapeHtml(branding.phone)}</div>` : "",
+    branding.showAddress && branding.address ? `<div>${escapeHtml(branding.address)}</div>` : "",
+    branding.showLicense ? `<div>${escapeHtml(branding.license)}</div>` : "",
+  ].filter(Boolean).join("\n    ");
 
   const bodyRows = items
     .map((it, i) => {
@@ -62,16 +70,14 @@ export function buildInventoryDocumentPrintHtml(doc, store = {}) {
     th { background: #1f3a5f; color: #fff; }
     td.num, th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
     .notes { margin-top: 12px; font-size: 12px; }
+    .printed-by { margin: 14px 0 0; font-size: 12px; text-align: start; }
     .footer { margin-top: 16px; font-size: 10px; color: #666; text-align: center; }
     @media print { thead { display: table-header-group; } tr { page-break-inside: avoid; } }
   </style>
 </head>
 <body>
   <div class="print-branding">
-    ${logo ? `<img src="${logo}" alt="" />` : ""}
-    <div><strong>${escapeHtml(storeName)}</strong></div>
-    <div>${escapeHtml(STORE_PHONE)}</div>
-    <div>${escapeHtml(STORE_LICENSE_LINE)}</div>
+    ${brandingLines}
   </div>
   <h1>${escapeHtml(title)} رقم: ${escapeHtml(docNo)}</h1>
   <div class="meta">
@@ -95,6 +101,7 @@ export function buildInventoryDocumentPrintHtml(doc, store = {}) {
     </thead>
     <tbody>${bodyRows || `<tr><td colspan="8" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
+  ${extras.printedBy ? `<p class="printed-by"><strong>طُبع بواسطة:</strong> ${escapeHtml(extras.printedBy)}</p>` : ""}
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}
   <p class="footer">${escapeHtml(storeName)} — ${escapeHtml(title)}</p>
 </body>

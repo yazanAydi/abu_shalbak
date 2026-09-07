@@ -138,7 +138,7 @@
 .form-field select,
 .form-field textarea {
   padding: 0.45rem 0.75rem;
-  border: 1px solid #cbd5e0;
+  border: 1.5px solid var(--office-input-border, #94a3b8);
   border-radius: 5px;
   font-size: 0.95rem;
   background: #fff;
@@ -233,7 +233,7 @@
 }
 .filter-row input, .filter-row select {
   padding: 0.45rem 0.75rem;
-  border: 1px solid #cbd5e0;
+  border: 1.5px solid var(--office-input-border, #94a3b8);
   border-radius: 5px;
   font-size: 0.9rem;
 }
@@ -250,7 +250,7 @@
   flex: 1;
   min-width: 200px;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #cbd5e0;
+  border: 1.5px solid var(--office-input-border, #94a3b8);
   border-radius: 5px;
   font-size: 0.9rem;
 }
@@ -270,7 +270,7 @@
   margin-top: 0.75rem;
   flex-wrap: wrap;
 }
-.count-product-row input { width: 120px; padding: 0.4rem; border: 1px solid #cbd5e0; border-radius: 5px; }
+.count-product-row input { width: 120px; padding: 0.4rem; border: 1.5px solid var(--office-input-border, #94a3b8); border-radius: 5px; }
 .search-dropdown {
   list-style: none;
   padding: 0;
@@ -313,7 +313,7 @@
 }
 .voucher-line-row select, .voucher-line-row input {
   padding: 0.4rem 0.6rem;
-  border: 1px solid #cbd5e0;
+  border: 1.5px solid var(--office-input-border, #94a3b8);
   border-radius: 5px;
   font-size: 0.9rem;
 }
@@ -334,7 +334,7 @@
   gap: 0.35rem;
   flex-wrap: wrap;
   padding: 0.4rem 0.6rem;
-  border: 1px solid #cbd5e0;
+  border: 1.5px solid var(--office-input-border, #94a3b8);
   border-radius: 5px;
   background: #f7fafc;
 }

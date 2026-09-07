@@ -43,7 +43,7 @@ function buildTableHtml(columns, rows) {
  * Open a styled RTL print window for tabular reports.
  * @param {{ title: string, subtitle?: string, columns: object[], rows: object[], summary?: { label: string, value: string }[], meta?: string[] }} opts
  */
-export function printReport({ title, subtitle, columns, rows, summary, meta }) {
+export function printReport({ title, subtitle, columns, rows, summary, meta, store }) {
   if (!columns?.length || !rows?.length) return;
 
   const w = window.open("", "_blank", "width=900,height=720");
@@ -113,7 +113,7 @@ export function printReport({ title, subtitle, columns, rows, summary, meta }) {
   </style>
 </head>
 <body>
-  ${buildPrintBrandingHtml()}
+  ${buildPrintBrandingHtml(store)}
   <h1>${escapeHtml(title)}</h1>
   ${subtitle ? `<p class="subtitle">${escapeHtml(subtitle)}</p>` : ""}
   ${metaLines}
@@ -132,7 +132,7 @@ export function printReport({ title, subtitle, columns, rows, summary, meta }) {
  * Print a summary-only report (no table), e.g. dashboard KPIs.
  * @param {{ title: string, subtitle?: string, sections: { heading?: string, items: { label: string, value: string }[] }[], meta?: string[] }} opts
  */
-export function printSummaryReport({ title, subtitle, sections, meta }) {
+export function printSummaryReport({ title, subtitle, sections, meta, store }) {
   const w = window.open("", "_blank", "width=900,height=720");
   if (!w) {
     window.alert("اسمح بفتح النافذة المنبثقة للطباعة.");
@@ -177,7 +177,7 @@ export function printSummaryReport({ title, subtitle, sections, meta }) {
   </style>
 </head>
 <body>
-  ${buildPrintBrandingHtml()}
+  ${buildPrintBrandingHtml(store)}
   <h1>${escapeHtml(title)}</h1>
   ${subtitle ? `<p class="subtitle">${escapeHtml(subtitle)}</p>` : ""}
   ${metaLines}

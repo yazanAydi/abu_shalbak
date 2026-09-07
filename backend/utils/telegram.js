@@ -553,17 +553,16 @@ export function parseTelegramApproverIds() {
 }
 
 /**
- * Chat membership is not enough — the person who clicked the button must be
- * an allowed manager. TELEGRAM_MANAGER_USER_IDS is a comma-separated list of
- * Telegram user IDs. If unset, only a private-chat click (from.id === chat.id)
- * against the configured manager chat is accepted.
+ * If TELEGRAM_MANAGER_USER_IDS is set (comma-separated Telegram user IDs),
+ * only those accounts may approve. If unset, any click inside the configured
+ * manager chat is accepted (group or private). App roles are not consulted.
  */
 export function isAllowedTelegramApprover(fromId, chatId, botKind = "refund") {
   const from = fromId == null ? "" : String(fromId);
   if (!from) return false;
   const allowList = parseTelegramApproverIds();
   if (allowList.length > 0) return allowList.includes(from);
-  return isManagerChat(chatId, botKind) && from === String(chatId);
+  return isManagerChat(chatId, botKind);
 }
 
 function buildApprovalKeyboard(prefix, requestId, withButtons) {

@@ -33,7 +33,7 @@ export function createWarehousesRouter(db) {
     res.json(await db.all("SELECT * FROM warehouses ORDER BY active DESC, name"));
   });
 
-  router.post("/", requireAuth, requireWarehouses, async (req, res) => {
+  router.post("/", requireAuth, requireWarehouses, async (req, res, next) => {
     const { name, code, type } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ error: "اسم المستودع مطلوب", code: "VALIDATION_ERROR" });
     const t = WH_TYPES.includes(type) ? type : "store";
@@ -41,7 +41,7 @@ export function createWarehousesRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM warehouses WHERE id = ?", [ins.lastID]));
   });
 
-  router.put("/:id", requireAuth, requireWarehouses, async (req, res) => {
+  router.put("/:id", requireAuth, requireWarehouses, async (req, res, next) => {
     const ex = await db.get("SELECT * FROM warehouses WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     const b = req.body || {};
@@ -58,7 +58,7 @@ export function createWarehousesRouter(db) {
     res.json(await db.get("SELECT * FROM warehouses WHERE id = ?", [req.params.id]));
   });
 
-  router.delete("/:id", requireAuth, requireWarehouses, async (req, res) => {
+  router.delete("/:id", requireAuth, requireWarehouses, async (req, res, next) => {
     const qty = await db.get("SELECT COALESCE(SUM(quantity),0) AS q FROM warehouse_stock WHERE warehouse_id = ?", [req.params.id]);
     if (Math.abs(Number(qty?.q) || 0) > 0.0001) {
       return res.status(400).json({ error: "لا يمكن حذف مستودع به مخزون", code: "NON_EMPTY" });
@@ -69,7 +69,7 @@ export function createWarehousesRouter(db) {
 
   // ════════════ Stock report ════════════
 
-  router.get("/stock", requireAuth, requireWarehouses, async (req, res) => {
+  router.get("/stock", requireAuth, requireWarehouses, async (req, res, next) => {
     const { warehouse_id } = req.query;
     let sql = `SELECT ws.warehouse_id, w.name AS warehouse_name, ws.product_id,
                       p.name AS product_name, p.barcode, ws.quantity, p.cost,
@@ -106,7 +106,7 @@ export function createWarehousesRouter(db) {
 
   // ════════════ Transfers ════════════
 
-  router.get("/transfers", requireAuth, requireWarehouses, async (req, res) => {
+  router.get("/transfers", requireAuth, requireWarehouses, async (req, res, next) => {
     const rows = await db.all(
       `SELECT t.*, wf.name AS from_name, wt.name AS to_name,
               (SELECT COUNT(*) FROM warehouse_transfer_items i WHERE i.transfer_id = t.id) AS item_count
@@ -118,7 +118,7 @@ export function createWarehousesRouter(db) {
     res.json(rows);
   });
 
-  router.get("/transfers/:id", requireAuth, requireWarehouses, async (req, res) => {
+  router.get("/transfers/:id", requireAuth, requireWarehouses, async (req, res, next) => {
     const t = await db.get(
       `SELECT t.*, wf.name AS from_name, wt.name AS to_name
        FROM warehouse_transfers t
@@ -135,7 +135,7 @@ export function createWarehousesRouter(db) {
     res.json({ ...t, items });
   });
 
-  router.post("/transfers", requireAuth, requireWarehouses, async (req, res) => {
+  router.post("/transfers", requireAuth, requireWarehouses, async (req, res, next) => {
     const { from_warehouse_id, to_warehouse_id, transfer_date, notes, items } = req.body || {};
     const from = Number(from_warehouse_id);
     const to = Number(to_warehouse_id);
@@ -168,11 +168,11 @@ export function createWarehousesRouter(db) {
       });
       res.status(201).json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.post("/transfers/:id/post", requireAuth, requireWarehouses, async (req, res) => {
+  router.post("/transfers/:id/post", requireAuth, requireWarehouses, async (req, res, next) => {
     const t = await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [req.params.id]);
     if (!t) return res.status(404).json({ error: "التحويل غير موجود", code: "NOT_FOUND" });
     if (t.status === "posted") return res.status(400).json({ error: "مرحّل بالفعل", code: "ALREADY_POSTED" });
@@ -201,11 +201,11 @@ export function createWarehousesRouter(db) {
       });
       res.json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.put("/transfers/:id", requireAuth, requireWarehouses, async (req, res) => {
+  router.put("/transfers/:id", requireAuth, requireWarehouses, async (req, res, next) => {
     const t = await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [req.params.id]);
     if (!t) return res.status(404).json({ error: "التحويل غير موجود", code: "NOT_FOUND" });
     if (t.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل تحويل مرحّل", code: "ALREADY_POSTED" });
@@ -239,11 +239,11 @@ export function createWarehousesRouter(db) {
       });
       res.json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.delete("/transfers/:id", requireAuth, requireWarehouses, async (req, res) => {
+  router.delete("/transfers/:id", requireAuth, requireWarehouses, async (req, res, next) => {
     const t = await db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [req.params.id]);
     if (!t) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     if (t.status === "posted") return res.status(400).json({ error: "لا يمكن حذف تحويل مرحّل", code: "ALREADY_POSTED" });

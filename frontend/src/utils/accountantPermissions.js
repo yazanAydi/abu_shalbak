@@ -87,7 +87,22 @@ export function normalizeAccountantPermissions(raw) {
 }
 
 export function hasAccountantPermission(role, permissions, key) {
-  if (role === "admin") return true;
+  if (role === "admin") {
+    if (
+      permissions &&
+      typeof permissions === "object" &&
+      !Array.isArray(permissions) &&
+      Object.prototype.hasOwnProperty.call(permissions, key)
+    ) {
+      return (
+        permissions[key] === true ||
+        permissions[key] === "true" ||
+        permissions[key] === 1 ||
+        permissions[key] === "1"
+      );
+    }
+    return true;
+  }
   if (role !== "accountant") return false;
   const normalized = normalizeAccountantPermissions(permissions);
   return normalized[key] === true;
@@ -161,7 +176,6 @@ export function permissionKeyForPath(pathname) {
 }
 
 export function canAccessOfficePath(role, permissions, pathname) {
-  if (role === "admin") return true;
   const key = permissionKeyForPath(pathname);
   if (!key) return role === "admin";
   return hasAccountantPermission(role, permissions, key);

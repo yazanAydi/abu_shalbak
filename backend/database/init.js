@@ -1763,7 +1763,7 @@ async function migrateRefundRequestsTable(db) {
       subtotal REAL NOT NULL,
       tax REAL NOT NULL,
       total_amount REAL NOT NULL,
-      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'visa')),
+      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'visa', 'on_account')),
       reason TEXT,
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
       telegram_message_id TEXT,
@@ -2010,6 +2010,12 @@ async function migrateMustChangePasswordColumn(db) {
   }
 }
 
+async function migrateUserPermissionsColumn(db) {
+  if (!(await tableHasColumn(db, "users", "permissions_json"))) {
+    await db.run("ALTER TABLE users ADD COLUMN permissions_json TEXT");
+  }
+}
+
 async function migrateHourlyRateColumn(db) {
   if (!(await tableHasColumn(db, "users", "hourly_rate"))) {
     await db.run("ALTER TABLE users ADD COLUMN hourly_rate REAL");
@@ -2175,20 +2181,9 @@ export async function initDatabase(dbPath) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- DEPRECATED / NON-AUTHORITATIVE. Kept only for backward compatibility.
-    -- No code writes to or reads from this table anymore. All sales/profit
-    -- reporting is computed on demand from the source tables (transactions,
-    -- transaction_items, refunds) — see backend/routes/reports.js. Do not
-    -- treat daily_reports as a source of truth.
-    CREATE TABLE IF NOT EXISTS daily_reports (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      report_date TEXT NOT NULL UNIQUE,
-      total_sales REAL NOT NULL DEFAULT 0,
-      total_items INTEGER NOT NULL DEFAULT 0,
-      cash_count INTEGER NOT NULL DEFAULT 0,
-      card_count INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    -- daily_reports is no longer created for new databases. Existing DBs may
+    -- still have the table; reporting never reads it. Drop later if desired:
+    -- DROP TABLE IF EXISTS daily_reports;
 
     CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
 
@@ -2260,7 +2255,7 @@ export async function initDatabase(dbPath) {
       subtotal REAL NOT NULL,
       tax REAL NOT NULL,
       total REAL NOT NULL,
-      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'visa')),
+      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'visa', 'on_account')),
       reason TEXT,
       cashier_id INTEGER NOT NULL REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -2327,6 +2322,7 @@ export async function initDatabase(dbPath) {
   await migrateOrphanReferenceCleanup(db);
   await migrateShiftCashMovementsAdvanceType(db);
   await migrateMustChangePasswordColumn(db);
+  await migrateUserPermissionsColumn(db);
   await migrateHourlyRateColumn(db);
   await migrateAttendanceTables(db);
   await migrateStoresTable(db);
@@ -2358,6 +2354,7 @@ export async function initDatabase(dbPath) {
   await migrateInventoryDocumentsTables(db);
   await migrateSuspendedSalesTables(db);
   await migrateFractionalInventoryQuantityTypes(db);
+  await migrateRefundPaymentMethodOnAccount(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);
@@ -2383,7 +2380,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.09-inventory-documents";
+const SCHEMA_VERSION = "2026.09-refund-on-account";
 
 async function migratePerfIndexes(db) {
   await db.exec(`
@@ -2691,6 +2688,90 @@ async function migrateSalePaymentsCheckMethod(db) {
       PRAGMA foreign_keys = ON;
     `);
   }
+}
+
+async function rebuildExpandPaymentMethodCheck(db, tableName, createNewSql, indexSqls) {
+  const row = await db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [tableName]);
+  if (!row?.sql || String(row.sql).includes("'on_account'")) return;
+
+  const existing = await db.all(`PRAGMA table_info(${tableName})`);
+  const existingNames = new Set(existing.map((c) => c.name));
+  await db.exec("PRAGMA foreign_keys = OFF");
+  await db.exec(createNewSql);
+  const newCols = await db.all(`PRAGMA table_info(${tableName}_new)`);
+  const shared = newCols.map((c) => c.name).filter((n) => existingNames.has(n));
+  await db.exec(`
+    INSERT INTO ${tableName}_new (${shared.join(",")}) SELECT ${shared.join(",")} FROM ${tableName};
+    DROP TABLE ${tableName};
+    ALTER TABLE ${tableName}_new RENAME TO ${tableName};
+    ${indexSqls.map((s) => `CREATE INDEX IF NOT EXISTS ${s};`).join("\n")}
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+async function migrateRefundPaymentMethodOnAccount(db) {
+  await rebuildExpandPaymentMethodCheck(
+    db,
+    "refunds",
+    `CREATE TABLE refunds_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+      items_json TEXT NOT NULL,
+      subtotal REAL NOT NULL,
+      tax REAL NOT NULL,
+      total REAL NOT NULL,
+      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'visa', 'on_account')),
+      reason TEXT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      shift_id INTEGER REFERENCES cashier_shifts(id),
+      status TEXT,
+      approved_at TEXT,
+      approved_by_id INTEGER REFERENCES users(id),
+      review_notes TEXT,
+      rejected_at TEXT,
+      rejected_by_id INTEGER REFERENCES users(id),
+      customer_id INTEGER REFERENCES customers(id)
+    )`,
+    [
+      "idx_refunds_tx ON refunds(original_transaction_id)",
+      "idx_refunds_date ON refunds(created_at)",
+      "idx_refunds_shift_id ON refunds(shift_id)",
+      "idx_refunds_customer_created ON refunds(customer_id, created_at)",
+    ]
+  );
+  await rebuildExpandPaymentMethodCheck(
+    db,
+    "refund_requests",
+    `CREATE TABLE refund_requests_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      manager_id INTEGER REFERENCES users(id),
+      shift_id INTEGER REFERENCES cashier_shifts(id),
+      items_json TEXT NOT NULL,
+      subtotal REAL NOT NULL,
+      tax REAL NOT NULL,
+      total_amount REAL NOT NULL,
+      payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'visa', 'on_account')),
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+      telegram_message_id TEXT,
+      refund_id INTEGER REFERENCES refunds(id),
+      review_notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      approved_at TEXT,
+      rejected_at TEXT,
+      decision_source TEXT,
+      cashier_notified_at TEXT,
+      cashier_acknowledged_at TEXT
+    )`,
+    [
+      "idx_refund_requests_status_created ON refund_requests(status, created_at)",
+      "idx_refund_requests_cashier ON refund_requests(cashier_id)",
+      "idx_refund_requests_tx ON refund_requests(transaction_id)",
+    ]
+  );
 }
 
 async function migrateAccountStatementIndexes(db) {

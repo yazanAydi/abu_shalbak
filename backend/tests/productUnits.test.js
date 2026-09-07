@@ -321,8 +321,8 @@ describe("units catalog", () => {
 
   test("GET /api/products/units/catalog returns products with packaging units", async () => {
     const ins = await ctx.db.run(
-      `INSERT INTO products (barcode, name, price, cost, stock) VALUES (?, ?, ?, ?, ?)`,
-      ["8100000001", "كولا كتالوج", 2, 1, 50]
+      `INSERT INTO products (barcode, name, price, cost, stock, sku) VALUES (?, ?, ?, ?, ?, ?)`,
+      ["8100000001", "كولا كتالوج", 2, 1, 50, "42"]
     );
     const productId = ins.lastID;
     await upsertProductUnit(ctx.db, productId, {
@@ -350,8 +350,20 @@ describe("units catalog", () => {
     const row = res.body.rows.find((r) => r.product_id === productId);
     expect(row).toBeTruthy();
     expect(row.product_name).toBe("كولا كتالوج");
+    expect(row.product_sku).toBe("42");
     expect(row.unit_count).toBe(2);
     expect(row.units.some((u) => u.unit_name === "صندوق" && u.conversion_to_base === 10)).toBe(true);
+  });
+
+  test("GET /api/products/:id/units includes product sku", async () => {
+    const product = await ctx.db.get("SELECT id FROM products WHERE barcode = ?", ["8100000001"]);
+    const res = await request(ctx.app)
+      .get(`/api/products/${product.id}/units`)
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    expect(res.body.sku).toBe("42");
+    expect(Array.isArray(res.body.units)).toBe(true);
+    expect(res.body.units.length).toBeGreaterThanOrEqual(2);
   });
 
   test("GET /api/products/units/catalog excludes single base-only unit", async () => {
@@ -377,12 +389,19 @@ describe("units catalog", () => {
   });
 
   test("GET /api/products/units/catalog supports search", async () => {
-    const res = await request(ctx.app)
+    const byName = await request(ctx.app)
       .get("/api/products/units/catalog")
       .query({ search: "كولا كتالوج" })
       .set(authHeader(adminToken));
-    expect(res.status).toBe(200);
-    expect(res.body.rows.some((r) => r.product_name === "كولا كتالوج")).toBe(true);
+    expect(byName.status).toBe(200);
+    expect(byName.body.rows.some((r) => r.product_name === "كولا كتالوج")).toBe(true);
+
+    const bySku = await request(ctx.app)
+      .get("/api/products/units/catalog")
+      .query({ search: "42" })
+      .set(authHeader(adminToken));
+    expect(bySku.status).toBe(200);
+    expect(bySku.body.rows.some((r) => r.product_sku === "42")).toBe(true);
   });
 
   test("GET /api/products/units/catalog is admin-only", async () => {

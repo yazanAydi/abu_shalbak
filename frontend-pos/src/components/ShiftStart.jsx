@@ -1,17 +1,29 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import "./ShiftModal.css";
 
 /**
  * @param {object} props
- * @param {() => void} props.onSuccess — after shift started; parent refetches current shift
+ * @param {() => Promise<unknown> | unknown} props.onSuccess — after shift started; parent refetches current shift
  * @param {number | null} props.openShiftId — if set, show open shift summary + end button
  * @param {() => void} [props.onRequestEndShift]
+ * @param {() => void} [props.onLogout]
+ * @param {string} [props.initialError]
  */
-export default function ShiftStart({ onSuccess, openShiftId, onRequestEndShift }) {
-  const [err, setErr] = useState("");
+export default function ShiftStart({
+  onSuccess,
+  openShiftId,
+  onRequestEndShift,
+  onLogout,
+  initialError,
+}) {
+  const [err, setErr] = useState(initialError || "");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (initialError) setErr(initialError);
+  }, [initialError]);
 
   async function startShift(e) {
     e.preventDefault();
@@ -23,11 +35,14 @@ export default function ShiftStart({ onSuccess, openShiftId, onRequestEndShift }
         {},
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
-      onSuccess();
+      await onSuccess();
     } catch (e2) {
       const status = e2.response?.status;
       const apiErr = e2.response?.data?.error;
-      if (status === 401) {
+      if (status === 409) {
+        const shift = await onSuccess?.();
+        if (!shift) setErr(apiErr || "لديك وردية مفتوحة بالفعل");
+      } else if (status === 401) {
         setErr("انتهت الجلسة. سجّل الدخول مرة أخرى.");
       } else if (status === 0 || e2.message?.includes("الاتصال")) {
         setErr("تعذّر الاتصال بالخادم. شغّل الخادم: npm run start من مجلد المشروع.");
@@ -48,6 +63,11 @@ export default function ShiftStart({ onSuccess, openShiftId, onRequestEndShift }
             إغلاق الوردية
           </button>
         ) : null}
+        {onLogout ? (
+          <button type="button" className="shift-modal-secondary" onClick={onLogout}>
+            خروج
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -60,6 +80,11 @@ export default function ShiftStart({ onSuccess, openShiftId, onRequestEndShift }
       <button type="submit" className="shift-modal-primary" disabled={loading}>
         {loading ? "جاري الحفظ…" : "بدء الوردية"}
       </button>
+      {onLogout ? (
+        <button type="button" className="shift-modal-secondary" onClick={onLogout} disabled={loading}>
+          خروج
+        </button>
+      ) : null}
     </form>
   );
 }

@@ -21,6 +21,7 @@ import { createOnAccountRequest } from "../services/onAccountRequestService.js";
 import { executeCheckoutSale } from "../services/checkoutSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { validateCustomerCredit } from "../utils/customerCredit.js";
+import { partyBalanceForSale } from "../utils/partyBalanceAroundMove.js";
 
 const SUSPENDED_QTY_TOLERANCE = 0.0001;
 
@@ -66,11 +67,17 @@ export function createCheckoutRouter(db) {
   async function buildResponseFromTransaction(txId, settings) {
     const row = await db.get("SELECT * FROM transactions WHERE id = ?", [txId]);
     const tiRows = await db.all(
-      "SELECT * FROM transaction_items WHERE transaction_id = ? ORDER BY id",
+      `SELECT ti.*, p.sku AS product_sku
+       FROM transaction_items ti
+       LEFT JOIN products p ON p.id = ti.product_id
+       WHERE ti.transaction_id = ? ORDER BY ti.id`,
       [txId]
     );
     const payments = await loadSalePayments(db, txId);
     const cashier = await db.get("SELECT username FROM users WHERE id = ?", [row.cashier_id]);
+    const customer = row.customer_id
+      ? await db.get("SELECT name FROM customers WHERE id = ?", [row.customer_id])
+      : null;
     const itemsOut = tiRows.map((t) => ({
       product_id: t.product_id,
       barcode: t.barcode,
@@ -81,6 +88,7 @@ export function createCheckoutRouter(db) {
     }));
     const receiptLines = tiRows.map((t) => ({
       name: t.unit_name ? `${t.name} (${t.unit_name})` : t.name,
+      sku: t.product_sku,
       quantity: t.quantity,
       price: t.unit_price,
       lineTotal: t.line_gross,
@@ -91,6 +99,7 @@ export function createCheckoutRouter(db) {
       receiptNumber: row.receipt_number,
       timestamp: row.created_at,
       cashierName: cashier?.username || "",
+      customerName: customer?.name || "",
       lines: receiptLines,
       subtotal: row.subtotal,
       tax: row.tax,
@@ -99,6 +108,12 @@ export function createCheckoutRouter(db) {
       payments,
       changeNis: row.change_amount,
       settings,
+      partyBalance: await partyBalanceForSale(db, {
+        customerId: row.customer_id,
+        payments,
+        transactionId: txId,
+        status: "posted",
+      }),
     };
     const { receipt_text, receipt_html } = buildReceiptPayload(receiptOpts);
     return {
@@ -156,13 +171,36 @@ export function createCheckoutRouter(db) {
       }
     }
 
+    const uniqueProductIds = [
+      ...new Set(items.map((line) => Number(line.product_id)).filter(Boolean)),
+    ];
+    const productById = new Map();
+    const unitsByProduct = new Map();
+    if (uniqueProductIds.length) {
+      const ph = uniqueProductIds.map(() => "?").join(",");
+      const productRows = await db.all(`SELECT * FROM products WHERE id IN (${ph})`, uniqueProductIds);
+      for (const row of productRows) productById.set(Number(row.id), row);
+      for (const pid of uniqueProductIds) {
+        await ensureDefaultProductUnit(db, pid);
+      }
+      const unitRows = await db.all(
+        `SELECT * FROM product_units WHERE product_id IN (${ph}) ORDER BY is_default DESC, id ASC`,
+        uniqueProductIds
+      );
+      for (const u of unitRows) {
+        const pid = Number(u.product_id);
+        if (!unitsByProduct.has(pid)) unitsByProduct.set(pid, []);
+        unitsByProduct.get(pid).push(u);
+      }
+    }
+
     const normalized = [];
     for (const line of items) {
       const productId = Number(line.product_id);
       const rawQty = Number(line.quantity);
       const price = Number(line.price);
 
-      const p = await db.get("SELECT * FROM products WHERE id = ?", [productId]);
+      const p = productById.get(productId);
       if (!p) {
         return res.status(404).json({ error: `المنتج غير موجود: ${productId}`, code: "NOT_FOUND" });
       }
@@ -184,17 +222,13 @@ export function createCheckoutRouter(db) {
         });
       }
 
-      await ensureDefaultProductUnit(db, productId);
-
       let unitId = line.unit_id != null ? Number(line.unit_id) : line.product_unit_id != null ? Number(line.product_unit_id) : null;
       const explicitUnitId =
         line.unit_id != null || line.product_unit_id != null;
+      const units = unitsByProduct.get(productId) || [];
       let unit = null;
       if (unitId) {
-        unit = await db.get("SELECT * FROM product_units WHERE id = ? AND product_id = ?", [
-          unitId,
-          productId,
-        ]);
+        unit = units.find((u) => Number(u.id) === Number(unitId)) || null;
         if (!unit) {
           return res.status(400).json({
             error: "معرّف الوحدة لا يطابق المنتج",
@@ -203,10 +237,7 @@ export function createCheckoutRouter(db) {
           });
         }
       } else {
-        unit = await db.get(
-          "SELECT * FROM product_units WHERE product_id = ? ORDER BY is_default DESC, id ASC LIMIT 1",
-          [productId]
-        );
+        unit = units[0] || null;
         if (!unit) {
           const fallback = await getDefaultUnit(db, productId);
           if (!fallback) {
@@ -216,7 +247,7 @@ export function createCheckoutRouter(db) {
               product_id: productId,
             });
           }
-          unit = await db.get("SELECT * FROM product_units WHERE id = ?", [fallback.id]);
+          unit = fallback;
         }
         unitId = unit.id;
       }
@@ -329,6 +360,7 @@ export function createCheckoutRouter(db) {
         conversion_to_base: conversionToBase,
         stock_delta: stockDelta,
         barcode: lineBarcode,
+        sku: p.sku ?? null,
         scanned_barcode: scannedBarcode || null,
         product_barcode_id: productBarcodeId || null,
         name: lineName,
@@ -410,6 +442,7 @@ export function createCheckoutRouter(db) {
       product_id: L.product_id,
       unit_id: L.product_unit_id,
       barcode: L.barcode,
+      sku: L.sku ?? null,
       name: L.name,
       unit_name: L.unit_name,
       quantity: L.quantity,
@@ -419,6 +452,9 @@ export function createCheckoutRouter(db) {
     }));
 
     const cashier = await db.get("SELECT username FROM users WHERE id = ?", [req.user.id]);
+    const customer = custId
+      ? await db.get("SELECT name FROM customers WHERE id = ?", [custId])
+      : null;
 
     const { shift, error: shiftErr } = await requireOpenShiftForCashier(db, req.user.id);
     if (shiftErr || !shift) {
@@ -536,6 +572,7 @@ export function createCheckoutRouter(db) {
       const row = await db.get("SELECT * FROM transactions WHERE id = ?", [transactionId]);
       const receiptLines = normalized.map((L, i) => ({
         name: L.unit_name ? `${L.name} (${L.unit_name})` : L.name,
+        sku: L.sku ?? null,
         quantity: L.quantity,
         price: L.price,
         lineTotal: detailed[i].lineGross,
@@ -546,6 +583,7 @@ export function createCheckoutRouter(db) {
         receiptNumber,
         timestamp: row.created_at,
         cashierName: cashier?.username || "",
+        customerName: customer?.name || "",
         lines: receiptLines,
         subtotal,
         tax,
@@ -555,6 +593,12 @@ export function createCheckoutRouter(db) {
         cashTendered,
         changeNis,
         settings,
+        partyBalance: await partyBalanceForSale(db, {
+          customerId: custId,
+          payments: paymentLines,
+          transactionId,
+          status: "posted",
+        }),
       });
 
       res.status(201).json({

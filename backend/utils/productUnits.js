@@ -287,18 +287,18 @@ export async function loadUnitsCatalog(db, { search = "", limit = 100, offset = 
   if (term) {
     const like = `%${term}%`;
     searchClause = ` AND (
-      p.name LIKE ? OR CAST(p.barcode AS TEXT) LIKE ?
+      p.name LIKE ? OR CAST(p.barcode AS TEXT) LIKE ? OR CAST(p.sku AS TEXT) LIKE ?
       OR EXISTS (
         SELECT 1 FROM product_units pu2
         WHERE pu2.product_id = p.id AND pu2.barcode LIKE ?
       )
     )`;
-    params.push(like, like, like);
+    params.push(like, like, like, like);
   }
 
   const productRows = await db.all(
     `SELECT p.id AS product_id, p.name AS product_name, p.barcode AS product_barcode,
-            COUNT(pu.id) AS unit_count
+            p.sku AS product_sku, COUNT(pu.id) AS unit_count
      FROM products p
      JOIN product_units pu ON pu.product_id = p.id
      WHERE 1=1 ${searchClause}
@@ -319,6 +319,7 @@ export async function loadUnitsCatalog(db, { search = "", limit = 100, offset = 
       product_id: row.product_id,
       product_name: row.product_name,
       product_barcode: row.product_barcode,
+      product_sku: row.product_sku ?? null,
       unit_count: Number(row.unit_count) || units.length,
       units,
     };

@@ -16,6 +16,7 @@ export async function searchProductsApi(query, opts = {}) {
   const { data } = await api.get("/api/products", {
     params: { search: q },
     headers: getAuthHeaders(),
+    signal: opts.signal,
   });
 
   let rows = Array.isArray(data) ? data : [];

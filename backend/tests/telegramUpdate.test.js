@@ -45,13 +45,41 @@ describe("Telegram refund callback", () => {
     transactionId = checkoutRes.body.data.transaction_id;
   });
 
+  afterEach(() => {
+    delete process.env.TELEGRAM_MANAGER_USER_IDS;
+    process.env.TELEGRAM_MANAGER_CHAT_ID = managerChatId;
+  });
+
   afterAll(async () => {
     global.fetch = originalFetch;
     delete process.env.TELEGRAM_REFUND_BOT_TOKEN;
     delete process.env.TELEGRAM_REFUND_WEBHOOK_SECRET;
     delete process.env.TELEGRAM_MANAGER_CHAT_ID;
+    delete process.env.TELEGRAM_MANAGER_USER_IDS;
     await destroyTestContext(ctx);
   });
+
+  async function createPendingRefund() {
+    const product = await ctx.db.get("SELECT * FROM products WHERE id = ?", [ctx.productId]);
+    const checkoutRes = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
+        payment_method: "cash",
+      });
+    const txnId = checkoutRes.body.data.transaction_id;
+    const createRes = await request(ctx.app)
+      .post("/api/v1/refund-requests")
+      .set(authHeader(cashierToken))
+      .send({
+        original_transaction_id: txnId,
+        lines: [{ product_id: ctx.productId, quantity: 1 }],
+        payment_method: "cash",
+      });
+    expect(createRes.status).toBe(201);
+    return createRes.body.data.request_id;
+  }
 
   test("handleTelegramUpdate approves pending refund via callback", async () => {
     const stockBefore = (await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId])).stock;
@@ -127,5 +155,81 @@ describe("Telegram refund callback", () => {
 
     const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
     expect(reqRow.status).toBe("approved");
+  });
+
+  test("group chat click is approved when allow-list is unset", async () => {
+    const groupChatId = "-1001234567890";
+    process.env.TELEGRAM_MANAGER_CHAT_ID = groupChatId;
+    const requestId = await createPendingRefund();
+
+    const result = await handleTelegramUpdate(ctx.db, {
+      callback_query: {
+        id: "test-cq-group",
+        data: `refund:approve:${requestId}`,
+        message: { chat: { id: Number(groupChatId) } },
+        from: { id: 111222333 },
+      },
+    });
+
+    expect(result.handled).toBe(true);
+    expect(result.action).toBe("approve");
+    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
+    expect(reqRow.status).toBe("approved");
+  });
+
+  test("allow-list denies a click from a user not on the list", async () => {
+    process.env.TELEGRAM_MANAGER_USER_IDS = "999888777";
+    const requestId = await createPendingRefund();
+
+    const result = await handleTelegramUpdate(ctx.db, {
+      callback_query: {
+        id: "test-cq-deny",
+        data: `refund:approve:${requestId}`,
+        message: { chat: { id: Number(managerChatId) } },
+        from: { id: 111222333 },
+      },
+    });
+
+    expect(result.handled).toBe(true);
+    expect(result.action).toBe("denied");
+    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
+    expect(reqRow.status).toBe("pending");
+  });
+
+  test("allow-list approves a click from a listed user", async () => {
+    process.env.TELEGRAM_MANAGER_USER_IDS = "111222333,999888777";
+    const requestId = await createPendingRefund();
+
+    const result = await handleTelegramUpdate(ctx.db, {
+      callback_query: {
+        id: "test-cq-allow",
+        data: `refund:approve:${requestId}`,
+        message: { chat: { id: Number(managerChatId) } },
+        from: { id: 111222333 },
+      },
+    });
+
+    expect(result.handled).toBe(true);
+    expect(result.action).toBe("approve");
+    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
+    expect(reqRow.status).toBe("approved");
+  });
+
+  test("wrong chat id is denied", async () => {
+    const requestId = await createPendingRefund();
+
+    const result = await handleTelegramUpdate(ctx.db, {
+      callback_query: {
+        id: "test-cq-wrong-chat",
+        data: `refund:approve:${requestId}`,
+        message: { chat: { id: 12345 } },
+        from: { id: Number(managerChatId) },
+      },
+    });
+
+    expect(result.handled).toBe(true);
+    expect(result.action).toBe("denied");
+    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
+    expect(reqRow.status).toBe("pending");
   });
 });

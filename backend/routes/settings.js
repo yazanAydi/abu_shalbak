@@ -1,7 +1,7 @@
 import { Router } from "express";
 
 import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
-import { isAdmin } from "../utils/roles.js";
+import { isAdmin, canViewReports } from "../utils/roles.js";
 import { getAppSettings, updateAppSettings, SETTING_KEYS } from "../utils/settings.js";
 import { sendCachedJson } from "../utils/httpCache.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
@@ -12,6 +12,10 @@ export function createSettingsRouter(db) {
 
   router.get("/", requireAuth, async (req, res) => {
     const settings = await getAppSettings(db);
+    if (!canViewReports(req.user?.role)) {
+      const { accountant_permissions: _perms, ...posSettings } = settings;
+      return sendCachedJson(req, res, posSettings, { maxAgeSec: 30 });
+    }
     return sendCachedJson(req, res, settings, { maxAgeSec: 30 });
   });
 

@@ -28,7 +28,7 @@ function pathsIn(groups, section) {
 
 describe("office nav filtering", () => {
   test("admin sees every nav item, including admin-only ones", () => {
-    const items = filterOfficeNav("admin", NONE);
+    const items = filterOfficeNav("admin", ALL);
     expect(items).toHaveLength(OFFICE_NAV.length);
     expect(items.map((i) => i.path)).toContain("/import-supplier-balances");
   });
@@ -87,7 +87,7 @@ describe("office nav filtering", () => {
   });
 
   test("groups follow the section order", () => {
-    const groups = navFor("admin", NONE);
+    const groups = navFor("admin", ALL);
     const order = sectionsOf(groups);
     expect(order).toEqual(SECTION_ORDER.filter((s) => order.includes(s)));
   });

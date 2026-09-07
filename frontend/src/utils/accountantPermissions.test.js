@@ -125,9 +125,11 @@ describe("normalizeAccountantPermissions", () => {
 describe("hasAccountantPermission", () => {
   const noneAllowed = allAccountantPermissionsDisabled();
 
-  test("admin always passes, even with everything disabled", () => {
-    expect(hasAccountantPermission("admin", noneAllowed, "products")).toBe(true);
-    expect(hasAccountantPermission("admin", noneAllowed, "permissions")).toBe(true);
+  test("admin follows an explicit custom map and stays open when a key is missing", () => {
+    expect(hasAccountantPermission("admin", noneAllowed, "products")).toBe(false);
+    expect(hasAccountantPermission("admin", { products: true }, "products")).toBe(true);
+    expect(hasAccountantPermission("admin", {}, "permissions")).toBe(true);
+    expect(hasAccountantPermission("admin", null, "products")).toBe(true);
   });
 
   test("accountant follows the shared map", () => {

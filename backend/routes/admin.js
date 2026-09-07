@@ -21,11 +21,21 @@ import {
 } from "./hesabatiUploadHandlers.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
-import { productDeletePasswordSchema } from "../middleware/schemas.js";
+import { productDeletePasswordSchema, userPermissionsSchema } from "../middleware/schemas.js";
 import {
+  allAccountantPermissionsEnabled,
+  isOfficePermissionRole,
+  normalizeAccountantPermissions,
+  parseUserPermissionsJson,
+} from "../utils/accountantPermissions.js";
+import {
+  getAppSettings,
   getProductDeletePasswordHash,
   setProductDeletePasswordHash,
   clearProductDeletePassword,
+  getZeroAllStockPasswordHash,
+  setZeroAllStockPasswordHash,
+  clearZeroAllStockPassword,
 } from "../utils/settings.js";
 import { shopYmdToUtcBounds } from "../utils/shopTime.js";
 import { assignEntityCodeIfMissing, ensureEntityCode, renumberAllEntityCodesBatch } from "../utils/entityCodes.js";
@@ -489,15 +499,148 @@ export function createAdminRouter(db, dbPath) {
     }
   });
 
+  router.put("/zero-all-stock-password", validate(productDeletePasswordSchema), async (req, res, next) => {
+    try {
+      const wasSet = Boolean(await getZeroAllStockPasswordHash(db));
+      const hash = await bcrypt.hash(req.body.password, 10);
+      await setZeroAllStockPasswordHash(db, hash);
+      await logAudit(
+        db,
+        req,
+        AUDIT_ACTIONS.ZERO_ALL_STOCK_PASSWORD_SET,
+        "app_settings",
+        null,
+        { set: wasSet },
+        { set: true }
+      );
+      res.json({ zero_all_stock_password_set: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete("/zero-all-stock-password", async (req, res, next) => {
+    try {
+      const wasSet = Boolean(await getZeroAllStockPasswordHash(db));
+      await clearZeroAllStockPassword(db);
+      await logAudit(
+        db,
+        req,
+        AUDIT_ACTIONS.ZERO_ALL_STOCK_PASSWORD_CLEARED,
+        "app_settings",
+        null,
+        { set: wasSet },
+        { set: false }
+      );
+      res.json({ zero_all_stock_password_set: false });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.get("/roles", (_req, res) => {
     res.json({ roles: USER_ROLES });
   });
 
   router.get("/users", async (_req, res) => {
     const rows = await db.all(
-      "SELECT id, username, role, created_at FROM users ORDER BY username"
+      `SELECT id, username, role, created_at,
+              CASE WHEN permissions_json IS NOT NULL AND TRIM(permissions_json) != '' THEN 1 ELSE 0 END
+                AS has_custom_permissions
+       FROM users
+       ORDER BY username`
     );
-    res.json(rows);
+    res.json(
+      rows.map((row) => ({
+        ...row,
+        has_custom_permissions: !!row.has_custom_permissions,
+      }))
+    );
+  });
+
+  router.get("/users/:id/permissions", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "المعرّف غير صالح" });
+    const row = await db.get(
+      "SELECT id, username, role, permissions_json FROM users WHERE id = ?",
+      [id]
+    );
+    if (!row) return res.status(404).json({ error: "المستخدم غير موجود" });
+    if (!isOfficePermissionRole(row.role)) {
+      return res.status(400).json({ error: "يمكن تخصيص الصلاحيات لحسابات المدير والمحاسب فقط" });
+    }
+    const parsed = parseUserPermissionsJson(row.permissions_json);
+    const custom = parsed != null;
+    let permissions;
+    if (custom) {
+      permissions = normalizeAccountantPermissions(parsed);
+    } else if (row.role === "admin") {
+      permissions = allAccountantPermissionsEnabled();
+    } else {
+      const settings = await getAppSettings(db);
+      permissions = normalizeAccountantPermissions(settings.accountant_permissions);
+    }
+    res.json({ permissions, custom });
+  });
+
+  router.put("/users/:id/permissions", requireAdmin, validate(userPermissionsSchema), async (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "المعرّف غير صالح" });
+    const row = await db.get(
+      "SELECT id, username, role, permissions_json FROM users WHERE id = ?",
+      [id]
+    );
+    if (!row) return res.status(404).json({ error: "المستخدم غير موجود" });
+    if (!isOfficePermissionRole(row.role)) {
+      return res.status(400).json({ error: "يمكن تخصيص الصلاحيات لحسابات المدير والمحاسب فقط" });
+    }
+
+    const raw = req.body.permissions;
+    if (raw == null) {
+      await db.run("UPDATE users SET permissions_json = NULL WHERE id = ?", [id]);
+      invalidateUserCache(id);
+      const settings = await getAppSettings(db);
+      await logAudit(
+        db,
+        req,
+        AUDIT_ACTIONS.USER_UPDATE,
+        "users",
+        id,
+        { permissions_custom: true },
+        { permissions_custom: false }
+      );
+      return res.json({
+        permissions:
+          row.role === "admin"
+            ? allAccountantPermissionsEnabled()
+            : normalizeAccountantPermissions(settings.accountant_permissions),
+        custom: false,
+      });
+    }
+
+    const permissions =
+      row.role === "admin"
+        ? {
+            ...normalizeAccountantPermissions(raw),
+            permissions: true,
+            user_accounts: true,
+          }
+        : normalizeAccountantPermissions(raw);
+    await db.run("UPDATE users SET permissions_json = ? WHERE id = ?", [
+      JSON.stringify(permissions),
+      id,
+    ]);
+    invalidateUserCache(id);
+    await logAudit(
+      db,
+      req,
+      AUDIT_ACTIONS.USER_UPDATE,
+      "users",
+      id,
+      { permissions_custom: parseUserPermissionsJson(row.permissions_json) != null },
+      { permissions_custom: true }
+    );
+    res.json({ permissions, custom: true });
   });
 
   router.post("/users", async (req, res) => {
@@ -663,8 +806,13 @@ export function createAdminRouter(db, dbPath) {
         dbPath ||
         path.resolve(__dirname, "..", "..", "data", "supermarket.db");
       const result = await createBackup(resolvedPath);
-      await logAudit(db, req, AUDIT_ACTIONS.BACKUP_CREATE, "backup", null, null, result);
-      res.status(201).json(result);
+      const safeResult = {
+        filename: result.filename,
+        size: result.size,
+        created_at: result.created_at,
+      };
+      await logAudit(db, req, AUDIT_ACTIONS.BACKUP_CREATE, "backup", null, null, safeResult);
+      res.status(201).json(safeResult);
     } catch (e) {
       next(e);
     }

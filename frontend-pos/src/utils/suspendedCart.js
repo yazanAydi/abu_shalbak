@@ -44,7 +44,7 @@ export function suspendedItemsToCartItems(items, liveMeta = {}) {
       stock: Number(live.stock) || 0,
       tax_rate: it.tax_rate_snapshot,
       quantity: qty,
-      subtotal: qty * price,
+      subtotal: Math.round(Number(qty) * Number(price) * 100) / 100,
     };
   });
 }
@@ -57,7 +57,7 @@ export function mergeCartItemsByKey(existing, incoming) {
     if (idx >= 0) {
       const target = { ...merged[idx] };
       target.quantity += row.quantity;
-      target.subtotal = target.quantity * target.price;
+      target.subtotal = Math.round(Number(target.quantity) * Number(target.price) * 100) / 100;
       merged[idx] = target;
     } else {
       merged.push({ ...row });

@@ -9,7 +9,7 @@ import "./RefundPanel.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
-const PM_AR = { cash: "نقد", visa: "بطاقة" };
+const PM_AR = { cash: "نقد", visa: "بطاقة", on_account: "ذمة" };
 
 const SALES_PAGE_SIZE = 50;
 
@@ -140,6 +140,7 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
         q[L.product_id] = 0;
       }
       setQtyByPid(q);
+      setPm(payload.has_on_account ? "on_account" : "cash");
       setView("detail");
     } catch (e) {
       setLookup(null);
@@ -442,13 +443,17 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                 </tbody>
               </table>
               <div className="rf-row">
-                <label>
-                  طريقة الرد
-                  <select value={pm} onChange={(e) => setPm(e.target.value)}>
-                    <option value="cash">نقد</option>
-                    <option value="visa">بطاقة</option>
-                  </select>
-                </label>
+                {lookup.has_on_account ? (
+                  <p className="rf-meta">رد على حساب العميل</p>
+                ) : (
+                  <label>
+                    طريقة الرد
+                    <select value={pm} onChange={(e) => setPm(e.target.value)}>
+                      <option value="cash">نقد</option>
+                      <option value="visa">بطاقة</option>
+                    </select>
+                  </label>
+                )}
               </div>
               <label className="rf-reason">
                 السبب (اختياري)

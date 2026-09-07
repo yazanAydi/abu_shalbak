@@ -242,13 +242,13 @@ npm run verify:dev
 
 | Kiosk (no login) | `http://127.0.0.1:3001/admin/kiosk` | `https://…/admin/kiosk` (HTTPS required for camera) |
 
-| Backend key | `KIOSK_API_KEY` in `.env.development` | `KIOSK_API_KEY` in `.env.store` |
+| Backend key | Optional legacy `KIOSK_API_KEY` in `.env.development` | Optional legacy `KIOSK_API_KEY` in `.env.store` |
 
-| Frontend key | `REACT_APP_KIOSK_API_KEY` in `frontend/.env` | Same value, baked in at Docker build |
+| Device token | Admin JWT → `POST /api/attendance/kiosk/session`; stored in that device's `localStorage` only | Same enrollment on the shop tablet |
 
 
 
-**Security note:** `REACT_APP_KIOSK_API_KEY` is embedded in the admin frontend bundle and `/kiosk` is a public route (no login). Anyone on the LAN who opens the kiosk page can read the key from browser devtools. Treat `KIOSK_API_KEY` as a **LAN gate** that blocks casual/unconfigured access, not as a secret credential. Restrict kiosk devices to the shop network and pin the browser to the kiosk URL.
+**Security note:** The kiosk page is public (no login). Enroll the device once while signed in as admin (`تسجيل هذا الجهاز`). The issued token stays on that device only. Optional `KIOSK_API_KEY` / `X-Kiosk-Key` is a deprecated one-release fallback, compared with `timingSafeEqual`. Restrict kiosk devices to the shop network and pin the browser to the kiosk URL.
 
 
 
@@ -256,15 +256,15 @@ Setup (one-time per shop):
 
 
 
-1. Set the **same** random string in `KIOSK_API_KEY` (backend) and `REACT_APP_KIOSK_API_KEY` (admin frontend build).
+1. Open `/admin/kiosk` on the tablet while signed in as admin and tap **تسجيل هذا الجهاز**.
 
-2. Rebuild store: `npm run store:build` (passes `KIOSK_API_KEY` into the admin build).
+2. Rebuild store if needed: `npm run store:build`.
 
 3. In admin → **الموظفون** → **تسجيل الوجه**: enroll each employee (2–3 face samples).
 
 4. Set hourly rates in **أجور الساعة**.
 
-5. Open the kiosk on a tablet; pin the browser to the kiosk URL.
+5. Pin the browser to the kiosk URL.
 
 
 

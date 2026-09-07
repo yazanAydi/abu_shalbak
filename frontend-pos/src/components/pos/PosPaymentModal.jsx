@@ -127,13 +127,13 @@ export default function PosPaymentModal({
 
   useEffect(() => {
     if (!open) return;
-    setAmountTendered("");
+    setAmountTendered("0");
     setCashErr("");
     setMixedErr("");
     setCustomerQuery("");
     setCustomerResults([]);
     setSelectedCustomerName("");
-  }, [open]);
+  }, [open, total]);
 
   useEffect(() => {
     if (selectedPayment !== "on_account") {
@@ -248,7 +248,9 @@ export default function PosPaymentModal({
     setCustomerResults([]);
   }
 
+  const submittingRef = useRef(false);
   const handleTarhil = useCallback(() => {
+    if (submittingRef.current) return;
     if (!canTarhil) {
       if (selectedPayment === "cash" && !cashValid) {
         setCashErr("المبلغ المستلم (بالمعادل بالشيكل) يجب أن يغطي الإجمالي");
@@ -260,6 +262,7 @@ export default function PosPaymentModal({
     }
     setCashErr("");
     setMixedErr("");
+    submittingRef.current = true;
 
     if (selectedPayment === "mixed") {
       const payments = mixedLines
@@ -315,6 +318,21 @@ export default function PosPaymentModal({
 
   const handleTarhilRef = useRef(handleTarhil);
   handleTarhilRef.current = handleTarhil;
+
+  const wasLoadingRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      submittingRef.current = false;
+      wasLoadingRef.current = false;
+      return;
+    }
+    if (isLoading) {
+      wasLoadingRef.current = true;
+    } else if (wasLoadingRef.current) {
+      submittingRef.current = false;
+      wasLoadingRef.current = false;
+    }
+  }, [open, isLoading]);
 
   useEffect(() => {
     if (!open) return;

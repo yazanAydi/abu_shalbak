@@ -3,7 +3,7 @@
  * Falls back to row created_at when shift_id is missing (legacy rows).
  */
 
-import { shopYmdFromTimestamp, shopYmdToUtcBounds } from "./shopTime.js";
+import { shopYmdFromTimestamp, shopYmdToUtcBounds, shopYmdRangeToUtcBounds } from "./shopTime.js";
 
 export const TX_BUSINESS_DAY_JOIN = "LEFT JOIN cashier_shifts cs ON cs.id = t.shift_id";
 export const REFUND_BUSINESS_DAY_JOIN = "LEFT JOIN cashier_shifts cs ON cs.id = r.shift_id";
@@ -90,5 +90,60 @@ export async function fetchRefundsForShopDate(db, dateStr) {
   );
   return rows.filter((r) =>
     txMatchesShopDate({ start_time: r.shift_start_time, created_at: r.created_at }, dateStr)
+  );
+}
+
+/**
+ * @param {object} db
+ * @param {string} fromYmd
+ * @param {string} toYmd
+ */
+export async function fetchTransactionsForShopDateRange(db, fromYmd, toYmd) {
+  const { startIso, endIso } = shopYmdRangeToUtcBounds(fromYmd, toYmd);
+  const startSql = toSqlUtc(startIso);
+  const endSql = toSqlUtc(endIso);
+  const rows = await db.all(
+    `SELECT t.id, t.items_json, t.subtotal, t.tax, t.total, t.change_amount, t.payment_method, t.created_at,
+            cs.start_time AS shift_start_time
+     FROM transactions t
+     ${TX_BUSINESS_DAY_JOIN}
+     WHERE (datetime(t.created_at) >= datetime(?)
+       AND datetime(t.created_at) <= datetime(?))
+        OR (cs.start_time IS NOT NULL
+            AND datetime(cs.start_time) >= datetime(?)
+            AND datetime(cs.start_time) <= datetime(?))`,
+    [startSql, endSql, startSql, endSql]
+  );
+  return rows.filter((r) =>
+    rowMatchesShopDateRange({ start_time: r.shift_start_time, created_at: r.created_at }, fromYmd, toYmd)
+  );
+}
+
+/**
+ * @param {object} db
+ * @param {string} fromYmd
+ * @param {string} toYmd
+ */
+export async function fetchRefundsForShopDateRange(db, fromYmd, toYmd) {
+  const { startIso, endIso } = shopYmdRangeToUtcBounds(fromYmd, toYmd);
+  const startSql = toSqlUtc(startIso);
+  const endSql = toSqlUtc(endIso);
+  const rows = await db.all(
+    `SELECT r.id, r.total, r.payment_method, r.items_json, r.original_transaction_id,
+            r.created_at, cs.start_time AS shift_start_time
+     FROM refunds r
+     ${REFUND_BUSINESS_DAY_JOIN}
+     WHERE r.status = 'approved'
+       AND (
+         (datetime(r.created_at) >= datetime(?)
+          AND datetime(r.created_at) <= datetime(?))
+         OR (cs.start_time IS NOT NULL
+             AND datetime(cs.start_time) >= datetime(?)
+             AND datetime(cs.start_time) <= datetime(?))
+       )`,
+    [startSql, endSql, startSql, endSql]
+  );
+  return rows.filter((r) =>
+    rowMatchesShopDateRange({ start_time: r.shift_start_time, created_at: r.created_at }, fromYmd, toYmd)
   );
 }

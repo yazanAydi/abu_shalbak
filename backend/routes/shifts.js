@@ -1,11 +1,11 @@
-import { Router } from "express";
+import { createSafeRouter } from "../utils/asyncHandler.js";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { isAdmin } from "../utils/roles.js";
-import { hasAccountantPermission } from "../utils/accountantPermissions.js";
+import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
-import { buildSaleSummary } from "../utils/saleSummary.js";
+import { buildSaleSummaries } from "../utils/saleSummary.js";
 import {
   sumShiftCardPayments,
   loadSalePayments,
@@ -16,7 +16,8 @@ import {
 } from "../utils/salePayments.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { round2 } from "../utils/money.js";
-import { buildReceiptPayload, mapSaleItemsToReceiptLines } from "../utils/receipt.js";
+import { buildReceiptPayload, mapSaleItemsToReceiptLines, RECEIPT_STORED_ITEMS_SQL } from "../utils/receipt.js";
+import { partyBalanceForSale } from "../utils/partyBalanceAroundMove.js";
 import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
 
@@ -50,10 +51,8 @@ async function computeShiftTotals(db, shiftId) {
 
 async function canViewShiftDetail(db, user, shift) {
   if (!user || !shift) return false;
-  if (isAdmin(user.role)) return true;
-  if (user.role === "accountant") {
-    const settings = await getAppSettings(db);
-    return hasAccountantPermission(user.role, settings.accountant_permissions, "shift_audit");
+  if (user.role === "admin" || user.role === "accountant") {
+    return userHasAccountantPermission(db, user, "shift_audit");
   }
   return Number(shift.cashier_id) === Number(user.id);
 }
@@ -95,15 +94,22 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
   const shiftId = shift.id;
   const settings = await getAppSettings(db);
   const varianceThreshold = round2(Number(settings.shift_variance_threshold) || 50);
-  const expected_cash = await computeExpectedCash(db, shiftId, shift.opening_cash);
-  const variance = round2(closing_cash - expected_cash);
-  const { card_total, refund_total } = await computeShiftTotals(db, shiftId);
-  const needsApproval = Math.abs(variance) > varianceThreshold;
-  const endTime = shift.end_time || new Date().toISOString();
   const countedJson = counted_cash ? JSON.stringify(counted_cash) : null;
 
-  await withTransaction(db, async () => {
-    await db.run(
+  const closed = await withTransaction(db, async () => {
+    const live = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
+    if (!live || !["open", "pending_count"].includes(live.status)) {
+      const err = new Error("الوردية مغلقة بالفعل");
+      err.status = 400;
+      err.code = "SHIFT_ALREADY_CLOSED";
+      throw err;
+    }
+    const expected_cash = await computeExpectedCash(db, shiftId, live.opening_cash);
+    const variance = round2(closing_cash - expected_cash);
+    const { card_total, refund_total } = await computeShiftTotals(db, shiftId);
+    const needsApproval = Math.abs(variance) > varianceThreshold;
+    const endTime = live.end_time || new Date().toISOString();
+    const upd = await db.run(
       `UPDATE cashier_shifts SET
         end_time = ?, closing_cash = ?, actual_cash = ?, expected_cash = ?, variance = ?,
         notes = COALESCE(?, notes), closing_notes = ?, card_total = ?, refund_total = ?,
@@ -125,12 +131,30 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
         shiftId,
       ]
     );
+    if (!upd.changes) {
+      const err = new Error("الوردية مغلقة بالفعل");
+      err.status = 400;
+      err.code = "SHIFT_ALREADY_CLOSED";
+      throw err;
+    }
     await db.run(
       `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description)
        VALUES (?, 'closing', ?, ?)`,
       [shiftId, closing_cash, closing_notes ? `إغلاق الوردية — ${closing_notes}` : "إغلاق الوردية"]
     );
+    return {
+      expected_cash,
+      variance,
+      card_total,
+      refund_total,
+      needsApproval,
+      opening_cash: live.opening_cash,
+      priorStatus: live.status,
+    };
   });
+
+  const { expected_cash, variance, card_total, refund_total, needsApproval, opening_cash, priorStatus } = closed;
+  shift.status = priorStatus;
 
   const auditAction =
     shift.status === "pending_count" ? AUDIT_ACTIONS.SHIFT_RECONCILE : AUDIT_ACTIONS.SHIFT_CLOSE;
@@ -145,7 +169,7 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
 
   return {
     shift_id: shiftId,
-    opening_cash: round2(Number(shift.opening_cash)),
+    opening_cash: round2(Number(opening_cash)),
     closing_cash,
     actual_cash: closing_cash,
     expected_cash,
@@ -160,7 +184,7 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
 }
 
 export function createShiftsRouter(db) {
-  const router = Router();
+  const router = createSafeRouter();
   const requireShiftAudit = requireReportsPermission(db, "shift_audit");
 
   router.post("/start", requireAuth, requirePosAccess, async (req, res, next) => {
@@ -252,10 +276,7 @@ export function createShiftsRouter(db) {
        LIMIT ? OFFSET ?`,
       [shift.id, limit, offset]
     );
-    const sales = [];
-    for (const tx of rows) {
-      sales.push(await buildSaleSummary(db, tx));
-    }
+    const sales = await buildSaleSummaries(db, rows);
     res.json({
       shift_id: shift.id,
       sales,
@@ -316,7 +337,7 @@ export function createShiftsRouter(db) {
       params.push(dateTo);
     }
     sql += " ORDER BY datetime(COALESCE(s.end_time, s.start_time)) DESC, s.id DESC";
-    sql += listLimitSql(req.query, 100).sql;
+    sql += listLimitSql(req.query, 100, req.user?.role).sql;
     const rows = await db.all(sql, params);
     for (const row of rows) {
       row.sale_count = Number(row.sale_count) || 0;
@@ -490,9 +511,6 @@ export function createShiftsRouter(db) {
       }
       res.json(payload);
     } catch (e) {
-      try {
-        await db.run("ROLLBACK");
-      } catch (_) {}
       next(e);
     }
   });
@@ -523,38 +541,48 @@ export function createShiftsRouter(db) {
       (closingRaw !== undefined && closingRaw !== null && String(closingRaw).trim() !== "");
 
     if (isOwner && !isAdminUser) {
-      const expected_cash = await computeExpectedCash(db, shiftId, shift.opening_cash);
-      const { card_total, refund_total } = await computeShiftTotals(db, shiftId);
-      const endTime = new Date().toISOString();
-
       try {
-        await withTransaction(db, async () => {
-          await db.run(
+        const pending = await withTransaction(db, async () => {
+          const live = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
+          if (!live || live.status !== "open") {
+            const err = new Error("الوردية مغلقة بالفعل");
+            err.status = 400;
+            throw err;
+          }
+          const expected_cash = await computeExpectedCash(db, shiftId, live.opening_cash);
+          const { card_total, refund_total } = await computeShiftTotals(db, shiftId);
+          const endTime = new Date().toISOString();
+          const upd = await db.run(
             `UPDATE cashier_shifts SET
               end_time = ?, expected_cash = ?, notes = ?, closing_notes = ?,
               card_total = ?, refund_total = ?, status = 'pending_count'
              WHERE id = ? AND status = 'open'`,
             [endTime, expected_cash, notes, closing_notes, card_total, refund_total, shiftId]
           );
+          if (!upd.changes) {
+            const err = new Error("الوردية مغلقة بالفعل");
+            err.status = 400;
+            throw err;
+          }
+          return { expected_cash, card_total, refund_total };
         });
         await logAudit(db, req, AUDIT_ACTIONS.SHIFT_CLOSE, "cashier_shifts", shiftId, { status: "open" }, {
-          expected_cash,
-          card_total,
-          refund_total,
+          expected_cash: pending.expected_cash,
+          card_total: pending.card_total,
+          refund_total: pending.refund_total,
           pending_count: true,
+        });
+        return res.json({
+          shift_id: shiftId,
+          status: "pending_count",
+          expected_cash: pending.expected_cash,
+          card_total: pending.card_total,
+          refund_total: pending.refund_total,
+          message: "تم إرسال الوردية للمراجعة — سيقوم المدير بعد النقد",
         });
       } catch (e) {
         return next(e);
       }
-
-      return res.json({
-        shift_id: shiftId,
-        status: "pending_count",
-        expected_cash,
-        card_total,
-        refund_total,
-        message: "تم إرسال الوردية للمراجعة — سيقوم المدير بعد النقد",
-      });
     }
 
     if (!hasClosingCash) {
@@ -586,9 +614,6 @@ export function createShiftsRouter(db) {
       }
       res.json(payload);
     } catch (e) {
-      try {
-        await db.run("ROLLBACK");
-      } catch (_) {}
       next(e);
     }
   });
@@ -615,20 +640,21 @@ export function createShiftsRouter(db) {
       }
 
       const cashier = await db.get("SELECT username FROM users WHERE id = ?", [tx.cashier_id]);
+      const customer = tx.customer_id
+        ? await db.get("SELECT name FROM customers WHERE id = ?", [tx.customer_id])
+        : null;
       const payments = await loadSalePayments(db, tid);
       const settings = await getAppSettings(db);
 
-      const storedItems = await db.all(
-        `SELECT line_gross, unit_name, quantity, unit_price
-         FROM transaction_items WHERE transaction_id = ? ORDER BY id`,
-        [tid]
-      );
+      const storedItems = await db.all(RECEIPT_STORED_ITEMS_SQL, [tid]);
       const lines = mapSaleItemsToReceiptLines(items, storedItems);
 
       const { receipt_text, receipt_html } = buildReceiptPayload({
         transactionId: tid,
+        receiptNumber: tx.receipt_number,
         timestamp: tx.created_at,
         cashierName: cashier?.username || "",
+        customerName: customer?.name || "",
         lines,
         subtotal: Number(tx.subtotal),
         tax: Number(tx.tax),
@@ -637,6 +663,12 @@ export function createShiftsRouter(db) {
         payments,
         changeNis: tx.change_amount,
         settings,
+        partyBalance: await partyBalanceForSale(db, {
+          customerId: tx.customer_id,
+          payments,
+          transactionId: tid,
+          status: "posted",
+        }),
       });
 
       res.json({

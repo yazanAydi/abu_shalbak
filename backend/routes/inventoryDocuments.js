@@ -13,11 +13,12 @@ import {
 } from "../services/inventoryDocumentService.js";
 import { reasonsForType } from "../utils/inventoryDocumentReasons.js";
 import { buildInventoryDocumentPrintHtml } from "../utils/inventoryDocumentPrintHtml.js";
-import { STORE_NAME_AR } from "../utils/storeBranding.js";
+import { getAppSettings } from "../utils/settings.js";
 
 
-function sendPrintHtml(res, doc) {
-  const html = buildInventoryDocumentPrintHtml(doc, { store_name_ar: STORE_NAME_AR });
+async function sendPrintHtml(res, db, doc, printedBy) {
+  const settings = await getAppSettings(db);
+  const html = buildInventoryDocumentPrintHtml(doc, settings, { printedBy });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(html);
 }
@@ -50,7 +51,7 @@ export function createInventoryDocumentsRouter(db, documentType) {
       if (!doc) {
         return res.status(404).json({ error: "السند غير موجود", code: "NOT_FOUND" });
       }
-      sendPrintHtml(res, doc);
+      await sendPrintHtml(res, db, doc, req.user?.username);
     } catch (e) {
       next(e);
     }
@@ -90,7 +91,7 @@ export function createInventoryDocumentPrintRouter(db) {
       if (!doc) {
         return res.status(404).json({ error: "السند غير موجود", code: "NOT_FOUND" });
       }
-      sendPrintHtml(res, doc);
+      await sendPrintHtml(res, db, doc, req.user?.username);
     } catch (e) {
       next(e);
     }

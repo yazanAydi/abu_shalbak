@@ -29,6 +29,7 @@ export default function PosHeader({
   activeShift,
   shiftTxCount,
   onEndShift,
+  onLogout,
   onProductFound,
 }) {
   return (
@@ -54,6 +55,11 @@ export default function PosHeader({
         ) : null}
         <LiveClock />
         <span className="pos-pill">{user?.username}</span>
+        {onLogout ? (
+          <button type="button" className="pos-btn-ghost pos-btn-ghost--compact" onClick={onLogout}>
+            خروج
+          </button>
+        ) : null}
       </div>
     </header>
   );

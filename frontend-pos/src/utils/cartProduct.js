@@ -37,7 +37,7 @@ export function applyCartUnit(row, unit) {
     conversionToBase,
     weighed: toKg,
     quantity,
-    subtotal: quantity * price,
+    subtotal: Math.round(Number(quantity) * Number(price) * 100) / 100,
   };
 }
 

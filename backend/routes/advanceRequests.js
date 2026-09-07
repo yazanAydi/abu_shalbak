@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
-import { canViewReports } from "../utils/roles.js";
+import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { validate } from "../middleware/validate.js";
 import { advanceRequestCreateSchema, advanceRequestReviewSchema } from "../middleware/schemas.js";
 import {
@@ -15,10 +15,13 @@ import {
   rejectAdvanceRequest,
 } from "../services/advanceRequestService.js";
 
-function canViewAdvanceRequest(user, request) {
+async function canViewAdvanceRequest(db, user, request) {
   if (!user || !request) return false;
-  if (canViewReports(user.role)) return true;
-  return Number(request.cashier_id) === Number(user.id);
+  if (Number(request.cashier_id) === Number(user.id)) return true;
+  if (user.role === "admin" || user.role === "accountant") {
+    return userHasAccountantPermission(db, user, "advance_approvals");
+  }
+  return false;
 }
 
 export function createAdvanceRequestsRouter(db) {
@@ -79,7 +82,7 @@ export function createAdvanceRequestsRouter(db) {
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     const row = await getAdvanceRequestById(db, id);
     if (!row) return res.status(404).json({ error: "طلب السلف غير موجود" });
-    if (!canViewAdvanceRequest(req.user, row)) {
+    if (!(await canViewAdvanceRequest(db, req.user, row))) {
       return res.status(403).json({ error: "ممنوع" });
     }
     res.json({

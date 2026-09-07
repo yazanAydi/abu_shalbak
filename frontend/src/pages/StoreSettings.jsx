@@ -27,7 +27,16 @@ import { isAdminRole } from "../utils/roles";
 const LABELS = {
   business_day_cutoff_hour: "ساعة بداية اليوم (0–23)",
   receipt_show_cashier: "إظهار اسم الكاشير في الإيصال",
-  receipt_logo_url: "رابط الشعار في الإيصال",
+  receipt_logo_url: "رابط الشعار",
+  store_name_ar: "اسم المتجر",
+  store_phone: "الهاتف",
+  store_address: "العنوان",
+  store_license: "رقم المشتغل المرخص",
+  print_show_logo: "إظهار الشعار",
+  print_show_name: "إظهار الاسم",
+  print_show_phone: "إظهار الهاتف",
+  print_show_address: "إظهار العنوان",
+  print_show_license: "إظهار المشتغل المرخص",
   default_opening_cash: "النقد الافتتاحي الافتراضي (₪)",
   shift_variance_threshold: "حد الفارق في الوردية (₪)",
   expiry_alert_days: "تنبيه الأصناف الأخرى (أيام)",
@@ -64,6 +73,10 @@ export default function StoreSettings() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deletePasswordConfirm, setDeletePasswordConfirm] = useState("");
   const [deletePasswordSaving, setDeletePasswordSaving] = useState(false);
+  const [zeroPasswordSet, setZeroPasswordSet] = useState(false);
+  const [zeroPassword, setZeroPassword] = useState("");
+  const [zeroPasswordConfirm, setZeroPasswordConfirm] = useState("");
+  const [zeroPasswordSaving, setZeroPasswordSaving] = useState(false);
 
   useEffect(() => {
     api
@@ -72,6 +85,7 @@ export default function StoreSettings() {
         const data = settingsRes.data;
         setSettings(data);
         setDeletePasswordSet(!!data.product_delete_password_set);
+        setZeroPasswordSet(!!data.zero_all_stock_password_set);
         setForm({
           default_tax_rate: data.default_tax_rate,
           tax_inclusive: data.tax_inclusive,
@@ -79,6 +93,15 @@ export default function StoreSettings() {
           receipt_show_tax: data.receipt_show_tax,
           receipt_show_cashier: data.receipt_show_cashier,
           receipt_logo_url: data.receipt_logo_url || "",
+          store_name_ar: data.store_name_ar || "",
+          store_phone: data.store_phone || "",
+          store_address: data.store_address || "",
+          store_license: data.store_license || "",
+          print_show_logo: data.print_show_logo !== false,
+          print_show_name: data.print_show_name !== false,
+          print_show_phone: data.print_show_phone !== false,
+          print_show_address: data.print_show_address === true,
+          print_show_license: data.print_show_license !== false,
           default_opening_cash: data.default_opening_cash ?? 0,
           shift_variance_threshold: data.shift_variance_threshold ?? 50,
           expiry_alert_days: data.expiry_alert_days ?? 7,
@@ -243,6 +266,9 @@ export default function StoreSettings() {
       if (typeof data.product_delete_password_set === "boolean") {
         setDeletePasswordSet(data.product_delete_password_set);
       }
+      if (typeof data.zero_all_stock_password_set === "boolean") {
+        setZeroPasswordSet(data.zero_all_stock_password_set);
+      }
       setQuickCategories(data.pos_quick_categories || quickCategories);
       setDairyCategories(data.expiry_dairy_categories || dairyCategories);
       setQuickButtons(data.pos_quick_buttons || quickButtons);
@@ -316,6 +342,54 @@ export default function StoreSettings() {
     }
   }
 
+  async function saveZeroPassword() {
+    const password = zeroPassword.trim();
+    const confirm = zeroPasswordConfirm.trim();
+    if (password.length < 6) {
+      toast.error("كلمة المرور يجب أن تكون 6 أحرف على الأقل");
+      return;
+    }
+    if (password !== confirm) {
+      toast.error("كلمتا المرور غير متطابقتين");
+      return;
+    }
+    setZeroPasswordSaving(true);
+    try {
+      const { data } = await api.put(
+        "/api/admin/zero-all-stock-password",
+        { password },
+        { headers: getAuthHeaders() }
+      );
+      setZeroPasswordSet(!!data?.zero_all_stock_password_set);
+      setZeroPassword("");
+      setZeroPasswordConfirm("");
+      toast.success(zeroPasswordSet ? "تم تغيير كلمة مرور تصفير الكميات" : "تم حفظ كلمة مرور تصفير الكميات");
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "تعذّر حفظ كلمة المرور");
+    } finally {
+      setZeroPasswordSaving(false);
+    }
+  }
+
+  async function clearZeroPassword() {
+    const ok = window.confirm(
+      "سيتم حذف كلمة مرور تصفير الكميات، وسيُسمح بعدها بالتصفير بعد التأكيد فقط. متابعة؟"
+    );
+    if (!ok) return;
+    setZeroPasswordSaving(true);
+    try {
+      await api.delete("/api/admin/zero-all-stock-password", { headers: getAuthHeaders() });
+      setZeroPasswordSet(false);
+      setZeroPassword("");
+      setZeroPasswordConfirm("");
+      toast.success("تم حذف كلمة مرور تصفير الكميات");
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || "تعذّر حذف كلمة المرور");
+    } finally {
+      setZeroPasswordSaving(false);
+    }
+  }
+
   async function clearDeletePassword() {
     const ok = window.confirm(
       "سيتم حذف كلمة مرور الحذف، وسيُطلب بعدها كلمة مرور حساب المسؤول عند حذف منتج. متابعة؟"
@@ -347,13 +421,34 @@ export default function StoreSettings() {
         <Card>
         <CardBody>
         <form onSubmit={save}>
-          <SectionTitle>الإيصال والوردية</SectionTitle>
+          <SectionTitle>خيارات الطباعة</SectionTitle>
           <FormGrid>
-            <FormField label={LABELS.receipt_show_cashier}>
+            <FormField label={LABELS.store_name_ar}>
               <Input
-                type="checkbox"
-                checked={!!form.receipt_show_cashier}
-                onChange={(e) => onChange("receipt_show_cashier", e.target.checked)}
+                type="text"
+                value={form.store_name_ar || ""}
+                onChange={(e) => onChange("store_name_ar", e.target.value)}
+              />
+            </FormField>
+            <FormField label={LABELS.store_phone}>
+              <Input
+                type="text"
+                value={form.store_phone || ""}
+                onChange={(e) => onChange("store_phone", e.target.value)}
+              />
+            </FormField>
+            <FormField label={LABELS.store_address} hint="يظهر في المستندات فقط إذا فعّلت إظهار العنوان">
+              <Input
+                type="text"
+                value={form.store_address || ""}
+                onChange={(e) => onChange("store_address", e.target.value)}
+              />
+            </FormField>
+            <FormField label={LABELS.store_license}>
+              <Input
+                type="text"
+                value={form.store_license || ""}
+                onChange={(e) => onChange("store_license", e.target.value)}
               />
             </FormField>
             <FormField
@@ -362,7 +457,7 @@ export default function StoreSettings() {
             >
               <Input
                 type="text"
-                value={form.receipt_logo_url}
+                value={form.receipt_logo_url || ""}
                 onChange={(e) => onChange("receipt_logo_url", e.target.value)}
                 placeholder="اتركه فارغاً للشعار الافتراضي"
               />
@@ -379,6 +474,54 @@ export default function StoreSettings() {
               />
             </FormField>
           </FormGrid>
+          <div className="settings-check-row">
+            <FormField label={LABELS.print_show_logo}>
+              <Input
+                type="checkbox"
+                checked={!!form.print_show_logo}
+                onChange={(e) => onChange("print_show_logo", e.target.checked)}
+              />
+            </FormField>
+            <FormField label={LABELS.print_show_name}>
+              <Input
+                type="checkbox"
+                checked={!!form.print_show_name}
+                onChange={(e) => onChange("print_show_name", e.target.checked)}
+              />
+            </FormField>
+            <FormField label={LABELS.print_show_phone}>
+              <Input
+                type="checkbox"
+                checked={!!form.print_show_phone}
+                onChange={(e) => onChange("print_show_phone", e.target.checked)}
+              />
+            </FormField>
+            <FormField label={LABELS.print_show_address}>
+              <Input
+                type="checkbox"
+                checked={!!form.print_show_address}
+                onChange={(e) => onChange("print_show_address", e.target.checked)}
+              />
+            </FormField>
+            <FormField label={LABELS.print_show_license}>
+              <Input
+                type="checkbox"
+                checked={!!form.print_show_license}
+                onChange={(e) => onChange("print_show_license", e.target.checked)}
+              />
+            </FormField>
+          </div>
+
+          <SectionTitle>الإيصال والوردية</SectionTitle>
+          <div className="settings-check-row">
+            <FormField label={LABELS.receipt_show_cashier}>
+              <Input
+                type="checkbox"
+                checked={!!form.receipt_show_cashier}
+                onChange={(e) => onChange("receipt_show_cashier", e.target.checked)}
+              />
+            </FormField>
+          </div>
 
           <SectionTitle>الورديات والكاشير</SectionTitle>
           <FormGrid>
@@ -662,6 +805,61 @@ export default function StoreSettings() {
                   type="button"
                   disabled={deletePasswordSaving}
                   onClick={clearDeletePassword}
+                >
+                  حذف كلمة المرور
+                </DangerButton>
+              ) : null}
+            </div>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {settings && isAdminRole(user?.role) ? (
+        <Card>
+          <CardBody>
+            <SectionTitle>كلمة مرور تصفير كل الكميات</SectionTitle>
+            <p className="settings-favorites-hint">
+              {zeroPasswordSet
+                ? "كلمة المرور معيّنة. تصفير كل الكميات في الجرد يتطلب هذه الكلمة."
+                : "غير معيّنة. تصفير كل الكميات يتطلب التأكيد فقط."}
+            </p>
+            <FormGrid>
+              <FormField label="كلمة المرور الجديدة" required>
+                <Input
+                  type="password"
+                  value={zeroPassword}
+                  onChange={(e) => setZeroPassword(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="6 أحرف على الأقل"
+                />
+              </FormField>
+              <FormField label="تأكيد كلمة المرور" required>
+                <Input
+                  type="password"
+                  value={zeroPasswordConfirm}
+                  onChange={(e) => setZeroPasswordConfirm(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="أعد إدخال كلمة المرور"
+                />
+              </FormField>
+            </FormGrid>
+            <div className="ui-toolbar" style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              <PrimaryButton
+                type="button"
+                disabled={zeroPasswordSaving}
+                onClick={saveZeroPassword}
+              >
+                {zeroPasswordSaving
+                  ? "جاري الحفظ…"
+                  : zeroPasswordSet
+                    ? "تغيير"
+                    : "حفظ"}
+              </PrimaryButton>
+              {zeroPasswordSet ? (
+                <DangerButton
+                  type="button"
+                  disabled={zeroPasswordSaving}
+                  onClick={clearZeroPassword}
                 >
                   حذف كلمة المرور
                 </DangerButton>

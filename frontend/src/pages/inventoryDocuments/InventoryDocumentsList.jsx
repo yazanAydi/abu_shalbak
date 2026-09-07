@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import api from "../../apiClient";
+import api, { createAbortController } from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
 import { dateOnly, qty as fmtQty } from "../../utils/format";
 import { printInventoryDocument, printInventoryDocumentHtml } from "../../utils/inventoryDocumentPrint";
@@ -25,6 +25,8 @@ export default function InventoryDocumentsList({ docType }) {
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState([]);
   const [store, setStore] = useState({});
+  const loadAbortRef = useRef(null);
+  const loadReqRef = useRef(0);
   const [filters, setFilters] = useState({
     search: "",
     from: "",
@@ -43,6 +45,10 @@ export default function InventoryDocumentsList({ docType }) {
   }, []);
 
   const load = useCallback(async () => {
+    loadAbortRef.current?.abort();
+    const ac = createAbortController();
+    loadAbortRef.current = ac;
+    const reqId = ++loadReqRef.current;
     setLoading(true);
     try {
       const params = {};
@@ -52,18 +58,26 @@ export default function InventoryDocumentsList({ docType }) {
       if (filters.reason) params.reason = filters.reason;
       if (filters.created_by) params.created_by = filters.created_by;
       if (filters.status) params.status = filters.status;
-      const { data } = await api.get(cfg.apiBase, { params, headers: getAuthHeaders() });
+      const { data } = await api.get(cfg.apiBase, {
+        params,
+        headers: getAuthHeaders(),
+        signal: ac.signal,
+      });
+      if (reqId !== loadReqRef.current) return;
       setRows(Array.isArray(data) ? data : []);
     } catch (e) {
+      if (e.code === "ERR_CANCELED" || e.name === "CanceledError") return;
+      if (reqId !== loadReqRef.current) return;
       toast.error(e.response?.data?.error || "تعذّر تحميل السندات");
       setRows([]);
     } finally {
-      setLoading(false);
+      if (reqId === loadReqRef.current) setLoading(false);
     }
   }, [cfg.apiBase, filters.created_by, filters.from, filters.reason, filters.search, filters.status, filters.to]);
 
   useEffect(() => {
     load();
+    return () => loadAbortRef.current?.abort();
   }, [load]);
 
   const printRow = useCallback(async (id) => {

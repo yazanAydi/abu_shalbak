@@ -6,6 +6,7 @@ import {
   authHeader,
 } from "./helpers.js";
 import { invalidatePromotionsCache } from "../utils/promotions.js";
+import { executeCheckoutSale } from "../services/checkoutSaleService.js";
 
 describe("Checkout flow", () => {
   let ctx;
@@ -127,5 +128,38 @@ describe("Checkout flow", () => {
       ins.lastID,
     ]);
     expect(Number(row.used_qty)).toBe(Number(row.limit_qty));
+  });
+
+  test("executeCheckoutSale rejects a closed shift and writes no transaction", async () => {
+    const cashier = await ctx.db.get("SELECT id FROM users WHERE username = 'testcashier'");
+    await ctx.db.run("UPDATE cashier_shifts SET status = 'pending_count' WHERE id = ?", [shiftId]);
+    const before = await ctx.db.get("SELECT COUNT(*) AS n FROM transactions");
+    await expect(
+      executeCheckoutSale(ctx.db, {
+        cashierId: cashier.id,
+        shiftId,
+        custId: null,
+        itemsForJson: [],
+        normalized: [],
+        detailed: [],
+        subtotal: 0,
+        tax: 0,
+        total: 0,
+        discount: 0,
+        paymentLines: [],
+        summaryMethod: "cash",
+        onAccountTotal: 0,
+        cashTotal: 0,
+        changeNis: 0,
+        changeCurrencyId: null,
+        changeOriginalAmount: 0,
+        idempotencyKey: null,
+        suspendedSaleId: null,
+        promoBreakdown: [],
+      })
+    ).rejects.toMatchObject({ code: "SHIFT_CLOSED", status: 409 });
+    const after = await ctx.db.get("SELECT COUNT(*) AS n FROM transactions");
+    expect(Number(after.n)).toBe(Number(before.n));
+    await ctx.db.run("UPDATE cashier_shifts SET status = 'open' WHERE id = ?", [shiftId]);
   });
 });

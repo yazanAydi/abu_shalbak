@@ -3,7 +3,7 @@ import { lookupProductByBarcode } from "../utils/barcode";
 import { searchProductsApi } from "../utils/productSearch";
 import { displayProductSku } from "../utils/entityCodeDisplay";
 import CameraBarcodeButton from "./barcode/CameraBarcodeButton";
-import { Icon } from "./ui";
+import Icon from "./icons/Icon";
 import "./barcode/barcode-scanner.css";
 
 /** Autocomplete product picker. onPick(product) called on selection. */

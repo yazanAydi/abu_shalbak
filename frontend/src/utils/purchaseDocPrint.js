@@ -1,4 +1,4 @@
-import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
+import { buildPrintBrandingHtml, buildPartyBalanceHtml, buildPrintedByHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { deriveEffectiveUnitCost, formatDiscountPercent, formatTaxRatePercent, lineHasPurchaseDiscount } from "./purchaseTotals";
 import { dateOnly, formatDateTimeShopAr } from "./format";
@@ -129,7 +129,7 @@ export function printPurchaseDoc(doc, which, store = {}) {
   </style>
 </head>
 <body>
-  ${buildPrintBrandingHtml()}
+  ${buildPrintBrandingHtml(store)}
   <h1>${escapeHtml(meta.title)} #${escapeHtml(docNo)}</h1>
   <div class="meta">
     <div><strong>المورد:</strong> ${escapeHtml(doc.supplier_name || "")}</div>
@@ -147,6 +147,8 @@ export function printPurchaseDoc(doc, which, store = {}) {
     <tbody>${bodyRows || `<tr><td colspan="12" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
   <table class="totals">${totalsRows}</table>
+  ${which === "orders" ? "" : buildPartyBalanceHtml(doc.party_balance)}
+  ${buildPrintedByHtml()}
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}
   <div class="signatures">
     <div>توقيع المستلم</div>

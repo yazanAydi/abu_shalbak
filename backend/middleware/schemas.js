@@ -68,7 +68,7 @@ export const refundRequestCreateSchema = z.object({
     )
     .min(1),
   reason: z.string().max(500).optional().nullable(),
-  payment_method: z.enum(["cash", "visa"]),
+  payment_method: z.enum(["cash", "visa", "on_account"]),
 });
 
 export const refundRequestReviewSchema = z.object({
@@ -106,6 +106,10 @@ export const createUserSchema = z
 export const changePasswordSchema = z.object({
   current_password: z.string().min(1).max(100),
   new_password: z.string().min(6).max(100),
+});
+
+export const userPermissionsSchema = z.object({
+  permissions: z.record(z.any()).nullable(),
 });
 
 export const productDeletePasswordSchema = z.object({

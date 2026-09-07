@@ -41,7 +41,7 @@ import { createAttendanceRouter } from "./routes/attendance.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { responseEnvelope } from "./middleware/responseEnvelope.js";
 import { apiLimiter } from "./middleware/rateLimit.js";
-import { requireAuth, requirePasswordChanged } from "./middleware/auth.js";
+import { requireAuth } from "./middleware/auth.js";
 import { HttpError } from "./utils/httpError.js";
 import { queryCountMiddleware } from "./utils/queryStats.js";
 
@@ -92,13 +92,9 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   });
   router.use("/auth", createAuthRouter(db));
   router.use("/telegram", createTelegramRouter(db));
-  const requireChanged = requirePasswordChanged(db);
   router.use((req, res, next) => {
     if (req.path.startsWith("/attendance/kiosk")) return next();
-    requireAuth(req, res, (err) => {
-      if (err) return next(err);
-      requireChanged(req, res, next);
-    });
+    requireAuth(req, res, next);
   });
   router.use("/products", createProductsRouter(db));
   router.use("/checkout", createCheckoutRouter(db));
@@ -144,6 +140,7 @@ export function createApp(db, dbPath, options = {}) {
     );
   }
   const app = express();
+  app.set("trust proxy", process.env.TRUST_PROXY === "1" ? 1 : false);
 
   // The app is served over plain HTTP on the store LAN. Helmet's default CSP
   // includes `upgrade-insecure-requests`, which makes browsers rewrite all
@@ -254,9 +251,8 @@ export function createApp(db, dbPath, options = {}) {
     console.error(`[${req.requestId || "no-id"}]`, err);
     const status = err.status || err.statusCode || 500;
     const code = err.code || "INTERNAL_ERROR";
-    const isProd = process.env.NODE_ENV === "production";
     const message =
-      err instanceof HttpError || !isProd
+      err instanceof HttpError
         ? err.message || "خطأ في الخادم"
         : "خطأ في الخادم";
     res.status(status).json({

@@ -1,18 +1,26 @@
 import jwt from "jsonwebtoken";
 import { isAdmin, canRunCheckout } from "../utils/roles.js";
-import { getAppSettings } from "../utils/settings.js";
-import { hasAccountantPermission } from "../utils/accountantPermissions.js";
-import { CACHE_KEYS, cacheGet, cacheInvalidate, cacheInvalidatePrefix, cacheSet } from "../utils/cache.js";
+import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
+import { CACHE_KEYS, cacheInvalidate, cacheInvalidatePrefix } from "../utils/cache.js";
 
 const DEFAULT_SECRET = "change-me-in-production";
 const JWT_SECRET = process.env.JWT_SECRET || DEFAULT_SECRET;
 
-if (
-  process.env.NODE_ENV === "production" &&
-  (!process.env.JWT_SECRET || JWT_SECRET === DEFAULT_SECRET)
-) {
+function isLoopbackHost(host) {
+  const h = String(host || "127.0.0.1").toLowerCase();
+  return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+const usingDefaultJwt =
+  !process.env.JWT_SECRET || JWT_SECRET === DEFAULT_SECRET;
+if (process.env.NODE_ENV === "production" && usingDefaultJwt) {
   throw new Error(
     "JWT_SECRET must be set to a strong random value in production (environment variable)."
+  );
+}
+if (usingDefaultJwt && !isLoopbackHost(process.env.HOST)) {
+  throw new Error(
+    "JWT_SECRET must be set to a strong random value when HOST is not loopback."
   );
 }
 
@@ -53,44 +61,6 @@ export function requireAuth(req, res, next) {
   } catch {
     return res.status(401).json({ success: false, error: "رمز غير صالح", code: "INVALID_TOKEN" });
   }
-}
-
-/** Block access until default password is changed (checked after DB lookup in route). */
-export function requirePasswordChanged(db) {
-  return async (req, res, next) => {
-    if (!req.user?.id) return next();
-    try {
-      const cacheKey = CACHE_KEYS.user(req.user.id);
-      let row = cacheGet(cacheKey);
-      if (!row) {
-        row = await db.get(
-          "SELECT username, role, must_change_password FROM users WHERE id = ?",
-          [req.user.id]
-        );
-        if (row) cacheSet(cacheKey, row, 60_000);
-      }
-      if (row?.username === ADMIN_RECOVERY_USERNAME) {
-        return next();
-      }
-      if (row?.must_change_password) {
-        const path = req.path || "";
-        const allowed =
-          path.endsWith("/change-password") ||
-          path.endsWith("/me") ||
-          path.endsWith("/logout");
-        if (!allowed) {
-          return res.status(403).json({
-            success: false,
-            error: "يجب تغيير كلمة المرور قبل المتابعة",
-            code: "PASSWORD_CHANGE_REQUIRED",
-          });
-        }
-      }
-      next();
-    } catch (err) {
-      next(err);
-    }
-  };
 }
 
 export function requireAdmin(req, res, next) {
@@ -143,10 +113,8 @@ export function requireReportsPermission(db, permissionKey) {
     if (!role || !isOfficeRole(role)) {
       return res.status(403).json(FORBIDDEN_PAYLOAD);
     }
-    if (isAdmin(role)) return next();
     try {
-      const settings = await getAppSettings(db);
-      if (hasAccountantPermission(role, settings.accountant_permissions, permissionKey)) {
+      if (await userHasAccountantPermission(db, req.user, permissionKey)) {
         return next();
       }
       return res.status(403).json(FORBIDDEN_PAYLOAD);
@@ -167,12 +135,9 @@ export function requireAnyReportsPermission(db, ...permissionKeys) {
     if (!role || !isOfficeRole(role)) {
       return res.status(403).json(FORBIDDEN_PAYLOAD);
     }
-    if (isAdmin(role)) return next();
     try {
-      const settings = await getAppSettings(db);
-      const permissions = settings.accountant_permissions;
       for (const key of permissionKeys) {
-        if (hasAccountantPermission(role, permissions, key)) {
+        if (await userHasAccountantPermission(db, req.user, key)) {
           return next();
         }
       }

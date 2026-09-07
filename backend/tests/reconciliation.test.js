@@ -81,8 +81,10 @@ describe("Reporting reconciliation and inventory source of truth", () => {
   });
 
   test("daily_reports is never written (non-authoritative)", async () => {
-    const row = await ctx.db.get("SELECT COUNT(*) AS c FROM daily_reports");
-    expect(row.c).toBe(0);
+    const row = await ctx.db.get(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'daily_reports'"
+    );
+    expect(row).toBeFalsy();
   });
 
   test("Stage 8: a single sale produces exactly one stock delta", async () => {
@@ -101,11 +103,11 @@ describe("Reporting reconciliation and inventory source of truth", () => {
     expect(ledger[0].quantity_delta).toBe(-3);
 
     const movements = await ctx.db.all(
-      "SELECT * FROM inventory_movements WHERE ref_id = ? AND movement_type = 'sale'",
+      "SELECT * FROM inventory_ledger WHERE reference_id = ? AND movement_type = 'sale'",
       [txId]
     );
     expect(movements.length).toBe(1);
-    expect(movements[0].quantity).toBe(-3);
+    expect(movements[0].quantity_delta).toBe(-3);
   });
 
   test("Stage 8: ledger is authoritative — derived stock matches cache when only the ledger mutates stock", async () => {

@@ -14,11 +14,8 @@ import {
   createStatementHistoryPreviewHandler,
   createStatementHistoryConfirmHandler,
 } from "./statementHistoryHandlers.js";
-import {
-  STORE_LICENSE_LINE,
-  STORE_NAME_AR,
-  STORE_PHONE,
-} from "../utils/storeBranding.js";
+import { resolvePrintBranding } from "../utils/storeBranding.js";
+import { getAppSettings } from "../utils/settings.js";
 
 const MOVEMENT_TYPE_AR = {
   opening_balance: "رصيد افتتاحي",
@@ -39,7 +36,7 @@ export function createSuppliersRouter(db) {
   const requireSuppliersOrFinance = requireAnyReportsPermission(db, "suppliers", "finance", "purchases", "account_statement");
   const router = Router();
 
-  router.get("/", requireAuth, requireSuppliersOrFinance, async (req, res) => {
+  router.get("/", requireAuth, requireSuppliersOrFinance, async (req, res, next) => {
     const { q } = req.query;
     let rows;
     if (q) {
@@ -54,7 +51,7 @@ export function createSuppliersRouter(db) {
     res.json(rows);
   });
 
-  router.get("/balances", requireAuth, requireFinance, async (req, res) => {
+  router.get("/balances", requireAuth, requireFinance, async (req, res, next) => {
     const onlyOpen = String(req.query.only_open || "") === "1";
     const rows = await db.all(
       `SELECT id, supplier_code, name, contact_phone, balance
@@ -74,7 +71,7 @@ export function createSuppliersRouter(db) {
     });
   });
 
-  router.post("/upload", requireAuth, requireAdmin, importUploadMiddleware(), async (req, res) => {
+  router.post("/upload", requireAuth, requireAdmin, importUploadMiddleware(), async (req, res, next) => {
     await handleSupplierBalanceUpload(db, req, res);
   });
 
@@ -94,13 +91,13 @@ export function createSuppliersRouter(db) {
     createStatementHistoryConfirmHandler(db, "supplier")
   );
 
-  router.get("/:id", requireAuth, requireSuppliersOrFinance, async (req, res) => {
+  router.get("/:id", requireAuth, requireSuppliersOrFinance, async (req, res, next) => {
     const row = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!row) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     res.json(row);
   });
 
-  router.post("/", requireAuth, requireSuppliers, async (req, res) => {
+  router.post("/", requireAuth, requireSuppliers, async (req, res, next) => {
     const b = req.body || {};
     const name = b.name ? String(b.name).trim() : "";
     if (!name) return res.status(400).json({ error: "اسم المورد مطلوب", code: "VALIDATION_ERROR" });
@@ -126,7 +123,7 @@ export function createSuppliersRouter(db) {
     res.status(201).json(row);
   });
 
-  router.put("/:id", requireAuth, requireSuppliers, async (req, res) => {
+  router.put("/:id", requireAuth, requireSuppliers, async (req, res, next) => {
     const ex = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const b = req.body || {};
@@ -146,7 +143,7 @@ export function createSuppliersRouter(db) {
     res.json(row);
   });
 
-  router.delete("/:id", requireAuth, requireSuppliers, async (req, res) => {
+  router.delete("/:id", requireAuth, requireSuppliers, async (req, res, next) => {
     const ex = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     if (Math.abs(Number(ex.balance) || 0) > 0.009) {
@@ -158,7 +155,7 @@ export function createSuppliersRouter(db) {
     res.json({ success: true });
   });
 
-  router.get("/:id/ledger", requireAuth, requireFinance, async (req, res) => {
+  router.get("/:id/ledger", requireAuth, requireFinance, async (req, res, next) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const { from, to } = req.query;
@@ -167,7 +164,7 @@ export function createSuppliersRouter(db) {
     res.json({ supplier, ...led });
   });
 
-  router.get("/:id/statement", requireAuth, requireAccountStatement, async (req, res) => {
+  router.get("/:id/statement", requireAuth, requireAccountStatement, async (req, res, next) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const { from, to, page, pageSize } = req.query;
@@ -232,11 +229,18 @@ export function createSuppliersRouter(db) {
     };
   }
 
-  function statementEnvelope(supplier, from, to, ledger, movements, pagination) {
+  async function statementEnvelope(supplier, from, to, ledger, movements, pagination) {
+    const branding = resolvePrintBranding(await getAppSettings(db));
     return {
-      store_name: STORE_NAME_AR,
-      store_phone: STORE_PHONE,
-      store_license: STORE_LICENSE_LINE,
+      store_name: branding.name,
+      store_phone: branding.phone,
+      store_license: branding.license,
+      store_address: branding.address,
+      print_show_logo: branding.showLogo,
+      print_show_name: branding.showName,
+      print_show_phone: branding.showPhone,
+      print_show_address: branding.showAddress,
+      print_show_license: branding.showLicense,
       report_title: "كشف حساب المورد",
       generated_at: new Date().toISOString(),
       date_from: from,
@@ -261,7 +265,7 @@ export function createSuppliersRouter(db) {
     };
   }
 
-  router.get("/:id/statement-ledger", requireAuth, requireAccountStatement, async (req, res) => {
+  router.get("/:id/statement-ledger", requireAuth, requireAccountStatement, async (req, res, next) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     try {
@@ -280,13 +284,13 @@ export function createSuppliersRouter(db) {
         pagination = { page, limit, totalRows, totalPages: Math.ceil(totalRows / limit) || 1 };
       }
 
-      res.json(statementEnvelope(supplier, from, to, ledger, movements, pagination));
+      res.json(await statementEnvelope(supplier, from, to, ledger, movements, pagination));
     } catch (e) {
       res.status(e.status || 500).json({ error: e.message, code: e.code || "INTERNAL_ERROR" });
     }
   });
 
-  router.get("/:id/statement-ledger/excel", requireAuth, requireAccountStatement, async (req, res) => {
+  router.get("/:id/statement-ledger/excel", requireAuth, requireAccountStatement, async (req, res, next) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     try {
@@ -335,7 +339,7 @@ export function createSuppliersRouter(db) {
   });
 
   // Products purchased from this supplier, grouped by each posted purchase invoice.
-  router.get("/:id/purchase-items", requireAuth, requireFinance, async (req, res) => {
+  router.get("/:id/purchase-items", requireAuth, requireFinance, async (req, res, next) => {
     const supplier = await db.get("SELECT id, name FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
     const { from, to } = req.query;
@@ -378,7 +382,7 @@ export function createSuppliersRouter(db) {
   });
 
   // Manual balance adjustment. credit raises what we owe; debit lowers it.
-  router.post("/:id/adjustments", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/:id/adjustments", requireAuth, requireAdmin, async (req, res, next) => {
     const supplier = await db.get("SELECT * FROM suppliers WHERE id = ?", [req.params.id]);
     if (!supplier) return res.status(404).json({ error: "المورد غير موجود", code: "NOT_FOUND" });
 
@@ -416,7 +420,7 @@ export function createSuppliersRouter(db) {
       });
       res.status(201).json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 

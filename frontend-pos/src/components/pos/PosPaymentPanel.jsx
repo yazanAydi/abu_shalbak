@@ -52,7 +52,7 @@ export default function PosPaymentPanel({
         </button>
         <p className="pos-complete-hint">{POS_SHORTCUTS.completeSale.key} — إتمام البيع</p>
 
-        {receiptData?.receipt_text ? (
+        {receiptData?.transaction_id ? (
           <button type="button" className="pos-complete-btn secondary" onClick={onPrintLocal}>
             طباعة الإيصال
           </button>

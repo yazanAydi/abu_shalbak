@@ -1,8 +1,10 @@
-import { Router } from "express";
+import { createSafeRouter } from "../utils/asyncHandler.js";
 import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import {
   snapshotSalesCogsForRange,
   snapshotRefundCogsForRange,
+  snapshotSalesCogsByDay,
+  snapshotRefundCogsByDay,
 } from "../utils/cogs.js";
 import {
   aggregateSalesByPrice,
@@ -23,7 +25,10 @@ import XLSX from "xlsx";
 import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
 import {
   fetchRefundsForShopDate,
+  fetchRefundsForShopDateRange,
   fetchTransactionsForShopDate,
+  fetchTransactionsForShopDateRange,
+  shopBusinessDayYmd,
 } from "../utils/businessDay.js";
 import { addShopDays, shopDateRange, shopTodayYmd } from "../utils/shopTime.js";
 
@@ -194,8 +199,78 @@ async function aggregateDayProfit(db, dateStr) {
   };
 }
 
+function emptyProfitDay(dateStr) {
+  return {
+    date: dateStr,
+    revenue: 0,
+    cost: 0,
+    profit: 0,
+    total_sales: 0,
+    net_sales: 0,
+    total_transactions: 0,
+    refunds_total: 0,
+    refund_count: 0,
+    items_sold: 0,
+  };
+}
+
+async function aggregateProfitRange(db, fromYmd, toYmd) {
+  const dates = shopDateRange(fromYmd, toYmd);
+  const days = new Map(dates.map((dateStr) => [dateStr, emptyProfitDay(dateStr)]));
+  const [txs, refunds, salesCogs, refundCogs] = await Promise.all([
+    fetchTransactionsForShopDateRange(db, fromYmd, toYmd),
+    fetchRefundsForShopDateRange(db, fromYmd, toYmd),
+    snapshotSalesCogsByDay(db, fromYmd, toYmd),
+    snapshotRefundCogsByDay(db, fromYmd, toYmd),
+  ]);
+  const itemsByTx = await loadItemsByTransaction(
+    db,
+    txs.map((t) => t.id)
+  );
+
+  for (const t of txs) {
+    const ymd = shopBusinessDayYmd({ start_time: t.shift_start_time, created_at: t.created_at });
+    const bucket = days.get(ymd);
+    if (!bucket) continue;
+    bucket.total_transactions += 1;
+    bucket.total_sales = round2(bucket.total_sales + Number(t.total));
+    const txItems = itemsByTx.get(t.id) || [];
+    if (txItems.length > 0) {
+      bucket.items_sold += txItems.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+    } else {
+      try {
+        const items = JSON.parse(t.items_json);
+        if (Array.isArray(items)) {
+          bucket.items_sold += items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  for (const r of refunds) {
+    const ymd = shopBusinessDayYmd({ start_time: r.shift_start_time, created_at: r.created_at });
+    const bucket = days.get(ymd);
+    if (!bucket) continue;
+    bucket.refund_count += 1;
+    bucket.refunds_total = round2(bucket.refunds_total + Number(r.total));
+  }
+
+  for (const dateStr of dates) {
+    const bucket = days.get(dateStr);
+    const cost = round2((salesCogs.get(dateStr) || 0) - (refundCogs.get(dateStr) || 0));
+    bucket.net_sales = round2(bucket.total_sales - bucket.refunds_total);
+    bucket.revenue = bucket.net_sales;
+    bucket.cost = cost;
+    bucket.profit = round2(bucket.net_sales - cost);
+  }
+
+  return dates.map((dateStr) => days.get(dateStr));
+}
+
 export function createReportsRouter(db) {
-  const router = Router();
+  const router = createSafeRouter();
   const dashboard = requireReportsPermission(db, "dashboard");
   const salesReports = requireReportsPermission(db, "sales_reports");
   const expiry = requireReportsPermission(db, "expiry");
@@ -318,24 +393,16 @@ export function createReportsRouter(db) {
   });
 
   router.get("/last-7-days", dashboard, async (_req, res) => {
-    const out = [];
     const today = shopTodayYmd();
-    for (let i = 6; i >= 0; i--) {
-      const dateStr = addShopDays(today, -i);
-      const row = await aggregateDayProfit(db, dateStr);
-      out.push(row);
-    }
+    const from = addShopDays(today, -6);
+    const out = await aggregateProfitRange(db, from, today);
     res.json({ success: true, days: out });
   });
 
   router.get("/last-30-days", dashboard, async (_req, res) => {
-    const out = [];
     const today = shopTodayYmd();
-    for (let i = 29; i >= 0; i--) {
-      const dateStr = addShopDays(today, -i);
-      const row = await aggregateDayProfit(db, dateStr);
-      out.push(row);
-    }
+    const from = addShopDays(today, -29);
+    const out = await aggregateProfitRange(db, from, today);
     res.json({ success: true, days: out });
   });
 
@@ -421,29 +488,25 @@ export function createReportsRouter(db) {
     if (dates.length > 366) {
       return res.status(400).json({ error: "الفترة تتجاوز 366 يوماً" });
     }
-    const out = [];
-    for (const dateStr of dates) {
-      out.push(await aggregateDayProfit(db, dateStr));
-    }
+    const out = await aggregateProfitRange(db, from, to);
     res.json({ success: true, from, to, days: out });
   });
 
   router.get("/last7days", dashboard, async (_req, res) => {
-    const out = [];
     const today = shopTodayYmd();
-    for (let i = 6; i >= 0; i--) {
-      const dateStr = addShopDays(today, -i);
-      const r = await aggregateDay(db, dateStr);
-      out.push({
-        date: dateStr,
+    const from = addShopDays(today, -6);
+    const days = await aggregateProfitRange(db, from, today);
+    res.json({
+      success: true,
+      days: days.map((r) => ({
+        date: r.date,
         total_sales: r.total_sales,
         total_transactions: r.total_transactions,
         items_sold: r.items_sold,
         refunds_total: r.refunds_total,
         net_sales: r.net_sales,
-      });
-    }
-    res.json({ success: true, days: out });
+      })),
+    });
   });
 
   router.get("/products/:productId/sales-by-price", salesByPrice, async (req, res) => {

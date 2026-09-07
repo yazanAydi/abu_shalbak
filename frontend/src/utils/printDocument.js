@@ -11,9 +11,34 @@ export function printDocumentWhenReady(doc, { onAfterPrint } = {}) {
   }
 
   const triggerPrint = () => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      onAfterPrint?.();
+    };
+    if (typeof win.addEventListener === "function") {
+      win.addEventListener("afterprint", finish, { once: true });
+    } else {
+      win.onafterprint = finish;
+    }
+    try {
+      const mq = win.matchMedia?.("print");
+      if (mq && typeof mq.addEventListener === "function") {
+        const onChange = (e) => {
+          if (!e.matches) {
+            mq.removeEventListener("change", onChange);
+            finish();
+          }
+        };
+        mq.addEventListener("change", onChange);
+      }
+    } catch {
+      /* ignore */
+    }
     win.focus();
     win.print();
-    onAfterPrint?.();
+    win.setTimeout(finish, 1500);
   };
 
   const images = Array.from(doc.images || []);

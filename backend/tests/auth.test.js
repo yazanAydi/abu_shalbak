@@ -1,4 +1,5 @@
 import request from "supertest";
+import bcrypt from "bcrypt";
 import {
   createTestContext,
   destroyTestContext,
@@ -60,5 +61,30 @@ describe("Auth", () => {
       .set(authHeader(loginRes.body.token));
     expect(res.status).toBe(200);
     expect(res.body.data.user.username).toBe("testadmin");
+  });
+
+  test("must_change_password does not block shift start", async () => {
+    const hash = await bcrypt.hash("oldpass123", 4);
+    await ctx.db.run(
+      "INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, 'cashier', 1)",
+      ["newcashier", hash]
+    );
+
+    const loginRes = await login(ctx.app, "newcashier", "oldpass123", "pos");
+    expect(loginRes.status).toBe(200);
+    expect(loginRes.body.user.must_change_password).toBe(true);
+    const token = loginRes.body.token;
+
+    const current = await request(ctx.app)
+      .get("/api/v1/shifts/current")
+      .set(authHeader(token));
+    expect(current.status).toBe(200);
+
+    const started = await request(ctx.app)
+      .post("/api/v1/shifts/start")
+      .set(authHeader(token))
+      .send({});
+    expect(started.status).toBe(201);
+    expect(started.body.data?.shift_id ?? started.body.shift_id).toBeTruthy();
   });
 });

@@ -1,7 +1,6 @@
-# Docker / Linux API only: open POS with --kiosk-printing so the browser
-# auto-confirms print. When the API runs on Windows (npm start), checkout
-# already silent-prints to the default printer — this shortcut is not required.
-# Set the receipt printer as the Windows default first (not Print to PDF).
+# Obsolete for POS receipts: checkout no longer uses window.print / kiosk-printing.
+# Run the API on the Windows till and set the thermal printer as default
+# (or RECEIPT_PRINTER). This shortcut does not print receipts.
 # Store:  .\scripts\open-pos-silent-print.ps1
 # Dev:    .\scripts\open-pos-silent-print.ps1 -Url http://127.0.0.1:3002/pos
 # Pin:    .\scripts\open-pos-silent-print.ps1 -CreateShortcut

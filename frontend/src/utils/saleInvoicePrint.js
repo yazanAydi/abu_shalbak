@@ -1,4 +1,4 @@
-import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
+import { buildPrintBrandingHtml, buildPartyBalanceHtml, buildPrintedByHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { formatDiscountPercent } from "./saleInvoiceTotals";
 import { dateOnly, formatDateTimeShopAr } from "./format";
@@ -97,7 +97,7 @@ export function printSalesInvoiceDoc(doc, store = {}) {
   </style>
 </head>
 <body>
-  ${buildPrintBrandingHtml()}
+  ${buildPrintBrandingHtml(store)}
   <h1>فتورة مبيعات #${escapeHtml(docNo)}</h1>
   <div class="meta">
     <div><strong>العميل:</strong> ${escapeHtml(doc.customer_name || "")}</div>
@@ -115,6 +115,8 @@ export function printSalesInvoiceDoc(doc, store = {}) {
     <tbody>${bodyRows || `<tr><td colspan="9" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
   <table class="totals">${totalsRows}</table>
+  ${buildPartyBalanceHtml(doc.party_balance)}
+  ${buildPrintedByHtml()}
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}
   <p class="footer">${escapeHtml(storeName)} — فتورة مبيعات</p>
 </body>

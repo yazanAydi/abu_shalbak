@@ -14,7 +14,7 @@ export function createBanksRouter(db) {
     res.json(await db.all("SELECT * FROM bank_accounts ORDER BY name"));
   });
 
-  router.post("/accounts", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/accounts", requireAuth, requireAdmin, async (req, res, next) => {
     const { name, bank_name, account_no, currency, notes } = req.body || {};
     if (!name) return res.status(400).json({ error: "اسم الحساب مطلوب", code: "VALIDATION_ERROR" });
     const ins = await db.run(
@@ -24,7 +24,7 @@ export function createBanksRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM bank_accounts WHERE id = ?", [ins.lastID]));
   });
 
-  router.put("/accounts/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.put("/accounts/:id", requireAuth, requireAdmin, async (req, res, next) => {
     const acc = await db.get("SELECT * FROM bank_accounts WHERE id = ?", [req.params.id]);
     if (!acc) return res.status(404).json({ error: "الحساب غير موجود", code: "NOT_FOUND" });
     const b = req.body || {};
@@ -44,7 +44,7 @@ export function createBanksRouter(db) {
 
   // ───── Checks ─────
 
-  router.get("/checks", requireAuth, requireBanks, async (req, res) => {
+  router.get("/checks", requireAuth, requireBanks, async (req, res, next) => {
     const { status, type, from, to } = req.query;
     let sql = `SELECT c.*, cu.name as customer_name, su.name as supplier_name
                FROM bank_checks c
@@ -60,7 +60,7 @@ export function createBanksRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.get("/checks/:id", requireAuth, requireBanks, async (req, res) => {
+  router.get("/checks/:id", requireAuth, requireBanks, async (req, res, next) => {
     const row = await db.get("SELECT * FROM bank_checks WHERE id = ?", [req.params.id]);
     if (!row) return res.status(404).json({ error: "الشيك غير موجود", code: "NOT_FOUND" });
     res.json(row);
@@ -96,7 +96,7 @@ export function createBanksRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM bank_checks WHERE id = ?", [ins.lastID]));
   });
 
-  router.patch("/checks/:id/status", requireAuth, requireAdmin, async (req, res) => {
+  router.patch("/checks/:id/status", requireAuth, requireAdmin, async (req, res, next) => {
     const check = await db.get("SELECT * FROM bank_checks WHERE id = ?", [req.params.id]);
     if (!check) return res.status(404).json({ error: "الشيك غير موجود", code: "NOT_FOUND" });
     const { status } = req.body || {};
@@ -126,14 +126,14 @@ export function createBanksRouter(db) {
         }
       });
     } catch (e) {
-      return res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      return next(e);
     }
     res.json(await db.get("SELECT * FROM bank_checks WHERE id = ?", [check.id]));
   });
 
   // ───── Upcoming checks summary ─────
 
-  router.get("/checks-due", requireAuth, requireBanks, async (req, res) => {
+  router.get("/checks-due", requireAuth, requireBanks, async (req, res, next) => {
     const { days = 7 } = req.query;
     const d = Math.max(1, Number(days) || 7);
     const rows = await db.all(

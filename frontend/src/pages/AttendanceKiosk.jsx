@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCameraVideo } from "../hooks/useCameraVideo";
 import { useFaceRecognition } from "../hooks/useFaceRecognition";
-import { fetchKioskDescriptors, isKioskConfigured, postKioskPunch } from "../utils/kioskApi";
+import { enrollKioskDevice, fetchKioskDescriptors, isKioskConfigured, postKioskPunch } from "../utils/kioskApi";
 import { formatDateTimeAr } from "../utils/payrollHelpers";
 import "./AttendanceKiosk.css";
 
@@ -21,6 +21,7 @@ export default function AttendanceKiosk() {
   const { ready, loading, error: modelError, detectFace, extractDescriptor, matchFace } =
     useFaceRecognition();
 
+  const [enrolling, setEnrolling] = useState(false);
   const [enrolled, setEnrolled] = useState([]);
   const [lastPunchByUser, setLastPunchByUser] = useState({});
   const [loadErr, setLoadErr] = useState("");
@@ -35,7 +36,7 @@ export default function AttendanceKiosk() {
 
   const loadDescriptors = useCallback(async () => {
     if (!isKioskConfigured()) {
-      setLoadErr("مفتاح الكشك غير مُعدّ — أضف REACT_APP_KIOSK_API_KEY");
+      setLoadErr("هذا الجهاز غير مسجّل ككشك — سجّل دخول المدير ثم اضغط «تسجيل هذا الجهاز»");
       return;
     }
     try {
@@ -206,6 +207,24 @@ export default function AttendanceKiosk() {
     setStatus("انظر إلى الكاميرا ثم اضغط الزر");
   }, []);
 
+  const handleEnrollDevice = useCallback(async () => {
+    setEnrolling(true);
+    setLoadErr("");
+    try {
+      await enrollKioskDevice();
+      await loadDescriptors();
+    } catch (e) {
+      const status = e.response?.status;
+      setLoadErr(
+        status === 401 || status === 403
+          ? "سجّل دخول المدير في هذا المتصفح ثم أعد المحاولة"
+          : e.response?.data?.error || e.message || "فشل تسجيل الجهاز"
+      );
+    } finally {
+      setEnrolling(false);
+    }
+  }, [loadDescriptors]);
+
   const blockingError = loadErr || modelError || cameraError;
   const isLoading = loading || (!ready && !modelError);
   const inCooldown = cooldownUntil > Date.now();
@@ -285,6 +304,17 @@ export default function AttendanceKiosk() {
                   : "تسجيل الحضور والانصراف"}
             </button>
           )}
+
+          {!isKioskConfigured() ? (
+            <button
+              type="button"
+              className="attendance-kiosk__punch-btn"
+              onClick={handleEnrollDevice}
+              disabled={enrolling}
+            >
+              {enrolling ? "جاري التسجيل…" : "تسجيل هذا الجهاز"}
+            </button>
+          ) : null}
 
           {blockingError ? (
             <p className="attendance-kiosk__hint" style={{ color: "#fca5a5" }}>

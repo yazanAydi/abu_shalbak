@@ -2,6 +2,7 @@ import Icon from "../icons/Icon";
 import { SecondaryButton } from "./ActionButtons";
 import { exportToCsv } from "../../utils/reportExport";
 import { printReport, printSummaryReport } from "../../utils/printReport";
+import { loadStoreSettings } from "../../utils/loadStoreSettings";
 import { todayISO } from "../../utils/format";
 
 function sanitizeFilename(name) {
@@ -32,9 +33,10 @@ export default function ReportToolbar({
   const isDisabled = disabled || (!hasTableData && !hasSummary);
   const csvName = `${sanitizeFilename(filename || title)}-${todayISO()}`;
 
-  function onPrint() {
+  async function onPrint() {
+    const store = await loadStoreSettings();
     if (hasTableData) {
-      printReport({ title, subtitle, columns, rows, summary, meta });
+      printReport({ title, subtitle, columns, rows, summary, meta, store });
       return;
     }
     if (hasSummary) {
@@ -43,6 +45,7 @@ export default function ReportToolbar({
         subtitle,
         sections: [{ items: summary }],
         meta,
+        store,
       });
     }
   }

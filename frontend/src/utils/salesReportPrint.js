@@ -1,6 +1,7 @@
 import { cellValue } from "./reportExport";
 import { buildPrintBrandingHtml, PRINT_BRANDING_CSS } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
+import { loadStoreSettings } from "./loadStoreSettings";
 import { formatDateTimeShopAr } from "./format";
 
 function escapeHtml(text) {
@@ -85,7 +86,8 @@ function buildTableHtml(columns, rows, heading) {
   return `${headingHtml}<table><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-function openPrintWindow(title, bodyHtml) {
+async function openPrintWindow(title, bodyHtml) {
+  const store = await loadStoreSettings();
   const w = window.open("", "_blank", "width=900,height=720");
   if (!w) {
     window.alert("اسمح بفتح النافذة المنبثقة للطباعة.");
@@ -98,7 +100,7 @@ function openPrintWindow(title, bodyHtml) {
   <title>${escapeHtml(title)}</title>
   <style>${PRINT_CSS}</style>
 </head>
-<body>${buildPrintBrandingHtml()}${bodyHtml}</body>
+<body>${buildPrintBrandingHtml(store)}${bodyHtml}</body>
 </html>`;
   w.document.write(html);
   w.document.close();
@@ -128,7 +130,7 @@ export function printSalesDailyReport({
   ${buildTableHtml(productColumns, products, "أفضل المنتجات")}
   `;
 
-  openPrintWindow(title, body);
+  return openPrintWindow(title, body);
 }
 
 /**
@@ -153,5 +155,5 @@ export function printSalesRangeReport({
   ${buildTableHtml(dayColumns, byDay, "التفصيل اليومي")}
   `;
 
-  openPrintWindow(title, body);
+  return openPrintWindow(title, body);
 }

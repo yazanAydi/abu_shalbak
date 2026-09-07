@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSubmitGuard } from "../hooks/useSubmitGuard";
-import { todayISO } from "../utils/format";
+import { ils, todayISO } from "../utils/format";
 import { useParams, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { voucherPartyName } from "../utils/partySearch";
+import { printVoucherDoc } from "../utils/voucherDocPrint";
 import PartyPicker from "../components/PartyPicker";
 import {
   PageHeader,
@@ -25,7 +26,6 @@ import {
   useToast,
 } from "../components/ui";
 
-const ils = (n) => `₪${Number(n ?? 0).toFixed(2)}`;
 const TYPE_AR = { receipt: "سند قبض", payment: "سند صرف" };
 const VALID_VOUCHER_TYPES = new Set(["receipt", "payment"]);
 const STATUS_AR = { draft: "مسودة", posted: "مرحّل" };
@@ -41,8 +41,18 @@ const VOUCHER_COLUMNS = [
 
 const emptyLine = { line_type: "cash", amount: "", currency: "NIS", bank_name: "", description: "" };
 
+function newLineKey() {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `line-${Date.now()}-${Math.random()}`;
+}
+
+function makeLine(overrides = {}) {
+  return { ...emptyLine, ...overrides, key: newLineKey() };
+}
+
 function resetForm(setLines, setNotes, setParty) {
-  setLines([{ ...emptyLine }]);
+  setLines([makeLine()]);
   setNotes("");
   setParty(null);
 }
@@ -59,13 +69,21 @@ export default function VouchersPage() {
   const [voucherType, setVoucherType] = useState(lockedType || "receipt");
   const [voucherDate, setVoucherDate] = useState(todayISO());
   const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState([{ ...emptyLine }]);
+  const [lines, setLines] = useState([makeLine()]);
   const [party, setParty] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [postingAll, setPostingAll] = useState(false);
   const [detail, setDetail] = useState(null);
   const [editId, setEditId] = useState(null);
   const [filter, setFilter] = useState({ type: lockedType || "", status: "" });
   const [searchParams, setSearchParams] = useSearchParams();
+  const [store, setStore] = useState({});
+
+  useEffect(() => {
+    api.get("/api/settings", { headers: getAuthHeaders() })
+      .then(({ data }) => setStore(data || {}))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (lockedType) {
@@ -104,7 +122,7 @@ export default function VouchersPage() {
   }, []);
 
   function addLine() {
-    setLines((p) => [...p, { ...emptyLine }]);
+    setLines((p) => [...p, makeLine()]);
   }
   function removeLine(i) {
     setLines((p) => p.filter((_, idx) => idx !== i));
@@ -169,6 +187,37 @@ export default function VouchersPage() {
     });
   }
 
+  async function postAllVouchers() {
+    const hasVisibleDrafts = vouchers.some((v) => v.status === "draft");
+    if (!hasVisibleDrafts && filter.status !== "posted") {
+      toast.error("لا توجد مسودات للترحيل");
+      return;
+    }
+    if (!window.confirm("ترحيل كل المسودات؟ لا يمكن التراجع.")) return;
+    await guardSubmit(async () => {
+      setPostingAll(true);
+      try {
+        const type = lockedType || filter.type || undefined;
+        const { data } = await api.post(
+          "/api/vouchers/post-all",
+          type ? { type } : {},
+          { headers: getAuthHeaders() }
+        );
+        const n = Number(data?.posted_count) || 0;
+        if (n === 0) {
+          toast.error("لا توجد مسودات للترحيل");
+        } else {
+          toast.success(`تم ترحيل ${n} سند`);
+        }
+        load();
+      } catch (e) {
+        toast.error(e.response?.data?.error || "فشل الترحيل");
+      } finally {
+        setPostingAll(false);
+      }
+    });
+  }
+
   async function deleteVoucher(v) {
     if (!window.confirm(`حذف السند #${v.id}؟`)) return;
     await guardSubmit(async () => {
@@ -181,6 +230,15 @@ export default function VouchersPage() {
     }
     });
   }
+
+  const printVoucher = useCallback(async (id) => {
+    try {
+      const { data } = await api.get(`/api/vouchers/${id}`, { headers: getAuthHeaders() });
+      printVoucherDoc(data, store);
+    } catch {
+      toast.error("تعذّر التحميل للطباعة");
+    }
+  }, [store, toast]);
 
   async function loadDetail(v) {
     const { data } = await api.get(`/api/vouchers/${v.id}`, { headers: getAuthHeaders() });
@@ -214,13 +272,15 @@ export default function VouchersPage() {
       setParty(null);
     }
     setLines(
-      (data.lines || []).map((L) => ({
-        line_type: L.line_type,
-        amount: L.amount,
-        currency: L.currency || "NIS",
-        bank_name: L.bank_name || "",
-        description: L.description || "",
-      }))
+      (data.lines || []).map((L) =>
+        makeLine({
+          line_type: L.line_type,
+          amount: L.amount,
+          currency: L.currency || "NIS",
+          bank_name: L.bank_name || "",
+          description: L.description || "",
+        })
+      )
     );
     setEditId(data.id);
     setShowForm(true);
@@ -263,6 +323,9 @@ export default function VouchersPage() {
             <Button variant="ghost" size="sm" onClick={() => loadDetail(v)}>
               عرض
             </Button>
+            <Button variant="ghost" size="sm" icon="print" onClick={() => printVoucher(v.id)}>
+              طباعة
+            </Button>
             {v.status === "draft" && (
               <>
                 <Button variant="ghost" size="sm" onClick={() => postVoucher(v)}>
@@ -278,7 +341,7 @@ export default function VouchersPage() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [printVoucher]
   );
 
   const detailColumns = useMemo(
@@ -341,6 +404,9 @@ export default function VouchersPage() {
             </div>
             <DataTable columns={detailColumns} rows={detail.lines || []} empty="لا توجد أسطر" />
             <div className="ui-toolbar">
+              <Button icon="print" onClick={() => printVoucher(detail.id)}>
+                طباعة
+              </Button>
               <Button variant="secondary" onClick={() => setDetail(null)}>
                 إغلاق
               </Button>
@@ -349,7 +415,16 @@ export default function VouchersPage() {
         </Card>
       ) : (
         <>
-          <FilterBar actions={<Button onClick={openNewForm}>+ سند جديد</Button>}>
+          <FilterBar
+            actions={
+              <>
+                <Button variant="outline" onClick={postAllVouchers} disabled={postingAll}>
+                  {postingAll ? "جاري الترحيل…" : "ترحيل الكل"}
+                </Button>
+                <Button onClick={openNewForm}>+ سند جديد</Button>
+              </>
+            }
+          >
             {!lockedType ? (
               <FormField label="النوع">
                 <Select value={filter.type} onChange={(e) => setFilter((p) => ({ ...p, type: e.target.value }))}>
@@ -422,7 +497,7 @@ export default function VouchersPage() {
 
           <SectionTitle as="h3">أسطر السند</SectionTitle>
           {lines.map((L, i) => (
-            <div key={i} className="voucher-line-row">
+            <div key={L.key || i} className="voucher-line-row">
               <Select value={L.line_type} onChange={(e) => updateLine(i, "line_type", e.target.value)}>
                 <option value="cash">نقدي</option>
                 <option value="check">شيك</option>

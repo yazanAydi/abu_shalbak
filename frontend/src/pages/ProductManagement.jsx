@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import api from "../apiClient";
+import api, { createAbortController } from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import useAuthUser from "../hooks/useAuthUser";
 import { isAdminRole } from "../utils/roles";
@@ -224,6 +224,7 @@ export default function ProductManagement() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [search, setSearch] = useState("");
+  const searchReqRef = useRef(0);
   const [uploadFeedback, setUploadFeedback] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [importSummary, setImportSummary] = useState(null);
@@ -334,19 +335,27 @@ export default function ProductManagement() {
     }
 
     setSearchLoading(true);
+    const ac = createAbortController();
+    const reqId = ++searchReqRef.current;
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchProductsApi(q, { limit: 50, scope: "retail" });
+        const rows = await searchProductsApi(q, { limit: 50, scope: "retail", signal: ac.signal });
+        if (reqId !== searchReqRef.current) return;
         setSearchResults(rows);
       } catch (e) {
+        if (e.code === "ERR_CANCELED" || e.name === "CanceledError") return;
+        if (reqId !== searchReqRef.current) return;
         toast.error(e.response?.data?.error || e.message);
         setSearchResults([]);
       } finally {
-        setSearchLoading(false);
+        if (reqId === searchReqRef.current) setSearchLoading(false);
       }
     }, 300);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      ac.abort();
+    };
   }, [search, toast]);
 
   const isSearchActive = Boolean(search.trim());

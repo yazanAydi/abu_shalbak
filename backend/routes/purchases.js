@@ -8,6 +8,10 @@ import { shopTodayYmd } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { withTransaction } from "../utils/dbTx.js";
 import {
+  partyBalanceForPurchaseInvoice,
+  partyBalanceForPurchaseReturn,
+} from "../utils/partyBalanceAroundMove.js";
+import {
   purchaseBaseQty,
   purchaseBaseUnitCost,
   purchaseLineGross,
@@ -114,13 +118,103 @@ async function normalizeItems(db, items) {
   return out;
 }
 
+async function applyPurchaseInvoicePost(db, inv, items, userId) {
+  for (const it of items) {
+    const product = await db.get("SELECT stock, cost FROM products WHERE id = ?", [it.product_id]);
+    if (!product) continue;
+    const oldStock = Number(product.stock) || 0;
+    const oldCost = Number(product.cost) || 0;
+    const addQty = purchaseBaseQty(it);
+    const lineGross = purchaseLineGross(it);
+    const baseUnitCost = addQty > 0 ? round6(lineGross / addQty) : Number(it.unit_cost) || 0;
+    const newCost = wacAfterInbound(oldStock, oldCost, addQty, baseUnitCost);
+    await db.run("UPDATE products SET cost = ? WHERE id = ?", [newCost, it.product_id]);
+    await refreshUnitCostCache(db, it.product_id);
+    await recordMovement(db, {
+      productId: it.product_id,
+      movementType: "purchase",
+      quantity: addQty,
+      unitCost: baseUnitCost,
+      refType: "purchase_invoice",
+      refId: inv.id,
+      notes: `فاتورة شراء #${inv.invoice_no ?? inv.id}`,
+      userId,
+      applyStock: true,
+    });
+  }
+
+  const legacy = await db.run(
+    `INSERT INTO supplier_invoices (supplier_id, ref_text, amount_total, amount_paid, due_on, status)
+     VALUES (?, ?, ?, 0, NULL, 'open')`,
+    [inv.supplier_id, inv.ref_text || `PINV-${inv.invoice_no ?? inv.id}`, inv.total]
+  );
+
+  await db.run("UPDATE suppliers SET balance = balance + ? WHERE id = ?", [inv.total, inv.supplier_id]);
+  await db.run(
+    "UPDATE purchase_invoices SET status = 'posted', posted_at = datetime('now'), supplier_invoice_id = ? WHERE id = ?",
+    [legacy.lastID, inv.id]
+  );
+  if (inv.order_id) {
+    await db.run("UPDATE purchase_orders SET status = 'received' WHERE id = ?", [inv.order_id]);
+  }
+  return db.get("SELECT * FROM purchase_invoices WHERE id = ?", [inv.id]);
+}
+
+async function postPurchaseInvoice(db, invoiceId, userId) {
+  const inv = await db.get("SELECT * FROM purchase_invoices WHERE id = ?", [invoiceId]);
+  if (!inv) return { error: "الفاتورة غير موجودة", status: 404, code: "NOT_FOUND" };
+  if (inv.status === "posted") return { error: "الفاتورة مرحّلة بالفعل", status: 400, code: "ALREADY_POSTED" };
+  const items = await db.all("SELECT * FROM purchase_invoice_items WHERE invoice_id = ?", [inv.id]);
+  if (items.length === 0) return { error: "لا توجد أصناف", status: 400, code: "EMPTY" };
+  const row = await withTransaction(db, async () => applyPurchaseInvoicePost(db, inv, items, userId));
+  return { row };
+}
+
+async function applyPurchaseReturnPost(db, ret, items, userId) {
+  for (const it of items) {
+    const product = await db.get("SELECT stock, cost FROM products WHERE id = ?", [it.product_id]);
+    if (!product) continue;
+    const oldStock = Number(product.stock) || 0;
+    const oldCost = Number(product.cost) || 0;
+    const baseQty = purchaseBaseQty(it);
+    const baseUnitCost = purchaseBaseUnitCost(it);
+    const newCost = wacAfterOutbound(oldStock, oldCost, baseQty, baseUnitCost);
+    await db.run("UPDATE products SET cost = ? WHERE id = ?", [newCost, it.product_id]);
+    await refreshUnitCostCache(db, it.product_id);
+    await recordMovement(db, {
+      productId: it.product_id,
+      movementType: "purchase_return",
+      quantity: -baseQty,
+      unitCost: baseUnitCost,
+      refType: "purchase_return",
+      refId: ret.id,
+      notes: `مرتجع شراء #${ret.return_no ?? ret.id}`,
+      userId,
+      applyStock: true,
+    });
+  }
+  await db.run("UPDATE suppliers SET balance = balance - ? WHERE id = ?", [ret.total, ret.supplier_id]);
+  await db.run("UPDATE purchase_returns SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [ret.id]);
+  return db.get("SELECT * FROM purchase_returns WHERE id = ?", [ret.id]);
+}
+
+async function postPurchaseReturn(db, returnId, userId) {
+  const ret = await db.get("SELECT * FROM purchase_returns WHERE id = ?", [returnId]);
+  if (!ret) return { error: "المرتجع غير موجود", status: 404, code: "NOT_FOUND" };
+  if (ret.status === "posted") return { error: "المرتجع مرحّل بالفعل", status: 400, code: "ALREADY_POSTED" };
+  const items = await db.all("SELECT * FROM purchase_return_items WHERE return_id = ?", [ret.id]);
+  if (items.length === 0) return { error: "لا توجد أصناف", status: 400, code: "EMPTY" };
+  const row = await withTransaction(db, async () => applyPurchaseReturnPost(db, ret, items, userId));
+  return { row };
+}
+
 export function createPurchasesRouter(db) {
   const router = Router();
   const requirePurchasesOrBakery = requireAnyReportsPermission(db, "purchases", "bakery_supplies");
 
   // ════════════ Purchase Orders ════════════
 
-  router.get("/orders", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.get("/orders", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const page = listLimitSql(req.query);
     const rows = await db.all(
       `SELECT po.*, s.name AS supplier_name FROM purchase_orders po
@@ -130,7 +224,7 @@ export function createPurchasesRouter(db) {
     res.json(rows);
   });
 
-  router.get("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.get("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const order = await db.get(
       `SELECT po.*, s.name AS supplier_name FROM purchase_orders po
        JOIN suppliers s ON s.id = po.supplier_id WHERE po.id = ?`,
@@ -145,7 +239,7 @@ export function createPurchasesRouter(db) {
     res.json({ ...order, items });
   });
 
-  router.post("/orders", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.post("/orders", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const { supplier_id, order_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
@@ -172,11 +266,11 @@ export function createPurchasesRouter(db) {
       });
       res.status(201).json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.put("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.put("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const order = await db.get("SELECT * FROM purchase_orders WHERE id = ?", [req.params.id]);
     if (!order) return res.status(404).json({ error: "أمر الشراء غير موجود", code: "NOT_FOUND" });
     if (order.status === "received") return res.status(400).json({ error: "لا يمكن تعديل أمر مستلم", code: "LOCKED" });
@@ -205,11 +299,11 @@ export function createPurchasesRouter(db) {
       });
       res.json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.delete("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.delete("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const order = await db.get("SELECT * FROM purchase_orders WHERE id = ?", [req.params.id]);
     if (!order) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     if (order.status === "received") return res.status(400).json({ error: "لا يمكن حذف أمر مستلم", code: "LOCKED" });
@@ -219,7 +313,7 @@ export function createPurchasesRouter(db) {
 
   // ════════════ Purchase Invoices ════════════
 
-  router.get("/invoices", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.get("/invoices", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const { supplier_id, status } = req.query;
     let sql = `SELECT pi.*, s.name AS supplier_name FROM purchase_invoices pi
                JOIN suppliers s ON s.id = pi.supplier_id WHERE 1=1`;
@@ -252,7 +346,7 @@ export function createPurchasesRouter(db) {
     res.json(rows);
   });
 
-  router.get("/invoices/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.get("/invoices/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const inv = await db.get(
       `SELECT pi.*, s.name AS supplier_name FROM purchase_invoices pi
        JOIN suppliers s ON s.id = pi.supplier_id WHERE pi.id = ?`,
@@ -264,7 +358,8 @@ export function createPurchasesRouter(db) {
        JOIN products p ON p.id = pii.product_id WHERE pii.invoice_id = ?`,
       [inv.id]
     );
-    res.json({ ...inv, items });
+    const party_balance = await partyBalanceForPurchaseInvoice(db, inv);
+    res.json({ ...inv, items, party_balance });
   });
 
   async function computeInvoiceTotals(db, norm) {
@@ -274,7 +369,7 @@ export function createPurchasesRouter(db) {
     return { subtotal, vat, total, lines };
   }
 
-  router.post("/invoices", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.post("/invoices", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const { supplier_id, order_id, ref_text, invoice_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
@@ -303,11 +398,11 @@ export function createPurchasesRouter(db) {
       });
       res.status(201).json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.put("/invoices/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.put("/invoices/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const inv = await db.get("SELECT * FROM purchase_invoices WHERE id = ?", [req.params.id]);
     if (!inv) return res.status(404).json({ error: "الفاتورة غير موجودة", code: "NOT_FOUND" });
     if (inv.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل فاتورة مرحّلة", code: "ALREADY_POSTED" });
@@ -338,72 +433,39 @@ export function createPurchasesRouter(db) {
       });
       res.json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.post("/invoices/:id/post", requireAuth, requirePurchasesOrBakery, async (req, res) => {
-    const inv = await db.get("SELECT * FROM purchase_invoices WHERE id = ?", [req.params.id]);
-    if (!inv) return res.status(404).json({ error: "الفاتورة غير موجودة", code: "NOT_FOUND" });
-    if (inv.status === "posted") return res.status(400).json({ error: "الفاتورة مرحّلة بالفعل", code: "ALREADY_POSTED" });
-    const items = await db.all("SELECT * FROM purchase_invoice_items WHERE invoice_id = ?", [inv.id]);
-    if (items.length === 0) return res.status(400).json({ error: "لا توجد أصناف", code: "EMPTY" });
-
+  router.post("/invoices/post-all", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     try {
-      const row = await withTransaction(db, async () => {
-        for (const it of items) {
-          const product = await db.get("SELECT stock, cost FROM products WHERE id = ?", [it.product_id]);
-          if (!product) continue;
-          const oldStock = Number(product.stock) || 0;
-          const oldCost = Number(product.cost) || 0;
-          // Stock moves in base units (paid + bonus). Inventory cost uses the VAT-inclusive
-          // amount actually owed to the supplier so COGS matches AP.
-          const addQty = purchaseBaseQty(it);
-          const lineGross = purchaseLineGross(it);
-          const baseUnitCost = addQty > 0 ? round6(lineGross / addQty) : Number(it.unit_cost) || 0;
-          const newCost = wacAfterInbound(oldStock, oldCost, addQty, baseUnitCost);
-          await db.run("UPDATE products SET cost = ? WHERE id = ?", [newCost, it.product_id]);
-          // Refresh unit-cost cache so product_units.cost stays consistent with the
-          // new WAC. Direction is base → units only; never the reverse.
-          await refreshUnitCostCache(db, it.product_id);
-          await recordMovement(db, {
-            productId: it.product_id,
-            movementType: "purchase",
-            quantity: addQty,
-            unitCost: baseUnitCost,
-            refType: "purchase_invoice",
-            refId: inv.id,
-            notes: `فاتورة شراء #${inv.invoice_no ?? inv.id}`,
-            userId: req.user.id,
-            applyStock: true,
-          });
-        }
-
-        // Continuity: write a legacy supplier_invoices AP row so finance /overview keeps working
-        const legacy = await db.run(
-          `INSERT INTO supplier_invoices (supplier_id, ref_text, amount_total, amount_paid, due_on, status)
-           VALUES (?, ?, ?, 0, NULL, 'open')`,
-          [inv.supplier_id, inv.ref_text || `PINV-${inv.invoice_no ?? inv.id}`, inv.total]
-        );
-
-        await db.run("UPDATE suppliers SET balance = balance + ? WHERE id = ?", [inv.total, inv.supplier_id]);
-
-        await db.run(
-          "UPDATE purchase_invoices SET status = 'posted', posted_at = datetime('now'), supplier_invoice_id = ? WHERE id = ?",
-          [legacy.lastID, inv.id]
-        );
-        if (inv.order_id) {
-          await db.run("UPDATE purchase_orders SET status = 'received' WHERE id = ?", [inv.order_id]);
-        }
-        return db.get("SELECT * FROM purchase_invoices WHERE id = ?", [inv.id]);
-      });
-      res.json(row);
+      const drafts = await db.all("SELECT id FROM purchase_invoices WHERE status = 'draft' ORDER BY id");
+      const ids = [];
+      const errors = [];
+      for (const d of drafts) {
+        const result = await postPurchaseInvoice(db, d.id, req.user.id);
+        if (result.error) errors.push({ id: d.id, error: result.error });
+        else ids.push(d.id);
+      }
+      res.json({ posted_count: ids.length, ids, errors });
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.delete("/invoices/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.post("/invoices/:id/post", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+    try {
+      const result = await postPurchaseInvoice(db, req.params.id, req.user.id);
+      if (result.error) {
+        return res.status(result.status).json({ error: result.error, code: result.code || "ERROR" });
+      }
+      res.json(result.row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete("/invoices/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const inv = await db.get("SELECT * FROM purchase_invoices WHERE id = ?", [req.params.id]);
     if (!inv) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     if (inv.status === "posted") return res.status(400).json({ error: "لا يمكن حذف فاتورة مرحّلة", code: "ALREADY_POSTED" });
@@ -413,7 +475,7 @@ export function createPurchasesRouter(db) {
 
   // ════════════ Purchase Returns ════════════
 
-  router.get("/returns", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.get("/returns", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const rows = await db.all(
       `SELECT pr.*, s.name AS supplier_name FROM purchase_returns pr
        JOIN suppliers s ON s.id = pr.supplier_id ORDER BY pr.created_at DESC${listLimitSql(req.query).sql}`
@@ -421,7 +483,7 @@ export function createPurchasesRouter(db) {
     res.json(rows);
   });
 
-  router.get("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.get("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const ret = await db.get(
       `SELECT pr.*, s.name AS supplier_name FROM purchase_returns pr
        JOIN suppliers s ON s.id = pr.supplier_id WHERE pr.id = ?`,
@@ -433,10 +495,11 @@ export function createPurchasesRouter(db) {
        JOIN products p ON p.id = pri.product_id WHERE pri.return_id = ?`,
       [ret.id]
     );
-    res.json({ ...ret, items });
+    const party_balance = await partyBalanceForPurchaseReturn(db, ret);
+    res.json({ ...ret, items, party_balance });
   });
 
-  router.post("/returns", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.post("/returns", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const { supplier_id, invoice_id, return_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
@@ -463,11 +526,11 @@ export function createPurchasesRouter(db) {
       });
       res.status(201).json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.put("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.put("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const ret = await db.get("SELECT * FROM purchase_returns WHERE id = ?", [req.params.id]);
     if (!ret) return res.status(404).json({ error: "المرتجع غير موجود", code: "NOT_FOUND" });
     if (ret.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل مرتجع مرحّل", code: "ALREADY_POSTED" });
@@ -498,55 +561,39 @@ export function createPurchasesRouter(db) {
       });
       res.json(row);
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.post("/returns/:id/post", requireAuth, requirePurchasesOrBakery, async (req, res) => {
-    const ret = await db.get("SELECT * FROM purchase_returns WHERE id = ?", [req.params.id]);
-    if (!ret) return res.status(404).json({ error: "المرتجع غير موجود", code: "NOT_FOUND" });
-    if (ret.status === "posted") return res.status(400).json({ error: "المرتجع مرحّل بالفعل", code: "ALREADY_POSTED" });
-    const items = await db.all("SELECT * FROM purchase_return_items WHERE return_id = ?", [ret.id]);
-    if (items.length === 0) return res.status(400).json({ error: "لا توجد أصناف", code: "EMPTY" });
-
+  router.post("/returns/post-all", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     try {
-      const row = await withTransaction(db, async () => {
-        for (const it of items) {
-          const product = await db.get("SELECT stock, cost FROM products WHERE id = ?", [it.product_id]);
-          if (!product) continue;
-          const oldStock = Number(product.stock) || 0;
-          const oldCost = Number(product.cost) || 0;
-          const baseQty = purchaseBaseQty(it);
-          // Same inventory-cost basis as invoice posting: post-discount payable
-          // `line_total` (VAT-inclusive). Returns are not batch-linked; WAC
-          // reverses this document's stated value from the aggregate average.
-          const baseUnitCost = purchaseBaseUnitCost(it);
-          const newCost = wacAfterOutbound(oldStock, oldCost, baseQty, baseUnitCost);
-          await db.run("UPDATE products SET cost = ? WHERE id = ?", [newCost, it.product_id]);
-          await refreshUnitCostCache(db, it.product_id);
-          await recordMovement(db, {
-            productId: it.product_id,
-            movementType: "purchase_return",
-            quantity: -baseQty,
-            unitCost: baseUnitCost,
-            refType: "purchase_return",
-            refId: ret.id,
-            notes: `مرتجع شراء #${ret.return_no ?? ret.id}`,
-            userId: req.user.id,
-            applyStock: true,
-          });
-        }
-        await db.run("UPDATE suppliers SET balance = balance - ? WHERE id = ?", [ret.total, ret.supplier_id]);
-        await db.run("UPDATE purchase_returns SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [ret.id]);
-        return db.get("SELECT * FROM purchase_returns WHERE id = ?", [ret.id]);
-      });
-      res.json(row);
+      const drafts = await db.all("SELECT id FROM purchase_returns WHERE status = 'draft' ORDER BY id");
+      const ids = [];
+      const errors = [];
+      for (const d of drafts) {
+        const result = await postPurchaseReturn(db, d.id, req.user.id);
+        if (result.error) errors.push({ id: d.id, error: result.error });
+        else ids.push(d.id);
+      }
+      res.json({ posted_count: ids.length, ids, errors });
     } catch (e) {
-      res.status(500).json({ error: e.message, code: "DB_ERROR" });
+      next(e);
     }
   });
 
-  router.delete("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+  router.post("/returns/:id/post", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+    try {
+      const result = await postPurchaseReturn(db, req.params.id, req.user.id);
+      if (result.error) {
+        return res.status(result.status).json({ error: result.error, code: result.code || "ERROR" });
+      }
+      res.json(result.row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
     const ret = await db.get("SELECT * FROM purchase_returns WHERE id = ?", [req.params.id]);
     if (!ret) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     if (ret.status === "posted") return res.status(400).json({ error: "لا يمكن حذف مرتجع مرحّل", code: "ALREADY_POSTED" });

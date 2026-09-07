@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
 import {
   buildEmployeeAttendanceReport,
   createManualPunch,
@@ -12,34 +12,58 @@ import {
   updatePunch,
 } from "../services/attendanceService.js";
 import { HttpError } from "../utils/httpError.js";
+import { signKioskToken, timingSafeStringEqual, verifyKioskToken } from "../utils/kioskToken.js";
 
 function getKioskApiKey() {
   return process.env.KIOSK_API_KEY && String(process.env.KIOSK_API_KEY).trim();
 }
 
+function extractBearer(req) {
+  const header = req.headers.authorization;
+  return header?.startsWith("Bearer ") ? header.slice(7) : null;
+}
+
 function requireKioskKey(req, res, next) {
+  const token = req.headers["x-kiosk-token"] || extractBearer(req);
+  if (token) {
+    try {
+      const payload = verifyKioskToken(token);
+      if (payload?.typ === "kiosk") {
+        req.kiosk = payload;
+        return next();
+      }
+    } catch {
+      /* fall through to shared-key fallback */
+    }
+  }
+
   const expected = getKioskApiKey();
-  if (!expected) {
+  const provided = req.headers["x-kiosk-key"];
+  if (expected && provided && timingSafeStringEqual(provided, expected)) {
+    return next();
+  }
+  if (!expected && !token) {
     return res.status(503).json({
       success: false,
-      error: "مفتاح الكشك غير مُعدّ على الخادم",
+      error: "الكشك غير مُعدّ — سجّل هذا الجهاز من حساب المدير",
       code: "KIOSK_NOT_CONFIGURED",
     });
   }
-  const provided = req.headers["x-kiosk-key"];
-  if (!provided || String(provided) !== expected) {
-    return res.status(401).json({
-      success: false,
-      error: "مفتاح الكشك غير صالح",
-      code: "INVALID_KIOSK_KEY",
-    });
-  }
-  next();
+  return res.status(401).json({
+    success: false,
+    error: "مفتاح الكشك غير صالح",
+    code: "INVALID_KIOSK_KEY",
+  });
 }
 
 export function createAttendanceRouter(db) {
   const router = Router();
   const requirePayroll = requireReportsPermission(db, "employee_payroll");
+
+  router.post("/kiosk/session", requireAuth, requireAdmin, async (req, res) => {
+    const token = signKioskToken({ enrolledBy: req.user.id });
+    res.status(201).json({ token, expires_in: process.env.KIOSK_TOKEN_EXPIRES_IN || "365d" });
+  });
 
   router.get("/kiosk/descriptors", requireKioskKey, async (_req, res, next) => {
     try {

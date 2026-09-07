@@ -114,6 +114,11 @@
   min-width: 8rem;
 }
 
+.product-unit-row__sku {
+  font-size: 0.82rem;
+  color: var(--office-text, #0f172a);
+}
+
 .product-unit-row__id code {
   font-size: 0.82rem;
   color: var(--office-text-muted, #64748b);
@@ -181,14 +186,6 @@
   justify-content: flex-start;
   gap: 0.5rem;
   margin-top: 1rem;
-}
-
-.product-unit-form__auto {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin-top: 0.4rem;
-  font-size: 0.88rem;
 }
 
 @media (max-width: 720px) {

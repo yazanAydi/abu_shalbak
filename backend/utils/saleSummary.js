@@ -1,4 +1,4 @@
-import { refundedQtyByProduct } from "../services/refundRequestService.js";
+import { refundedQtyByProduct, refundedQtyByTransactions } from "../services/refundRequestService.js";
 import { round2 } from "./money.js";
 
 export function parseTransactionItems(itemsJson) {
@@ -21,11 +21,11 @@ export function buildItemsPreview(items, maxItems = 3) {
   return parts.join("، ");
 }
 
-export async function buildSaleSummary(db, tx) {
+export async function buildSaleSummary(db, tx, alreadyMap = null) {
   const items = parseTransactionItems(tx.items_json);
   const item_count = items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
   const items_preview = buildItemsPreview(items);
-  const already = await refundedQtyByProduct(db, tx.id);
+  const already = alreadyMap || (await refundedQtyByProduct(db, tx.id));
 
   let fully_refunded = items.length > 0;
   for (const it of items) {
@@ -55,4 +55,17 @@ export async function buildSaleSummary(db, tx) {
     fully_refunded,
     returnable: !fully_refunded,
   };
+}
+
+export async function buildSaleSummaries(db, txs) {
+  const list = Array.isArray(txs) ? txs : [];
+  const maps = await refundedQtyByTransactions(
+    db,
+    list.map((tx) => tx.id)
+  );
+  const out = [];
+  for (const tx of list) {
+    out.push(await buildSaleSummary(db, tx, maps.get(Number(tx.id))));
+  }
+  return out;
 }

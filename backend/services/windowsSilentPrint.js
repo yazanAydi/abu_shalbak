@@ -80,9 +80,16 @@ function powershellJson(script) {
   });
 }
 
+const RECEIPT_PRINTER_NAME_RE = /^[\w \-\.\(\)\\]+$/;
+
 export async function resolveReceiptPrinterName() {
   const named = process.env.RECEIPT_PRINTER && String(process.env.RECEIPT_PRINTER).trim();
-  if (named) return named;
+  if (named) {
+    if (!RECEIPT_PRINTER_NAME_RE.test(named)) {
+      throw new SilentPrintError("INVALID_PRINTER", "اسم الطابعة غير صالح");
+    }
+    return named;
+  }
 
   try {
     const { getDefaultPrinter, getPrinters } = loadPdfToPrinter();
@@ -172,6 +179,15 @@ async function printPdfFile(pdfPath, printerName) {
   });
 }
 
+/** @type {null | ((html: string) => Promise<{ printed: boolean, printer?: string, dryRun?: boolean }>)} */
+let testAdapter = null;
+
+/** Test-only hook to simulate printer success/failure without Windows hardware. */
+export function setSilentPrintTestAdapter(fn) {
+  if (process.env.NODE_ENV !== "test") return;
+  testAdapter = typeof fn === "function" ? fn : null;
+}
+
 /**
  * Print receipt HTML on the Windows machine that runs the API, with no browser dialog.
  * @param {string} html
@@ -182,12 +198,13 @@ export async function silentPrintReceiptHtml(html) {
     throw new SilentPrintError("NO_HTML", "لا يوجد إيصال للطباعة");
   }
   if (process.env.NODE_ENV === "test") {
+    if (testAdapter) return testAdapter(html);
     return { printed: true, dryRun: true };
   }
   if (process.platform !== "win32") {
     throw new SilentPrintError(
       "SILENT_PRINT_UNSUPPORTED",
-      "الطباعة المباشرة تعمل عندما يعمل الخادم على ويندوز (جهاز الكاشير). من Docker استخدم اختصار الطباعة الصامتة."
+      "الطباعة المباشرة تعمل عندما يعمل الخادم على ويندوز (جهاز الكاشير)، وليس من Docker/Linux."
     );
   }
 

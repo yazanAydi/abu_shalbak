@@ -1,3 +1,5 @@
+import { CACHE_KEYS, cacheGet, cacheSet } from "./cache.js";
+
 /**
  * Accountant permission catalog — topics are UI grouping only; leaf keys are enforced.
  * Existing keys default to enabled when missing (backward compatible).
@@ -119,6 +121,78 @@ export function getEffectivePermissions(role, storedPermissions) {
   if (role === "admin") return allAccountantPermissionsEnabled();
   if (role === "accountant") return normalizeAccountantPermissions(storedPermissions);
   return defaultAccountantPermissions();
+}
+
+/** Parse users.permissions_json. Returns a plain object or null (use global defaults). */
+export function parseUserPermissionsJson(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw;
+  const text = String(raw).trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+const USER_PERMISSION_ROW_SQL =
+  "SELECT username, role, must_change_password, permissions_json FROM users WHERE id = ?";
+
+/**
+ * Shared per-user row used by password-change checks and permission resolution.
+ * @param {object} db
+ * @param {number|string} userId
+ */
+export async function getCachedUserRow(db, userId) {
+  const cacheKey = CACHE_KEYS.user(userId);
+  let row = cacheGet(cacheKey);
+  if (!row) {
+    row = await db.get(USER_PERMISSION_ROW_SQL, [userId]);
+    if (row) cacheSet(cacheKey, row, 60_000);
+  }
+  return row;
+}
+
+export function isOfficePermissionRole(role) {
+  return role === "admin" || role === "accountant";
+}
+
+/**
+ * Effective permission map for a signed-in user.
+ * Admin without a custom set: all enabled. Accountant without a custom set: global settings.
+ * Either role with users.permissions_json: that custom set.
+ * @param {object} db
+ * @param {{ id?: number, role?: string, permissions_json?: unknown }|null|undefined} user
+ */
+export async function resolveUserPermissions(db, user) {
+  const role = user?.role;
+  if (!isOfficePermissionRole(role)) return defaultAccountantPermissions();
+
+  let stored = user?.permissions_json;
+  if (stored === undefined && user?.id != null) {
+    const row = await getCachedUserRow(db, user.id);
+    stored = row?.permissions_json;
+  }
+  const parsed = parseUserPermissionsJson(stored);
+  if (parsed) return normalizeAccountantPermissions(parsed);
+  if (role === "admin") return allAccountantPermissionsEnabled();
+  const { getAppSettings } = await import("./settings.js");
+  const settings = await getAppSettings(db);
+  return normalizeAccountantPermissions(settings.accountant_permissions);
+}
+
+/**
+ * @param {object} db
+ * @param {{ id?: number, role?: string, permissions_json?: unknown }|null|undefined} user
+ * @param {string} key
+ */
+export async function userHasAccountantPermission(db, user, key) {
+  if (!isOfficePermissionRole(user?.role)) return false;
+  const permissions = await resolveUserPermissions(db, user);
+  return permissions[key] === true;
 }
 
 /** Map nav paths to permission keys for badge filtering. */

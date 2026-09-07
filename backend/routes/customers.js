@@ -1,6 +1,7 @@
-import { Router } from "express";
+import { createSafeRouter } from "../utils/asyncHandler.js";
 
 import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
+import { projectCustomerForRole } from "../utils/roleProjection.js";
 
 import { round2 } from "../utils/tax.js";
 
@@ -161,7 +162,7 @@ export function createCustomersRouter(db) {
   const requireAccountStatement = requireReportsPermission(db, "account_statement");
   const requireCustomers = requireReportsPermission(db, "customers");
 
-  const router = Router();
+  const router = createSafeRouter();
 
 
 
@@ -193,7 +194,7 @@ export function createCustomersRouter(db) {
 
     const rows = await db.all(sql, params);
 
-    res.json(rows);
+    res.json(projectCustomerForRole(rows, req.user?.role));
 
   });
 
@@ -491,7 +492,7 @@ export function createCustomersRouter(db) {
 
     if (!row) return res.status(404).json({ error: "العميل غير موجود", code: "NOT_FOUND" });
 
-    res.json(row);
+    res.json(projectCustomerForRole(row, req.user?.role));
 
   });
 

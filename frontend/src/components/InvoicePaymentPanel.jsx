@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Button, FormField, Input, Select } from "./ui";
+import { ils, round2 } from "../utils/format";
 
 const METHODS = [
   { id: "cash", label: "نقدًا" },
@@ -8,17 +9,28 @@ const METHODS = [
   { id: "check", label: "شيك" },
 ];
 
-const ils = (n) => `₪${Number(n ?? 0).toFixed(2)}`;
+function newLineKey() {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `line-${Date.now()}-${Math.random()}`;
+}
 
 function emptyLine() {
-  return { method: "cash", amount: "", bank_name: "", check_no: "" };
+  return { key: newLineKey(), method: "cash", amount: "", bank_name: "", check_no: "" };
 }
 
 /**
  * Payment panel for posting office sales invoices (single or mixed).
- * @param {{ total: number, onSubmit: (payload: object) => void, onCancel: () => void, submitting?: boolean }} props
+ * @param {{ total: number, onSubmit: (payload: object) => void, onCancel: () => void, submitting?: boolean, allowMixed?: boolean, submitLabel?: string }} props
  */
-export default function InvoicePaymentPanel({ total, onSubmit, onCancel, submitting = false }) {
+export default function InvoicePaymentPanel({
+  total,
+  onSubmit,
+  onCancel,
+  submitting = false,
+  allowMixed = true,
+  submitLabel = "ترحيل الفاتورة",
+}) {
   const [mode, setMode] = useState("single");
   const [singleMethod, setSingleMethod] = useState("cash");
   const [bankName, setBankName] = useState("");
@@ -82,12 +94,14 @@ export default function InvoicePaymentPanel({ total, onSubmit, onCancel, submitt
         <strong>{ils(total)}</strong>
       </div>
 
-      <FormField label="طريقة الدفع">
-        <Select value={mode} onChange={(e) => setMode(e.target.value)}>
-          <option value="single">طريقة واحدة</option>
-          <option value="mixed">دفع مختلط</option>
-        </Select>
-      </FormField>
+      {allowMixed ? (
+        <FormField label="طريقة الدفع">
+          <Select value={mode} onChange={(e) => setMode(e.target.value)}>
+            <option value="single">طريقة واحدة</option>
+            <option value="mixed">دفع مختلط</option>
+          </Select>
+        </FormField>
+      ) : null}
 
       {mode === "single" ? (
         <>
@@ -112,7 +126,7 @@ export default function InvoicePaymentPanel({ total, onSubmit, onCancel, submitt
       ) : (
         <div className="invoice-payment-panel__lines">
           {lines.map((line, i) => (
-            <div key={i} className="invoice-payment-panel__line">
+            <div key={line.key || i} className="invoice-payment-panel__line">
               <Select value={line.method} onChange={(e) => updateLine(i, "method", e.target.value)}>
                 {METHODS.map((m) => (
                   <option key={m.id} value={m.id}>{m.label}</option>
@@ -155,7 +169,7 @@ export default function InvoicePaymentPanel({ total, onSubmit, onCancel, submitt
 
       <div className="ui-toolbar" style={{ marginTop: "1rem" }}>
         <Button type="submit" disabled={!canSubmit || submitting}>
-          {submitting ? "جاري الترحيل…" : "ترحيل الفاتورة"}
+          {submitting ? "جاري الترحيل…" : submitLabel}
         </Button>
         <Button type="button" variant="secondary" onClick={onCancel} disabled={submitting}>
           إلغاء
@@ -163,8 +177,4 @@ export default function InvoicePaymentPanel({ total, onSubmit, onCancel, submitt
       </div>
     </form>
   );
-}
-
-function round2(n) {
-  return Math.round((Number(n) || 0) * 100) / 100;
 }

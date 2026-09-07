@@ -86,7 +86,7 @@
   margin-top: 0.35rem;
   font-size: 1rem;
   padding: 0 14px;
-  border: 1px solid var(--office-border, #e2e8f0);
+  border: 1.5px solid var(--office-input-border, #94a3b8);
   border-radius: var(--office-radius-sm, 8px);
   box-sizing: border-box;
   background: #fff;

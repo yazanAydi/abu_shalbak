@@ -1,4 +1,4 @@
-import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
+import { buildPrintBrandingHtml, buildPrintedByHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { dateOnly, formatDateTimeShopAr, qty as fmtQty } from "./format";
 
@@ -68,7 +68,7 @@ export function printInventoryDocument(doc, store = {}) {
   </style>
 </head>
 <body>
-  ${buildPrintBrandingHtml()}
+  ${buildPrintBrandingHtml(store)}
   <h1>${escapeHtml(title)} رقم: ${escapeHtml(docNo)}</h1>
   <div class="meta">
     <div><strong>التاريخ:</strong> ${escapeHtml(dateOnly(doc.document_date))}</div>
@@ -91,6 +91,7 @@ export function printInventoryDocument(doc, store = {}) {
     </thead>
     <tbody>${bodyRows || `<tr><td colspan="7" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
+  ${buildPrintedByHtml()}
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}
   <p class="footer">${escapeHtml(storeName)} — ${escapeHtml(title)}</p>
 </body>

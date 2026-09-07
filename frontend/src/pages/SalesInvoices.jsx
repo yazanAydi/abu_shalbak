@@ -218,6 +218,17 @@ export default function SalesInvoices() {
   const [detail, setDetail] = useState(null);
   const [postTarget, setPostTarget] = useState(null);
   const [posting, setPosting] = useState(false);
+  const [postAllOpen, setPostAllOpen] = useState(false);
+  const [postingAll, setPostingAll] = useState(false);
+
+  const draftInvoices = useMemo(
+    () => invoices.filter((r) => r.status === "draft"),
+    [invoices]
+  );
+  const draftTotal = useMemo(
+    () => draftInvoices.reduce((s, r) => s + (Number(r.total) || 0), 0),
+    [draftInvoices]
+  );
 
   const taxInclusive = store.tax_inclusive !== false && store.tax_inclusive !== "0";
 
@@ -397,6 +408,40 @@ export default function SalesInvoices() {
     }
   }
 
+  function startPostAll() {
+    if (draftInvoices.length === 0) {
+      toast.error("لا توجد مسودات للترحيل");
+      return;
+    }
+    setPostAllOpen(true);
+  }
+
+  async function confirmPostAll(paymentPayload) {
+    setPostingAll(true);
+    try {
+      const { data } = await api.post("/api/sales/invoices/post-all", paymentPayload, {
+        headers: getAuthHeaders(),
+      });
+      const n = Number(data?.posted_count) || 0;
+      const failed = Array.isArray(data?.errors) ? data.errors.length : 0;
+      if (n === 0 && failed === 0) {
+        toast.error("لا توجد مسودات للترحيل");
+      } else if (n === 0) {
+        toast.error(data.errors[0]?.error || "فشل الترحيل");
+      } else if (failed) {
+        toast.error(`تم ترحيل ${n} فاتورة — فشل ${failed}`);
+      } else {
+        toast.success(`تم ترحيل ${n} فاتورة`);
+      }
+      setPostAllOpen(false);
+      loadList();
+    } catch (e) {
+      toast.error(e.response?.data?.error || "فشل الترحيل");
+    } finally {
+      setPostingAll(false);
+    }
+  }
+
   async function printDoc(id) {
     try {
       const { data } = await api.get(`/api/sales/invoices/${id}`, { headers: getAuthHeaders() });
@@ -445,6 +490,9 @@ export default function SalesInvoices() {
               filename="sales-invoices"
               disabled={loading}
             />
+            <Button variant="outline" onClick={startPostAll} disabled={postingAll}>
+              {postingAll ? "جاري الترحيل…" : "ترحيل الكل"}
+            </Button>
             <Button icon="plus" onClick={openForm}>فاتورة مبيعات جديدة</Button>
           </>
         }
@@ -534,6 +582,22 @@ export default function SalesInvoices() {
             submitting={posting}
           />
         ) : null}
+      </Modal>
+
+      <Modal
+        open={postAllOpen}
+        title={`ترحيل كل المسودات (${draftInvoices.length})`}
+        onClose={() => !postingAll && setPostAllOpen(false)}
+        size="md"
+      >
+        <InvoicePaymentPanel
+          total={draftTotal}
+          onSubmit={confirmPostAll}
+          onCancel={() => setPostAllOpen(false)}
+          submitting={postingAll}
+          allowMixed={false}
+          submitLabel="ترحيل الكل"
+        />
       </Modal>
     </div>
   );

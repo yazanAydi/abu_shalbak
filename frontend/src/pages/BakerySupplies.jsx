@@ -13,6 +13,7 @@ import EditProductModal from "./productDashboard/EditProductModal";
 import { fetchProductUnits, pickDefaultPurchaseUnit, ItemEditor } from "./Purchases";
 import UnitNameSelect from "../components/UnitNameSelect";
 import { deriveUnitCost } from "../utils/purchaseTotals";
+import { printPurchaseDoc } from "../utils/purchaseDocPrint";
 import {
   PageHeader,
   Tabs,
@@ -371,6 +372,16 @@ function BakeryPurchases() {
     loadFilteredInvoices();
   }
 
+  async function printDoc(id) {
+    try {
+      const { data } = await api.get(`/api/purchases/invoices/${id}`, { headers: getAuthHeaders() });
+      const doc = data?.data ?? data;
+      printPurchaseDoc(doc, "invoices", store);
+    } catch {
+      toast.error("تعذّر التحميل");
+    }
+  }
+
   async function openDetail(id) {
     try {
       const { data } = await api.get(`/api/purchases/invoices/${id}`, { headers: getAuthHeaders() });
@@ -426,6 +437,7 @@ function BakeryPurchases() {
       render: (r) => (
         <div className="ui-table__actions">
           <Button variant="ghost" size="sm" onClick={() => openDetail(r.id)}>عرض</Button>
+          <Button variant="ghost" size="sm" icon="print" onClick={() => printDoc(r.id)}>طباعة</Button>
           {r.status === "draft" && (
             <Button variant="outline" size="sm" icon="check" onClick={async () => {
               if (!window.confirm("ترحيل الفاتورة سيحدّث مخزون مواد المخبز. متابعة؟")) return;
@@ -480,7 +492,13 @@ function BakeryPurchases() {
         <FormField label="ملاحظات"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></FormField>
       </Modal>
 
-      <Modal open={!!detail} title={detail ? `فاتورة #${detail.invoice_no ?? detail.id}` : ""} onClose={() => setDetail(null)} size="lg">
+      <Modal
+        open={!!detail}
+        title={detail ? `فاتورة #${detail.invoice_no ?? detail.id}` : ""}
+        onClose={() => setDetail(null)}
+        size="lg"
+        footer={detail ? <Button icon="print" onClick={() => printPurchaseDoc(detail, "invoices", store)}>طباعة</Button> : null}
+      >
         {detail ? (
           <>
             <div className="detail-header">

@@ -39,6 +39,13 @@ const app = createApp(db, dbPath, {
 const HOST = process.env.HOST || "127.0.0.1";
 
 if (process.env.NODE_ENV !== "test") {
+  process.on("unhandledRejection", (reason) => {
+    console.error("[unhandledRejection]", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[uncaughtException]", err);
+  });
+
   const server = app.listen(PORT, HOST, () => {
     console.log(`Server running on http://${HOST}:${PORT}`);
     console.log(`Database initialized at ${dbPath}`);

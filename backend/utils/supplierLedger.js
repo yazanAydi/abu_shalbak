@@ -66,9 +66,13 @@ export async function fetchSupplierLedgerEvents(db, supplierId, from, to) {
      SELECT 'purchase_return' AS ev_type, return_date AS ev_date, 0 AS credit, total AS debit, id AS ref_id, NULL AS notes, id AS sort_id
        FROM purchase_returns WHERE supplier_id = ? AND status = 'posted' ${pret.c}
      UNION ALL
-     SELECT 'payment' AS ev_type, v.voucher_date AS ev_date, 0 AS credit, vl.amount_nis AS debit, v.id AS ref_id, NULL AS notes, v.id AS sort_id
+     SELECT 'payment' AS ev_type, v.voucher_date AS ev_date,
+            CASE WHEN v.voucher_type = 'receipt' THEN vl.amount_nis ELSE 0 END AS credit,
+            CASE WHEN v.voucher_type = 'payment' THEN vl.amount_nis ELSE 0 END AS debit,
+            v.id AS ref_id, NULL AS notes, v.id AS sort_id
        FROM voucher_lines vl JOIN vouchers v ON v.id = vl.voucher_id
-       WHERE vl.supplier_id = ? AND v.voucher_type = 'payment' AND v.status = 'posted' ${vpay.c}
+       WHERE vl.supplier_id = ? AND v.status = 'posted'
+         AND v.voucher_type IN ('payment', 'receipt') ${vpay.c}
      UNION ALL
      SELECT 'payment' AS ev_type, paid_on AS ev_date, 0 AS credit, amount AS debit, id AS ref_id, NULL AS notes, id AS sort_id
        FROM supplier_payments WHERE supplier_id = ? ${lpay.c}

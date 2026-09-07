@@ -39,7 +39,7 @@ export function applyUndoScan(cartItems, entry, cartKeyFor) {
     return cartItems.filter((_, i) => i !== idx);
   }
   row.quantity = newQty;
-  row.subtotal = newQty * row.price;
+  row.subtotal = Math.round(Number(newQty) * Number(row.price) * 100) / 100;
   next[idx] = row;
   return next;
 }

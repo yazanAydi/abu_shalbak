@@ -1,12 +1,11 @@
 import { Router } from "express";
 import { requireAuth, requireOfficeRole } from "../middleware/auth.js";
-import { getAppSettings } from "../utils/settings.js";
 import { resolveExpiryAlertDays } from "../services/expiryAlertService.js";
 import {
   hasAccountantPermission,
   NAV_PATH_PERMISSION_KEYS,
+  resolveUserPermissions,
 } from "../utils/accountantPermissions.js";
-import { isAdmin } from "../utils/roles.js";
 
 const LOW_STOCK_THRESHOLD = 5;
 
@@ -102,16 +101,17 @@ async function countPendingShiftCount(db) {
 }
 
 function filterBadgesForUser(role, permissions, byPath) {
-  if (isAdmin(role)) return byPath;
   /** @type {Record<string, number>} */
   const filtered = {};
   for (const [path, count] of Object.entries(byPath)) {
     const key = NAV_PATH_PERMISSION_KEYS[path];
-    if (key && !hasAccountantPermission(role, permissions, key)) {
-      filtered[path] = 0;
-    } else {
-      filtered[path] = count;
-    }
+    const allowed =
+      key == null
+        ? true
+        : role === "admin"
+          ? permissions?.[key] !== false
+          : hasAccountantPermission(role, permissions, key);
+    filtered[path] = allowed ? count : 0;
   }
   return filtered;
 }
@@ -152,8 +152,7 @@ export function createOfficeRouter(db) {
       "/shift-audit": pendingShiftCount,
     };
 
-    const settings = await getAppSettings(db);
-    const permissions = settings.accountant_permissions;
+    const permissions = await resolveUserPermissions(db, req.user);
     const byPath = filterBadgesForUser(req.user?.role, permissions, rawByPath);
     const total = Object.values(byPath).reduce((sum, n) => sum + n, 0);
 

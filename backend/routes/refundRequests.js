@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
-import { canViewReports } from "../utils/roles.js";
+import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { validate } from "../middleware/validate.js";
 import { refundRequestCreateSchema, refundRequestReviewSchema } from "../middleware/schemas.js";
 import {
@@ -15,10 +15,13 @@ import {
   rejectRefundRequest,
 } from "../services/refundRequestService.js";
 
-function canViewRefundRequest(user, request) {
+async function canViewRefundRequest(db, user, request) {
   if (!user || !request) return false;
-  if (canViewReports(user.role)) return true;
-  return Number(request.cashier_id) === Number(user.id);
+  if (Number(request.cashier_id) === Number(user.id)) return true;
+  if (user.role === "admin" || user.role === "accountant") {
+    return userHasAccountantPermission(db, user, "refund_approvals");
+  }
+  return false;
 }
 
 export function createRefundRequestsRouter(db) {
@@ -38,7 +41,7 @@ export function createRefundRequestsRouter(db) {
       });
       res.status(201).json(result);
     } catch (e) {
-      if (e.status) return res.status(e.status).json({ error: e.message, max_returnable: e.max_returnable });
+      if (e.status) return res.status(e.status).json({ error: e.message, max_returnable: e.max_returnable, code: e.code });
       next(e);
     }
   });
@@ -81,7 +84,7 @@ export function createRefundRequestsRouter(db) {
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     const row = await getRefundRequestById(db, id);
     if (!row) return res.status(404).json({ error: "طلب الاسترجاع غير موجود" });
-    if (!canViewRefundRequest(req.user, row)) {
+    if (!(await canViewRefundRequest(db, req.user, row))) {
       return res.status(403).json({ error: "ممنوع" });
     }
     res.json({

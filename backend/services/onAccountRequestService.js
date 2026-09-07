@@ -1,6 +1,7 @@
 import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { buildReceiptPayload } from "../utils/receipt.js";
+import { partyBalanceForSale } from "../utils/partyBalanceAroundMove.js";
 import { logAuditUser, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { executeCheckoutSale } from "./checkoutSaleService.js";
 import { getTelegramManagerUser } from "./refundRequestService.js";
@@ -247,12 +248,16 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
     if (snapshot) {
       const txRow = await db.get("SELECT * FROM transactions WHERE id = ?", [row.transaction_id]);
       const tiRows = await db.all(
-        "SELECT * FROM transaction_items WHERE transaction_id = ? ORDER BY id",
+        `SELECT ti.*, p.sku AS product_sku
+         FROM transaction_items ti
+         LEFT JOIN products p ON p.id = ti.product_id
+         WHERE ti.transaction_id = ? ORDER BY ti.id`,
         [row.transaction_id]
       );
       const cashier = await db.get("SELECT username FROM users WHERE id = ?", [txRow.cashier_id]);
       const receiptLines = tiRows.map((t) => ({
         name: t.unit_name ? `${t.name} (${t.unit_name})` : t.name,
+        sku: t.product_sku,
         quantity: t.quantity,
         price: t.unit_price,
         lineTotal: t.line_gross,
@@ -263,6 +268,7 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
         receiptNumber: txRow.receipt_number,
         timestamp: txRow.created_at,
         cashierName: cashier?.username || "",
+        customerName: row.customer_name || "",
         lines: receiptLines,
         subtotal: txRow.subtotal,
         tax: txRow.tax,
@@ -272,6 +278,12 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
         cashTendered: snapshot.cashTendered,
         changeNis: snapshot.changeNis,
         settings,
+        partyBalance: await partyBalanceForSale(db, {
+          customerId: txRow.customer_id || row.customer_id,
+          payments: snapshot.paymentLines,
+          transactionId: row.transaction_id,
+          status: "posted",
+        }),
       });
       payload.checkout = {
         success: true,

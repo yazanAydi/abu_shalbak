@@ -189,6 +189,7 @@ describe("admin-only surfaces stay admin-only", () => {
     { label: "audit logs", method: "get", path: "/api/v1/admin/audit-logs" },
     { label: "supplier balance import", method: "post", path: "/api/v1/admin/import/supplier-balances/preview" },
     { label: "product delete password", method: "put", path: "/api/v1/admin/product-delete-password" },
+    { label: "zero all stock password", method: "put", path: "/api/v1/admin/zero-all-stock-password" },
   ];
 
   test.each(ADMIN_ONLY)("$label is refused for an accountant", async ({ method, path }) => {

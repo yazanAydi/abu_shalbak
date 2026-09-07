@@ -7,9 +7,10 @@
  *                      Never derived from sku.
  * See docs/PRODUCT_NUMBER_AND_BARCODE.md.
  */
-import { Router } from "express";
+import { createSafeRouter } from "../utils/asyncHandler.js";
 import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { isAdmin } from "../utils/roles.js";
+import { projectProductForRole } from "../utils/roleProjection.js";
 import {
   findProductByBarcode,
   isValidStoredBarcode,
@@ -704,7 +705,7 @@ export async function searchProducts(db, rawQuery, options = {}) {
 }
 
 export function createProductsRouter(db) {
-  const router = Router();
+  const router = createSafeRouter();
   const requireProductsOrOrg = requireAnyReportsPermission(db, "products", "product_organization");
   const requireCategories = requireReportsPermission(db, "categories");
   const requireUnits = requireReportsPermission(db, "units");
@@ -724,7 +725,7 @@ export function createProductsRouter(db) {
         scope: scope || undefined,
         limit: searchLimit,
       });
-      return res.json(rows ?? []);
+      return res.json(projectProductForRole(rows ?? [], req.user?.role));
     }
 
     if (!isAdmin(req.user?.role)) {
@@ -746,7 +747,7 @@ export function createProductsRouter(db) {
          FROM products WHERE id IN (${placeholders})${scopeSql}`,
         [...ids, ...scopeParams]
       );
-      return res.json(rows);
+      return res.json(projectProductForRole(rows, req.user?.role));
     }
 
     if (String(req.query.fields || "") === "id") {
@@ -790,7 +791,7 @@ export function createProductsRouter(db) {
     const countRow = await db.get(countSql, params);
     const rows = await db.all(selectSql, [...params, limit, offset]);
     return res.json({
-      items: rows,
+      items: projectProductForRole(rows, req.user?.role),
       total: Number(countRow?.total) || 0,
       limit,
       offset,
@@ -806,7 +807,7 @@ export function createProductsRouter(db) {
     if (payload.inactive) {
       return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
     }
-    return res.json(payload);
+    return res.json(projectProductForRole(payload, req.user?.role));
   });
 
   function sendCategoryError(res, e) {
@@ -942,11 +943,16 @@ export function createProductsRouter(db) {
 
     const payload = await buildBarcodeLookupResponse(db, barcode);
     if (payload) {
-      return res.json({
-        found: true,
-        inactive: Boolean(payload.inactive),
-        ...payload,
-      });
+      return res.json(
+        projectProductForRole(
+          {
+            found: true,
+            inactive: Boolean(payload.inactive),
+            ...payload,
+          },
+          req.user?.role
+        )
+      );
     }
 
     const found = await findProductByBarcode(db, barcode);
@@ -954,11 +960,16 @@ export function createProductsRouter(db) {
       return res.json({ found: false });
     }
 
-    return res.json({
-      found: true,
-      inactive: Number(found.product.is_active) === 0,
-      ...flatBarcodeLookupFields(found),
-    });
+    return res.json(
+      projectProductForRole(
+        {
+          found: true,
+          inactive: Number(found.product.is_active) === 0,
+          ...flatBarcodeLookupFields(found),
+        },
+        req.user?.role
+      )
+    );
   });
 
   router.get("/:barcode", requireAuth, async (req, res) => {
@@ -972,12 +983,12 @@ export function createProductsRouter(db) {
       if (Number(found.product.is_active) === 0) {
         return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
       }
-      return res.json(flatBarcodeLookupFields(found));
+      return res.json(projectProductForRole(flatBarcodeLookupFields(found), req.user?.role));
     }
     if (payload.inactive) {
       return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
     }
-    res.json(payload);
+    res.json(projectProductForRole(payload, req.user?.role));
   });
 
   router.post("/", requireAuth, requireProductsOrOrg, async (req, res) => {
@@ -1194,7 +1205,7 @@ export function createProductsRouter(db) {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const units = await loadUnitsForProduct(db, product.id);
-    res.json({ product_id: product.id, units });
+    res.json({ product_id: product.id, sku: product.sku ?? null, units });
   });
 
   router.get("/:id/last-purchase-cost", requireAuth, requireProductsOrOrg, async (req, res) => {

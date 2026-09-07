@@ -388,6 +388,7 @@ export default function Purchases() {
   const [saving, setSaving] = useState(false);
   const [editId, setEditId] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [postingAll, setPostingAll] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
 
   const loadSuppliers = useCallback(async () => {
@@ -562,6 +563,40 @@ export default function Purchases() {
     });
   }
 
+  async function postAllDocs() {
+    if (tab === "orders") return;
+    const rows = tab === "returns" ? returns : invoices;
+    const hasDrafts = rows.some((r) => r.status === "draft");
+    if (!hasDrafts) {
+      toast.error("لا توجد مسودات للترحيل");
+      return;
+    }
+    if (!window.confirm("ترحيل كل المسودات؟ سيحدّث المخزون وأرصدة المورد. لا يمكن التراجع.")) return;
+    await guardSubmit(async () => {
+      setPostingAll(true);
+      try {
+        const path = tab === "returns" ? "/api/purchases/returns/post-all" : "/api/purchases/invoices/post-all";
+        const { data } = await api.post(path, {}, { headers: getAuthHeaders() });
+        const n = Number(data?.posted_count) || 0;
+        const failed = Array.isArray(data?.errors) ? data.errors.length : 0;
+        if (n === 0 && failed === 0) {
+          toast.error("لا توجد مسودات للترحيل");
+        } else if (n === 0) {
+          toast.error(data.errors[0]?.error || "فشل الترحيل");
+        } else if (failed) {
+          toast.error(`تم ترحيل ${n} مستند — فشل ${failed}`);
+        } else {
+          toast.success(`تم ترحيل ${n} مستند`);
+        }
+        loadList(tab);
+      } catch (e) {
+        toast.error(e.response?.data?.error || "فشل الترحيل");
+      } finally {
+        setPostingAll(false);
+      }
+    });
+  }
+
   async function removeDoc(which, id) {
     if (!window.confirm("حذف هذه المسودة؟")) return;
     try {
@@ -665,6 +700,11 @@ export default function Purchases() {
               filename={`purchases-${tab}`}
               disabled={loading}
             />
+            {tab !== "orders" && (
+              <Button variant="outline" onClick={postAllDocs} disabled={postingAll}>
+                {postingAll ? "جاري الترحيل…" : "ترحيل الكل"}
+              </Button>
+            )}
             <Button icon="plus" onClick={openForm}>{newLabel}</Button>
           </>
         } />

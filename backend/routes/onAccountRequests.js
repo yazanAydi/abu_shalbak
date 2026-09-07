@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
-import { canViewReports } from "../utils/roles.js";
+import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { validate } from "../middleware/validate.js";
 import { onAccountRequestReviewSchema } from "../middleware/schemas.js";
 import {
@@ -15,10 +15,13 @@ import {
   buildOnAccountRequestStatusPayload,
 } from "../services/onAccountRequestService.js";
 
-function canViewOnAccountRequest(user, request) {
+async function canViewOnAccountRequest(db, user, request) {
   if (!user || !request) return false;
-  if (canViewReports(user.role)) return true;
-  return Number(request.cashier_id) === Number(user.id);
+  if (Number(request.cashier_id) === Number(user.id)) return true;
+  if (user.role === "admin" || user.role === "accountant") {
+    return userHasAccountantPermission(db, user, "on_account_approvals");
+  }
+  return false;
 }
 
 export function createOnAccountRequestsRouter(db) {
@@ -63,7 +66,7 @@ export function createOnAccountRequestsRouter(db) {
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     const row = await getOnAccountRequestById(db, id);
     if (!row) return res.status(404).json({ error: "طلب الذمة غير موجود" });
-    if (!canViewOnAccountRequest(req.user, row)) {
+    if (!(await canViewOnAccountRequest(db, req.user, row))) {
       return res.status(403).json({ error: "ممنوع" });
     }
     res.json(await buildOnAccountRequestStatusPayload(db, row));

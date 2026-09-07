@@ -37,6 +37,12 @@ export function Input({ className = "", onKeyDown, type, ...rest }) {
     );
   }
 
+  if (type === "checkbox") {
+    return (
+      <input className={`ui-check ${className}`.trim()} type="checkbox" {...rest} />
+    );
+  }
+
   return (
     <input className={`ui-input ${className}`} type={type} {...rest} onKeyDown={handleKeyDown} />
   );

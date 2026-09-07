@@ -4,8 +4,8 @@ import { hasAccountantPermission } from "../../utils/accountantPermissions";
 /** @typedef {{ path: string, label: string, icon: string, section?: string, badgePath?: string, permissionKey?: string, visible: (role: string, permissions?: Record<string, boolean>|null) => boolean }} NavItem */
 
 function canSeeNavItem(role, permissions, permissionKey) {
-  if (isAdminRole(role)) return true;
   if (!canViewReports(role)) return false;
+  if (isAdminRole(role) && !permissionKey) return true;
   if (!permissionKey) return false;
   return hasAccountantPermission(role, permissions, permissionKey);
 }
