@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
+import { isAdminRole } from "../utils/roles";
+import useAuthUser from "../hooks/useAuthUser";
 import ProductPicker from "../components/ProductPicker";
 import QtyStepper from "../components/QtyStepper";
 import {
@@ -38,6 +40,7 @@ const LINE_COLUMNS = [
 const ils = (n) => `₪${Number(n ?? 0).toFixed(2)}`;
 
 export default function InventoryCount({ embedded = false }) {
+  const canZeroAllStock = isAdminRole(useAuthUser()?.role);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -206,9 +209,11 @@ export default function InventoryCount({ embedded = false }) {
                 rows={reportConfig.rows}
                 filename={reportConfig.filename}
               />
+              {canZeroAllStock ? (
               <button className="btn-danger" onClick={openZeroAllStock} disabled={saving}>
                 تصفير كل الكميات
               </button>
+              ) : null}
               {activeSession.status === "open" && (
                 <button className="btn-danger" onClick={() => postSession(activeSession)} disabled={saving}>
                   ترحيل الجرد
@@ -281,9 +286,11 @@ export default function InventoryCount({ embedded = false }) {
               disabled={loading}
             />
             <button className="btn-primary" onClick={openNew}>+ فتح جلسة جرد جديدة</button>
+            {canZeroAllStock ? (
             <button className="btn-danger" onClick={openZeroAllStock} disabled={saving}>
               تصفير كل الكميات
             </button>
+            ) : null}
           </div>
           {loading ? (
             <p>جاري التحميل…</p>

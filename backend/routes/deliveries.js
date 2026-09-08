@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { nextNumericDoc } from "../utils/receiptNumber.js";
@@ -25,7 +25,7 @@ export function createDeliveriesRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.post("/sales", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/sales", requireAuth, requireDeliveries, async (req, res) => {
     const { transaction_id, customer_id, driver, vehicle, address, delivery_date, notes } = req.body || {};
     const noRow = await db.get("SELECT MAX(delivery_no) AS mx FROM sales_deliveries");
     const no = await nextNumericDoc(db, "delivery", Number(noRow?.mx) || 0);
@@ -44,7 +44,7 @@ export function createDeliveriesRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM sales_deliveries WHERE id = ?", [ins.lastID]));
   });
 
-  router.patch("/sales/:id/status", requireAuth, requireAdmin, async (req, res) => {
+  router.patch("/sales/:id/status", requireAuth, requireDeliveries, async (req, res) => {
     const { status } = req.body || {};
     if (!SALES_STATUS.includes(status)) return res.status(400).json({ error: "حالة غير صالحة", code: "VALIDATION_ERROR" });
     const info = await db.run("UPDATE sales_deliveries SET status = ? WHERE id = ?", [status, req.params.id]);
@@ -52,7 +52,7 @@ export function createDeliveriesRouter(db) {
     res.json(await db.get("SELECT * FROM sales_deliveries WHERE id = ?", [req.params.id]));
   });
 
-  router.delete("/sales/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/sales/:id", requireAuth, requireDeliveries, async (req, res) => {
     const info = await db.run("DELETE FROM sales_deliveries WHERE id = ?", [req.params.id]);
     if (info.changes === 0) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     res.json({ success: true });
@@ -72,7 +72,7 @@ export function createDeliveriesRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.post("/receivings", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/receivings", requireAuth, requireDeliveries, async (req, res) => {
     const { purchase_invoice_id, supplier_id, driver, vehicle, received_date, notes } = req.body || {};
     const noRow = await db.get("SELECT MAX(receiving_no) AS mx FROM purchase_receivings");
     const no = await nextNumericDoc(db, "receiving", Number(noRow?.mx) || 0);
@@ -91,7 +91,7 @@ export function createDeliveriesRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM purchase_receivings WHERE id = ?", [ins.lastID]));
   });
 
-  router.patch("/receivings/:id/status", requireAuth, requireAdmin, async (req, res) => {
+  router.patch("/receivings/:id/status", requireAuth, requireDeliveries, async (req, res) => {
     const { status } = req.body || {};
     if (!RECV_STATUS.includes(status)) return res.status(400).json({ error: "حالة غير صالحة", code: "VALIDATION_ERROR" });
     const info = await db.run("UPDATE purchase_receivings SET status = ? WHERE id = ?", [status, req.params.id]);
@@ -99,7 +99,7 @@ export function createDeliveriesRouter(db) {
     res.json(await db.get("SELECT * FROM purchase_receivings WHERE id = ?", [req.params.id]));
   });
 
-  router.delete("/receivings/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/receivings/:id", requireAuth, requireDeliveries, async (req, res) => {
     const info = await db.run("DELETE FROM purchase_receivings WHERE id = ?", [req.params.id]);
     if (info.changes === 0) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     res.json({ success: true });

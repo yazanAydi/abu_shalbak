@@ -63,6 +63,23 @@ export function authHeader(token) {
   return { Authorization: `Bearer ${token}` };
 }
 
+/**
+ * Office accountant used by permission tests. Pass `permissions` to store a
+ * custom users.permissions_json map; omit it to follow the global template.
+ */
+export async function createAccountantUser(
+  db,
+  { username = "testaccountant", password = "acctpass123", permissions = null } = {}
+) {
+  const hash = await bcrypt.hash(password, 4);
+  const permissionsJson = permissions == null ? null : JSON.stringify(permissions);
+  const ins = await db.run(
+    "INSERT INTO users (username, password, role, must_change_password, permissions_json) VALUES (?, ?, 'accountant', 0, ?)",
+    [username, hash, permissionsJson]
+  );
+  return { id: ins.lastID, username, password };
+}
+
 export async function destroyTestContext(ctx) {
   if (!ctx) return;
   try {

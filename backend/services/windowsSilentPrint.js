@@ -141,11 +141,75 @@ function powershellJson(script) {
 
 const RECEIPT_PRINTER_NAME_RE = /^[\w \-\.\(\)\\]+$/;
 
+export function receiptPrintAgentToken(env = process.env) {
+  return String(env.RECEIPT_PRINT_AGENT_TOKEN || "").trim();
+}
+
+export function receiptPrintAgentHeaders(env = process.env) {
+  const headers = { "Content-Type": "application/json", Accept: "application/json" };
+  const token = receiptPrintAgentToken(env);
+  if (token) headers["X-Receipt-Print-Token"] = token;
+  return headers;
+}
+
+async function listInstalledPrinterNames() {
+  try {
+    const { getPrinters } = loadPdfToPrinter();
+    if (typeof getPrinters === "function") {
+      const all = await getPrinters();
+      return (all || []).map((p) => p?.name).filter(Boolean);
+    }
+  } catch {
+    /* fall through */
+  }
+  const row = await powershellJson(
+    `@(Get-CimInstance -ClassName Win32_Printer | Select-Object -ExpandProperty Name) | ConvertTo-Json -Compress`
+  );
+  if (Array.isArray(row)) return row.map(String);
+  if (typeof row === "string" && row.trim()) return [row.trim()];
+  return [];
+}
+
+/**
+ * Startup check: named RECEIPT_PRINTER must exist and must not be Print to PDF.
+ * If unset, Windows default must be a real thermal printer.
+ */
+export async function assertReceiptPrinterReady() {
+  if (isReceiptPrintTestSave()) {
+    return { printer: null, testMode: true, printerOk: true };
+  }
+  const named = process.env.RECEIPT_PRINTER && String(process.env.RECEIPT_PRINTER).trim();
+  if (named) {
+    if (!RECEIPT_PRINTER_NAME_RE.test(named)) {
+      throw new SilentPrintError("INVALID_PRINTER", "اسم الطابعة غير صالح");
+    }
+    if (VIRTUAL_PRINTER.test(named)) {
+      throw new SilentPrintError(
+        "VIRTUAL_PRINTER",
+        `الطابعة "${named}" ليست طابعة إيصالات (Print to PDF / XPS). عيّن RECEIPT_PRINTER للطابعة الحرارية.`
+      );
+    }
+    const names = await listInstalledPrinterNames().catch(() => []);
+    if (names.length > 0 && !names.includes(named)) {
+      throw new SilentPrintError("NO_PRINTER", `الطابعة "${named}" غير مثبتة على ويندوز`);
+    }
+    return { printer: named, testMode: false, printerOk: true };
+  }
+  const printer = await resolveReceiptPrinterName();
+  return { printer, testMode: false, printerOk: true };
+}
+
 export async function resolveReceiptPrinterName() {
   const named = process.env.RECEIPT_PRINTER && String(process.env.RECEIPT_PRINTER).trim();
   if (named) {
     if (!RECEIPT_PRINTER_NAME_RE.test(named)) {
       throw new SilentPrintError("INVALID_PRINTER", "اسم الطابعة غير صالح");
+    }
+    if (VIRTUAL_PRINTER.test(named)) {
+      throw new SilentPrintError(
+        "VIRTUAL_PRINTER",
+        `الطابعة "${named}" ليست طابعة إيصالات (Print to PDF / XPS). عيّن RECEIPT_PRINTER للطابعة الحرارية.`
+      );
     }
     return named;
   }
@@ -343,7 +407,7 @@ export function setPrintPipelineForTests(partial = null) {
 }
 
 const AGENT_UNAVAILABLE_AR =
-  "خدمة طباعة الإيصالات غير شغّالة على جهاز ويندوز. شغّل start-store.ps1 ثم أعد طباعة الإيصال.";
+  "تعذر الاتصال بطابعة الإيصالات. تأكد من تشغيل خدمة الطباعة ثم حاول مرة أخرى.";
 
 export function receiptPrintAgentUrl() {
   const raw = process.env.RECEIPT_PRINT_AGENT_URL;
@@ -365,7 +429,7 @@ export async function forwardToPrintAgent(html, fetchImpl = globalThis.fetch) {
   try {
     res = await fetchImpl(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: receiptPrintAgentHeaders(),
       body: JSON.stringify({ html }),
       signal: AbortSignal.timeout(60000),
     });

@@ -15,6 +15,8 @@
     "store:logs": "docker compose logs -f app",
     "store:ps": "docker compose ps",
     "store:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-store.ps1 -Build",
+    "admin:app": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/open-admin-app.ps1",
+    "admin:shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/open-admin-app.ps1 -CreateShortcut",
     "build": "npm run build --prefix frontend && npm run build --prefix frontend-pos",
     "build:admin": "npm run build --prefix frontend",
     "build:pos": "npm run build --prefix frontend-pos",

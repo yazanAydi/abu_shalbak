@@ -1,7 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import api, { createAbortController } from "../apiClient";
 import { Link, useNavigate } from "react-router-dom";
-import { getAuthHeaders } from "../utils/auth";
+import { getAuthHeaders, getUser } from "../utils/auth";
+import { userHasOfficePermission } from "../utils/accountantPermissions";
 import {
   buildDashboardAlerts,
   buildDemoChartSeries,
@@ -187,12 +188,18 @@ export default function DailyReport() {
         // first paint waits only on the daily summary instead of on the slowest
         // of eight calls. The remaining panels fill in behind it.
         const dailyPromise = api.get(`/api/reports/daily?date=${todayStr}`, { headers, signal });
-        const openShiftsPromise = api
-          .get("/api/shifts?status=open", { headers, signal })
-          .catch(() => ({ data: [] }));
-        const closedShiftsPromise = api
-          .get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers, signal })
-          .catch(() => ({ data: [] }));
+        const canSeeShifts = userHasOfficePermission(getUser(), "shift_audit");
+        const canSeeFinance = userHasOfficePermission(getUser(), "finance");
+        const openShiftsPromise = canSeeShifts
+          ? api
+              .get("/api/shifts?status=open", { headers, signal })
+              .catch(() => ({ data: [] }))
+          : Promise.resolve({ data: [] });
+        const closedShiftsPromise = canSeeShifts
+          ? api
+              .get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers, signal })
+              .catch(() => ({ data: [] }))
+          : Promise.resolve({ data: [] });
         const lowStockPromise = api
           .get(
             `/api/reports/low-stock?threshold=${LOW_STOCK_THRESHOLD}&limit=${LOW_STOCK_WIDGET_LIMIT}`,
@@ -202,10 +209,12 @@ export default function DailyReport() {
         const nearExpiryPromise = api
           .get(`/api/reports/near-expiry?limit=${NEAR_EXPIRY_WIDGET_LIMIT}`, { headers, signal })
           .catch(() => ({ data: { items: [], total_count: 0, days_threshold: 7 } }));
-        const reconPromise = api
-          .get(`/api/finance/cash/reconciliation?date=${todayStr}`, { headers, signal })
-          .then((r) => r.data)
-          .catch(() => null);
+        const reconPromise = canSeeFinance
+          ? api
+              .get(`/api/finance/cash/reconciliation?date=${todayStr}`, { headers, signal })
+              .then((r) => r.data)
+              .catch(() => null)
+          : Promise.resolve(null);
         const chartPromise = fetchChartData(chartPeriodRef.current, signal).catch(() => ({
           series: [],
           isDemo: false,

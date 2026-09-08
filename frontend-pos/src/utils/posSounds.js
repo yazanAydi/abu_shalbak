@@ -1,17 +1,20 @@
 import scanSuccessUrl from "../assets/sounds/scan-success.mp3";
 import productNotFoundUrl from "../assets/sounds/product-not-found.mp3";
 import checkoutDoneUrl from "../assets/sounds/checkout-done.mp3";
+import approvalDecisionUrl from "../assets/sounds/approval-decision.mp3";
 
 const URLS = {
   scanSuccess: scanSuccessUrl,
   productNotFound: productNotFoundUrl,
   checkoutDone: checkoutDoneUrl,
+  approvalDecision: approvalDecisionUrl,
 };
 
 const MAX_MS = {
   scanSuccess: 650,
   productNotFound: 1300,
   checkoutDone: 1200,
+  approvalDecision: 8000,
 };
 
 const pools = {};
@@ -60,6 +63,7 @@ export function warmPosSounds() {
   initPool("scanSuccess");
   initPool("productNotFound");
   initPool("checkoutDone");
+  initPool("approvalDecision");
   const ctx = getAudioContext();
   if (ctx?.state === "suspended") ctx.resume().catch(() => {});
   return Promise.all(Object.keys(URLS).map((name) => decodeSound(name))).catch(() => {});
@@ -163,6 +167,23 @@ export function playProductNotFound() {
 
 export function playCheckoutDone() {
   play("checkoutDone");
+}
+
+const announcedDecisions = new Set();
+
+function decisionKey(kind, id) {
+  if (kind == null || id == null || id === "") return null;
+  return `${kind}:${id}`;
+}
+
+/** Play the Telegram/admin decision chime once per request (سلف / ذمم / استرجاع). */
+export function playApprovalDecision(kind, id) {
+  const key = decisionKey(kind, id);
+  if (key) {
+    if (announcedDecisions.has(key)) return;
+    announcedDecisions.add(key);
+  }
+  play("approvalDecision");
 }
 
 if (typeof window !== "undefined") {

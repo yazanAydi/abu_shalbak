@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
-import { getAuthHeaders } from "../utils/auth";
+import { getAuthHeaders, getUser } from "../utils/auth";
+import { userHasOfficePermission } from "../utils/accountantPermissions";
 import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
 import CategorySelect from "../components/CategorySelect";
 import UnitNameSelect from "../components/UnitNameSelect";
@@ -266,9 +267,11 @@ export default function ProductOrganization() {
                   {msg}
                 </span>
               ) : null}
+              {userHasOfficePermission(getUser(), "products") ? (
               <Link className="product-org-link" to={`/products/${p.id}`}>
                 تفاصيل
               </Link>
+              ) : null}
             </div>
           );
         },

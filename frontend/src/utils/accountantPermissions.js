@@ -86,6 +86,29 @@ export function normalizeAccountantPermissions(raw) {
   return out;
 }
 
+function permissionFlag(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+export function isOfficePermissionRole(role) {
+  return role === "admin" || role === "accountant";
+}
+
+/** Parse a stored permissions object. Returns a plain object or null (use defaults). */
+export function parseUserPermissionsJson(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw;
+  const text = String(raw).trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function hasAccountantPermission(role, permissions, key) {
   if (role === "admin") {
     if (
@@ -94,12 +117,7 @@ export function hasAccountantPermission(role, permissions, key) {
       !Array.isArray(permissions) &&
       Object.prototype.hasOwnProperty.call(permissions, key)
     ) {
-      return (
-        permissions[key] === true ||
-        permissions[key] === "true" ||
-        permissions[key] === 1 ||
-        permissions[key] === "1"
-      );
+      return permissionFlag(permissions[key]);
     }
     return true;
   }
@@ -108,10 +126,21 @@ export function hasAccountantPermission(role, permissions, key) {
   return normalized[key] === true;
 }
 
+/**
+ * Sync counterpart of backend resolveUserPermissions (without reading settings).
+ * Custom stored map wins for admin and accountant; otherwise admin is all-on.
+ */
 export function getEffectivePermissions(role, storedPermissions) {
+  if (!isOfficePermissionRole(role)) return defaultAccountantPermissions();
+  const parsed = parseUserPermissionsJson(storedPermissions);
+  if (parsed) return normalizeAccountantPermissions(parsed);
   if (role === "admin") return allAccountantPermissionsEnabled();
-  if (role === "accountant") return normalizeAccountantPermissions(storedPermissions);
-  return defaultAccountantPermissions();
+  return normalizeAccountantPermissions(storedPermissions);
+}
+
+/** Same check as hasAccountantPermission for a signed-in Office user object. */
+export function userHasOfficePermission(user, key) {
+  return hasAccountantPermission(user?.role, user?.permissions, key);
 }
 
 /** First allowed office path after login / denied-route redirect. */

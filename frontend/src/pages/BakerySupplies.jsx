@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { todayISO } from "../utils/format";
 import { useNavigate } from "react-router-dom";
 import api from "../apiClient";
-import { getAuthHeaders } from "../utils/auth";
+import { getAuthHeaders, getUser } from "../utils/auth";
+import { userHasOfficePermission } from "../utils/accountantPermissions";
 import { searchProductsApi } from "../utils/productSearch";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
 import ProductPicker from "../components/ProductPicker";
@@ -164,7 +165,8 @@ function SuppliesCatalog() {
     {
       key: "name",
       header: "الاسم",
-      render: (p) => (
+      render: (p) =>
+        userHasOfficePermission(getUser(), "products") ? (
         <button
           type="button"
           className="ui-link-btn"
@@ -172,7 +174,9 @@ function SuppliesCatalog() {
         >
           {p.name}
         </button>
-      ),
+        ) : (
+          p.name
+        ),
     },
     { key: "unit", header: "الوحدة", render: (p) => p.unit || "—" },
     { key: "stock", header: "المخزون", className: "num" },

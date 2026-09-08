@@ -1,10 +1,12 @@
-# Obsolete for POS receipts: checkout uses the Windows print agent / silent API.
-# Start the shop with npm run store:up (Docker + receipt-print-agent).
-# Store:  .\scripts\open-pos-silent-print.ps1
-# Dev:    .\scripts\open-pos-silent-print.ps1 -Url http://127.0.0.1:3002/pos
-# Pin:    .\scripts\open-pos-silent-print.ps1 -CreateShortcut
+# Open office admin as a Chromium app window with DevTools disabled.
+# A normal Edge/Chrome "Install as app" shortcut still allows F12, so a
+# barcode scanner suffix opens the Console over the page.
+#
+# Store:  .\scripts\open-admin-app.ps1
+# Dev:    .\scripts\open-admin-app.ps1 -Url http://127.0.0.1:3001/admin
+# Pin:    .\scripts\open-admin-app.ps1 -CreateShortcut
 param(
-  [string]$Url = "http://127.0.0.1:3000/pos",
+  [string]$Url = "http://127.0.0.1:3000/admin",
   [switch]$CreateShortcut
 )
 
@@ -29,7 +31,6 @@ function Resolve-ChromiumBrowser {
 function Get-BrowserArgs([string]$AppUrl, [string]$ProfileDir) {
   return @(
     "--disable-dev-tools",
-    "--kiosk-printing",
     "--no-first-run",
     "--no-default-browser-check",
     "--user-data-dir=$ProfileDir",
@@ -38,7 +39,7 @@ function Get-BrowserArgs([string]$AppUrl, [string]$ProfileDir) {
 }
 
 if ($Url -notmatch '^https?://') {
-  Write-Host "Invalid -Url. Use an http(s) POS address, e.g. http://127.0.0.1:3000/pos" -ForegroundColor Red
+  Write-Host "Invalid -Url. Use an http(s) admin address, e.g. http://127.0.0.1:3000/admin" -ForegroundColor Red
   exit 1
 }
 
@@ -48,24 +49,13 @@ if (-not $browser) {
   exit 1
 }
 
-$profileDir = Join-Path $env:LOCALAPPDATA "AboShalbak\pos-silent-print"
+$profileDir = Join-Path $env:LOCALAPPDATA "AboShalbak\admin-app"
 New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
 $browserArgs = Get-BrowserArgs -AppUrl $Url -ProfileDir $profileDir
 
-try {
-  $defaultPrinter = Get-CimInstance -ClassName Win32_Printer -Filter "Default=True" -ErrorAction Stop |
-    Select-Object -First 1
-  if ($defaultPrinter -and $defaultPrinter.Name -match "PDF|XPS|OneNote|Fax") {
-    Write-Host "Default printer is '$($defaultPrinter.Name)'." -ForegroundColor Yellow
-    Write-Host "Set the receipt / thermal printer as the Windows default, or print will ask where to save." -ForegroundColor Yellow
-  }
-} catch {
-  # Printer query is best-effort; still open POS.
-}
-
 if ($CreateShortcut) {
   $desktop = [Environment]::GetFolderPath("Desktop")
-  $shortcutPath = Join-Path $desktop "POS - silent print.lnk"
+  $shortcutPath = Join-Path $desktop "AboShalbak-Admin.lnk"
   $shell = New-Object -ComObject WScript.Shell
   $shortcut = $shell.CreateShortcut($shortcutPath)
   $shortcut.TargetPath = $browser
@@ -74,13 +64,13 @@ if ($CreateShortcut) {
   }) -join " "
   $shortcut.WorkingDirectory = Split-Path -Parent $browser
   $shortcut.WindowStyle = 1
-  $shortcut.Description = "Open POS with automatic receipt printing (no print dialog)"
+  $shortcut.Description = "Open admin as an app (DevTools disabled so barcode scan cannot open the Console)"
   $shortcut.Save()
   Write-Host "Shortcut created: $shortcutPath" -ForegroundColor Green
-  Write-Host "Open POS only from this shortcut so receipts print without the browser dialog." -ForegroundColor DarkGray
+  Write-Host "Use this shortcut only. Uninstall the old Edge/Chrome 'installed app' if it still opens the Console." -ForegroundColor DarkGray
   exit 0
 }
 
-Write-Host "Opening POS (silent print) in $browser" -ForegroundColor Green
+Write-Host "Opening admin app in $browser" -ForegroundColor Green
 Write-Host $Url -ForegroundColor DarkGray
 Start-Process -FilePath $browser -ArgumentList $browserArgs

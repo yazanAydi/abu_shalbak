@@ -1,9 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
+import { useVisiblePoll } from "../../hooks/useVisiblePoll";
+import { playApprovalDecision } from "../../utils/posSounds";
 import "../ShiftModal.css";
 
+function kindFromApiPath(apiPath) {
+  const path = String(apiPath || "");
+  if (path.includes("advance")) return "advance";
+  if (path.includes("on-account")) return "on_account";
+  return "refund";
+}
+
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
+
+const TERMINAL = ["approved", "rejected", "expired"];
 
 /**
  * @param {object} props
@@ -29,59 +40,70 @@ export default function PosApprovalWaitingModal({
   const [status, setStatus] = useState("pending");
   const [detail, setDetail] = useState(null);
   const [err, setErr] = useState("");
+  const [minimized, setMinimized] = useState(false);
   const terminalRef = useRef(false);
+  const onTerminalRef = useRef(onTerminal);
+  onTerminalRef.current = onTerminal;
 
   useEffect(() => {
-    if (!open || !requestId) {
-      setStatus("pending");
-      setDetail(null);
+    setStatus("pending");
+    setDetail(null);
+    setErr("");
+    setMinimized(false);
+    terminalRef.current = false;
+  }, [open, requestId]);
+
+  const poll = useCallback(async () => {
+    if (!open || !requestId) return;
+    try {
+      const { data } = await api.get(`${apiPath}/${requestId}`, {
+        headers: getAuthHeaders(),
+        params: { _: Date.now() },
+      });
+      const payload = data?.data ?? data;
+      if (!payload || typeof payload !== "object") return;
+      setDetail(payload);
+      const next = payload.status || "pending";
+      setStatus(next);
       setErr("");
-      terminalRef.current = false;
-      return undefined;
-    }
-
-    let cancelled = false;
-
-    async function poll() {
-      try {
-        const { data } = await api.get(`${apiPath}/${requestId}`, {
-          headers: getAuthHeaders(),
-        });
-        if (cancelled) return;
-        const payload = data?.data ?? data;
-        setDetail(payload);
-        setStatus(payload.status || "pending");
-        setErr("");
-        if (["approved", "rejected", "expired"].includes(payload.status)) {
-          if (!terminalRef.current) {
-            terminalRef.current = true;
-            onTerminal?.(payload);
-          }
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setErr(e.response?.data?.error || e.message || "تعذّر التحقق من الحالة");
-        }
+      if (TERMINAL.includes(next) && !terminalRef.current) {
+        terminalRef.current = true;
+        setMinimized(false);
+        playApprovalDecision(kindFromApiPath(apiPath), requestId);
+        onTerminalRef.current?.(payload);
       }
+    } catch (e) {
+      setErr(e.response?.data?.error || e.message || "تعذّر التحقق من الحالة");
     }
+  }, [open, requestId, apiPath]);
 
-    poll();
-    // Skip the request while the till is in the background. The next tick is only
-    // 3s away, so a returning cashier is never left looking at stale status.
-    const t = setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      poll();
-    }, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [open, requestId, apiPath, onTerminal]);
+  useEffect(() => {
+    if (open && requestId) poll();
+  }, [open, requestId, poll]);
+
+  // Keep polling even if the till tab is in the background — Telegram approval
+  // often happens on another device, and the cashier must see the result.
+  useVisiblePoll(poll, 2500, {
+    enabled: open && !!requestId,
+    hiddenIntervalMs: 2500,
+  });
 
   if (!open || !requestId) return null;
 
-  const isTerminal = ["approved", "rejected", "expired"].includes(status);
+  const isTerminal = TERMINAL.includes(status);
   const extra = detailLine?.(detail);
+
+  if (minimized && !isTerminal) {
+    return (
+      <button
+        type="button"
+        className="pos-waiting-chip"
+        onClick={() => setMinimized(false)}
+      >
+        بانتظار الموافقة — {titlePrefix} #{requestId}
+      </button>
+    );
+  }
 
   return (
     <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
@@ -103,7 +125,7 @@ export default function PosApprovalWaitingModal({
             {isTerminal ? "إغلاق" : "—"}
           </button>
           {!isTerminal ? (
-            <button type="button" className="shift-modal-secondary" onClick={onClose}>
+            <button type="button" className="shift-modal-secondary" onClick={() => setMinimized(true)}>
               إخفاء (يستمر بالخلفية)
             </button>
           ) : null}

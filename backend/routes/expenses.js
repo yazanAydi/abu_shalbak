@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 
 const PAY_METHODS = ["cash", "transfer", "check", "other"];
@@ -20,14 +20,14 @@ export function createExpensesRouter(db) {
     res.json(await db.all("SELECT * FROM expense_categories ORDER BY active DESC, name_ar, name"));
   });
 
-  router.post("/categories", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/categories", requireAuth, requireReports, async (req, res) => {
     const { name, name_ar } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ error: "اسم الفئة مطلوب", code: "VALIDATION_ERROR" });
     const ins = await db.run("INSERT INTO expense_categories (name, name_ar) VALUES (?, ?)", [String(name).trim(), name_ar || null]);
     res.status(201).json(await db.get("SELECT * FROM expense_categories WHERE id = ?", [ins.lastID]));
   });
 
-  router.put("/categories/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.put("/categories/:id", requireAuth, requireReports, async (req, res) => {
     const ex = await db.get("SELECT * FROM expense_categories WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     const b = req.body || {};
@@ -38,7 +38,7 @@ export function createExpensesRouter(db) {
     res.json(await db.get("SELECT * FROM expense_categories WHERE id = ?", [req.params.id]));
   });
 
-  router.delete("/categories/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/categories/:id", requireAuth, requireReports, async (req, res) => {
     const used = await db.get("SELECT COUNT(*) AS n FROM operating_expenses WHERE category_id = ?", [req.params.id]);
     if (used.n > 0) {
       await db.run("UPDATE expense_categories SET active = 0 WHERE id = ?", [req.params.id]);
@@ -65,7 +65,7 @@ export function createExpensesRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.post("/", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/", requireAuth, requireReports, async (req, res) => {
     const { category_id, amount, paid_on, payment_method, reference_note } = req.body || {};
     const cid = Number(category_id);
     const cat = await db.get("SELECT * FROM expense_categories WHERE id = ?", [cid]);
@@ -88,7 +88,7 @@ export function createExpensesRouter(db) {
     res.status(201).json(row);
   });
 
-  router.delete("/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/:id", requireAuth, requireReports, async (req, res) => {
     const info = await db.run("DELETE FROM operating_expenses WHERE id = ?", [req.params.id]);
     if (info.changes === 0) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     res.json({ success: true });

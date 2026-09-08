@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { requireAuth, requireAdmin, requireReportsPermission, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission, requireAnyReportsPermission, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
 import { isAdmin, isKioskOnlyRole, isValidRole, USER_ROLES } from "../utils/roles.js";
 import {
   csvBufferToRecords,
@@ -24,12 +24,14 @@ import { validate } from "../middleware/validate.js";
 import { productDeletePasswordSchema, userPermissionsSchema } from "../middleware/schemas.js";
 import {
   allAccountantPermissionsEnabled,
+  defaultAccountantPermissions,
   isOfficePermissionRole,
   normalizeAccountantPermissions,
   parseUserPermissionsJson,
 } from "../utils/accountantPermissions.js";
 import {
   getAppSettings,
+  updateAppSettings,
   getProductDeletePasswordHash,
   setProductDeletePasswordHash,
   clearProductDeletePassword,
@@ -163,8 +165,16 @@ function forbidAccountantAdminPrivilege(req, targetRole, existingRole) {
 export function createAdminRouter(db, dbPath) {
   const router = Router();
   const requireUsers = requireReportsPermission(db, "user_accounts");
+  const requirePermissions = requireReportsPermission(db, "permissions");
+  const requireUsersOrPermissions = requireAnyReportsPermission(db, "user_accounts", "permissions");
 
   router.use(requireAuth, (req, res, next) => {
+    if (req.path === "/office-accounts" || req.path === "/permission-defaults") {
+      return requirePermissions(req, res, next);
+    }
+    if (req.method === "GET" && /^\/users\/\d+\/permissions$/.test(req.path)) {
+      return requireUsersOrPermissions(req, res, next);
+    }
     if (req.path === "/roles" || req.path.startsWith("/users")) {
       return requireUsers(req, res, next);
     }
@@ -537,6 +547,59 @@ export function createAdminRouter(db, dbPath) {
       next(e);
     }
   });
+
+  router.get("/office-accounts", async (_req, res) => {
+    const rows = await db.all(
+      `SELECT id, username, role,
+              CASE WHEN permissions_json IS NOT NULL AND TRIM(permissions_json) != '' THEN 1 ELSE 0 END
+                AS has_custom_permissions
+       FROM users
+       WHERE role IN ('admin', 'accountant')
+       ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, username`
+    );
+    res.json(
+      rows.map((row) => ({
+        ...row,
+        has_custom_permissions: !!row.has_custom_permissions,
+      }))
+    );
+  });
+
+  router.get("/permission-defaults", async (_req, res) => {
+    const settings = await getAppSettings(db);
+    res.json({
+      permissions: normalizeAccountantPermissions(settings.accountant_permissions),
+    });
+  });
+
+  router.put(
+    "/permission-defaults",
+    requireAdmin,
+    validate(userPermissionsSchema),
+    async (req, res, next) => {
+      try {
+        const raw = req.body.permissions;
+        const permissions =
+          raw == null ? defaultAccountantPermissions() : normalizeAccountantPermissions(raw);
+        const before = await getAppSettings(db);
+        const settings = await updateAppSettings(db, { accountant_permissions: permissions });
+        await logAudit(
+          db,
+          req,
+          AUDIT_ACTIONS.SETTINGS_UPDATE,
+          "app_settings",
+          null,
+          { accountant_permissions: before.accountant_permissions },
+          { accountant_permissions: settings.accountant_permissions }
+        );
+        res.json({
+          permissions: normalizeAccountantPermissions(settings.accountant_permissions),
+        });
+      } catch (e) {
+        next(e);
+      }
+    }
+  );
 
   router.get("/roles", (_req, res) => {
     res.json({ roles: USER_ROLES });

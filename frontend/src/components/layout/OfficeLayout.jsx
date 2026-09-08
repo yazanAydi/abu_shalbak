@@ -27,6 +27,7 @@ export default function OfficeLayout() {
       refreshMe();
     }
 
+    refreshMe();
     window.addEventListener("focus", onResume);
     document.addEventListener("visibilitychange", onResume);
     return () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
-import { ROLE_LABELS_AR, USER_ROLES, isKioskOnlyRole, roleNeedsPassword } from "../utils/roles";
+import { ROLE_LABELS_AR, USER_ROLES, isAdminRole, isKioskOnlyRole, roleNeedsPassword } from "../utils/roles";
 import {
   PageHeader,
   Card,
@@ -23,6 +23,9 @@ import { pickExportColumns } from "../utils/reportExport";
 export default function UserManagement() {
   const toast = useToast();
   const me = getUser();
+  const assignableRoles = isAdminRole(me?.role)
+    ? USER_ROLES
+    : USER_ROLES.filter((role) => role !== "admin");
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ username: "", password: "", role: "cashier" });
@@ -77,6 +80,7 @@ export default function UserManagement() {
   }
 
   function startEdit(u) {
+    if (!isAdminRole(me?.role) && u.role === "admin") return;
     setEditing(u.id);
     setEditRole(u.role);
     setEditPassword("");
@@ -144,7 +148,7 @@ export default function UserManagement() {
             onChange={(e) => setEditRole(e.target.value)}
             onClick={(e) => e.stopPropagation()}
           >
-            {USER_ROLES.map((r) => (
+            {assignableRoles.map((r) => (
               <option key={r} value={r}>
                 {ROLE_LABELS_AR[r] || r}
               </option>
@@ -174,6 +178,8 @@ export default function UserManagement() {
               إلغاء
             </SecondaryButton>
           </div>
+        ) : !isAdminRole(me?.role) && u.role === "admin" ? (
+          <span className="ui-hint">حساب مدير</span>
         ) : (
           <div className="ui-table__actions">
             <SecondaryButton size="sm" type="button" onClick={() => startEdit(u)}>
@@ -199,7 +205,7 @@ export default function UserManagement() {
         subtitle={
           <>
             أنشئ حسابات بصلاحية:{" "}
-            {USER_ROLES.map((r) => (
+            {assignableRoles.map((r) => (
               <StatusBadge key={r} tone="neutral" noDot>
                 {ROLE_LABELS_AR[r] || r}
               </StatusBadge>
@@ -257,7 +263,7 @@ export default function UserManagement() {
                   }));
                 }}
               >
-                {USER_ROLES.map((r) => (
+                {assignableRoles.map((r) => (
                   <option key={r} value={r}>
                     {ROLE_LABELS_AR[r] || r}
                   </option>

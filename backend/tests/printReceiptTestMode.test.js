@@ -2,11 +2,13 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import {
+  assertReceiptPrinterReady,
   isReceiptPrintTestSave,
   measurePdfPageSizeMm,
   persistReceiptTestPdf,
   printReceiptHtmlLocally,
   receiptTestOutputDir,
+  resolveReceiptPrinterName,
   setPrintPipelineForTests,
   silentPrintReceiptHtml,
   SilentPrintError,
@@ -40,6 +42,7 @@ async function writeFixturePdf(widthMm, heightMm) {
 
 const prevTestMode = process.env.RECEIPT_PRINT_TEST_MODE;
 const prevWidth = process.env.RECEIPT_WIDTH_MM;
+const prevPrinter = process.env.RECEIPT_PRINTER;
 const savedPaths = [];
 
 async function cleanupSaved() {
@@ -54,8 +57,17 @@ describe("RECEIPT_PRINT_TEST_MODE", () => {
     else process.env.RECEIPT_PRINT_TEST_MODE = prevTestMode;
     if (prevWidth == null) delete process.env.RECEIPT_WIDTH_MM;
     else process.env.RECEIPT_WIDTH_MM = prevWidth;
+    if (prevPrinter == null) delete process.env.RECEIPT_PRINTER;
+    else process.env.RECEIPT_PRINTER = prevPrinter;
     setPrintPipelineForTests(null);
     await cleanupSaved();
+  });
+
+  test("rejects Microsoft Print to PDF as RECEIPT_PRINTER", async () => {
+    delete process.env.RECEIPT_PRINT_TEST_MODE;
+    process.env.RECEIPT_PRINTER = "Microsoft Print to PDF";
+    await expect(resolveReceiptPrinterName()).rejects.toMatchObject({ code: "VIRTUAL_PRINTER" });
+    await expect(assertReceiptPrinterReady()).rejects.toMatchObject({ code: "VIRTUAL_PRINTER" });
   });
 
   test("defaults off", () => {

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { resolveApiUrl } from "../apiClient";
 import { getToken } from "../utils/auth";
 
 /**
@@ -19,7 +20,8 @@ export function useAuthEventSource(url, onEvent, { enabled = true } = {}) {
 
     (async () => {
       try {
-        const res = await fetch(url, {
+        const resolved = /^https?:\/\//i.test(url) ? url : resolveApiUrl(url);
+        const res = await fetch(resolved, {
           headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" },
           signal: controller.signal,
         });

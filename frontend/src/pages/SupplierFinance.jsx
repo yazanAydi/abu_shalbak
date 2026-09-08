@@ -4,7 +4,7 @@ import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
-import { isAdminRole } from "../utils/roles";
+import { userHasOfficePermission } from "../utils/accountantPermissions";
 import { DateField, PageHeader, ReportToolbar, Select } from "../components/ui";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -135,6 +135,10 @@ export default function SupplierFinance() {
 
   const loadRefunds = useCallback(async () => {
     if (!from || !to) return;
+    if (!userHasOfficePermission(getUser(), "refunds")) {
+      setRefundRows([]);
+      return;
+    }
     try {
       const { data } = await api.get("/api/refunds", {
         params: { from, to },

@@ -1,7 +1,7 @@
 import { Router } from "express";
 
 import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
-import { isAdmin, canViewReports } from "../utils/roles.js";
+import { canViewReports } from "../utils/roles.js";
 import { getAppSettings, updateAppSettings, SETTING_KEYS } from "../utils/settings.js";
 import { sendCachedJson } from "../utils/httpCache.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
@@ -22,9 +22,7 @@ export function createSettingsRouter(db) {
   router.patch("/", requireAuth, requireStoreSettings, async (req, res, next) => {
     try {
       const body = { ...(req.body || {}) };
-      if (!isAdmin(req.user?.role)) {
-        delete body[SETTING_KEYS.accountant_permissions];
-      }
+      delete body[SETTING_KEYS.accountant_permissions];
 
       const before = await getAppSettings(db);
       const settings = await updateAppSettings(db, body);

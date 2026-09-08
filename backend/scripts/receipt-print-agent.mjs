@@ -6,15 +6,19 @@
  */
 import http from "http";
 import {
+  assertReceiptPrinterReady,
   isReceiptPrintTestSave,
   printReceiptHtmlLocally,
+  receiptPrintAgentToken,
   SilentPrintError,
 } from "../services/windowsSilentPrint.js";
 
 process.env.ABO_ENV = process.env.ABO_ENV || "store";
 await import("../loadEnv.js");
 
-const HOST = "127.0.0.1";
+// host.docker.internal / host-gateway is not 127.0.0.1. Bind all interfaces;
+// /print still requires the shared token and a local/docker client IP.
+const HOST = "0.0.0.0";
 const PORT = Number(process.env.RECEIPT_PRINT_AGENT_PORT) || 17891;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
@@ -30,6 +34,29 @@ function sendJson(res, status, body) {
     "Content-Length": Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+function clientIp(req) {
+  const raw = req.socket?.remoteAddress || "";
+  return raw.startsWith("::ffff:") ? raw.slice(7) : raw;
+}
+
+function isLocalOrDockerClient(req) {
+  const ip = clientIp(req);
+  if (ip === "127.0.0.1" || ip === "::1") return true;
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return false;
+  if (parts[0] === 10 || parts[0] === 127) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+}
+
+function isAuthorizedPrint(req) {
+  const token = receiptPrintAgentToken();
+  if (!token) return false;
+  const sent = String(req.headers["x-receipt-print-token"] || "").trim();
+  return sent === token && isLocalOrDockerClient(req);
 }
 
 function readJsonBody(req) {
@@ -67,20 +94,31 @@ function agentHttpStatus(code) {
   return 500;
 }
 
+let printerStatus = { printer: null, printerOk: false, printerError: null };
+
 const server = http.createServer(async (req, res) => {
   const url = req.url ? req.url.split("?")[0] : "/";
 
   if (req.method === "GET" && (url === "/health" || url === "/")) {
-    sendJson(res, 200, { ok: true, service: "receipt-print-agent" });
+    sendJson(res, 200, {
+      ok: true,
+      service: "receipt-print-agent",
+      printer: printerStatus.printer,
+      printerOk: printerStatus.printerOk,
+    });
     return;
   }
 
   if (req.method === "POST" && url === "/print") {
+    if (!isAuthorizedPrint(req)) {
+      sendJson(res, 403, { error: "طلب الطباعة غير مسموح", code: "FORBIDDEN" });
+      return;
+    }
     try {
       const body = await readJsonBody(req);
       const html = body && body.html;
       const result = await printReceiptHtmlLocally(html);
-      const payload = { printed: true, printer: result.printer || null };
+      const payload = { printed: true, printer: result.printer || printerStatus.printer || null };
       if (result.testMode) {
         payload.testMode = true;
         payload.pdfPath = result.pdfPath;
@@ -112,11 +150,35 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { error: "not found", code: "NOT_FOUND" });
 });
 
+try {
+  const ready = await assertReceiptPrinterReady();
+  printerStatus = {
+    printer: ready.printer || null,
+    printerOk: Boolean(ready.printerOk),
+    printerError: null,
+  };
+  if (ready.testMode) {
+    console.log("[receipt-print-agent] RECEIPT_PRINT_TEST_MODE=save — PDFs go to tmp/receipt-test/");
+  } else {
+    console.log(`[receipt-print-agent] printer: ${ready.printer}`);
+  }
+} catch (e) {
+  printerStatus = {
+    printer: null,
+    printerOk: false,
+    printerError: e.message || String(e),
+  };
+  console.error(`[receipt-print-agent] printer not ready: ${printerStatus.printerError}`);
+}
+
+if (!receiptPrintAgentToken()) {
+  console.error(
+    "[receipt-print-agent] RECEIPT_PRINT_AGENT_TOKEN is missing. Docker print will be rejected. Run start-store.ps1."
+  );
+}
+
 server.listen(PORT, HOST, () => {
   console.log(`[receipt-print-agent] listening on http://${HOST}:${PORT}`);
-  if (isReceiptPrintTestSave()) {
-    console.log("[receipt-print-agent] RECEIPT_PRINT_TEST_MODE=save — PDFs go to tmp/receipt-test/");
-  }
 });
 
 function shutdown() {

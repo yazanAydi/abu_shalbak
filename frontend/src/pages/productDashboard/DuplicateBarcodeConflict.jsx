@@ -109,9 +109,11 @@ export default function DuplicateBarcodeConflict({
             تعديل وحدات المنتج القديم
           </SecondaryButton>
         )}
+        {onDelete ? (
         <DangerButton type="button" onClick={onDelete} disabled={busy}>
           حذف المنتج القديم
         </DangerButton>
+        ) : null}
       </div>
     </div>
   );

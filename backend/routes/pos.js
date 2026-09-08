@@ -3,7 +3,18 @@ import { requireAuth, requirePosAccess } from "../middleware/auth.js";
 import { getAppSettings } from "../utils/settings.js";
 import { productSkuLookupValues } from "../utils/entityCodes.js";
 import { listUnreadRefundDecisions } from "../services/refundRequestService.js";
+import { listUnreadAdvanceDecisions } from "../services/advanceRequestService.js";
+import { listUnreadOnAccountDecisions } from "../services/onAccountRequestService.js";
 import { loadUnitsForProducts } from "../utils/productUnits.js";
+
+export async function buildPosDecisionSnapshot(db, cashierId) {
+  const [refunds, advances, on_account] = await Promise.all([
+    listUnreadRefundDecisions(db, cashierId),
+    listUnreadAdvanceDecisions(db, cashierId),
+    listUnreadOnAccountDecisions(db, cashierId),
+  ]);
+  return { refunds, advances, on_account };
+}
 
 function saleUnitsFor(units) {
   const list = Array.isArray(units) ? units : [];
@@ -139,8 +150,9 @@ export function createPosRouter(db) {
     const send = async () => {
       if (closed) return;
       try {
-        const unread = await listUnreadRefundDecisions(db, req.user.id);
-        res.write(`event: refunds\ndata: ${JSON.stringify(unread)}\n\n`);
+        const snapshot = await buildPosDecisionSnapshot(db, req.user.id);
+        res.write(`event: decisions\ndata: ${JSON.stringify(snapshot)}\n\n`);
+        res.write(`event: refunds\ndata: ${JSON.stringify(snapshot.refunds)}\n\n`);
       } catch {
         /* keep the stream alive */
       }

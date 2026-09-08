@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { withTransaction } from "../utils/dbTx.js";
@@ -224,7 +224,7 @@ export function createVouchersRouter(db) {
 
   // ───── Post all draft vouchers ─────
 
-  router.post("/post-all", requireAuth, requireAdmin, async (req, res, next) => {
+  router.post("/post-all", requireAuth, requireVouchers, async (req, res, next) => {
     const type = req.body?.type || req.query?.type;
     if (type && !["receipt", "payment"].includes(type)) {
       return res.status(400).json({
@@ -259,7 +259,7 @@ export function createVouchersRouter(db) {
 
   // ───── Post voucher (applies effects) ─────
 
-  router.post("/:id/post", requireAuth, requireAdmin, async (req, res, next) => {
+  router.post("/:id/post", requireAuth, requireVouchers, async (req, res, next) => {
     const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [req.params.id]);
     if (!voucher) return res.status(404).json({ error: "السند غير موجود", code: "NOT_FOUND" });
     if (voucher.status === "posted") {
@@ -277,7 +277,7 @@ export function createVouchersRouter(db) {
     res.json(await db.get("SELECT * FROM vouchers WHERE id = ?", [voucher.id]));
   });
 
-  router.delete("/:id", requireAuth, requireAdmin, async (req, res, next) => {
+  router.delete("/:id", requireAuth, requireVouchers, async (req, res, next) => {
     const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [req.params.id]);
     if (!voucher) return res.status(404).json({ error: "السند غير موجود", code: "NOT_FOUND" });
     if (voucher.status === "posted") {

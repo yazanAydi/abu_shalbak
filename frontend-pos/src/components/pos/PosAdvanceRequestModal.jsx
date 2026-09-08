@@ -1,28 +1,26 @@
 import { useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
-import PosApprovalWaitingModal, { approvalIls } from "./PosApprovalWaitingModal";
 import "../ShiftModal.css";
 
 /**
  * @param {object} props
  * @param {boolean} props.open
  * @param {() => void} props.onClose
+ * @param {(requestId: number) => void} [props.onWaiting]
  */
-export default function PosAdvanceRequestModal({ open, onClose }) {
+export default function PosAdvanceRequestModal({ open, onClose, onWaiting }) {
   const [employeeName, setEmployeeName] = useState("");
   const [amount, setAmount] = useState("");
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [waitingId, setWaitingId] = useState(null);
 
   function resetForm() {
     setEmployeeName("");
     setAmount("");
     setNotes("");
     setError("");
-    setWaitingId(null);
   }
 
   function handleClose() {
@@ -54,35 +52,15 @@ export default function PosAdvanceRequestModal({ open, onClose }) {
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       const payload = data?.data ?? data;
-      setWaitingId(payload.request_id);
+      const requestId = payload.request_id;
+      resetForm();
+      if (requestId) onWaiting?.(requestId);
+      else onClose();
     } catch (err) {
       setError(err.response?.data?.error || err.message || "فشل إرسال الطلب");
     } finally {
       setLoading(false);
     }
-  }
-
-  if (waitingId) {
-    return (
-      <PosApprovalWaitingModal
-        open={open}
-        requestId={waitingId}
-        apiPath="/api/advance-requests"
-        titlePrefix="طلب سلف"
-        statusLabels={{
-          pending: "بانتظار موافقة المدير…",
-          approved: "تمت الموافقة على السلف",
-          rejected: "تم رفض طلب السلف",
-          expired: "انتهت صلاحية الطلب",
-        }}
-        detailLine={(d) =>
-          d?.employee_name && d?.amount != null
-            ? `${d.employee_name} — ${approvalIls(d.amount)}`
-            : null
-        }
-        onClose={handleClose}
-      />
-    );
   }
 
   if (!open) return null;

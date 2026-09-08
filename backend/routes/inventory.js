@@ -24,6 +24,7 @@ export function createInventoryRouter(db) {
   const requireExpiry = requireReportsPermission(db, "expiry");
   const requireStockCount = requireReportsPermission(db, "stock_count");
   const requireStockOrBakery = requireAnyReportsPermission(db, "stock_count", "bakery_supplies");
+  const requireExpiryOrBakery = requireAnyReportsPermission(db, "expiry", "bakery_supplies");
 
   // ───── Stock Count Sessions ─────
 
@@ -463,7 +464,7 @@ export function createInventoryRouter(db) {
 
   // ───── Low Stock ─────
 
-  router.get("/low-stock", requireAuth, requireExpiry, async (req, res) => {
+  router.get("/low-stock", requireAuth, requireExpiryOrBakery, async (req, res) => {
     const { threshold = 10, scope } = req.query;
     const t = Math.max(0, Number(threshold) || 10);
     let sql = `SELECT id, barcode, name, unit, stock, category, min_stock,

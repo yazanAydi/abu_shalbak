@@ -806,7 +806,14 @@ export default function ProductManagement() {
       <Card>
         <CardBody>
           <h2 className="dashboard-section-title">إضافة منتج</h2>
-          <form onSubmit={addProduct}>
+          <form
+            onSubmit={addProduct}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && e.target?.name === "add-barcode") {
+                e.preventDefault();
+              }
+            }}
+          >
             <FormGrid>
               <FormField
                 label="الباركود"
@@ -815,6 +822,8 @@ export default function ProductManagement() {
               >
                 <div className="barcode-input-row">
                   <Input
+                    name="add-barcode"
+                    autoComplete="off"
                     value={form.barcode}
                     onChange={(e) => setForm({ ...form, barcode: e.target.value })}
                     onKeyDown={onAddBarcodeKeyDown}
@@ -964,7 +973,7 @@ export default function ProductManagement() {
               existingProduct={conflictProduct}
               busy={conflictBusy}
               onReplace={handleReplaceConflict}
-              onDelete={handleDeleteConflict}
+              onDelete={canAdminProducts ? handleDeleteConflict : undefined}
               onEditBarcode={() => setEditBarcodeProduct(conflictProduct)}
               onEditUnits={() => setUnitsProduct(conflictProduct)}
             />

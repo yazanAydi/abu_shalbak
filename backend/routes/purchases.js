@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAnyReportsPermission } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { round2, computePurchaseInvoiceTotals, applyPurchaseDiscount } from "../utils/tax.js";
 import { recordMovement } from "../utils/inventory.js";
 import { getAppSettings } from "../utils/settings.js";
@@ -210,11 +210,12 @@ async function postPurchaseReturn(db, returnId, userId) {
 
 export function createPurchasesRouter(db) {
   const router = Router();
+  const requirePurchases = requireReportsPermission(db, "purchases");
   const requirePurchasesOrBakery = requireAnyReportsPermission(db, "purchases", "bakery_supplies");
 
   // ════════════ Purchase Orders ════════════
 
-  router.get("/orders", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.get("/orders", requireAuth, requirePurchases, async (req, res, next) => {
     const page = listLimitSql(req.query);
     const rows = await db.all(
       `SELECT po.*, s.name AS supplier_name FROM purchase_orders po
@@ -224,7 +225,7 @@ export function createPurchasesRouter(db) {
     res.json(rows);
   });
 
-  router.get("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.get("/orders/:id", requireAuth, requirePurchases, async (req, res, next) => {
     const order = await db.get(
       `SELECT po.*, s.name AS supplier_name FROM purchase_orders po
        JOIN suppliers s ON s.id = po.supplier_id WHERE po.id = ?`,
@@ -239,7 +240,7 @@ export function createPurchasesRouter(db) {
     res.json({ ...order, items });
   });
 
-  router.post("/orders", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.post("/orders", requireAuth, requirePurchases, async (req, res, next) => {
     const { supplier_id, order_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
@@ -270,7 +271,7 @@ export function createPurchasesRouter(db) {
     }
   });
 
-  router.put("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.put("/orders/:id", requireAuth, requirePurchases, async (req, res, next) => {
     const order = await db.get("SELECT * FROM purchase_orders WHERE id = ?", [req.params.id]);
     if (!order) return res.status(404).json({ error: "أمر الشراء غير موجود", code: "NOT_FOUND" });
     if (order.status === "received") return res.status(400).json({ error: "لا يمكن تعديل أمر مستلم", code: "LOCKED" });
@@ -303,7 +304,7 @@ export function createPurchasesRouter(db) {
     }
   });
 
-  router.delete("/orders/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.delete("/orders/:id", requireAuth, requirePurchases, async (req, res, next) => {
     const order = await db.get("SELECT * FROM purchase_orders WHERE id = ?", [req.params.id]);
     if (!order) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     if (order.status === "received") return res.status(400).json({ error: "لا يمكن حذف أمر مستلم", code: "LOCKED" });
@@ -475,7 +476,7 @@ export function createPurchasesRouter(db) {
 
   // ════════════ Purchase Returns ════════════
 
-  router.get("/returns", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.get("/returns", requireAuth, requirePurchases, async (req, res, next) => {
     const rows = await db.all(
       `SELECT pr.*, s.name AS supplier_name FROM purchase_returns pr
        JOIN suppliers s ON s.id = pr.supplier_id ORDER BY pr.created_at DESC${listLimitSql(req.query).sql}`
@@ -483,7 +484,7 @@ export function createPurchasesRouter(db) {
     res.json(rows);
   });
 
-  router.get("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.get("/returns/:id", requireAuth, requirePurchases, async (req, res, next) => {
     const ret = await db.get(
       `SELECT pr.*, s.name AS supplier_name FROM purchase_returns pr
        JOIN suppliers s ON s.id = pr.supplier_id WHERE pr.id = ?`,
@@ -499,7 +500,7 @@ export function createPurchasesRouter(db) {
     res.json({ ...ret, items, party_balance });
   });
 
-  router.post("/returns", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.post("/returns", requireAuth, requirePurchases, async (req, res, next) => {
     const { supplier_id, invoice_id, return_date, notes, items } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
@@ -530,7 +531,7 @@ export function createPurchasesRouter(db) {
     }
   });
 
-  router.put("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.put("/returns/:id", requireAuth, requirePurchases, async (req, res, next) => {
     const ret = await db.get("SELECT * FROM purchase_returns WHERE id = ?", [req.params.id]);
     if (!ret) return res.status(404).json({ error: "المرتجع غير موجود", code: "NOT_FOUND" });
     if (ret.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل مرتجع مرحّل", code: "ALREADY_POSTED" });
@@ -565,7 +566,7 @@ export function createPurchasesRouter(db) {
     }
   });
 
-  router.post("/returns/post-all", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.post("/returns/post-all", requireAuth, requirePurchases, async (req, res, next) => {
     try {
       const drafts = await db.all("SELECT id FROM purchase_returns WHERE status = 'draft' ORDER BY id");
       const ids = [];
@@ -581,7 +582,7 @@ export function createPurchasesRouter(db) {
     }
   });
 
-  router.post("/returns/:id/post", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.post("/returns/:id/post", requireAuth, requirePurchases, async (req, res, next) => {
     try {
       const result = await postPurchaseReturn(db, req.params.id, req.user.id);
       if (result.error) {
@@ -593,7 +594,7 @@ export function createPurchasesRouter(db) {
     }
   });
 
-  router.delete("/returns/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+  router.delete("/returns/:id", requireAuth, requirePurchases, async (req, res, next) => {
     const ret = await db.get("SELECT * FROM purchase_returns WHERE id = ?", [req.params.id]);
     if (!ret) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
     if (ret.status === "posted") return res.status(400).json({ error: "لا يمكن حذف مرتجع مرحّل", code: "ALREADY_POSTED" });

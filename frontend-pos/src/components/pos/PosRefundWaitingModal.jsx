@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
+import { playApprovalDecision } from "../../utils/posSounds";
 import "../ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -49,6 +50,7 @@ export default function PosRefundWaitingModal({ open, requestId, onClose, onTerm
         if (["approved", "rejected", "expired"].includes(payload.status)) {
           if (!terminalRef.current) {
             terminalRef.current = true;
+            playApprovalDecision("refund", requestId);
             onTerminal?.();
           }
         }

@@ -100,27 +100,46 @@ export function normalizeAccountantPermissions(raw) {
   return out;
 }
 
+function permissionFlag(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
 /**
  * @param {string} role
  * @param {Record<string, boolean>|undefined|null} permissions
  * @param {string} key
  */
 export function hasAccountantPermission(role, permissions, key) {
-  if (role === "admin") return true;
+  if (role === "admin") {
+    if (
+      permissions &&
+      typeof permissions === "object" &&
+      !Array.isArray(permissions) &&
+      Object.prototype.hasOwnProperty.call(permissions, key)
+    ) {
+      return permissionFlag(permissions[key]);
+    }
+    return true;
+  }
   if (role !== "accountant") return false;
   const normalized = normalizeAccountantPermissions(permissions);
   return normalized[key] === true;
 }
 
 /**
+ * Sync counterpart of resolveUserPermissions (without reading settings).
+ * Custom stored map wins for admin and accountant; otherwise admin is all-on
+ * and accountant uses catalog defaults (caller should pass the global template).
  * @param {string} role
  * @param {Record<string, boolean>|undefined|null} storedPermissions
  * @returns {Record<string, boolean>}
  */
 export function getEffectivePermissions(role, storedPermissions) {
+  if (!isOfficePermissionRole(role)) return defaultAccountantPermissions();
+  const parsed = parseUserPermissionsJson(storedPermissions);
+  if (parsed) return normalizeAccountantPermissions(parsed);
   if (role === "admin") return allAccountantPermissionsEnabled();
-  if (role === "accountant") return normalizeAccountantPermissions(storedPermissions);
-  return defaultAccountantPermissions();
+  return normalizeAccountantPermissions(storedPermissions);
 }
 
 /** Parse users.permissions_json. Returns a plain object or null (use global defaults). */
@@ -194,6 +213,9 @@ export async function userHasAccountantPermission(db, user, key) {
   const permissions = await resolveUserPermissions(db, user);
   return permissions[key] === true;
 }
+
+/** Alias used by Office feature routes. Same live DB resolution as userHasAccountantPermission. */
+export const userHasOfficePermission = userHasAccountantPermission;
 
 /** Map nav paths to permission keys for badge filtering. */
 export const NAV_PATH_PERMISSION_KEYS = {

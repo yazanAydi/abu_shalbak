@@ -4,12 +4,15 @@ import { BrowserRouter } from "react-router-dom";
 import "./index.css";
 import "./utils/disableNumberInputSpin";
 import "./utils/forceLatinDigits";
+import { installBlockDevToolsShortcuts } from "./utils/blockDevToolsShortcuts";
 // The design-system stylesheet is global, but its JS barrel is not: importing
 // ToastProvider from the barrel would drag DataTable, Modal and ReportToolbar
 // into the main chunk on every visit.
 import "./components/ui/ui.css";
 import App from "./App";
 import { ToastProvider } from "./components/ui/Toast";
+
+installBlockDevToolsShortcuts();
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(

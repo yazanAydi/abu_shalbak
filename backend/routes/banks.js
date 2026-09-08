@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
+import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { listLimitSql } from "../utils/listQuery.js";
@@ -14,7 +14,7 @@ export function createBanksRouter(db) {
     res.json(await db.all("SELECT * FROM bank_accounts ORDER BY name"));
   });
 
-  router.post("/accounts", requireAuth, requireAdmin, async (req, res, next) => {
+  router.post("/accounts", requireAuth, requireBanks, async (req, res, next) => {
     const { name, bank_name, account_no, currency, notes } = req.body || {};
     if (!name) return res.status(400).json({ error: "اسم الحساب مطلوب", code: "VALIDATION_ERROR" });
     const ins = await db.run(
@@ -24,7 +24,7 @@ export function createBanksRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM bank_accounts WHERE id = ?", [ins.lastID]));
   });
 
-  router.put("/accounts/:id", requireAuth, requireAdmin, async (req, res, next) => {
+  router.put("/accounts/:id", requireAuth, requireBanks, async (req, res, next) => {
     const acc = await db.get("SELECT * FROM bank_accounts WHERE id = ?", [req.params.id]);
     if (!acc) return res.status(404).json({ error: "الحساب غير موجود", code: "NOT_FOUND" });
     const b = req.body || {};
@@ -96,7 +96,7 @@ export function createBanksRouter(db) {
     res.status(201).json(await db.get("SELECT * FROM bank_checks WHERE id = ?", [ins.lastID]));
   });
 
-  router.patch("/checks/:id/status", requireAuth, requireAdmin, async (req, res, next) => {
+  router.patch("/checks/:id/status", requireAuth, requireBanks, async (req, res, next) => {
     const check = await db.get("SELECT * FROM bank_checks WHERE id = ?", [req.params.id]);
     if (!check) return res.status(404).json({ error: "الشيك غير موجود", code: "NOT_FOUND" });
     const { status } = req.body || {};

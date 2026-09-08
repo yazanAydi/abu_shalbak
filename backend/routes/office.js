@@ -105,12 +105,7 @@ function filterBadgesForUser(role, permissions, byPath) {
   const filtered = {};
   for (const [path, count] of Object.entries(byPath)) {
     const key = NAV_PATH_PERMISSION_KEYS[path];
-    const allowed =
-      key == null
-        ? true
-        : role === "admin"
-          ? permissions?.[key] !== false
-          : hasAccountantPermission(role, permissions, key);
+    const allowed = key == null ? true : hasAccountantPermission(role, permissions, key);
     filtered[path] = allowed ? count : 0;
   }
   return filtered;

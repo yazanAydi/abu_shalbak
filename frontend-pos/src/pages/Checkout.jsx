@@ -28,6 +28,7 @@ import {
 } from "../config/posShortcuts";
 import { matchesShortcut, shouldHandlePosShortcut } from "../utils/posKeyboard";
 import { focusBarcodeInput } from "../utils/focusBarcodeInput";
+import { readWaitingRequestId, writeWaitingRequestId } from "../utils/posWaitingRequests";
 import { playCheckoutDone, playScanSuccess, unlockPosAudio, warmPosSounds } from "../utils/posSounds";
 import {
   cartItemsToSuspendPayload,
@@ -92,7 +93,11 @@ export default function Checkout() {
   const [endShiftOpen, setEndShiftOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [advanceOpen, setAdvanceOpen] = useState(false);
-  const [onAccountWaitingId, setOnAccountWaitingId] = useState(null);
+  const [advanceWaitingId, setAdvanceWaitingId] = useState(() => readWaitingRequestId("advance"));
+  const [onAccountWaitingId, setOnAccountWaitingId] = useState(() =>
+    readWaitingRequestId("onAccount")
+  );
+  const finalizedOnAccountRef = useRef(new Set());
   const [holdLoading, setHoldLoading] = useState(false);
   const [posActionError, setPosActionError] = useState("");
   const [suspendedModalOpen, setSuspendedModalOpen] = useState(false);
@@ -378,6 +383,7 @@ export default function Checkout() {
         });
         const payload = data?.data ?? data;
         if (payload?.pending_approval && payload?.request_id) {
+          writeWaitingRequestId("onAccount", payload.request_id);
           setOnAccountWaitingId(payload.request_id);
           setPayModalOpen(false);
           return;
@@ -423,11 +429,14 @@ export default function Checkout() {
     (detail) => {
       const checkout = detail?.checkout;
       if (!checkout) return;
+      const requestId = detail.request_id ?? detail.id;
+      if (requestId && finalizedOnAccountRef.current.has(Number(requestId))) return;
+      if (requestId) finalizedOnAccountRef.current.add(Number(requestId));
       dispatch({ type: "CHECKOUT_SUCCESS", data: checkout });
-      playCheckoutDone();
       idempotencyKeyRef.current = null;
       setSelectedPayment(null);
       setCustomerId(null);
+      writeWaitingRequestId("onAccount", null);
       setOnAccountWaitingId(null);
       setActiveSuspendedSaleId(null);
       loadShift();
@@ -440,8 +449,50 @@ export default function Checkout() {
     [loadShift, loadSuspendedList]
   );
 
+  const ackDecision = useCallback(async (apiPath, requestId) => {
+    if (!requestId) return;
+    try {
+      await api.post(`${apiPath}/${requestId}/acknowledge`, {}, { headers: getAuthHeaders() });
+    } catch {
+      /* unread notifications remain the fallback */
+    }
+  }, []);
+
+  const handleOnAccountTerminal = useCallback(
+    async (detail) => {
+      const id = detail?.request_id ?? detail?.id ?? onAccountWaitingId;
+      await ackDecision("/api/on-account-requests", id);
+      if (detail?.status === "approved") {
+        finalizeApprovedOnAccountSale(detail);
+        return;
+      }
+      if (detail?.status === "rejected") {
+        writeWaitingRequestId("onAccount", null);
+      }
+    },
+    [ackDecision, finalizeApprovedOnAccountSale, onAccountWaitingId]
+  );
+
+  const handleAdvanceTerminal = useCallback(
+    async (detail) => {
+      const id = detail?.request_id ?? detail?.id ?? advanceWaitingId;
+      await ackDecision("/api/advance-requests", id);
+      if (detail?.status === "rejected" || detail?.status === "approved") {
+        writeWaitingRequestId("advance", null);
+      }
+    },
+    [ackDecision, advanceWaitingId]
+  );
+
   function handleOnAccountWaitingClose() {
+    writeWaitingRequestId("onAccount", null);
     setOnAccountWaitingId(null);
+    focusBarcodeInput();
+  }
+
+  function handleAdvanceWaitingClose() {
+    writeWaitingRequestId("advance", null);
+    setAdvanceWaitingId(null);
     focusBarcodeInput();
   }
 
@@ -652,7 +703,13 @@ export default function Checkout() {
         onProductFound={addToCart}
       />
 
-      <PosRefundNotifications />
+      <PosRefundNotifications
+        suppressIds={{
+          on_account: onAccountWaitingId,
+          advance: advanceWaitingId,
+        }}
+        onApprovedOnAccount={finalizeApprovedOnAccountSale}
+      />
 
       {suspendedCount > 0 ? (
         <div className="pos-suspended-banner" role="status">
@@ -793,7 +850,35 @@ export default function Checkout() {
         ) : null}
 
         {advanceOpen ? (
-          <PosAdvanceRequestModal open onClose={() => setAdvanceOpen(false)} />
+          <PosAdvanceRequestModal
+            open
+            onClose={() => setAdvanceOpen(false)}
+            onWaiting={(id) => {
+              writeWaitingRequestId("advance", id);
+              setAdvanceWaitingId(id);
+              setAdvanceOpen(false);
+            }}
+          />
+        ) : null}
+
+        {advanceWaitingId ? (
+          <PosApprovalWaitingModal
+            open
+            requestId={advanceWaitingId}
+            apiPath="/api/advance-requests"
+            titlePrefix="طلب سلف"
+            statusLabels={{
+              pending: "بانتظار موافقة المدير…",
+              approved: "تمت الموافقة على السلف",
+              rejected: "تم رفض طلب السلف",
+              expired: "انتهت صلاحية الطلب",
+            }}
+            detailLine={(d) =>
+              d?.employee_name && d?.amount != null ? `${d.employee_name} — ${ils(d.amount)}` : null
+            }
+            onClose={handleAdvanceWaitingClose}
+            onTerminal={handleAdvanceTerminal}
+          />
         ) : null}
 
         {onAccountWaitingId ? (
@@ -816,11 +901,7 @@ export default function Checkout() {
               return parts.length ? parts.join(" — ") : null;
             }}
             onClose={handleOnAccountWaitingClose}
-            onTerminal={(detail) => {
-              if (detail.status === "approved") {
-                finalizeApprovedOnAccountSale(detail);
-              }
-            }}
+            onTerminal={handleOnAccountTerminal}
           />
         ) : null}
 

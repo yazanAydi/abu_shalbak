@@ -9,7 +9,10 @@ import { ToastProvider } from "./components/ui/Toast";
 import "./index.css";
 import "./utils/disableNumberInputSpin";
 import "./utils/forceLatinDigits";
+import { installBlockDevToolsShortcuts } from "./utils/blockDevToolsShortcuts";
 import App from "./App";
+
+installBlockDevToolsShortcuts();
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(

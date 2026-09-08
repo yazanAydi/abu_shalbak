@@ -1,15 +1,30 @@
 import {
   forwardToPrintAgent,
+  receiptPrintAgentHeaders,
   receiptPrintAgentUrl,
   SilentPrintError,
 } from "../services/windowsSilentPrint.js";
 
 describe("forwardToPrintAgent", () => {
   const prevUrl = process.env.RECEIPT_PRINT_AGENT_URL;
+  const prevToken = process.env.RECEIPT_PRINT_AGENT_TOKEN;
 
   afterEach(() => {
     if (prevUrl == null) delete process.env.RECEIPT_PRINT_AGENT_URL;
     else process.env.RECEIPT_PRINT_AGENT_URL = prevUrl;
+    if (prevToken == null) delete process.env.RECEIPT_PRINT_AGENT_TOKEN;
+    else process.env.RECEIPT_PRINT_AGENT_TOKEN = prevToken;
+  });
+
+  test("sends the shared print-agent token when configured", async () => {
+    process.env.RECEIPT_PRINT_AGENT_TOKEN = "shop-token";
+    const headers = receiptPrintAgentHeaders();
+    expect(headers["X-Receipt-Print-Token"]).toBe("shop-token");
+    const fetchImpl = async (_url, init) => {
+      expect(init.headers["X-Receipt-Print-Token"]).toBe("shop-token");
+      return { ok: true, json: async () => ({ printed: true, printer: "POS-80" }) };
+    };
+    await forwardToPrintAgent("<html>x</html>", fetchImpl);
   });
 
   test("default agent URL is host.docker.internal:17891", () => {

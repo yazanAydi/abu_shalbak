@@ -36,7 +36,7 @@ describe("Accountant permissions", () => {
     await destroyTestContext(ctx);
   });
 
-  test("settings round-trip for accountant_permissions", async () => {
+  test("permission-defaults round-trip for accountant_permissions", async () => {
     const patch = {
       ...defaultAccountantPermissions(),
       finance: false,
@@ -44,20 +44,39 @@ describe("Accountant permissions", () => {
     };
 
     const saveRes = await request(ctx.app)
-      .patch("/api/v1/settings")
+      .put("/api/v1/admin/permission-defaults")
       .set(authHeader(adminToken))
-      .send({ [SETTING_KEYS.accountant_permissions]: patch });
+      .send({ permissions: patch });
     expect(saveRes.status).toBe(200);
     const saved = saveRes.body.data ?? saveRes.body;
-    expect(normalizeAccountantPermissions(saved.accountant_permissions).finance).toBe(false);
-    expect(normalizeAccountantPermissions(saved.accountant_permissions).dashboard).toBe(true);
+    expect(normalizeAccountantPermissions(saved.permissions).finance).toBe(false);
+    expect(normalizeAccountantPermissions(saved.permissions).dashboard).toBe(true);
 
     const getRes = await request(ctx.app)
-      .get("/api/v1/settings")
+      .get("/api/v1/admin/permission-defaults")
       .set(authHeader(adminToken));
     expect(getRes.status).toBe(200);
     const loaded = getRes.body.data ?? getRes.body;
-    expect(normalizeAccountantPermissions(loaded.accountant_permissions).finance).toBe(false);
+    expect(normalizeAccountantPermissions(loaded.permissions).finance).toBe(false);
+
+    const settingsGet = await request(ctx.app)
+      .get("/api/v1/settings")
+      .set(authHeader(adminToken));
+    expect(settingsGet.status).toBe(200);
+    const settings = settingsGet.body.data ?? settingsGet.body;
+    expect(normalizeAccountantPermissions(settings.accountant_permissions).finance).toBe(false);
+
+    const ignored = await request(ctx.app)
+      .patch("/api/v1/settings")
+      .set(authHeader(adminToken))
+      .send({ [SETTING_KEYS.accountant_permissions]: { ...patch, finance: true } });
+    expect(ignored.status).toBe(200);
+    const still = await request(ctx.app)
+      .get("/api/v1/admin/permission-defaults")
+      .set(authHeader(adminToken));
+    expect(normalizeAccountantPermissions((still.body.data ?? still.body).permissions).finance).toBe(
+      false
+    );
   });
 
   test("accountant without finance permission gets 403 on finance API", async () => {

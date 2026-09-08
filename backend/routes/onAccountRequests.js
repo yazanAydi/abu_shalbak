@@ -40,6 +40,7 @@ export function createOnAccountRequestsRouter(db) {
   });
 
   router.get("/mine/unread", requireAuth, requirePosAccess, async (req, res) => {
+    res.set("Cache-Control", "no-store");
     const rows = await listUnreadOnAccountDecisions(db, req.user.id);
     res.json(rows);
   });
@@ -69,6 +70,7 @@ export function createOnAccountRequestsRouter(db) {
     if (!(await canViewOnAccountRequest(db, req.user, row))) {
       return res.status(403).json({ error: "ممنوع" });
     }
+    res.set("Cache-Control", "no-store");
     res.json(await buildOnAccountRequestStatusPayload(db, row));
   });
 

@@ -75,7 +75,7 @@ describe("silent receipt print", () => {
     setSilentPrintTestAdapter(async () => {
       throw new SilentPrintError(
         "AGENT_UNAVAILABLE",
-        "خدمة طباعة الإيصالات غير شغّالة على جهاز ويندوز"
+        "تعذر الاتصال بطابعة الإيصالات. تأكد من تشغيل خدمة الطباعة ثم حاول مرة أخرى."
       );
     });
     const res = await request(ctx.app)

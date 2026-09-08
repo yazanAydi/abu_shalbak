@@ -9,7 +9,7 @@
  */
 import { createSafeRouter } from "../utils/asyncHandler.js";
 import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
-import { isAdmin } from "../utils/roles.js";
+import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { projectProductForRole } from "../utils/roleProjection.js";
 import {
   findProductByBarcode,
@@ -704,9 +704,23 @@ export async function searchProducts(db, rawQuery, options = {}) {
   return rows;
 }
 
+const PRODUCT_ORG_FIELDS = new Set(["unit", "category"]);
+const PRODUCT_FORBIDDEN = { success: false, error: "صلاحيات غير كافية", code: "FORBIDDEN" };
+
+function isOrgOnlyPatch(body) {
+  const keys = Object.keys(body || {}).filter((key) => body[key] !== undefined);
+  return keys.length > 0 && keys.every((key) => PRODUCT_ORG_FIELDS.has(key));
+}
+
 export function createProductsRouter(db) {
   const router = createSafeRouter();
-  const requireProductsOrOrg = requireAnyReportsPermission(db, "products", "product_organization");
+  const requireProducts = requireReportsPermission(db, "products");
+  const requireCatalogList = requireAnyReportsPermission(
+    db,
+    "products",
+    "product_organization",
+    "bakery_supplies"
+  );
   const requireCategories = requireReportsPermission(db, "categories");
   const requireUnits = requireReportsPermission(db, "units");
 
@@ -716,10 +730,85 @@ export function createProductsRouter(db) {
     return db.get("SELECT * FROM products WHERE id = ?", [pid]);
   }
 
-  router.get("/", requireAuth, async (req, res) => {
-    const scope = req.query.scope ? parseInventoryScope(req.query.scope) : null;
+  async function enforceCatalogListScope(req, res, next) {
+    try {
+      const hasProducts = await userHasAccountantPermission(db, req.user, "products");
+      const hasOrg = await userHasAccountantPermission(db, req.user, "product_organization");
+      const hasBakery = await userHasAccountantPermission(db, req.user, "bakery_supplies");
+      const requested = req.query.scope ? parseInventoryScope(req.query.scope) : null;
+
+      if (!hasProducts && !hasOrg && hasBakery) {
+        if (requested && requested !== "bakery") {
+          return res.status(403).json(PRODUCT_FORBIDDEN);
+        }
+        req.query.scope = "bakery";
+        return next();
+      }
+      if ((hasProducts || hasOrg) && !hasBakery) {
+        if (requested === "bakery") {
+          return res.status(403).json(PRODUCT_FORBIDDEN);
+        }
+        if (!requested) req.query.scope = "retail";
+        return next();
+      }
+      return next();
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async function requireProductCreate(req, res, next) {
+    try {
+      const scope = parseInventoryScope(req.body?.inventory_scope, "retail");
+      const hasProducts = await userHasAccountantPermission(db, req.user, "products");
+      if (hasProducts) return next();
+      if (
+        scope === "bakery" &&
+        (await userHasAccountantPermission(db, req.user, "bakery_supplies"))
+      ) {
+        return next();
+      }
+      return res.status(403).json(PRODUCT_FORBIDDEN);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  function requireProductWrite({ orgFieldsOk = false, bakeryOk = false } = {}) {
+    return async (req, res, next) => {
+      try {
+        if (await userHasAccountantPermission(db, req.user, "products")) return next();
+        const product = await loadProductById(req.params.id);
+        if (!product) {
+          return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
+        }
+        const bakery = parseInventoryScope(product.inventory_scope, "retail") === "bakery";
+        if (
+          bakeryOk &&
+          bakery &&
+          (await userHasAccountantPermission(db, req.user, "bakery_supplies"))
+        ) {
+          return next();
+        }
+        if (
+          orgFieldsOk &&
+          !bakery &&
+          isOrgOnlyPatch(req.body) &&
+          (await userHasAccountantPermission(db, req.user, "product_organization"))
+        ) {
+          return next();
+        }
+        return res.status(403).json(PRODUCT_FORBIDDEN);
+      } catch (err) {
+        next(err);
+      }
+    };
+  }
+
+  router.get("/", requireAuth, async (req, res, next) => {
     const searchTerm = String(req.query.search ?? req.query.q ?? "").trim();
     if (searchTerm) {
+      const scope = req.query.scope ? parseInventoryScope(req.query.scope) : null;
       const searchLimit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
       const rows = await searchProducts(db, searchTerm, {
         scope: scope || undefined,
@@ -728,9 +817,17 @@ export function createProductsRouter(db) {
       return res.json(projectProductForRole(rows ?? [], req.user?.role));
     }
 
-    if (!isAdmin(req.user?.role)) {
-      return res.status(403).json({ success: false, error: "للمسؤول فقط", code: "FORBIDDEN" });
-    }
+    return requireCatalogList(req, res, (err) => {
+      if (err) return next(err);
+      return enforceCatalogListScope(req, res, (scopeErr) => {
+        if (scopeErr) return next(scopeErr);
+        return listCatalogProducts(req, res).catch(next);
+      });
+    });
+  });
+
+  async function listCatalogProducts(req, res) {
+    const scope = req.query.scope ? parseInventoryScope(req.query.scope) : null;
 
     const { sql: scopeSql, params: scopeParams } = inventoryScopeClause(scope);
     const idsParam = String(req.query.ids ?? "").trim();
@@ -796,7 +893,7 @@ export function createProductsRouter(db) {
       limit,
       offset,
     });
-  });
+  }
 
   router.get("/by-barcode/:barcode", requireAuth, async (req, res) => {
     const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
@@ -901,7 +998,7 @@ export function createProductsRouter(db) {
     res.json(payload);
   });
 
-  router.get("/barcode-check", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/barcode-check", requireAuth, requireCatalogList, async (req, res) => {
     const productId = parsePositiveInt(req.query.product_id ?? req.query.productId);
     if (!productId) {
       return res.status(400).json({ error: "معرّف المنتج مطلوب", code: "VALIDATION_ERROR" });
@@ -926,9 +1023,9 @@ export function createProductsRouter(db) {
     }
   }
 
-  router.get("/next-sku", requireAuth, requireProductsOrOrg, sendNextSku);
+  router.get("/next-sku", requireAuth, requireCatalogList, sendNextSku);
   /** @deprecated Use /next-sku — this never returns a barcode. */
-  router.get("/next-barcode", requireAuth, requireProductsOrOrg, sendNextSku);
+  router.get("/next-barcode", requireAuth, requireCatalogList, sendNextSku);
 
   /**
    * Duplicate-check for the admin add-product form. Always 200 so Chrome
@@ -991,7 +1088,7 @@ export function createProductsRouter(db) {
     res.json(projectProductForRole(payload, req.user?.role));
   });
 
-  router.post("/", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.post("/", requireAuth, requireProductCreate, async (req, res) => {
     const { barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, min_stock } = req.body || {};
     const inventoryScope = parseInventoryScope(req.body?.inventory_scope, "retail");
     const isBakery = inventoryScope === "bakery";
@@ -1166,7 +1263,7 @@ export function createProductsRouter(db) {
     }
   });
 
-  router.put("/:id", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.put("/:id", requireAuth, requireProductWrite({ orgFieldsOk: true, bakeryOk: true }), async (req, res) => {
     try {
       const row = await applyProductMetadataPatch(db, req, req.params.id, req.body || {});
       res.json(row);
@@ -1187,7 +1284,7 @@ export function createProductsRouter(db) {
     }
   });
 
-  router.patch("/:id/active", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.patch("/:id/active", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "معرّف غير صالح", code: "VALIDATION_ERROR" });
     const existing = await db.get("SELECT * FROM products WHERE id = ?", [id]);
@@ -1201,14 +1298,14 @@ export function createProductsRouter(db) {
 
   // ════════════════════ Product units (admin-only) ════════════════════
 
-  router.get("/:id/units", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/units", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const units = await loadUnitsForProduct(db, product.id);
     res.json({ product_id: product.id, sku: product.sku ?? null, units });
   });
 
-  router.get("/:id/last-purchase-cost", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/last-purchase-cost", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
 
@@ -1237,7 +1334,7 @@ export function createProductsRouter(db) {
     });
   });
 
-  router.post("/:id/units", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.post("/:id/units", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const b = req.body || {};
@@ -1262,7 +1359,7 @@ export function createProductsRouter(db) {
     }
   });
 
-  router.put("/:id/units/:unitId", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.put("/:id/units/:unitId", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const unitId = parsePositiveInt(req.params.unitId);
@@ -1300,7 +1397,7 @@ export function createProductsRouter(db) {
     }
   });
 
-  router.delete("/:id/units/:unitId", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.delete("/:id/units/:unitId", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const unitId = parsePositiveInt(req.params.unitId);
@@ -1316,7 +1413,7 @@ export function createProductsRouter(db) {
 
   // ════════════════════ Product barcodes (admin-only) ════════════════════
 
-  router.get("/:id/barcodes", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/barcodes", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const rows = await db.all(
@@ -1328,7 +1425,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, barcodes: rows });
   });
 
-  router.post("/:id/barcodes", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.post("/:id/barcodes", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const { barcode, label } = req.body || {};
@@ -1356,7 +1453,7 @@ export function createProductsRouter(db) {
     }
   });
 
-  router.delete("/:id/barcodes/:barcodeId", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.delete("/:id/barcodes/:barcodeId", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const barcodeId = parsePositiveInt(req.params.barcodeId);
@@ -1387,7 +1484,7 @@ export function createProductsRouter(db) {
     res.status(204).send();
   });
 
-  router.patch("/:id/barcodes/:barcodeId/primary", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.patch("/:id/barcodes/:barcodeId/primary", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const barcodeId = parsePositiveInt(req.params.barcodeId);
@@ -1409,7 +1506,7 @@ export function createProductsRouter(db) {
 
   // ════════════════════ Product 360 Dashboard (admin-only) ════════════════════
 
-  router.get("/:id/dashboard", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/dashboard", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const pid = product.id;
@@ -1507,7 +1604,7 @@ export function createProductsRouter(db) {
     });
   });
 
-  router.get("/:id/overview", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/overview", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
 
@@ -1566,7 +1663,7 @@ export function createProductsRouter(db) {
     });
   });
 
-  router.get("/:id/price-history", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/price-history", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const rows = await db.all(
@@ -1583,7 +1680,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, product_name: product.name, current_price: Number(product.price) || 0, rows });
   });
 
-  router.get("/:id/sales-by-price", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/sales-by-price", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
 
@@ -1609,7 +1706,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, product_name: product.name, rows, summary });
   });
 
-  router.get("/:id/supplier-prices", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/supplier-prices", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
 
@@ -1650,7 +1747,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, product_name: product.name, rows });
   });
 
-  router.get("/:id/supplier-prices/:supplierId/history", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/supplier-prices/:supplierId/history", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const supplierId = parsePositiveInt(req.params.supplierId);
@@ -1669,7 +1766,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, supplier_id: supplierId, supplier_name: supplier?.name ?? null, rows });
   });
 
-  router.get("/:id/purchase-history", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/purchase-history", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const { limit, offset } = parsePagination(req.query, 100, 500);
@@ -1688,7 +1785,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, product_name: product.name, rows });
   });
 
-  router.get("/:id/inventory-history", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/inventory-history", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const { limit, offset } = parsePagination(req.query, 100, 500);
@@ -1720,7 +1817,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, product_name: product.name, rows });
   });
 
-  router.get("/:id/profit-analysis", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/profit-analysis", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
 
@@ -1776,7 +1873,7 @@ export function createProductsRouter(db) {
     });
   });
 
-  router.get("/:id/batches", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/batches", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const rows = await db.all(
@@ -1790,7 +1887,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, product_name: product.name, rows });
   });
 
-  router.get("/:id/audit-log", requireAuth, requireProductsOrOrg, async (req, res) => {
+  router.get("/:id/audit-log", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
     const { limit, offset } = parsePagination(req.query, 100, 500);
@@ -1805,7 +1902,7 @@ export function createProductsRouter(db) {
     res.json({ product_id: product.id, product_name: product.name, rows });
   });
 
-  router.post("/:id/change-price", requireAuth, requireProductsOrOrg, async (req, res, next) => {
+  router.post("/:id/change-price", requireAuth, requireProductWrite({ bakeryOk: true }), async (req, res, next) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
 

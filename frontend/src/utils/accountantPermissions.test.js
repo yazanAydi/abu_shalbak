@@ -10,6 +10,7 @@ import {
   homePathForPermissions,
   normalizeAccountantPermissions,
   permissionKeyForPath,
+  userHasOfficePermission,
 } from "./accountantPermissions";
 
 describe("accountant permission catalog", () => {
@@ -146,14 +147,28 @@ describe("hasAccountantPermission", () => {
     }
   });
 
-  test("effective permissions: admin everything, accountant normalized, others defaults", () => {
-    expect(getEffectivePermissions("admin", noneAllowed)).toEqual(allAccountantPermissionsEnabled());
+  test("effective permissions: custom map wins; admin without a map is all-on", () => {
+    expect(getEffectivePermissions("admin", noneAllowed)).toEqual(noneAllowed);
+    expect(getEffectivePermissions("admin", null)).toEqual(allAccountantPermissionsEnabled());
     expect(getEffectivePermissions("accountant", { products: true })).toEqual(
       normalizeAccountantPermissions({ products: true })
     );
     expect(getEffectivePermissions("cashier", allAccountantPermissionsEnabled())).toEqual(
       defaultAccountantPermissions()
     );
+  });
+
+  test("userHasOfficePermission reads the signed-in user map", () => {
+    expect(userHasOfficePermission({ role: "accountant", permissions: { products: true } }, "products")).toBe(
+      true
+    );
+    expect(userHasOfficePermission({ role: "accountant", permissions: { products: false } }, "products")).toBe(
+      false
+    );
+    expect(userHasOfficePermission({ role: "admin", permissions: { products: false } }, "products")).toBe(
+      false
+    );
+    expect(userHasOfficePermission({ role: "admin" }, "products")).toBe(true);
   });
 });
 

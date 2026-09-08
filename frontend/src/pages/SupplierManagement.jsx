@@ -208,6 +208,7 @@ export default function SupplierManagement() {
         }
       />
 
+      {canImport ? (
       <Card>
         <CardBody>
           <h3 style={{ marginTop: 0 }}>استيراد أرصدة الموردين من حساباتي</h3>
@@ -219,6 +220,7 @@ export default function SupplierManagement() {
           </Link>
         </CardBody>
       </Card>
+      ) : null}
 
       <Tabs active={tab} onChange={setTab} tabs={[
         { id: "list", label: "الموردون", icon: "suppliers" },

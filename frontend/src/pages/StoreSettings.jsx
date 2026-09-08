@@ -705,6 +705,7 @@ export default function StoreSettings() {
                 value={form.expiry_alert_days}
                 onChange={(e) => onChange("expiry_alert_days", e.target.value)}
               />
+              {isAdminRole(user?.role) ? (
               <PrimaryButton
                 type="button"
                 disabled={sendingExpiryAlert}
@@ -713,6 +714,7 @@ export default function StoreSettings() {
               >
                 {sendingExpiryAlert ? "جاري الإرسال…" : "إرسال تنبيه الصلاحية الآن"}
               </PrimaryButton>
+              ) : null}
             </FormField>
           </FormGrid>
 

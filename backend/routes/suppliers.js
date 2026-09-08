@@ -33,7 +33,15 @@ export function createSuppliersRouter(db) {
   const requireFinance = requireReportsPermission(db, "finance");
   const requireAccountStatement = requireReportsPermission(db, "account_statement");
   const requireSuppliers = requireReportsPermission(db, "suppliers");
-  const requireSuppliersOrFinance = requireAnyReportsPermission(db, "suppliers", "finance", "purchases", "account_statement");
+  const requireSuppliersOrFinance = requireAnyReportsPermission(
+    db,
+    "suppliers",
+    "finance",
+    "purchases",
+    "account_statement",
+    "deliveries",
+    "bakery_supplies"
+  );
   const router = Router();
 
   router.get("/", requireAuth, requireSuppliersOrFinance, async (req, res, next) => {

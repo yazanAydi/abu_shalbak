@@ -12,6 +12,16 @@ function getBaseURL() {
   return "";
 }
 
+/** Absolute API URL for fetch/SSE (axios already applies baseURL). */
+export function resolveApiUrl(path) {
+  let p = String(path || "");
+  if (p.startsWith("/api/") && !p.startsWith("/api/v1/")) {
+    p = p.replace(/^\/api\//, "/api/v1/");
+  }
+  const base = getBaseURL();
+  return base ? `${base}${p}` : p;
+}
+
 export const api = axios.create({
   baseURL: getBaseURL(),
 });

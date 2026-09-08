@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../apiClient";
-import { getAuthHeaders, getUser } from "../utils/auth";
+import { getAuthHeaders, getUser, setUser } from "../utils/auth";
 import { ROLE_LABELS_AR, isAdminRole } from "../utils/roles";
 import {
   defaultAccountantPermissions,
@@ -41,17 +41,9 @@ export default function AccountantPermissions() {
 
   useEffect(() => {
     api
-      .get("/api/admin/users", { headers: getAuthHeaders() })
+      .get("/api/admin/office-accounts", { headers: getAuthHeaders() })
       .then(({ data }) => {
-        setAccounts(
-          unwrapUsers(data)
-            .filter((u) => u.role === "admin" || u.role === "accountant")
-            .sort((a, b) => {
-              const roleOrder = (a.role === "admin" ? 0 : 1) - (b.role === "admin" ? 0 : 1);
-              if (roleOrder !== 0) return roleOrder;
-              return String(a.username || "").localeCompare(String(b.username || ""), "ar");
-            })
-        );
+        setAccounts(unwrapUsers(data));
       })
       .catch(() => {
         setAccounts([]);
@@ -65,8 +57,8 @@ export default function AccountantPermissions() {
 
     const request =
       target === DEFAULT_TARGET
-        ? api.get("/api/settings", { headers: getAuthHeaders() }).then(({ data }) => ({
-            permissions: normalizeAccountantPermissions(data.accountant_permissions),
+        ? api.get("/api/admin/permission-defaults", { headers: getAuthHeaders() }).then(({ data }) => ({
+            permissions: normalizeAccountantPermissions(data.permissions),
             custom: false,
           }))
         : api
@@ -112,12 +104,12 @@ export default function AccountantPermissions() {
     setError(null);
     try {
       if (target === DEFAULT_TARGET) {
-        const { data } = await api.patch(
-          "/api/settings",
-          { accountant_permissions: permissions },
+        const { data } = await api.put(
+          "/api/admin/permission-defaults",
+          { permissions },
           { headers: getAuthHeaders() }
         );
-        setPermissions(normalizeAccountantPermissions(data.accountant_permissions));
+        setPermissions(normalizeAccountantPermissions(data.permissions));
         setCustom(false);
       } else {
         const { data } = await api.put(
@@ -130,6 +122,12 @@ export default function AccountantPermissions() {
         markAccountCustom(target, true);
       }
       toast.success("تم الحفظ بنجاح");
+      try {
+        const { data: me } = await api.get("/api/auth/me", { headers: getAuthHeaders() });
+        if (me?.user) setUser(me.user);
+      } catch {
+        /* keep cached user; next focus refresh will pick up */
+      }
     } catch (err) {
       const msg = err.response?.data?.error || "فشل الحفظ";
       setError(msg);
@@ -153,6 +151,12 @@ export default function AccountantPermissions() {
       setCustom(false);
       markAccountCustom(target, false);
       toast.success("تم الرجوع إلى الإعداد الافتراضي");
+      try {
+        const { data: me } = await api.get("/api/auth/me", { headers: getAuthHeaders() });
+        if (me?.user) setUser(me.user);
+      } catch {
+        /* keep cached user */
+      }
     } catch (err) {
       const msg = err.response?.data?.error || "فشل الحفظ";
       setError(msg);

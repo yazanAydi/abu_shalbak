@@ -58,6 +58,7 @@ export function createRefundRequestsRouter(db) {
   });
 
   router.get("/mine/unread", requireAuth, requirePosAccess, async (req, res) => {
+    res.set("Cache-Control", "no-store");
     const rows = await listUnreadRefundDecisions(db, req.user.id);
     res.json(rows);
   });
@@ -87,6 +88,7 @@ export function createRefundRequestsRouter(db) {
     if (!(await canViewRefundRequest(db, req.user, row))) {
       return res.status(403).json({ error: "ممنوع" });
     }
+    res.set("Cache-Control", "no-store");
     res.json({
       request_id: row.id,
       status: row.status,

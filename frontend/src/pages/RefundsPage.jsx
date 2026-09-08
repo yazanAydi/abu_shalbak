@@ -3,7 +3,6 @@ import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
-import { isAdminRole } from "../utils/roles";
 import RefundMetrics from "../components/RefundMetrics";
 import RefundFilters from "../components/RefundFilters";
 import RefundTable from "../components/RefundTable";

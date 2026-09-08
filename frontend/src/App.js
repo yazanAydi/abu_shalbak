@@ -7,6 +7,7 @@ import OfficeLayout from "./components/layout/OfficeLayout";
 import { SkeletonRows } from "./components/ui/Skeleton";
 import { isAuthenticated, getUser, removeToken } from "./utils/auth";
 import { canLoginOffice, homePathForRole } from "./utils/roles";
+import CurrencySettings from "./pages/CurrencySettings";
 import "./App.css";
 
 const DailyReport = lazy(() => import("./pages/DailyReport"));
@@ -21,7 +22,6 @@ const RefundApprovals = lazy(() => import("./pages/RefundApprovals"));
 const OnAccountApprovals = lazy(() => import("./pages/OnAccountApprovals"));
 const AdvanceApprovals = lazy(() => import("./pages/AdvanceApprovals"));
 const StoreSettings = lazy(() => import("./pages/StoreSettings"));
-const CurrencySettings = lazy(() => import("./pages/CurrencySettings"));
 const AccountantPermissions = lazy(() => import("./pages/AccountantPermissions"));
 const Inventory = lazy(() => import("./pages/Inventory"));
 const BakerySupplies = lazy(() => import("./pages/BakerySupplies"));
