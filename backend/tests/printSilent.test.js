@@ -71,6 +71,27 @@ describe("silent receipt print", () => {
     expect(res.body.data?.dry_run ?? res.body.dry_run).toBe(true);
   });
 
+  test("agent unavailable returns 503 and keeps the sale", async () => {
+    setSilentPrintTestAdapter(async () => {
+      throw new SilentPrintError(
+        "AGENT_UNAVAILABLE",
+        "خدمة طباعة الإيصالات غير شغّالة على جهاز ويندوز"
+      );
+    });
+    const res = await request(ctx.app)
+      .post("/api/v1/print-receipt/silent")
+      .set(authHeader(cashierToken))
+      .send({ transaction_id: transactionId });
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("AGENT_UNAVAILABLE");
+
+    const row = await ctx.db.get("SELECT id, total FROM transactions WHERE id = ?", [
+      transactionId,
+    ]);
+    expect(row).toBeTruthy();
+    expect(Number(row.total)).toBe(saleTotal);
+  });
+
   test("printer unavailable returns Arabic error and keeps the sale", async () => {
     setSilentPrintTestAdapter(async () => {
       throw new SilentPrintError("NO_PRINTER", "لا توجد طابعة افتراضية في ويندوز");
@@ -126,6 +147,60 @@ describe("silent receipt print", () => {
       .send({ transaction_id: transactionId });
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
+  });
+
+  test("PDF_FAILED in save mode includes measure diagnostics", async () => {
+    const prev = process.env.RECEIPT_PRINT_TEST_MODE;
+    process.env.RECEIPT_PRINT_TEST_MODE = "save";
+    const details = {
+      receiptSelectorFound: false,
+      rectHeight: 0,
+      receiptScrollHeight: 0,
+      bodyScrollHeight: 0,
+      calculatedHeightPx: null,
+      calculatedHeightMm: null,
+    };
+    setSilentPrintTestAdapter(async () => {
+      throw new SilentPrintError("PDF_FAILED", "تعذّر قياس ارتفاع محتوى الإيصال", details);
+    });
+    try {
+      const res = await request(ctx.app)
+        .post("/api/v1/print-receipt/silent")
+        .set(authHeader(cashierToken))
+        .send({ transaction_id: transactionId });
+      expect(res.status).toBe(500);
+      expect(res.body.code).toBe("PDF_FAILED");
+      expect(res.body.details).toEqual(details);
+      expect(res.body.error).toContain("تعذّر قياس");
+    } finally {
+      if (prev == null) delete process.env.RECEIPT_PRINT_TEST_MODE;
+      else process.env.RECEIPT_PRINT_TEST_MODE = prev;
+    }
+  });
+
+  test("save test mode returns measured PDF fields and HTTP 200", async () => {
+    setSilentPrintTestAdapter(async () => ({
+      printed: true,
+      testMode: true,
+      pdfPath: "C:\\abo_shalbak\\tmp\\receipt-test\\receipt.pdf",
+      widthMm: 80.25,
+      heightMm: 117.5,
+    }));
+    const res = await request(ctx.app)
+      .post("/api/v1/print-receipt/silent")
+      .set(authHeader(cashierToken))
+      .send({ transaction_id: transactionId });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.testMode).toBe(true);
+    expect(res.body.pdfPath).toContain("receipt-test");
+    expect(res.body.widthMm).toBe(80.25);
+    expect(res.body.heightMm).toBe(117.5);
+    const data = res.body.data;
+    expect(data.testMode).toBe(true);
+    expect(data.pdfPath).toBe(res.body.pdfPath);
+    expect(data.widthMm).toBe(80.25);
+    expect(data.heightMm).toBe(117.5);
   });
 
   test("receipt HTML stays RTL Arabic with totals", async () => {

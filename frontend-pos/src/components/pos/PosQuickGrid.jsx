@@ -31,7 +31,14 @@ export default function PosQuickGrid({ onProductFound }) {
   }, []);
 
   function tap(p) {
-    onProductFound({ product: p, ...p, unit_id: p.unit_id });
+    onProductFound({
+      product: p,
+      ...p,
+      unit_id: p.unit_id,
+      unit_name: p.unit_name,
+      selectedUnit: p.selectedUnit,
+      availableUnits: p.availableUnits,
+    });
   }
 
   const items =
@@ -73,13 +80,14 @@ export default function PosQuickGrid({ onProductFound }) {
             const outOfStock = Number(p.stock) <= 0;
             return (
             <button
-              key={p.id}
+              key={`${p.id}-${p.unit_id ?? "default"}`}
               type="button"
               className={`pos-quick-btn${outOfStock ? " pos-quick-btn--no-stock" : ""}`}
               onClick={() => tap(p)}
               title={outOfStock ? `${p.barcode} — الرصيد: 0` : p.barcode}
             >
               <span>{p.name}</span>
+              {p.unit_name ? <span className="pos-quick-unit">{p.unit_name}</span> : null}
               <span className="pos-quick-price">{ils(p.price)}</span>
             </button>
             );

@@ -42,8 +42,10 @@ BACKUP_DIR=/app/backups
 ### 3. تشغيل
 
 ```bash
-docker compose up -d
+npm run store:up
 ```
+
+Starts Docker and the Windows receipt print agent (Node.js LTS required on the shop PC for silent thermal printing).
 
 ### 4. فتح التطبيق من أي جهاز في الشبكة
 
@@ -81,9 +83,8 @@ docker compose exec -T app cp /app/data/supermarket.db /app/backups/manual_$(dat
 ### 7. إعادة البناء بعد تحديث الكود
 
 ```bash
-docker compose down
-docker compose build --no-cache
-docker compose up -d
+npm run store:down
+npm run store:build
 ```
 
 ---

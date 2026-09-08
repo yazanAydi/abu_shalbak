@@ -25,7 +25,8 @@ import {
 import { pickExportColumns } from "../utils/reportExport";
 import "./productDashboard/productBarcodes.css";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
-import { normalizeBarcode } from "../utils/barcode";
+import { fetchBarcodeLookup, normalizeBarcode } from "../utils/barcode";
+import { focusNextField } from "../utils/focusNavigation";
 import {
   displayProductBarcode,
   displayProductSku,
@@ -94,11 +95,12 @@ function toConflictProduct(hit) {
 async function lookupProductByBarcodeApi(barcode) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
-  const { data } = await api.get("/api/products/lookup", {
-    params: { barcode: code },
-    headers: getAuthHeaders(),
-  });
-  return data?.found ? data : null;
+  try {
+    const data = await fetchBarcodeLookup(code);
+    return data?.found ? data : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchSuggestedSku() {
@@ -377,22 +379,33 @@ export default function ProductManagement() {
     setSelectedIds(new Set());
   }, [search, showNeedsReviewOnly]);
 
+  const checkBarcodeConflict = useCallback(async (raw) => {
+    try {
+      const hit = await lookupProductByBarcodeApi(raw);
+      setConflictProduct(toConflictProduct(hit));
+    } catch {
+      setConflictProduct(null);
+    }
+  }, []);
+
   useEffect(() => {
     const code = form.barcode.trim();
     if (!code) {
       setConflictProduct(null);
       return undefined;
     }
-    const timer = window.setTimeout(async () => {
-      try {
-        const hit = await lookupProductByBarcodeApi(code);
-        setConflictProduct(toConflictProduct(hit));
-      } catch {
-        setConflictProduct(null);
-      }
+    const timer = window.setTimeout(() => {
+      checkBarcodeConflict(code);
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [form.barcode]);
+  }, [form.barcode, checkBarcodeConflict]);
+
+  function onAddBarcodeKeyDown(e) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    checkBarcodeConflict(e.target.value);
+    focusNextField(e.target);
+  }
 
   async function onUpload(ev) {
     const file = ev.target.files?.[0];
@@ -804,6 +817,7 @@ export default function ProductManagement() {
                   <Input
                     value={form.barcode}
                     onChange={(e) => setForm({ ...form, barcode: e.target.value })}
+                    onKeyDown={onAddBarcodeKeyDown}
                     placeholder="امسح أو أدخل الباركود"
                     required
                   />

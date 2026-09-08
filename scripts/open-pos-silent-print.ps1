@@ -1,6 +1,5 @@
-# Obsolete for POS receipts: checkout no longer uses window.print / kiosk-printing.
-# Run the API on the Windows till and set the thermal printer as default
-# (or RECEIPT_PRINTER). This shortcut does not print receipts.
+# Obsolete for POS receipts: checkout uses the Windows print agent / silent API.
+# Start the shop with npm run store:up (Docker + receipt-print-agent).
 # Store:  .\scripts\open-pos-silent-print.ps1
 # Dev:    .\scripts\open-pos-silent-print.ps1 -Url http://127.0.0.1:3002/pos
 # Pin:    .\scripts\open-pos-silent-print.ps1 -CreateShortcut

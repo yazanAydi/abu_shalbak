@@ -555,6 +555,12 @@
   opacity: 1;
 }
 
+.pos-quick-unit {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--pos-text-muted);
+}
+
 .pos-quick-price {
   font-size: 0.8rem;
   font-weight: 700;

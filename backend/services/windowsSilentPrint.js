@@ -3,16 +3,69 @@ import { createRequire } from "module";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { pathToFileURL } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
+import {
+  applyReceiptPageSize,
+  assembleReceiptHeightMeasure,
+  injectReceiptMeasureHook,
+  parseReceiptMeasureFromDom,
+  receiptMeasurePageSource,
+  receiptPrintWidthMm,
+} from "../utils/receiptPdfPage.js";
+import { cdpEvaluateOnUrl } from "./chromeCdp.js";
 
 const require = createRequire(import.meta.url);
+const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const PT_TO_MM = 25.4 / 72;
 
 const VIRTUAL_PRINTER = /PDF|XPS|OneNote|Fax|Snagit/i;
 
+/** @returns {boolean} */
+export function isReceiptPrintTestSave(env = process.env) {
+  return String(env.RECEIPT_PRINT_TEST_MODE || "").trim().toLowerCase() === "save";
+}
+
+export function receiptTestOutputDir() {
+  return path.join(REPO_ROOT, "tmp", "receipt-test");
+}
+
+/**
+ * Read the first page MediaBox from a generated PDF (points → mm).
+ * @param {Buffer|string} pdfBytes
+ * @returns {{ widthMm: number, heightMm: number }}
+ */
+export function measurePdfPageSizeMm(pdfBytes) {
+  const text = Buffer.isBuffer(pdfBytes) ? pdfBytes.toString("latin1") : String(pdfBytes);
+  const m = text.match(/\/MediaBox\s*\[\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s*\]/);
+  if (!m) {
+    throw new SilentPrintError("PDF_FAILED", "تعذّر قراءة مقاس صفحة الإيصال من PDF");
+  }
+  const widthPt = Number(m[3]) - Number(m[1]);
+  const heightPt = Number(m[4]) - Number(m[2]);
+  if (!Number.isFinite(widthPt) || !Number.isFinite(heightPt) || widthPt <= 0 || heightPt <= 0) {
+    throw new SilentPrintError("PDF_FAILED", "مقاس صفحة الإيصال غير صالح");
+  }
+  return {
+    widthMm: Math.round(widthPt * PT_TO_MM * 100) / 100,
+    heightMm: Math.round(heightPt * PT_TO_MM * 100) / 100,
+  };
+}
+
+export async function persistReceiptTestPdf(srcPdfPath) {
+  const dir = receiptTestOutputDir();
+  await fs.promises.mkdir(dir, { recursive: true });
+  const dest = path.join(dir, `receipt-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.pdf`);
+  await fs.promises.copyFile(srcPdfPath, dest);
+  const buf = await fs.promises.readFile(dest);
+  const { widthMm, heightMm } = measurePdfPageSizeMm(buf);
+  return { pdfPath: dest, widthMm, heightMm };
+}
+
 export class SilentPrintError extends Error {
-  constructor(code, message) {
+  constructor(code, message, details = null) {
     super(message);
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -27,10 +80,16 @@ function findChromium() {
   return candidates.find((p) => p && fs.existsSync(p)) || null;
 }
 
-function run(cmd, args, { timeoutMs = 45000 } = {}) {
+function run(cmd, args, { timeoutMs = 45000, captureStdout = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { windowsHide: true });
+    let stdout = "";
     let stderr = "";
+    if (captureStdout) {
+      child.stdout?.on("data", (buf) => {
+        stdout += String(buf);
+      });
+    }
     child.stderr?.on("data", (buf) => {
       stderr += String(buf);
     });
@@ -44,7 +103,7 @@ function run(cmd, args, { timeoutMs = 45000 } = {}) {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (code === 0) resolve();
+      if (code === 0) resolve(captureStdout ? stdout : undefined);
       else reject(new SilentPrintError("PRINT_FAILED", stderr.trim() || `print helper exited ${code}`));
     });
   });
@@ -124,6 +183,54 @@ export async function resolveReceiptPrinterName() {
   return fallback;
 }
 
+function includeReceiptMeasureDiagnostics() {
+  return isReceiptPrintTestSave() || process.env.NODE_ENV === "development";
+}
+
+function throwMeasureFailed(diag) {
+  const details = diag || assembleReceiptHeightMeasure({});
+  const suffix = includeReceiptMeasureDiagnostics() ? ` ${JSON.stringify(details)}` : "";
+  throw new SilentPrintError("PDF_FAILED", `تعذّر قياس ارتفاع محتوى الإيصال${suffix}`, details);
+}
+
+async function measureReceiptViaDumpDom(browser, measureHtmlPath, profileDir) {
+  const measureHtml = injectReceiptMeasureHook(await fs.promises.readFile(measureHtmlPath, "utf8"));
+  await fs.promises.writeFile(measureHtmlPath, measureHtml, "utf8");
+  const dom = await run(
+    browser,
+    [
+      "--headless=new",
+      "--disable-gpu",
+      "--hide-scrollbars",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--virtual-time-budget=8000",
+      `--user-data-dir=${profileDir}`,
+      "--dump-dom",
+      pathToFileURL(measureHtmlPath).href,
+    ],
+    { timeoutMs: 45000, captureStdout: true }
+  );
+  return parseReceiptMeasureFromDom(dom);
+}
+
+async function measureReceiptContent(browser, measureHtmlPath, profileDir) {
+  const url = pathToFileURL(measureHtmlPath).href;
+  try {
+    const raw = await cdpEvaluateOnUrl(browser, profileDir, url, receiptMeasurePageSource());
+    return assembleReceiptHeightMeasure(raw);
+  } catch (err) {
+    const dumpProfile = path.join(path.dirname(profileDir), "profile-dump");
+    await fs.promises.mkdir(dumpProfile, { recursive: true });
+    try {
+      return await measureReceiptViaDumpDom(browser, measureHtmlPath, dumpProfile);
+    } catch {
+      if (err instanceof SilentPrintError) throw err;
+      throwMeasureFailed(assembleReceiptHeightMeasure({}));
+    }
+  }
+}
+
 async function htmlToPdf(html) {
   const browser = findChromium();
   if (!browser) {
@@ -133,26 +240,52 @@ async function htmlToPdf(html) {
     );
   }
   const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abo-receipt-"));
-  const htmlPath = path.join(tmp, "receipt.html");
+  const measurePath = path.join(tmp, "measure.html");
+  const printPath = path.join(tmp, "receipt.html");
   const pdfPath = path.join(tmp, "receipt.pdf");
-  const profileDir = path.join(tmp, "profile");
-  await fs.promises.writeFile(htmlPath, html, "utf8");
-  await fs.promises.mkdir(profileDir);
+  const measureProfile = path.join(tmp, "profile-measure");
+  const printProfile = path.join(tmp, "profile-print");
+  await fs.promises.mkdir(measureProfile);
+  await fs.promises.mkdir(printProfile);
+
+  await fs.promises.writeFile(measurePath, html, "utf8");
+
+  const diag = await measureReceiptContent(browser, measurePath, measureProfile);
+  if (isReceiptPrintTestSave()) {
+    console.log({
+      receiptSelectorFound: diag.receiptSelectorFound,
+      rectHeight: diag.rectHeight,
+      receiptScrollHeight: diag.receiptScrollHeight,
+      bodyScrollHeight: diag.bodyScrollHeight,
+      calculatedHeightPx: diag.calculatedHeightPx,
+      calculatedHeightMm: diag.calculatedHeightMm,
+    });
+  }
+  if (diag.calculatedHeightPx == null || diag.calculatedHeightMm == null) {
+    throwMeasureFailed(diag);
+  }
+  const widthMm = receiptPrintWidthMm();
+  const heightMm = diag.calculatedHeightMm;
+  const printHtml = applyReceiptPageSize(html, widthMm, heightMm);
+  await fs.promises.writeFile(printPath, printHtml, "utf8");
+
   await run(browser, [
     "--headless=new",
     "--disable-gpu",
+    "--hide-scrollbars",
     "--no-first-run",
     "--no-default-browser-check",
     "--no-pdf-header-footer",
-    `--user-data-dir=${profileDir}`,
+    "--virtual-time-budget=3000",
+    `--user-data-dir=${printProfile}`,
     `--print-to-pdf=${pdfPath}`,
-    pathToFileURL(htmlPath).href,
+    pathToFileURL(printPath).href,
   ]);
   const stat = await fs.promises.stat(pdfPath).catch(() => null);
   if (!stat || stat.size < 100) {
     throw new SilentPrintError("PDF_FAILED", "فشل تحويل الإيصال إلى PDF");
   }
-  return { pdfPath, tmp };
+  return { pdfPath, tmp, widthMm, heightMm };
 }
 
 function loadPdfToPrinter() {
@@ -166,17 +299,158 @@ function loadPdfToPrinter() {
   }
 }
 
+function receiptPaperSizeOption() {
+  const named = process.env.RECEIPT_PAPER_SIZE && String(process.env.RECEIPT_PAPER_SIZE).trim();
+  return named || undefined;
+}
+
 async function printPdfFile(pdfPath, printerName) {
   const mod = loadPdfToPrinter();
   const print = typeof mod.print === "function" ? mod.print : mod.default;
   if (typeof print !== "function") {
     throw new SilentPrintError("NO_PRINT_HELPER", "تعذّر استدعاء مكتبة الطباعة");
   }
-  await print(pdfPath, {
+  const options = {
     printer: printerName,
     silent: true,
     scale: "noscale",
-  });
+  };
+  const paperSize = receiptPaperSizeOption();
+  if (paperSize) options.paperSize = paperSize;
+  await print(pdfPath, options);
+}
+
+const printPipeline = {
+  htmlToPdf,
+  printPdfFile,
+  resolvePrinter: resolveReceiptPrinterName,
+  platform: null,
+};
+
+/** Test-only: swap HTML→PDF / printer steps without Windows hardware. */
+export function setPrintPipelineForTests(partial = null) {
+  if (process.env.NODE_ENV !== "test") return;
+  printPipeline.htmlToPdf = htmlToPdf;
+  printPipeline.printPdfFile = printPdfFile;
+  printPipeline.resolvePrinter = resolveReceiptPrinterName;
+  printPipeline.platform = null;
+  if (partial && typeof partial === "object") {
+    if (partial.htmlToPdf) printPipeline.htmlToPdf = partial.htmlToPdf;
+    if (partial.printPdfFile) printPipeline.printPdfFile = partial.printPdfFile;
+    if (partial.resolvePrinter) printPipeline.resolvePrinter = partial.resolvePrinter;
+    if (partial.platform) printPipeline.platform = partial.platform;
+  }
+}
+
+const AGENT_UNAVAILABLE_AR =
+  "خدمة طباعة الإيصالات غير شغّالة على جهاز ويندوز. شغّل start-store.ps1 ثم أعد طباعة الإيصال.";
+
+export function receiptPrintAgentUrl() {
+  const raw = process.env.RECEIPT_PRINT_AGENT_URL;
+  const base = (raw && String(raw).trim()) || "http://host.docker.internal:17891";
+  return base.replace(/\/$/, "");
+}
+
+/**
+ * Forward receipt HTML to the Windows host print agent (Docker/Linux API).
+ * @param {string} html
+ * @param {typeof fetch} [fetchImpl]
+ */
+export async function forwardToPrintAgent(html, fetchImpl = globalThis.fetch) {
+  if (typeof fetchImpl !== "function") {
+    throw new SilentPrintError("AGENT_UNAVAILABLE", AGENT_UNAVAILABLE_AR);
+  }
+  const url = `${receiptPrintAgentUrl()}/print`;
+  let res;
+  try {
+    res = await fetchImpl(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ html }),
+      signal: AbortSignal.timeout(60000),
+    });
+  } catch {
+    throw new SilentPrintError("AGENT_UNAVAILABLE", AGENT_UNAVAILABLE_AR);
+  }
+
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+
+  if (!res.ok) {
+    const message = (body && body.error) || AGENT_UNAVAILABLE_AR;
+    const code = (body && body.code) || "AGENT_UNAVAILABLE";
+    const details = body && body.details ? body.details : null;
+    if (res.status === 409) {
+      throw new SilentPrintError(code, message, details);
+    }
+    if (res.status === 400) {
+      throw new SilentPrintError(code === "AGENT_UNAVAILABLE" ? "NO_HTML" : code, message, details);
+    }
+    throw new SilentPrintError("AGENT_UNAVAILABLE", message, details);
+  }
+
+  const result = {
+    printed: true,
+    printer: (body && body.printer) || null,
+    viaAgent: true,
+  };
+  if (body && body.testMode) {
+    result.testMode = true;
+    result.pdfPath = body.pdfPath || null;
+    result.widthMm = body.widthMm != null ? Number(body.widthMm) : null;
+    result.heightMm = body.heightMm != null ? Number(body.heightMm) : null;
+  }
+  return result;
+}
+
+/**
+ * Print on this Windows process (Edge PDF → pdf-to-printer). Used by the host agent
+ * and by a native Windows API. Never forwards to the agent.
+ * RECEIPT_PRINT_TEST_MODE=save writes that same PDF to tmp/receipt-test/ and skips the printer.
+ * @param {string} html
+ */
+export async function printReceiptHtmlLocally(html) {
+  if (!html || typeof html !== "string") {
+    throw new SilentPrintError("NO_HTML", "لا يوجد إيصال للطباعة");
+  }
+
+  const saveOnly = isReceiptPrintTestSave();
+  if (!saveOnly) {
+    const platform = printPipeline.platform || process.platform;
+    if (platform !== "win32") {
+      throw new SilentPrintError(
+        "SILENT_PRINT_UNSUPPORTED",
+        "الطباعة المباشرة تعمل عندما يعمل الخادم على ويندوز (جهاز الكاشير)، وليس من Docker/Linux."
+      );
+    }
+  }
+
+  let tmpDir = null;
+  try {
+    const { pdfPath, tmp } = await printPipeline.htmlToPdf(html);
+    tmpDir = tmp;
+    if (saveOnly) {
+      const saved = await persistReceiptTestPdf(pdfPath);
+      return {
+        printed: true,
+        testMode: true,
+        pdfPath: saved.pdfPath,
+        widthMm: saved.widthMm,
+        heightMm: saved.heightMm,
+      };
+    }
+    const printerName = await printPipeline.resolvePrinter();
+    await printPipeline.printPdfFile(pdfPath, printerName);
+    return { printed: true, printer: printerName };
+  } finally {
+    if (tmpDir) {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 /** @type {null | ((html: string) => Promise<{ printed: boolean, printer?: string, dryRun?: boolean }>)} */
@@ -189,9 +463,11 @@ export function setSilentPrintTestAdapter(fn) {
 }
 
 /**
- * Print receipt HTML on the Windows machine that runs the API, with no browser dialog.
+ * Print receipt HTML with no browser dialog.
+ * On Windows this process talks to the printer. On Linux/Docker it forwards to the
+ * Windows host print agent at RECEIPT_PRINT_AGENT_URL.
  * @param {string} html
- * @returns {Promise<{ printed: boolean, printer?: string, dryRun?: boolean }>}
+ * @returns {Promise<{ printed: boolean, printer?: string, dryRun?: boolean, viaAgent?: boolean }>}
  */
 export async function silentPrintReceiptHtml(html) {
   if (!html || typeof html !== "string") {
@@ -199,26 +475,13 @@ export async function silentPrintReceiptHtml(html) {
   }
   if (process.env.NODE_ENV === "test") {
     if (testAdapter) return testAdapter(html);
+    if (isReceiptPrintTestSave()) {
+      return printReceiptHtmlLocally(html);
+    }
     return { printed: true, dryRun: true };
   }
-  if (process.platform !== "win32") {
-    throw new SilentPrintError(
-      "SILENT_PRINT_UNSUPPORTED",
-      "الطباعة المباشرة تعمل عندما يعمل الخادم على ويندوز (جهاز الكاشير)، وليس من Docker/Linux."
-    );
+  if (process.platform === "win32") {
+    return printReceiptHtmlLocally(html);
   }
-
-  const printerName = await resolveReceiptPrinterName();
-
-  let tmpDir = null;
-  try {
-    const { pdfPath, tmp } = await htmlToPdf(html);
-    tmpDir = tmp;
-    await printPdfFile(pdfPath, printerName);
-    return { printed: true, printer: printerName };
-  } finally {
-    if (tmpDir) {
-      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    }
-  }
+  return forwardToPrintAgent(html);
 }

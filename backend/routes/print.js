@@ -2,7 +2,11 @@ import { Router } from "express";
 import { requireAuth, requirePosAccess } from "../middleware/auth.js";
 import { canViewReports } from "../utils/roles.js";
 import { getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
-import { SilentPrintError, silentPrintReceiptHtml } from "../services/windowsSilentPrint.js";
+import {
+  isReceiptPrintTestSave,
+  SilentPrintError,
+  silentPrintReceiptHtml,
+} from "../services/windowsSilentPrint.js";
 import { buildReceiptPayload, mapSaleItemsToReceiptLines, RECEIPT_STORED_ITEMS_SQL } from "../utils/receipt.js";
 import { loadSalePayments } from "../utils/salePayments.js";
 import { getAppSettings } from "../utils/settings.js";
@@ -71,6 +75,7 @@ async function canAccessSaleReceipt(db, user, tx) {
 }
 
 function silentPrintHttpStatus(code) {
+  if (code === "AGENT_UNAVAILABLE") return 503;
   if (code === "SILENT_PRINT_UNSUPPORTED") return 501;
   if (code === "VIRTUAL_PRINTER" || code === "NO_PRINTER") return 409;
   if (code === "NO_HTML" || code === "BAD_ITEMS") return 400;
@@ -98,22 +103,44 @@ export function createPrintRouter(db) {
         return res.status(404).json({ error: "العملية غير موجودة" });
       }
       const result = await silentPrintReceiptHtml(receipt.receipt_html);
-      res.json({
+      const payload = {
         success: true,
         printed: true,
         transaction_id: tid,
         printer: result.printer || null,
         dry_run: Boolean(result.dryRun),
-      });
+      };
+      if (result.testMode) {
+        payload.testMode = true;
+        payload.pdfPath = result.pdfPath;
+        payload.widthMm = result.widthMm;
+        payload.heightMm = result.heightMm;
+        return res.json({
+          success: true,
+          testMode: true,
+          pdfPath: result.pdfPath,
+          widthMm: result.widthMm,
+          heightMm: result.heightMm,
+          data: payload,
+        });
+      }
+      res.json(payload);
     } catch (e) {
       if (e.code === "BAD_ITEMS") {
         return next(e);
       }
       if (e instanceof SilentPrintError) {
-        return res.status(silentPrintHttpStatus(e.code)).json({
+        const body = {
           error: e.message,
           code: e.code,
-        });
+        };
+        if (
+          e.details &&
+          (isReceiptPrintTestSave() || process.env.NODE_ENV === "development")
+        ) {
+          body.details = e.details;
+        }
+        return res.status(silentPrintHttpStatus(e.code)).json(body);
       }
       next(e);
     }

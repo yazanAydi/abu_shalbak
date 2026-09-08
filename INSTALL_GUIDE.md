@@ -236,8 +236,12 @@ BACKUP_DIR=/app/backups
 
 ```powershell
 cd C:\abo_shalbak
-docker compose up -d
+npm run store:up
 ```
+
+This starts Docker **and** the Windows receipt print agent (needs [Node.js LTS](https://nodejs.org/) on the shop PC). Sales still work if Node is missing; receipts will not print until the agent is running.
+
+Equivalent: `scripts\start-store.ps1`. To start Docker only: `docker compose up -d`.
 
 **أول مرة تستغرق 5–15 دقيقة** (تحميل + بناء واجهة الإدارة ونقطة البيع).
 
@@ -528,10 +532,10 @@ xcopy C:\abo_shalbak\data D:\backup\data /E /I
 
 | المهمة | الأمر |
 |--------|-------|
-| تشغيل | `docker compose up -d` |
-| إيقاف | `docker compose down` |
+| تشغيل | `npm run store:up` |
+| إيقاف | `npm run store:down` |
 | عرض السجل | `docker compose logs -f app` |
-| تحديث بعد تغيير الكود | `docker compose down` ثم `docker compose build --no-cache` ثم `docker compose up -d` |
+| تحديث بعد تغيير الكود | `npm run store:down` ثم `npm run store:build` |
 
 > **استعادة من نسخة احتياطية:** أوقف الخادم أولاً — راجع [RESTORE.md](./RESTORE.md)
 
@@ -539,6 +543,7 @@ xcopy C:\abo_shalbak\data D:\backup\data /E /I
 
 - [ ] IP ثابت ([القسم 5](#5-كيف-تجعل-ip-ثابتا))
 - [ ] Docker يعمل (`docker compose ps`)
+- [ ] وكيل الطباعة يعمل (`http://127.0.0.1:17891/health`)
 - [ ] جدار الحماية مفتوح ([الخطوة 6.6](#الخطوة-66--افتح-المنفذ-3000-في-جدار-الحماية))
 - [ ] Admin و POS يفتحان من كل الأجهزة ([الخطوة 6.7](#الخطوة-67--اختبر-أن-الصفحتين-تعملان))
 - [ ] كلمات المرور الافتراضية تغيّرت
@@ -683,7 +688,7 @@ tailscale serve --bg 5000
 
 | المشكلة | الحل |
 |---------|------|
-| "This site can't be reached" | الخادم متوقف → `docker compose up -d` أو `npm run start:prod` |
+| "This site can't be reached" | الخادم متوقف → `npm run store:up` أو `npm run start:prod` |
 | يعمل على الخادم، لا يعمل على الكاشير | جدار الحماية → [6.5–6.6](#الخطوة-65--افتح-powershell-كمسؤول-administrator) |
 | صفحة قديمة / خاطئة | **Ctrl + F5** (تحديث قوي) |
 | IP توقف عن العمل بعد إعادة التشغيل | IP ثابت → [القسم 5](#5-كيف-تجعل-ip-ثابتا) |

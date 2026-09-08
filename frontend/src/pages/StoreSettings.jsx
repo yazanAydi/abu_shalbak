@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { searchProductsApi } from "../utils/productSearch";
@@ -48,6 +48,63 @@ const LABELS = {
 const OTHER_CATEGORY = "أخرى";
 const MAX_QUICK_BUTTONS = 48;
 
+function normalizeQuickUnitId(value) {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function quickButtonKey(productId, productUnitId) {
+  return `${Number(productId)}:${normalizeQuickUnitId(productUnitId) ?? "default"}`;
+}
+
+function sameQuickButton(a, productId, productUnitId) {
+  return (
+    Number(a.product_id) === Number(productId) &&
+    normalizeQuickUnitId(a.product_unit_id) === normalizeQuickUnitId(productUnitId)
+  );
+}
+
+function saleableUnits(units) {
+  const list = Array.isArray(units) ? units : [];
+  const sale = list.filter((u) => u.sale_enabled !== false);
+  return sale.length ? sale : list;
+}
+
+function pickDefaultSaleUnitId(units) {
+  const pool = saleableUnits(units);
+  const def = pool.find((u) => u.is_default) || pool[0];
+  return def ? def.id : null;
+}
+
+function parseProductUnitsPayload(data) {
+  if (Array.isArray(data?.units)) return data.units;
+  if (Array.isArray(data)) return data;
+  return [];
+}
+
+async function fetchProductUnitsList(productId) {
+  try {
+    const { data } = await api.get(`/api/products/${productId}/units`, {
+      headers: getAuthHeaders(),
+    });
+    return parseProductUnitsPayload(data);
+  } catch {
+    return [];
+  }
+}
+
+function usedUnitIdsForProduct(buttons, productId) {
+  const used = new Set();
+  let hasLegacyDefault = false;
+  for (const b of buttons) {
+    if (Number(b.product_id) !== Number(productId)) continue;
+    const unitId = normalizeQuickUnitId(b.product_unit_id);
+    if (unitId == null) hasLegacyDefault = true;
+    else used.add(unitId);
+  }
+  return { used, hasLegacyDefault };
+}
+
 export default function StoreSettings() {
   const toast = useToast();
   // The product-delete password is an admin safeguard, so an accountant with
@@ -65,6 +122,9 @@ export default function StoreSettings() {
   const [searchResults, setSearchResults] = useState([]);
   const [pendingProduct, setPendingProduct] = useState(null);
   const [pendingCategory, setPendingCategory] = useState("");
+  const [pendingUnitId, setPendingUnitId] = useState("");
+  const [pendingUnits, setPendingUnits] = useState([]);
+  const [pendingUnitsLoading, setPendingUnitsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [sendingExpiryAlert, setSendingExpiryAlert] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -128,21 +188,30 @@ export default function StoreSettings() {
           headers: getAuthHeaders(),
         });
         const rows = Array.isArray(products) ? products : products?.items || [];
+        const namesById = new Map(rows.map((p) => [Number(p.id), p.name]));
+        const uniqueIds = [...new Set(ids.map((id) => Number(id)))];
+        const unitsByProduct = new Map();
+        await Promise.all(
+          uniqueIds.map(async (id) => {
+            unitsByProduct.set(id, await fetchProductUnitsList(id));
+          })
+        );
         const labels = {};
-        for (const p of rows) {
-          labels[p.id] = p.name;
+        for (const b of buttons) {
+          const name = namesById.get(Number(b.product_id)) || `#${b.product_id}`;
+          const units = unitsByProduct.get(Number(b.product_id)) || [];
+          const unitId = normalizeQuickUnitId(b.product_unit_id);
+          const unit = unitId ? units.find((u) => Number(u.id) === unitId) : null;
+          labels[quickButtonKey(b.product_id, b.product_unit_id)] = unit?.unit_name
+            ? `${name} — ${unit.unit_name}`
+            : name;
         }
         setFavoriteLabels(labels);
       })
       .catch(() => toast.error("تعذّر تحميل الإعدادات"));
   }, []);
 
-  const favoriteIds = useMemo(() => quickButtons.map((b) => b.product_id), [quickButtons]);
-
-  // Read through a ref so adding or removing a quick button does not re-run the
-  // product search; the exclusion list is still current when the request fires.
-  const favoriteIdsRef = useRef(favoriteIds);
-  favoriteIdsRef.current = favoriteIds;
+  const pendingLoadRef = useRef(0);
 
   useEffect(() => {
     const q = productSearch.trim();
@@ -152,10 +221,7 @@ export default function StoreSettings() {
     }
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchProductsApi(q, {
-          limit: 12,
-          excludeIds: favoriteIdsRef.current,
-        });
+        const rows = await searchProductsApi(q, { limit: 12 });
         setSearchResults(rows);
       } catch {
         setSearchResults([]);
@@ -164,36 +230,104 @@ export default function StoreSettings() {
     return () => window.clearTimeout(timer);
   }, [productSearch]);
 
-  function openAddModal(product) {
+  function closeAddModal() {
+    pendingLoadRef.current += 1;
+    setPendingProduct(null);
+    setPendingCategory("");
+    setPendingUnitId("");
+    setPendingUnits([]);
+    setPendingUnitsLoading(false);
+  }
+
+  function availableUnitsForProduct(productId, units) {
+    const saleUnits = saleableUnits(units);
+    const { used, hasLegacyDefault } = usedUnitIdsForProduct(quickButtons, productId);
+    const defaultId = pickDefaultSaleUnitId(saleUnits);
+    return saleUnits.filter((u) => {
+      const id = Number(u.id);
+      if (used.has(id)) return false;
+      if (hasLegacyDefault && defaultId != null && id === Number(defaultId)) return false;
+      return true;
+    });
+  }
+
+  async function openAddModal(product) {
     if (quickButtons.length >= MAX_QUICK_BUTTONS) {
       setError(`الحد الأقصى ${MAX_QUICK_BUTTONS} منتجاً`);
       return;
     }
-    if (favoriteIds.includes(product.id)) return;
+    const loadId = ++pendingLoadRef.current;
     setPendingProduct(product);
     setPendingCategory(quickCategories[0] || OTHER_CATEGORY);
+    setPendingUnitId("");
+    setPendingUnits([]);
+    setPendingUnitsLoading(true);
     setProductSearch("");
     setError(null);
+
+    const units = await fetchProductUnitsList(product.id);
+    if (loadId !== pendingLoadRef.current) return;
+
+    if (units.length === 0) {
+      const alreadyLegacy = quickButtons.some(
+        (b) =>
+          Number(b.product_id) === Number(product.id) &&
+          normalizeQuickUnitId(b.product_unit_id) == null
+      );
+      if (alreadyLegacy) {
+        closeAddModal();
+        setError("تمت إضافة كل وحدات هذا المنتج");
+        return;
+      }
+      setPendingUnits([]);
+      setPendingUnitId("");
+      setPendingUnitsLoading(false);
+      return;
+    }
+
+    const available = availableUnitsForProduct(product.id, units);
+    if (available.length === 0) {
+      closeAddModal();
+      setError("تمت إضافة كل وحدات هذا المنتج");
+      return;
+    }
+
+    setPendingUnits(available);
+    const pick = available.find((u) => u.is_default) || available[0];
+    setPendingUnitId(pick ? String(pick.id) : "");
+    setPendingUnitsLoading(false);
   }
 
   function confirmAddFavorite() {
     if (!pendingProduct || !pendingCategory) return;
-    setQuickButtons((prev) => [
+    if (pendingUnitsLoading) return;
+    if (pendingUnits.length > 0 && !pendingUnitId) return;
+    const unitId = normalizeQuickUnitId(pendingUnitId);
+    if (quickButtons.some((b) => sameQuickButton(b, pendingProduct.id, unitId))) return;
+    const button = { product_id: pendingProduct.id, category: pendingCategory };
+    if (unitId != null) button.product_unit_id = unitId;
+    const unitName = pendingUnits.find((u) => Number(u.id) === unitId)?.unit_name;
+    setQuickButtons((prev) => [...prev, button]);
+    setFavoriteLabels((prev) => ({
       ...prev,
-      { product_id: pendingProduct.id, category: pendingCategory },
-    ]);
-    setFavoriteLabels((prev) => ({ ...prev, [pendingProduct.id]: pendingProduct.name }));
-    setPendingProduct(null);
-    setPendingCategory("");
+      [quickButtonKey(pendingProduct.id, unitId)]: unitName
+        ? `${pendingProduct.name} — ${unitName}`
+        : pendingProduct.name,
+    }));
+    closeAddModal();
   }
 
-  function removeFavorite(id) {
-    setQuickButtons((prev) => prev.filter((b) => b.product_id !== id));
-  }
-
-  function changeButtonCategory(productId, category) {
+  function removeFavorite(productId, productUnitId) {
     setQuickButtons((prev) =>
-      prev.map((b) => (b.product_id === productId ? { ...b, category } : b))
+      prev.filter((b) => !sameQuickButton(b, productId, productUnitId))
+    );
+  }
+
+  function changeButtonCategory(productId, productUnitId, category) {
+    setQuickButtons((prev) =>
+      prev.map((b) =>
+        sameQuickButton(b, productId, productUnitId) ? { ...b, category } : b
+      )
     );
   }
 
@@ -684,7 +818,7 @@ export default function StoreSettings() {
 
           <SectionTitle>أزرار الكاشير السريعة</SectionTitle>
             <p className="settings-favorites-hint">
-              اختر حتى {MAX_QUICK_BUTTONS} منتجاً موزّعة على الأقسام. عند الإضافة يُطلب اختيار القسم.
+              اختر حتى {MAX_QUICK_BUTTONS} زراً موزّعة على الأقسام. عند الإضافة يُطلب اختيار القسم والوحدة.
             </p>
             {quickCategories.map((cat) => {
               const catButtons = quickButtons.filter((b) => b.category === cat);
@@ -696,12 +830,18 @@ export default function StoreSettings() {
                       <span className="favorites-empty">لا توجد أزرار في هذا القسم</span>
                     ) : (
                       catButtons.map((b) => (
-                        <span key={b.product_id} className="favorite-chip">
-                          {favoriteLabels[b.product_id] || `#${b.product_id}`}
+                        <span
+                          key={quickButtonKey(b.product_id, b.product_unit_id)}
+                          className="favorite-chip"
+                        >
+                          {favoriteLabels[quickButtonKey(b.product_id, b.product_unit_id)] ||
+                            `#${b.product_id}`}
                           <Select
                             className="favorite-chip-category"
                             value={b.category}
-                            onChange={(e) => changeButtonCategory(b.product_id, e.target.value)}
+                            onChange={(e) =>
+                              changeButtonCategory(b.product_id, b.product_unit_id, e.target.value)
+                            }
                             aria-label="تغيير القسم"
                           >
                             {quickCategories.map((c) => (
@@ -713,7 +853,7 @@ export default function StoreSettings() {
                           <button
                             type="button"
                             className="favorite-chip-remove"
-                            onClick={() => removeFavorite(b.product_id)}
+                            onClick={() => removeFavorite(b.product_id, b.product_unit_id)}
                             aria-label="إزالة"
                           >
                             ×
@@ -871,14 +1011,18 @@ export default function StoreSettings() {
 
       <Modal
         open={!!pendingProduct}
-        onClose={() => setPendingProduct(null)}
-        title="اختر القسم"
+        onClose={closeAddModal}
+        title="اختر القسم والوحدة"
         footer={
           <>
-            <PrimaryButton type="button" onClick={confirmAddFavorite}>
+            <PrimaryButton
+              type="button"
+              onClick={confirmAddFavorite}
+              disabled={pendingUnitsLoading || (pendingUnits.length > 0 && !pendingUnitId)}
+            >
               إضافة
             </PrimaryButton>
-            <SecondaryButton type="button" onClick={() => setPendingProduct(null)}>
+            <SecondaryButton type="button" onClick={closeAddModal}>
               إلغاء
             </SecondaryButton>
           </>
@@ -896,6 +1040,24 @@ export default function StoreSettings() {
                 ))}
               </Select>
             </FormField>
+            {pendingUnitsLoading ? (
+              <p className="ui-field__hint">جاري تحميل الوحدات...</p>
+            ) : pendingUnits.length > 0 ? (
+              <FormField label="الوحدة" required>
+                <Select
+                  value={pendingUnitId}
+                  onChange={(e) => setPendingUnitId(e.target.value)}
+                >
+                  {pendingUnits.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.unit_name}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+            ) : (
+              <p className="ui-field__hint">سيتم استخدام الوحدة الافتراضية لهذا المنتج.</p>
+            )}
           </>
         )}
       </Modal>

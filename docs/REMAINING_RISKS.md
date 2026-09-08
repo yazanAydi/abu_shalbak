@@ -12,7 +12,7 @@
 ## Manual verification still required
 
 - Physical barcode scanner behavior (keyboard wedge)
-- Receipt printer drivers / browser print dialog
+- Receipt printer drivers / Windows print agent on the shop PC
 - Multi-cashier concurrent load on real LAN (unit tests use single process)
 - Backup restore drill on production DB copy
 - Shift close with real cash count and variance workflow

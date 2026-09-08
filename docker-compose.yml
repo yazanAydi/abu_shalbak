@@ -7,6 +7,8 @@ services:
       - "3000:3000"
     env_file:
       - .env.store
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       ABO_ENV: store
       NODE_ENV: production
@@ -15,6 +17,7 @@ services:
       TZ: Asia/Hebron
       DATABASE_PATH: /app/data/supermarket.db
       BACKUP_DIR: /app/backups
+      RECEIPT_PRINT_AGENT_URL: ${RECEIPT_PRINT_AGENT_URL:-http://host.docker.internal:17891}
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups

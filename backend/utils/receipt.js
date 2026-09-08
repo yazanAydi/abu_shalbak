@@ -231,9 +231,41 @@ function buildPaymentSection(opts) {
 }
 
 /** Thermal roll width. Chromium print-to-pdf needs an explicit height, not `auto`. */
-const RECEIPT_PAGE_WIDTH_MM = 80;
 const RECEIPT_HEIGHT_MIN_MM = 70;
 const RECEIPT_HEIGHT_MAX_MM = 400;
+
+/** @returns {80 | 58} */
+export function getReceiptPageWidthMm(env = process.env) {
+  return Number(env.RECEIPT_WIDTH_MM) === 58 ? 58 : 80;
+}
+
+/** Extra millimetres below شكراً لزيارتكم on the printed PDF. */
+export function getReceiptBottomMarginMm(env = process.env) {
+  const n = Number(env.RECEIPT_BOTTOM_MARGIN_MM);
+  if (Number.isFinite(n) && n >= 0 && n <= 30) return n;
+  return 5;
+}
+
+/** Horizontal inset on each side of the 80mm (or 58mm) page. */
+export function getReceiptSideMarginMm(env = process.env) {
+  const n = Number(env.RECEIPT_SIDE_MARGIN_MM);
+  const side = Number.isFinite(n) && n >= 0 && n <= 20 ? n : 3;
+  const page = getReceiptPageWidthMm(env);
+  const max = Math.max(0, Math.floor((page - 20) / 2));
+  return Math.min(side, max);
+}
+
+/** Optional physical shift (mm). Positive moves the slip to the right. Default 0. */
+export function getReceiptHorizontalOffsetMm(env = process.env) {
+  const n = Number(env.RECEIPT_HORIZONTAL_OFFSET_MM);
+  if (!Number.isFinite(n) || n === 0) return 0;
+  return Math.max(-10, Math.min(10, n));
+}
+
+/** Printable content width: page width minus equal left/right margins. */
+export function getReceiptContentWidthMm(env = process.env) {
+  return getReceiptPageWidthMm(env) - 2 * getReceiptSideMarginMm(env);
+}
 
 /**
  * Estimate printed slip height so Edge --print-to-pdf does not emit a full A4 page.
@@ -258,12 +290,17 @@ export function estimateReceiptPageHeightMm(opts) {
   return Math.min(RECEIPT_HEIGHT_MAX_MM, Math.max(RECEIPT_HEIGHT_MIN_MM, Math.round(raw)));
 }
 
-function receiptHtmlCss(heightMm) {
+function receiptHtmlCss() {
+  const pageWidthMm = getReceiptPageWidthMm();
+  const contentWidthMm = getReceiptContentWidthMm();
+  const offsetMm = getReceiptHorizontalOffsetMm();
+  const offsetCss =
+    offsetMm === 0 ? "" : `position: relative; left: ${offsetMm}mm;`;
   return `
-  @page { size: ${RECEIPT_PAGE_WIDTH_MM}mm ${heightMm}mm; margin: 0; }
+  @page { size: ${pageWidthMm}mm; margin: 0; }
   html { -webkit-locale: "en"; font-language-override: "eng"; font-feature-settings: "locl" 0; }
-  html, body { width: ${RECEIPT_PAGE_WIDTH_MM}mm; margin: 0; padding: 2mm 3mm 3mm; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; }
-  .receipt { width: 74mm; max-width: 74mm; margin: 0; }
+  html, body { direction: ltr; box-sizing: border-box; width: ${pageWidthMm}mm; height: auto !important; min-height: 0 !important; margin: 0; padding: 0; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; }
+  .receipt { direction: rtl; box-sizing: border-box; width: ${contentWidthMm}mm; max-width: ${contentWidthMm}mm; height: auto !important; min-height: 0 !important; margin-left: auto; margin-right: auto; padding: 2mm 0 0; ${offsetCss} }
   .logo-wrap { text-align: center; margin-bottom: 3px; }
   .logo-wrap img { max-width: 96px; max-height: 48px; object-fit: contain; }
   .center { text-align: center; }
@@ -284,14 +321,14 @@ function receiptHtmlCss(heightMm) {
   table.items .col-num { width: 17%; text-align: center; direction: ltr; font-variant-numeric: tabular-nums; white-space: nowrap; }
   table.items tfoot td { font-weight: 700; }
   .pay-box { text-align: center; border: 1px solid #000; border-radius: 6px; padding: 6px 4px; margin: 5px auto 4px; font-size: 14px; font-weight: 700; width: 88%; }
-  .foot-box { border: 1px solid #000; border-radius: 4px; padding: 3px 6px; margin: 3px 0; display: inline-block; min-width: 55%; }
+  .foot-box { border: 1px solid #000; border-radius: 4px; padding: 3px 6px; margin: 3px auto; display: block; min-width: 55%; width: max-content; box-sizing: border-box; }
   .foot-box div { margin: 1px 0; }
   .tax-line { margin: 2px 0; }
   .payment { margin-top: 3px; }
   .payment div { margin: 1px 0; }
   .party-balance { margin-top: 3px; }
   .party-balance div { margin: 1px 0; }
-  .thanks { text-align: center; margin: 4px 0 0; font-weight: 600; }
+  .thanks { text-align: center; margin: 4px 0 0; padding: 0; font-weight: 600; }
 `;
 }
 
@@ -303,7 +340,6 @@ export function buildReceiptHtml(opts) {
   const showTax = settings.receipt_show_tax !== false;
   const showCashier = settings.receipt_show_cashier !== false;
   const paymentLines = buildPaymentSection(opts);
-  const pageHeightMm = estimateReceiptPageHeightMm(opts);
   const brand = brandingFromSettings(settings);
   const printBrand = resolvePrintBranding(settings);
   const { date, time } = splitTimestamp(opts.timestamp);
@@ -354,7 +390,7 @@ export function buildReceiptHtml(opts) {
 <head>
   <meta charset="utf-8" />
   <title>إيصال</title>
-  <style>${receiptHtmlCss(pageHeightMm)}</style>
+  <style>${receiptHtmlCss()}</style>
 </head>
 <body>
   <div class="receipt">

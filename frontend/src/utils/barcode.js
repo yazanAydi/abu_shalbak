@@ -27,19 +27,32 @@ export function supportsCamera() {
 }
 
 /**
- * Look up a product by barcode via the API.
+ * Always-200 barcode probe. Free / empty code → `{ found: false }`.
+ * Chrome does not log console errors for 200 responses.
+ * @param {unknown} raw
+ * @returns {Promise<{ found: boolean, inactive?: boolean } & Record<string, unknown>>}
+ */
+export async function fetchBarcodeLookup(raw) {
+  const code = normalizeBarcode(raw);
+  if (!code) return { found: false };
+  const { data } = await api.get("/api/products/lookup", {
+    params: { barcode: code },
+    headers: getAuthHeaders(),
+  });
+  return data ?? { found: false };
+}
+
+/**
+ * Look up an active product by barcode. Throws when missing or inactive.
  * @param {unknown} raw
  * @returns {Promise<object>}
  */
 export async function lookupProductByBarcode(raw) {
   const code = normalizeBarcode(raw);
   if (!code) throw new Error("باركود فارغ");
+  let data;
   try {
-    const { data } = await api.get(
-      `/api/products/${encodeURIComponent(code)}`,
-      { headers: { ...getAuthHeaders() } }
-    );
-    return data;
+    data = await fetchBarcodeLookup(code);
   } catch (e) {
     if (e.response?.status === 404) {
       throw new Error(
@@ -50,4 +63,10 @@ export async function lookupProductByBarcode(raw) {
       e.response?.data?.error || e.message || "تعذّر البحث"
     );
   }
+  if (!data?.found || data.inactive) {
+    throw new Error(
+      `لم يُعثر على المنتج (${code}) — أضفه من «إدارة المنتجات» أو جرّب 1234567890`
+    );
+  }
+  return data;
 }

@@ -3,6 +3,27 @@ import { requireAuth, requirePosAccess } from "../middleware/auth.js";
 import { getAppSettings } from "../utils/settings.js";
 import { productSkuLookupValues } from "../utils/entityCodes.js";
 import { listUnreadRefundDecisions } from "../services/refundRequestService.js";
+import { loadUnitsForProducts } from "../utils/productUnits.js";
+
+function saleUnitsFor(units) {
+  const list = Array.isArray(units) ? units : [];
+  const sale = list.filter((u) => u.sale_enabled !== false);
+  return sale.length ? sale : list;
+}
+
+function resolveButtonUnit(btn, units) {
+  const all = Array.isArray(units) ? units : [];
+  const posUnits = saleUnitsFor(all);
+  if (btn.product_unit_id != null) {
+    const wanted =
+      posUnits.find((u) => Number(u.id) === Number(btn.product_unit_id)) ||
+      all.find((u) => Number(u.id) === Number(btn.product_unit_id));
+    if (wanted) return { unit: wanted, posUnits: posUnits.length ? posUnits : all };
+  }
+  const fallback =
+    posUnits.find((u) => u.is_default) || posUnits[0] || all.find((u) => u.is_default) || all[0];
+  return fallback ? { unit: fallback, posUnits: posUnits.length ? posUnits : all } : null;
+}
 
 async function loadQuickButtonProducts(db, settings) {
   const { pos_quick_categories: categories, pos_quick_buttons: buttons } = settings;
@@ -11,18 +32,18 @@ async function loadQuickButtonProducts(db, settings) {
   if (ids.length > 0) {
     const placeholders = ids.map(() => "?").join(",");
     const rows = await db.all(
-      `SELECT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate,
-              pu.id AS unit_id, pu.unit_name, pu.price AS unit_price, pu.conversion_to_base
+      `SELECT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate
        FROM products p
-       LEFT JOIN product_units pu ON pu.product_id = p.id AND pu.is_default = 1
        WHERE p.id IN (${placeholders}) AND COALESCE(p.is_active, 1) = 1
          AND COALESCE(p.inventory_scope, 'retail') = 'retail'`,
       ids
     );
     for (const r of rows) {
-      byId.set(r.id, { ...r, price: r.unit_price ?? r.price });
+      byId.set(r.id, r);
     }
   }
+
+  const unitsByProduct = await loadUnitsForProducts(db, ids);
 
   const buttonsByCategory = {};
   for (const cat of categories) {
@@ -30,9 +51,20 @@ async function loadQuickButtonProducts(db, settings) {
   }
   for (const btn of buttons) {
     const product = byId.get(btn.product_id);
-    if (product && buttonsByCategory[btn.category]) {
-      buttonsByCategory[btn.category].push(product);
-    }
+    if (!product || !buttonsByCategory[btn.category]) continue;
+    const resolved = resolveButtonUnit(btn, unitsByProduct.get(btn.product_id) || []);
+    if (!resolved) continue;
+    const { unit, posUnits } = resolved;
+    buttonsByCategory[btn.category].push({
+      ...product,
+      price: unit.price ?? product.price,
+      unit_id: unit.id,
+      unit_name: unit.unit_name,
+      unit_price: unit.price,
+      conversion_to_base: unit.conversion_to_base,
+      selectedUnit: unit,
+      availableUnits: posUnits,
+    });
   }
   return { categories, buttonsByCategory };
 }
@@ -53,8 +85,9 @@ export function createPosRouter(db) {
     const ordered = [];
     for (const cat of settings.pos_quick_categories) {
       for (const p of buttonsByCategory[cat] || []) {
-        if (seen.has(p.id)) continue;
-        seen.add(p.id);
+        const key = `${p.id}:${p.unit_id ?? "default"}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         ordered.push(p);
       }
     }

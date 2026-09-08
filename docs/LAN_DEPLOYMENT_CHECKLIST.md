@@ -54,18 +54,25 @@ Set-ItemProperty -Path $policyPath -Name "DeveloperToolsAvailability" -Type DWor
 
 ## Receipt printer (silent print)
 
-After ترحيل the POS calls `POST /api/v1/print-receipt/silent`. The **Windows API process** converts the receipt HTML and sends it to the configured printer. There is **no** Edge print preview on a working Windows till.
+After ترحيل the POS calls `POST /api/v1/print-receipt/silent`. There is **no** Edge print preview.
 
-This only works when the API runs on the **same Windows PC** as the USB/LAN receipt printer (`npm start` / `production:start`). A Linux Docker API cannot reach the till printer: the sale still saves, and the POS falls back to a browser print window when the API returns **501** (`SILENT_PRINT_UNSUPPORTED`). Other print errors still show an Arabic alert. Do not use `scripts/open-pos-silent-print.ps1` for POS — that kiosk shortcut no longer prints.
+On **Docker store** (`npm run store:up` / `scripts/start-store.ps1`), a Windows print agent on the shop PC (`http://127.0.0.1:17891`) receives the receipt from the Linux container and sends it to the thermal printer. On **native Windows API** (`npm start` / `production:start`) the API prints directly.
 
-- [ ] Install the thermal / receipt printer driver on the PC that runs the API
+If the agent is not running, the sale still saves and the POS shows an Arabic alert (no browser dialog). Reprint with **طباعة الإيصال**. Do not use `scripts/open-pos-silent-print.ps1`.
+
+- [ ] Install **Node.js LTS** on the shop Windows PC (needed for the print agent next to Docker)
+- [ ] Install the thermal / receipt printer driver on that same PC
 - [ ] Settings → Bluetooth & devices → Printers & scanners → set that printer as **Default**
 - [ ] Confirm it is not Print to PDF, XPS, OneNote, or Fax
-- [ ] Optional: set `RECEIPT_PRINTER=Exact Printer Name` in the API env if the default is wrong
+- [ ] Optional: set `RECEIPT_PRINTER=Exact Printer Name` in `.env.store`
+- [ ] Start with `npm run store:up` so Docker **and** the print agent run
+- [ ] Confirm `http://127.0.0.1:17891/health` returns `ok`
 - [ ] Complete a test sale — paper should come out with **no** print preview
 - [ ] If printing fails, reprint with **طباعة الإيصال** — do not create a second sale
 
 If the default printer is still Print to PDF, the sale succeeds and an Arabic alert explains the printer problem. Edge preview does not appear.
+
+To test the **same HTML→PDF** path without a thermal printer, set `RECEIPT_PRINT_TEST_MODE=save` in `.env.development` (native `npm run dev`) or `.env.store` (Docker + print agent), then restart. ترحيل writes `tmp/receipt-test/*.pdf` and returns `widthMm` / `heightMm` from that file. The page height is the rendered content plus `RECEIPT_BOTTOM_MARGIN_MM` (default 5). Leave test mode unset in production.
 
 ## Network
 

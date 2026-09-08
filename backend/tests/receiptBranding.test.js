@@ -2,6 +2,7 @@ import {
   buildReceiptHtml,
   buildReceiptText,
   estimateReceiptPageHeightMm,
+  getReceiptPageWidthMm,
 } from "../utils/receipt.js";
 import {
   STORE_LICENSE_LINE,
@@ -34,12 +35,23 @@ describe("receipt store branding", () => {
 });
 
 describe("receipt thermal page", () => {
-  test("HTML uses an explicit 80mm page height and ends at the thank-you", () => {
+  test("HTML uses an 80mm width and does not force a tall page", () => {
     const html = buildReceiptHtml(baseReceiptOpts);
-    const heightMm = estimateReceiptPageHeightMm(baseReceiptOpts);
 
-    expect(html).toMatch(/@page\s*\{\s*size:\s*80mm\s+\d+mm;/);
-    expect(html).toContain(`size: 80mm ${heightMm}mm`);
+    expect(html).toMatch(/@page\s*\{\s*size:\s*80mm;/);
+    expect(html).not.toMatch(/min-height:\s*100vh/);
+    expect(html).not.toMatch(/height:\s*100vh/);
+    expect(html).not.toMatch(/297mm/);
+    expect(html).toContain("height: auto !important");
+    expect(html).toContain("min-height: 0 !important");
+    expect(html).toContain("padding: 0");
+    expect(html).toContain("box-sizing: border-box");
+    expect(html).toContain("margin-left: auto");
+    expect(html).toContain("margin-right: auto");
+    expect(html).toContain("width: 74mm");
+    expect(html).toMatch(/html,\s*body\s*\{[^}]*direction:\s*ltr/);
+    expect(html).toMatch(/\.receipt\s*\{[^}]*direction:\s*rtl/);
+    expect(html).not.toMatch(/RECEIPT_HORIZONTAL_OFFSET|left: [1-9]/);
     expect(html).toContain("شكراً لزيارتكم");
     expect(html).toContain("فاتورة مبيعات ضريبية");
     expect(html).toContain("المبلغ للدفع");
@@ -95,6 +107,21 @@ describe("receipt thermal page", () => {
     });
     expect(text).toContain("سوبر ماركت الاختبار");
     expect(text).toContain("0590000000");
+  });
+
+  test("RECEIPT_WIDTH_MM=58 produces a 58mm page", () => {
+    const prev = process.env.RECEIPT_WIDTH_MM;
+    process.env.RECEIPT_WIDTH_MM = "58";
+    try {
+      expect(getReceiptPageWidthMm()).toBe(58);
+      const html = buildReceiptHtml(baseReceiptOpts);
+      expect(html).toMatch(/@page\s*\{\s*size:\s*58mm;/);
+      expect(html).toContain("width: 52mm");
+    } finally {
+      if (prev == null) delete process.env.RECEIPT_WIDTH_MM;
+      else process.env.RECEIPT_WIDTH_MM = prev;
+    }
+    expect(getReceiptPageWidthMm()).toBe(80);
   });
 
   test("more items produce a taller page than a one-line sale", () => {

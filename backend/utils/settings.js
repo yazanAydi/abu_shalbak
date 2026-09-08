@@ -234,6 +234,11 @@ function serializeDairyCategories(categories) {
   return JSON.stringify(normalizeDairyCategories(categories));
 }
 
+function normalizeProductUnitId(raw) {
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export function normalizeQuickButtons(raw, categories) {
   const cats = normalizeQuickCategories(categories);
   const catSet = new Set(cats);
@@ -243,11 +248,16 @@ export function normalizeQuickButtons(raw, categories) {
   const clean = [];
   for (const item of raw) {
     const productId = Math.floor(Number(item?.product_id ?? item?.productId));
-    if (!Number.isFinite(productId) || productId <= 0 || seen.has(productId)) continue;
+    if (!Number.isFinite(productId) || productId <= 0) continue;
+    const productUnitId = normalizeProductUnitId(item?.product_unit_id ?? item?.productUnitId);
+    const key = `${productId}:${productUnitId ?? "default"}`;
+    if (seen.has(key)) continue;
     let category = String(item?.category ?? "").trim();
     if (!catSet.has(category)) category = fallback;
-    seen.add(productId);
-    clean.push({ product_id: productId, category });
+    seen.add(key);
+    const button = { product_id: productId, category };
+    if (productUnitId != null) button.product_unit_id = productUnitId;
+    clean.push(button);
     if (clean.length >= MAX_POS_QUICK_BUTTONS) break;
   }
   return clean;
