@@ -839,19 +839,9 @@ export default function ProductManagement() {
               </FormField>
               <FormField
                 label="الرقم"
-                hint="مقترح — يمكن تعديله"
+                hint="يُولَّد تلقائياً"
               >
-                <Input
-                  value={form.sku}
-                  inputMode="numeric"
-                  autoComplete="off"
-                  maxLength={11}
-                  onChange={(e) => {
-                    const raw = e.target.value.replace(/\D/g, "").slice(0, 11);
-                    setForm({ ...form, sku: raw });
-                  }}
-                  placeholder="يُولَّد تلقائياً إن تُرك فارغاً"
-                />
+                <Input value={form.sku} readOnly disabled />
               </FormField>
               <FormField label="الاسم" required>
                 <Input

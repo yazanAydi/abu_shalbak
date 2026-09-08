@@ -1,4 +1,4 @@
-# Live shop — Docker on port 3000 + Windows receipt print agent
+# Live shop - Docker on port 3000 + Windows receipt print agent
 param(
   [switch]$Build
 )
@@ -6,12 +6,12 @@ param(
 Set-Location $PSScriptRoot\..
 
 if (-not (Test-Path ".env.store")) {
-  Write-Host "Missing .env.store — copy .env.store.example to .env.store first." -ForegroundColor Red
+  Write-Host "Missing .env.store - copy .env.store.example to .env.store first." -ForegroundColor Red
   exit 1
 }
 
 Write-Host "Starting STORE (Docker :3000)..." -ForegroundColor Green
-Write-Host "Config: .env.store — POS/Admin at http://YOUR_LAN_IP:3000" -ForegroundColor DarkGray
+Write-Host "Config: .env.store - POS/Admin at http://YOUR_LAN_IP:3000" -ForegroundColor DarkGray
 
 $ensureToken = Join-Path (Get-Location) "scripts\ensure-receipt-print-agent-token.ps1"
 if (Test-Path $ensureToken) {

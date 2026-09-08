@@ -33,6 +33,68 @@ function preventButtonFocus(e) {
   e.preventDefault();
 }
 
+export function bumpQty(value, delta, decimals) {
+  return Number((Number(value) + delta).toFixed(decimals));
+}
+
+function CartQtyStepper({
+  value,
+  min,
+  step,
+  decimals,
+  ariaLabel,
+  inputClassName,
+  inputStep,
+  onChange,
+}) {
+  const qty = Number(value);
+  const canMinus = qty > min;
+
+  const applyBump = (delta) => {
+    const next = bumpQty(qty, delta, decimals);
+    if (!(next > 0) || next < min) return;
+    onChange(next);
+    focusBarcodeInput();
+  };
+
+  return (
+    <div className="pos-qty-controls" dir="ltr">
+      <button
+        type="button"
+        className="pos-qty-btn"
+        disabled={!canMinus}
+        onMouseDown={preventButtonFocus}
+        onClick={() => applyBump(-step)}
+        aria-label="إنقاص الكمية"
+      >
+        −
+      </button>
+      <input
+        type="number"
+        className={inputClassName}
+        min={min}
+        step={inputStep}
+        value={value}
+        aria-label={ariaLabel}
+        onChange={(e) => {
+          const next = Number(e.target.value);
+          if (!(next > 0)) return;
+          onChange(next);
+        }}
+      />
+      <button
+        type="button"
+        className="pos-qty-btn"
+        onMouseDown={preventButtonFocus}
+        onClick={() => applyBump(step)}
+        aria-label="زيادة الكمية"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
 function cartKey(it) {
   return it.cartKey ?? `${it.id}-${it.unitId ?? "0"}`;
 }
@@ -153,37 +215,27 @@ function CartTableBody({
                       <span className="pos-qty-val pos-qty-val--weight">{formatQty(it)}</span>
                     ) : kgLine ? (
                       // KG unit added manually (not from scale label): cashier can type fractional qty.
-                      <div className="pos-qty-controls">
-                        <input
-                          type="number"
-                          className="pos-qty-input pos-qty-input--kg"
-                          min={0.001}
-                          step="0.001"
-                          value={it.quantity}
-                          aria-label="الكمية (كغم)"
-                          onChange={(e) => {
-                            const next = Number(e.target.value);
-                            if (!(next > 0)) return;
-                            onQuantityChange(key, next);
-                          }}
-                        />
-                      </div>
+                      <CartQtyStepper
+                        value={it.quantity}
+                        min={0.001}
+                        step={0.1}
+                        decimals={3}
+                        inputStep="0.001"
+                        inputClassName="pos-qty-input pos-qty-input--kg"
+                        ariaLabel="الكمية (كغم)"
+                        onChange={(next) => onQuantityChange(key, next)}
+                      />
                     ) : (
-                      <div className="pos-qty-controls">
-                        <input
-                          type="number"
-                          className="pos-qty-input"
-                          min={1}
-                          step="any"
-                          value={it.quantity}
-                          aria-label="الكمية"
-                          onChange={(e) => {
-                            const next = Number(e.target.value);
-                            if (!(next > 0)) return;
-                            onQuantityChange(key, next);
-                          }}
-                        />
-                      </div>
+                      <CartQtyStepper
+                        value={it.quantity}
+                        min={1}
+                        step={1}
+                        decimals={0}
+                        inputStep="any"
+                        inputClassName="pos-qty-input"
+                        ariaLabel="الكمية"
+                        onChange={(next) => onQuantityChange(key, next)}
+                      />
                     )}
                   </td>
                   <td className="pos-col-money">{formatUnitPrice(it)}</td>

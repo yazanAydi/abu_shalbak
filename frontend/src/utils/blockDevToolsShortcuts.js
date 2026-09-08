@@ -20,8 +20,8 @@ export function resetScannerBurstForTests() {
 }
 
 export function noteScannerKey(e) {
-  if (e.ctrlKey || e.altKey || e.metaKey) return;
-  if (e.key.length !== 1) return;
+  if (!e || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (typeof e.key !== "string" || e.key.length !== 1) return;
   const now = Date.now();
   if (now - burstStarted > SCANNER_WINDOW_MS) {
     burstCount = 0;

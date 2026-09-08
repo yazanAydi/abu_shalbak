@@ -40,6 +40,12 @@ describe("blockDevToolsShortcuts", () => {
     );
   });
 
+  test("noteScannerKey ignores events with a missing key", () => {
+    expect(() => noteScannerKey({ ctrlKey: false, altKey: false, metaKey: false })).not.toThrow();
+    expect(() => noteScannerKey({ key: undefined, ctrlKey: false })).not.toThrow();
+    expect(isRecentScannerBurst()).toBe(false);
+  });
+
   test("Ctrl+P is blocked only after a scanner-like digit burst", () => {
     const print = keyEvent({ key: "p", ctrlKey: true });
     expect(shouldBlockBrowserShortcut(print)).toBe(false);

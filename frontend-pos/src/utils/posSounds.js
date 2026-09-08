@@ -14,7 +14,7 @@ const MAX_MS = {
   scanSuccess: 650,
   productNotFound: 1300,
   checkoutDone: 1200,
-  approvalDecision: 8000,
+  approvalDecision: 850,
 };
 
 const pools = {};
