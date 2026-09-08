@@ -1,4 +1,4 @@
-# Start the Windows silent receipt print agent (0.0.0.0 :17891, token required)
+﻿# Start the Windows silent receipt print agent (0.0.0.0 :17891, token required)
 Set-Location $PSScriptRoot\..
 
 $node = Get-Command node -ErrorAction SilentlyContinue
