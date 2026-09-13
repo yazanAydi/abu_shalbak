@@ -1,10 +1,10 @@
-﻿# Start the Windows silent receipt print agent (0.0.0.0 :17891, token required)
+﻿# Legacy: Windows silent receipt print agent (POS checkout no longer uses this).
+# Start the Windows silent receipt print agent (0.0.0.0 :17891, token required)
 Set-Location $PSScriptRoot\..
 
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {
-  Write-Host "Node.js is required for silent receipt printing. Install Node.js LTS, then run start-store.ps1 again." -ForegroundColor Yellow
-  Write-Host "Sales will still save; ترحيل will show an Arabic print error until the agent is running." -ForegroundColor DarkGray
+  Write-Host "Node.js is required to start this legacy print agent. POS checkout no longer uses it." -ForegroundColor Yellow
   return
 }
 
@@ -26,13 +26,15 @@ if (Test-Path $pidFile) {
   }
 }
 
+# Docker reaches this agent via host.docker.internal on the server PC.
+# Do not open 17891 to the LAN — remote POS browsers must print through :3000/api only.
 try {
   $rule = Get-NetFirewallRule -DisplayName "Abo Shalbak Receipt Print Agent" -ErrorAction SilentlyContinue
-  if (-not $rule) {
-    New-NetFirewallRule -DisplayName "Abo Shalbak Receipt Print Agent" -Direction Inbound -Protocol TCP -LocalPort 17891 -Action Allow -Profile Any -ErrorAction Stop | Out-Null
+  if ($rule) {
+    Remove-NetFirewallRule -DisplayName "Abo Shalbak Receipt Print Agent" -ErrorAction SilentlyContinue
   }
 } catch {
-  Write-Host "Could not add firewall rule for port 17891 (run PowerShell as Administrator once)." -ForegroundColor DarkGray
+  # Best-effort. LAN inbound 17891 should stay blocked.
 }
 
 $env:ABO_ENV = "store"

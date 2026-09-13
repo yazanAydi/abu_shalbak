@@ -5,6 +5,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 
@@ -38,10 +39,10 @@ describe("Telegram refund callback", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 2, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     transactionId = checkoutRes.body.data.transaction_id;
   });
 
@@ -64,10 +65,10 @@ describe("Telegram refund callback", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     const txnId = checkoutRes.body.data.transaction_id;
     const createRes = await request(ctx.app)
       .post("/api/v1/refund-requests")
@@ -121,10 +122,10 @@ describe("Telegram refund callback", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     const txnId = checkoutRes.body.data.transaction_id;
 
     const createRes = await request(ctx.app)

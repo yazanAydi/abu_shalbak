@@ -8,6 +8,8 @@ const TYPE_LABELS = {
   hesabati_building_balances: "أرصدة العمارة",
   arabic_retail: "بطاقة الأصناف",
   generic_products: "منتجات",
+  misimported_supplier_recovery: "استرداد موردين استُوردوا كزبائن",
+  abu_shalbak_supplier_list: "قائمة الموردين — نقل بين الأجهزة",
 };
 
 /**
@@ -19,19 +21,25 @@ export default function ImportSummaryModal({ open, onClose, data }) {
   const importType = data.type || data.detected_type || "generic_products";
   const typeLabel = data.label || TYPE_LABELS[importType] || "استيراد";
 
+  const isTransfer = importType === "abu_shalbak_supplier_list";
   const isProductImport =
+    !isTransfer &&
     !importType.includes("balance") &&
+    importType !== "misimported_supplier_recovery" &&
     importType !== "hesabati_customer_balances" &&
     importType !== "hesabati_supplier_balances" &&
     importType !== "hesabati_operator_balances" &&
     importType !== "hesabati_building_balances";
 
+  const isRecovery = importType === "misimported_supplier_recovery";
   const isBalanceImport =
-    importType.includes("balance") ||
-    importType === "hesabati_customer_balances" ||
-    importType === "hesabati_supplier_balances" ||
-    importType === "hesabati_operator_balances" ||
-    importType === "hesabati_building_balances";
+    !isRecovery &&
+    (isTransfer ||
+      importType.includes("balance") ||
+      importType === "hesabati_customer_balances" ||
+      importType === "hesabati_supplier_balances" ||
+      importType === "hesabati_operator_balances" ||
+      importType === "hesabati_building_balances");
 
   /** @type {{ label: string, value: number }[]} */
   let stats = [];
@@ -44,10 +52,30 @@ export default function ImportSummaryModal({ open, onClose, data }) {
       { label: "أكواد داخلية قصيرة", value: data.short_internal_codes_added ?? 0 },
       { label: "صفوف تُركت", value: data.skipped ?? 0 },
     ];
+  } else if (isRecovery) {
+    stats = [
+      { label: "موردون جدد", value: data.suppliersCreated ?? 0 },
+      { label: "موردون موجودون", value: data.suppliersExisting ?? 0 },
+      { label: "زبائن محذوفون", value: data.customersDeleted ?? 0 },
+      { label: "للمراجعة", value: Array.isArray(data.review) ? data.review.length : 0 },
+    ];
   } else if (isBalanceImport) {
+    const isSupplierBalances = importType === "hesabati_supplier_balances" || isTransfer;
     stats = [
       { label: "سجلات جديدة", value: data.created ?? 0 },
       { label: "سجلات محدّثة", value: data.updated ?? 0 },
+      ...(isSupplierBalances || data.existing != null
+        ? [{ label: "موجودون", value: data.existing ?? 0 }]
+        : []),
+      ...(isTransfer || data.conflicts != null
+        ? [{ label: "تعارض رقم", value: data.conflicts ?? 0 }]
+        : []),
+      ...(isSupplierBalances || data.rejected != null
+        ? [{ label: "مرفوضون", value: data.rejected ?? 0 }]
+        : []),
+      ...(isTransfer || data.excluded != null
+        ? [{ label: "تجريبيون مستبعدون", value: data.excluded ?? 0 }]
+        : []),
       { label: "صفوف تُركت", value: data.skipped ?? 0 },
     ];
   } else {

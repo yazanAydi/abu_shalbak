@@ -38,7 +38,9 @@ describe("receipt thermal page", () => {
   test("HTML uses an 80mm width and does not force a tall page", () => {
     const html = buildReceiptHtml(baseReceiptOpts);
 
-    expect(html).toMatch(/@page\s*\{\s*size:\s*80mm;/);
+    expect(html).toMatch(/@page\s*\{\s*size:\s*80mm\s+\d+(\.\d+)?mm;/);
+    expect(html).not.toMatch(/@page\s*\{\s*size:\s*80mm\s*;/);
+    expect(html).not.toMatch(/80mm\s+auto/);
     expect(html).not.toMatch(/min-height:\s*100vh/);
     expect(html).not.toMatch(/height:\s*100vh/);
     expect(html).not.toMatch(/297mm/);
@@ -46,12 +48,14 @@ describe("receipt thermal page", () => {
     expect(html).toContain("min-height: 0 !important");
     expect(html).toContain("padding: 0");
     expect(html).toContain("box-sizing: border-box");
-    expect(html).toContain("margin-left: auto");
-    expect(html).toContain("margin-right: auto");
+    expect(html).toMatch(/\.receipt\s*\{[^}]*margin:\s*0 auto/);
     expect(html).toContain("width: 74mm");
     expect(html).toMatch(/html,\s*body\s*\{[^}]*direction:\s*ltr/);
     expect(html).toMatch(/\.receipt\s*\{[^}]*direction:\s*rtl/);
     expect(html).not.toMatch(/RECEIPT_HORIZONTAL_OFFSET|left: [1-9]/);
+    expect(html).toMatch(/<title>\s*<\/title>/);
+    expect(html).not.toContain("<title>إيصال</title>");
+    expect(html).toContain("page-break-inside: avoid");
     expect(html).toContain("شكراً لزيارتكم");
     expect(html).toContain("فاتورة مبيعات ضريبية");
     expect(html).toContain("المبلغ للدفع");
@@ -115,13 +119,41 @@ describe("receipt thermal page", () => {
     try {
       expect(getReceiptPageWidthMm()).toBe(58);
       const html = buildReceiptHtml(baseReceiptOpts);
-      expect(html).toMatch(/@page\s*\{\s*size:\s*58mm;/);
+      expect(html).toMatch(/@page\s*\{\s*size:\s*58mm\s+\d+(\.\d+)?mm;/);
       expect(html).toContain("width: 52mm");
     } finally {
       if (prev == null) delete process.env.RECEIPT_WIDTH_MM;
       else process.env.RECEIPT_WIDTH_MM = prev;
     }
     expect(getReceiptPageWidthMm()).toBe(80);
+  });
+
+  test("short and long Arabic receipts stay 80mm RTL without A4", () => {
+    const shortHtml = buildReceiptHtml(baseReceiptOpts);
+    const longLines = Array.from({ length: 24 }, (_, i) => ({
+      name: `صنف عربي طويل ${i + 1} خبز وحليب`,
+      quantity: i + 1,
+      price: 3.5,
+      lineTotal: 3.5 * (i + 1),
+    }));
+    const longHtml = buildReceiptHtml({
+      ...baseReceiptOpts,
+      lines: longLines,
+      subtotal: 1085,
+      total: 1085,
+    });
+    for (const html of [shortHtml, longHtml]) {
+      expect(html).toMatch(/@page\s*\{\s*size:\s*80mm\s+\d+(\.\d+)?mm;/);
+      expect(html).not.toMatch(/@page\s*\{\s*size:\s*80mm\s*;/);
+      expect(html).toMatch(/\.receipt\s*\{[^}]*direction:\s*rtl/);
+      expect(html).toMatch(/\.receipt\s*\{[^}]*margin:\s*0 auto/);
+      expect(html).not.toMatch(/size:\s*A4/i);
+      expect(html).not.toMatch(/297mm/);
+      expect(html).not.toMatch(/80mm\s+auto/);
+      expect(html).toContain("شكراً لزيارتكم");
+    }
+    expect(shortHtml).toContain("خبز");
+    expect(longHtml).toContain("صنف عربي طويل 24");
   });
 
   test("more items produce a taller page than a one-line sale", () => {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
-import { setToken, setUser, removeToken } from "../utils/auth";
+import { setToken, setUser, getUser, removeToken } from "../utils/auth";
 import { canLoginOffice, homePathForRole, wrongPortalLoginMessage } from "../utils/roles";
 import { getPosLoginUrl } from "../utils/appLinks";
 import "../styles/office-theme.css";
@@ -12,6 +12,10 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [mustChange, setMustChange] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -48,6 +52,12 @@ export default function Login() {
       }
       setToken(data.token);
       setUser(data.user);
+      if (data.user?.must_change_password) {
+        setMustChange(true);
+        setCurrentPassword(password);
+        setError("يجب تغيير كلمة المرور قبل المتابعة");
+        return;
+      }
       navigate(homePathForRole(data.user?.role, data.user?.permissions), { replace: true });
     } catch (e) {
       const msg =
@@ -60,8 +70,50 @@ export default function Login() {
     }
   }
 
+  async function submitNewPassword() {
+    if (loading) return;
+    if (newPassword.length < 6) {
+      setError("كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError("تأكيد كلمة المرور غير مطابق");
+      return;
+    }
+    setError("");
+    setLoading(true);
+    try {
+      await api.post("/api/auth/change-password", {
+        current_password: currentPassword || password,
+        new_password: newPassword,
+      });
+      const prev = getUser() || {};
+      const nextUser = { ...prev, must_change_password: false };
+      setUser(nextUser);
+      setMustChange(false);
+      navigate(homePathForRole(nextUser.role, nextUser.permissions), { replace: true });
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "تعذر تغيير كلمة المرور");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function logoutForced() {
+    removeToken();
+    setMustChange(false);
+    setPassword("");
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setError("");
+  }
+
   function onKeyDown(ev) {
-    if (ev.key === "Enter") submit();
+    if (ev.key === "Enter") {
+      if (mustChange) submitNewPassword();
+      else submit();
+    }
   }
 
   return (
@@ -73,8 +125,63 @@ export default function Login() {
       </section>
       <section className="login-panel">
         <div className="login-card" data-enter-nav="off">
-          <h2 className="login-card-title">تسجيل الدخول</h2>
-          <p className="login-sub">أدخل بيانات حسابك للمتابعة</p>
+          <h2 className="login-card-title">{mustChange ? "تغيير كلمة المرور" : "تسجيل الدخول"}</h2>
+          <p className="login-sub">
+            {mustChange ? "يجب تغيير كلمة المرور قبل استخدام لوحة الإدارة" : "أدخل بيانات حسابك للمتابعة"}
+          </p>
+          {mustChange ? (
+            <>
+              <label className="login-label">
+                كلمة المرور الحالية
+                <input
+                  type="password"
+                  className="login-input"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  onKeyDown={onKeyDown}
+                  autoComplete="current-password"
+                  disabled={loading}
+                />
+              </label>
+              <label className="login-label">
+                كلمة المرور الجديدة
+                <input
+                  type="password"
+                  className="login-input"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  onKeyDown={onKeyDown}
+                  autoComplete="new-password"
+                  disabled={loading}
+                />
+              </label>
+              <label className="login-label">
+                تأكيد كلمة المرور
+                <input
+                  type="password"
+                  className="login-input"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  onKeyDown={onKeyDown}
+                  autoComplete="new-password"
+                  disabled={loading}
+                />
+              </label>
+              {error ? <div className="login-error">{error}</div> : null}
+              <button
+                type="button"
+                className="login-btn"
+                disabled={loading || !newPassword || !confirmPassword}
+                onClick={() => void submitNewPassword()}
+              >
+                {loading ? "جاري الحفظ..." : "حفظ كلمة المرور"}
+              </button>
+              <button type="button" className="login-btn" style={{ marginTop: 8 }} onClick={logoutForced}>
+                تسجيل الخروج
+              </button>
+            </>
+          ) : (
+            <>
           <label className="login-label">
             اسم المستخدم
             <input
@@ -113,6 +220,8 @@ export default function Login() {
               افتح نقطة البيع
             </a>
           </p>
+            </>
+          )}
         </div>
       </section>
     </div>

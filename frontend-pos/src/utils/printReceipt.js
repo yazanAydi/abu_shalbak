@@ -1,31 +1,21 @@
 import api from "../apiClient";
 import { getAuthHeaders } from "./auth";
-import { printDocumentWhenReady } from "./printDocument";
+import { printHtmlInHiddenIframe } from "./printDocument";
 
 const inFlight = new Set();
 
 export const STORE_PRINT_UNAVAILABLE_AR =
-  "تعذر الاتصال بطابعة الإيصالات. تأكد من تشغيل خدمة الطباعة ثم حاول مرة أخرى.";
+  "تعذر تجهيز طباعة الإيصال في المتصفح. استخدم إعادة الطباعة لهذه العملية.";
 
-let testEnv = null;
-
-/** Test-only: override process.env so production vs development print can be asserted. */
-export function setPrintEnvForTests(env) {
-  testEnv = env;
-}
-
-function printEnv() {
-  return testEnv || process.env;
-}
-
-/** Store POS is a production CRA build. Dev `npm start` is NODE_ENV=development. */
-export function isDevelopmentPrintMode(env = printEnv()) {
-  return env.NODE_ENV === "development";
+/** Print dispatch failed after the sale was already saved. Never resubmit checkout. */
+export function saleSavedPrintFailedMessage(receiptNumber) {
+  const num = receiptNumber != null && String(receiptNumber).trim() !== "" ? String(receiptNumber) : "—";
+  return `تم حفظ عملية البيع رقم ${num}، لكن تعذّرت طباعة الإيصال. لا تُعد إدخال البيع.`;
 }
 
 function normalizeReceiptInput(receiptOrPayload, options = {}) {
   if (typeof receiptOrPayload === "string") {
-    return { transactionId: null };
+    return { transactionId: null, fallbackHtml: null };
   }
   if (receiptOrPayload && typeof receiptOrPayload === "object") {
     const transactionId = Number(
@@ -33,35 +23,14 @@ function normalizeReceiptInput(receiptOrPayload, options = {}) {
     );
     return {
       transactionId: Number.isFinite(transactionId) && transactionId > 0 ? transactionId : null,
+      fallbackHtml: receiptOrPayload.receipt_html || null,
     };
   }
   const fromOptions = Number(options.transactionId);
   return {
     transactionId: Number.isFinite(fromOptions) && fromOptions > 0 ? fromOptions : null,
+    fallbackHtml: options.html || null,
   };
-}
-
-export function shouldFallbackToBrowser(err, env = printEnv()) {
-  if (!isDevelopmentPrintMode(env)) return false;
-  const status = err?.response?.status;
-  const code = err?.response?.data?.code;
-  return (
-    status === 501 ||
-    status === 503 ||
-    code === "SILENT_PRINT_UNSUPPORTED" ||
-    code === "AGENT_UNAVAILABLE"
-  );
-}
-
-function isAgentUnavailableError(err) {
-  const status = err?.response?.status;
-  const code = err?.response?.data?.code;
-  return (
-    status === 501 ||
-    status === 503 ||
-    code === "SILENT_PRINT_UNSUPPORTED" ||
-    code === "AGENT_UNAVAILABLE"
-  );
 }
 
 function authHeaders() {
@@ -74,78 +43,61 @@ function receiptHtmlFromResponse(res) {
 }
 
 function cashierPrintError(err) {
-  if (isAgentUnavailableError(err)) return STORE_PRINT_UNAVAILABLE_AR;
-  return err?.response?.data?.error || err?.message || "فشلت طباعة الإيصال";
+  return err?.response?.data?.error || err?.message || STORE_PRINT_UNAVAILABLE_AR;
 }
 
-/** Development-only Edge preview. Never used in store/production builds. */
-function browserPrint(html) {
-  const w = window.open("", "_blank", "width=420,height=720");
-  if (!w) {
-    window.alert("اسمح بفتح النافذة المنبثقة لطباعة الإيصال.");
-    return;
-  }
+async function loadSavedSaleHtml(transactionId, fallbackHtml) {
   try {
-    w.opener = null;
-  } catch {
-    /* ignore */
-  }
-  w.document.write(html);
-  w.document.close();
-  printDocumentWhenReady(w.document, {
-    onAfterPrint: () => {
-      try {
-        w.close();
-      } catch {
-        /* ignore */
-      }
-    },
-  });
-}
-
-async function printViaBrowserFallback(transactionId) {
-  const htmlRes = await api.post(
-    "/api/print-receipt",
-    { transaction_id: transactionId },
-    { headers: authHeaders() }
-  );
-  const html = receiptHtmlFromResponse(htmlRes);
-  if (!html) {
-    window.alert("فشلت طباعة الإيصال");
-    return;
-  }
-  browserPrint(html);
-}
-
-/**
- * Print a sale receipt via silent print.
- * Store/production: never window.print(). Development may fall back to Edge preview.
- */
-export async function printReceipt(receiptOrPayload, options = {}) {
-  const { transactionId } = normalizeReceiptInput(receiptOrPayload, options);
-  if (!transactionId) {
-    window.alert("لا يوجد رقم عملية للطباعة");
-    return;
-  }
-  if (inFlight.has(transactionId)) return;
-  inFlight.add(transactionId);
-
-  try {
-    await api.post(
-      "/api/print-receipt/silent",
+    const htmlRes = await api.post(
+      "/api/print-receipt",
       { transaction_id: transactionId },
       { headers: authHeaders() }
     );
-  } catch (e) {
-    if (shouldFallbackToBrowser(e)) {
-      try {
-        await printViaBrowserFallback(transactionId);
-      } catch (fallbackErr) {
-        window.alert(cashierPrintError(fallbackErr));
-      }
-      return;
+    return receiptHtmlFromResponse(htmlRes) || fallbackHtml || null;
+  } catch (err) {
+    if (fallbackHtml) return fallbackHtml;
+    throw err;
+  }
+}
+
+/**
+ * Print a saved sale through the cashier browser.
+ * Fetches the stored receipt HTML, then prints in a hidden iframe.
+     * Does not call the Windows print agent or its silent HTTP path.
+     * ok means the browser print() call was dispatched, not that paper printed.
+ */
+export async function printReceipt(receiptOrPayload, options = {}) {
+  const notify = options.alert !== false;
+  const { transactionId, fallbackHtml } = normalizeReceiptInput(receiptOrPayload, options);
+  if (!transactionId) {
+    const error = "لا يوجد رقم عملية للطباعة";
+    if (notify) window.alert(error);
+    return { ok: false, error };
+  }
+  if (inFlight.has(transactionId)) return { ok: true, skipped: true };
+  inFlight.add(transactionId);
+
+  try {
+    let html;
+    try {
+      html = await loadSavedSaleHtml(transactionId, fallbackHtml);
+    } catch (e) {
+      const error = cashierPrintError(e);
+      if (notify) window.alert(error);
+      return { ok: false, error };
     }
-    window.alert(cashierPrintError(e));
+    if (!html) {
+      const error = "تعذر تحميل محتوى الإيصال. استخدم إعادة الطباعة لهذه العملية.";
+      if (notify) window.alert(error);
+      return { ok: false, error };
+    }
+    const printed = await printHtmlInHiddenIframe(html);
+    if (!printed?.ok) {
+      const error = printed?.error || STORE_PRINT_UNAVAILABLE_AR;
+      if (notify) window.alert(error);
+      return { ok: false, error };
+    }
+    return { ok: true, dispatched: true };
   } finally {
     inFlight.delete(transactionId);
   }

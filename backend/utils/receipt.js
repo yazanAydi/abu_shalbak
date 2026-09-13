@@ -290,17 +290,22 @@ export function estimateReceiptPageHeightMm(opts) {
   return Math.min(RECEIPT_HEIGHT_MAX_MM, Math.max(RECEIPT_HEIGHT_MIN_MM, Math.round(raw)));
 }
 
-function receiptHtmlCss() {
+function receiptHtmlCss(opts = {}) {
   const pageWidthMm = getReceiptPageWidthMm();
+  const pageHeightMm = estimateReceiptPageHeightMm(opts);
   const contentWidthMm = getReceiptContentWidthMm();
   const offsetMm = getReceiptHorizontalOffsetMm();
   const offsetCss =
     offsetMm === 0 ? "" : `position: relative; left: ${offsetMm}mm;`;
   return `
-  @page { size: ${pageWidthMm}mm; margin: 0; }
+  @page { size: ${pageWidthMm}mm ${pageHeightMm}mm; margin: 0; }
   html { -webkit-locale: "en"; font-language-override: "eng"; font-feature-settings: "locl" 0; }
-  html, body { direction: ltr; box-sizing: border-box; width: ${pageWidthMm}mm; height: auto !important; min-height: 0 !important; margin: 0; padding: 0; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; }
-  .receipt { direction: rtl; box-sizing: border-box; width: ${contentWidthMm}mm; max-width: ${contentWidthMm}mm; height: auto !important; min-height: 0 !important; margin-left: auto; margin-right: auto; padding: 2mm 0 0; ${offsetCss} }
+  html, body { direction: ltr; box-sizing: border-box; width: ${pageWidthMm}mm; height: auto !important; min-height: 0 !important; margin: 0; padding: 0; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; overflow: visible !important; }
+  .receipt { direction: rtl; box-sizing: border-box; width: ${contentWidthMm}mm; max-width: ${contentWidthMm}mm; height: auto !important; min-height: 0 !important; margin: 0 auto; padding: 2mm 0 0; page-break-inside: avoid; break-inside: avoid-page; ${offsetCss} }
+  @media print {
+    html, body { height: auto !important; min-height: 0 !important; overflow: visible !important; }
+    .receipt { page-break-inside: avoid; break-inside: avoid-page; }
+  }
   .logo-wrap { text-align: center; margin-bottom: 3px; }
   .logo-wrap img { max-width: 96px; max-height: 48px; object-fit: contain; }
   .center { text-align: center; }
@@ -389,8 +394,8 @@ export function buildReceiptHtml(opts) {
 <html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
-  <title>إيصال</title>
-  <style>${receiptHtmlCss()}</style>
+  <title></title>
+  <style>${receiptHtmlCss(opts)}</style>
 </head>
 <body>
   <div class="receipt">

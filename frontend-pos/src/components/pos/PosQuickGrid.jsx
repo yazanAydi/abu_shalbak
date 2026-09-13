@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import api from "../../apiClient";
+import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
+
+function preventButtonFocus(e) {
+  e.preventDefault();
+}
 
 export default function PosQuickGrid({ onProductFound }) {
   const [categories, setCategories] = useState([]);
@@ -39,6 +44,7 @@ export default function PosQuickGrid({ onProductFound }) {
       selectedUnit: p.selectedUnit,
       availableUnits: p.availableUnits,
     });
+    focusBarcodeInput();
   }
 
   const items =
@@ -56,7 +62,11 @@ export default function PosQuickGrid({ onProductFound }) {
               key={cat}
               type="button"
               className={`pos-quick-tab${activeCategory === cat ? " pos-quick-tab--active" : ""}`}
-              onClick={() => setActiveCategory(cat)}
+              onMouseDown={preventButtonFocus}
+              onClick={() => {
+                setActiveCategory(cat);
+                focusBarcodeInput();
+              }}
               aria-pressed={activeCategory === cat}
             >
               {cat}
@@ -83,6 +93,7 @@ export default function PosQuickGrid({ onProductFound }) {
               key={`${p.id}-${p.unit_id ?? "default"}`}
               type="button"
               className={`pos-quick-btn${outOfStock ? " pos-quick-btn--no-stock" : ""}`}
+              onMouseDown={preventButtonFocus}
               onClick={() => tap(p)}
               title={outOfStock ? `${p.barcode} — الرصيد: 0` : p.barcode}
             >

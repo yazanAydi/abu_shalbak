@@ -63,6 +63,18 @@ export function authHeader(token) {
   return { Authorization: `Bearer ${token}` };
 }
 
+let checkoutKeySeq = 0;
+
+/** Unique checkout idempotency key for first-party tests. */
+export function withCheckoutKey(body = {}, key) {
+  if (body && body.idempotency_key) return body;
+  checkoutKeySeq += 1;
+  return {
+    ...body,
+    idempotency_key: key || `chk-key-${checkoutKeySeq.toString().padStart(8, "0")}-${Date.now()}`,
+  };
+}
+
 /**
  * Office accountant used by permission tests. Pass `permissions` to store a
  * custom users.permissions_json map; omit it to follow the global template.

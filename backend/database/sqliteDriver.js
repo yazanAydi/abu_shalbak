@@ -32,10 +32,12 @@ function txKeyword(sql) {
 }
 
 function applyPragmasBetter(raw, { readonly = false } = {}) {
-  raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");
   raw.pragma("busy_timeout = 10000");
+  // journal_mode=WAL rewrites the file header. A readonly handle on a
+  // DELETE-mode snapshot (VACUUM INTO) fails with SQLITE_READONLY.
   if (!readonly) {
+    raw.pragma("journal_mode = WAL");
     raw.pragma("synchronous = NORMAL");
     raw.pragma("cache_size = -64000");
     raw.pragma("temp_store = MEMORY");
@@ -43,7 +45,13 @@ function applyPragmasBetter(raw, { readonly = false } = {}) {
   }
 }
 
-function applyPragmasSqlite3(db) {
+function applyPragmasSqlite3(db, { readonly = false } = {}) {
+  if (readonly) {
+    return db.exec(`
+      PRAGMA foreign_keys = ON;
+      PRAGMA busy_timeout = 10000;
+    `);
+  }
   return db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
@@ -282,17 +290,31 @@ export async function openSqliteConnection(dbPath, opts = {}) {
   if (await useBetterSqlite()) {
     const Database = (await import("better-sqlite3")).default;
     const write = new Database(dbPath, readonly ? { readonly: true, fileMustExist: true } : {});
-    applyPragmasBetter(write, { readonly });
     let read = null;
-    if (!readonly && !opts.isolated) {
-      try {
-        read = new Database(dbPath, { readonly: true, fileMustExist: true });
-        applyPragmasBetter(read, { readonly: true });
-      } catch {
-        read = null;
+    try {
+      applyPragmasBetter(write, { readonly });
+      if (!readonly && !opts.isolated) {
+        try {
+          read = new Database(dbPath, { readonly: true, fileMustExist: true });
+          applyPragmasBetter(read, { readonly: true });
+        } catch {
+          read = null;
+        }
       }
+      return wrapBetterSqlite(write, read);
+    } catch (err) {
+      try {
+        read?.close();
+      } catch {
+        /* ignore */
+      }
+      try {
+        write.close();
+      } catch {
+        /* ignore */
+      }
+      throw err;
     }
-    return wrapBetterSqlite(write, read);
   }
 
   const raw = await new Promise((resolve, reject) => {
@@ -300,8 +322,13 @@ export async function openSqliteConnection(dbPath, opts = {}) {
     const d = new sqlite3.Database(dbPath, mode, (err) => (err ? reject(err) : resolve(d)));
   });
   const db = wrapNodeSqlite(raw);
-  await applyPragmasSqlite3(db);
-  return db;
+  try {
+    await applyPragmasSqlite3(db, { readonly });
+    return db;
+  } catch (err) {
+    await closeSqliteConnection(db);
+    throw err;
+  }
 }
 
 export async function closeSqliteConnection(db) {

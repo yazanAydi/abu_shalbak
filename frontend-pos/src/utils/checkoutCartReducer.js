@@ -16,6 +16,7 @@ export const checkoutInitialState = {
   error: null,
   blockedScan: null,
   receiptData: null,
+  printWarning: null,
 };
 
 export function checkoutReducer(state, action) {
@@ -46,6 +47,7 @@ export function checkoutReducer(state, action) {
           error: null,
           blockedScan: null,
           receiptData: null,
+          printWarning: null,
         };
       }
 
@@ -68,6 +70,7 @@ export function checkoutReducer(state, action) {
           error: null,
           blockedScan: null,
           receiptData: null,
+          printWarning: null,
         };
       }
 
@@ -87,6 +90,7 @@ export function checkoutReducer(state, action) {
         error: null,
         blockedScan: null,
         receiptData: null,
+        printWarning: null,
       };
     }
     case "UNDO_LAST_SCAN": {
@@ -195,6 +199,12 @@ export function checkoutReducer(state, action) {
       return {
         ...checkoutInitialState,
         receiptData: action.data,
+        printWarning: null,
+      };
+    case "CHECKOUT_PRINT_WARNING":
+      return {
+        ...state,
+        printWarning: action.message || null,
       };
     case "CHECKOUT_ERROR": {
       const d = action.payload;
@@ -213,7 +223,7 @@ export function checkoutReducer(state, action) {
       };
     }
     case "CLEAR_SALE_ERR":
-      return { ...state, error: null, blockedScan: null };
+      return { ...state, error: null, blockedScan: null, printWarning: null };
     default:
       return state;
   }

@@ -8,6 +8,7 @@ services:
     env_file:
       - .env.store
     extra_hosts:
+      # leftover for POST /print-receipt/silent only; POS checkout prints in the cashier browser
       - "host.docker.internal:host-gateway"
     environment:
       ABO_ENV: store

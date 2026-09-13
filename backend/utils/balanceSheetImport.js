@@ -13,7 +13,7 @@ const BALANCE_FIELD_PATTERNS = {
   code: [/^رقم$|^الرقم$|^كود$|^كود\s*الزبون|^كود\s*العميل|^كود\s*المورد|^customer_code$/i],
   name: [/^الاسم$|^اسم\s*الزبون|^اسم\s*العميل|^اسم\s*المورد|^البيان$|^name$/i],
   phone: [/^هاتف$|^الهاتف$|^تل$|^تل\.|^جوال$|^موب/i, /^phone$/i],
-  balance: [/^الرصيد$|^رصيد$|^الرصيد\s*الحالي$|^balance$/i],
+  balance: [/^الرصيد|^رصيد$|^balance$/i],
 };
 
 /**
@@ -48,6 +48,7 @@ export function parseBalanceSheetMatrix(matrix, headerRowIndex = -1) {
     code: row.code != null && String(row.code).trim() !== "" ? String(row.code).trim() : null,
     name: String(row.name ?? "").trim(),
     phone: row.phone != null && String(row.phone).trim() !== "" ? String(row.phone).trim() : null,
+    rawBalance: row.balance,
     balance: parseBalanceAmount(row.balance),
   }));
 }
@@ -62,6 +63,44 @@ export function parseBalanceAmount(val) {
   const m = s.match(/-?\d+(?:\.\d+)?/);
   if (!m) return 0;
   return round2(Number(m[0]));
+}
+
+/**
+ * Distinguish explicit zero from a missing or unparseable balance cell.
+ * @param {unknown} val
+ * @returns {{ ok: true, value: number, reason: null } | { ok: false, value: null, reason: 'missing' | 'invalid' }}
+ */
+export function parseBalanceAmountStrict(val) {
+  if (val === undefined || val === null) {
+    return { ok: false, value: null, reason: "missing" };
+  }
+  if (typeof val === "number") {
+    if (!Number.isFinite(val)) return { ok: false, value: null, reason: "invalid" };
+    return { ok: true, value: round2(val), reason: null };
+  }
+  let s = String(val).trim();
+  if (!s) return { ok: false, value: null, reason: "missing" };
+  // CSV formula-injection guard prefixes a leading -, +, =, @ with '
+  if (s.startsWith("'")) s = s.slice(1).trim();
+  const cleaned = s.replace(/,/g, "").replace(/₪/g, "").trim();
+  if (!cleaned) return { ok: false, value: null, reason: "missing" };
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(cleaned)) {
+    return { ok: false, value: null, reason: "invalid" };
+  }
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return { ok: false, value: null, reason: "invalid" };
+  return { ok: true, value: round2(n), reason: null };
+}
+
+const SUMMARY_ROW_NAMES = new Set(["الاجمالي", "المجموع", "total"]);
+
+/**
+ * Hesabati totals row — not a supplier card.
+ * @param {string} name
+ */
+export function isBalanceSummaryRow(name) {
+  const n = normalizeArabicNameForMatch(name);
+  return Boolean(n) && SUMMARY_ROW_NAMES.has(n);
 }
 
 /**

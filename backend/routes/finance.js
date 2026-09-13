@@ -93,8 +93,9 @@ export function createFinanceRouter(db) {
     // Historical COGS from sale-item snapshots (immune to later cost changes).
     const cogsSales = await snapshotSalesCogsForRange(db, from, to);
     const cogsRefunds = await snapshotRefundCogsForRange(db, from, to);
-    const netCogs = round2(cogsSales - cogsRefunds);
-    const estGrossProfit = round2(netPos - netCogs);
+    const cogsUnknown = !!(cogsSales.unknown || cogsRefunds.unknown);
+    const netCogs = cogsUnknown ? null : round2((cogsSales.cogs || 0) - (cogsRefunds.cogs || 0));
+    const estGrossProfit = cogsUnknown ? null : round2(netPos - netCogs);
 
     const inv = await db.get(
       `SELECT
@@ -120,10 +121,11 @@ export function createFinanceRouter(db) {
       operating_expense_count: Number(expRow?.n) || 0,
       supplier_payments_total: round2(Number(payRow?.total) || 0),
       supplier_payment_count: Number(payRow?.n) || 0,
-      estimated_cogs_on_sales: cogsSales,
-      estimated_cogs_on_refunds: cogsRefunds,
+      estimated_cogs_on_sales: cogsUnknown ? null : cogsSales.cogs,
+      estimated_cogs_on_refunds: cogsUnknown ? null : cogsRefunds.cogs,
       net_estimated_cogs: netCogs,
       estimated_gross_profit: estGrossProfit,
+      cogs_unknown: cogsUnknown,
       inventory_value_at_cost: round2(Number(inv?.at_cost) || 0),
       inventory_value_at_retail: round2(Number(inv?.at_retail) || 0),
       open_payables_total: round2(Number(apRow?.outstanding) || 0),

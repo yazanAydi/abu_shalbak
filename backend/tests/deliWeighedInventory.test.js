@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { buildBarcodeLookupResponse } from "../utils/productUnitLookup.js";
 
@@ -111,11 +112,11 @@ describe("deli dual-sale weighed inventory", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         payment_method: "cash",
         items,
         ...extra,
-      });
+      }));
     return res;
   }
 

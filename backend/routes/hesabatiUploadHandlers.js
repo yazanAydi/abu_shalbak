@@ -1,10 +1,14 @@
-import { detectFromBuffer } from "../utils/importDetect.js";
+import { detectFromBuffer, filenameSuggestsCustomerBalances, filenameSuggestsSupplierBalances } from "../utils/importDetect.js";
 import { requireImportFile } from "../utils/importUpload.js";
 import { importCustomerBalancesFromBuffer } from "../utils/customerImport.js";
 import {
   importSupplierBalancesFromBuffer,
   previewSupplierBalancesFromBuffer,
 } from "../utils/supplierImport.js";
+import {
+  planMisimportedSupplierRecovery,
+  applyMisimportedSupplierRecovery,
+} from "../utils/misimportedSupplierRecovery.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 
@@ -18,12 +22,21 @@ function parseSupplierImportOptions(req) {
     overwriteExistingOpeningBalances:
       String(req.query.overwrite_existing_opening_balances || "") === "1",
     openingBalanceDate: String(req.query.opening_balance_date || "").trim() || null,
+    includeTestRows: String(req.query.include_test_rows || "") === "1",
   };
 }
 
 /**
  * @param {string|null} dateStr
  */
+function supplierFileDestinationWarning(filename, detectedType) {
+  if (filenameSuggestsSupplierBalances(filename)) return null;
+  if (filenameSuggestsCustomerBalances(filename) || detectedType === "hesabati_customer_balances") {
+    return "اسم الملف يشير إلى أرصدة زبائن/عملاء. هذا المسار ينشئ بطاقات في إدارة الموردين فقط — لن يُنشئ زبائن.";
+  }
+  return null;
+}
+
 function validateOpeningBalanceDate(dateStr) {
   if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     return null;
@@ -89,6 +102,7 @@ export async function handleSupplierBalancePreview(db, req, res) {
     res.json({
       success: true,
       ...plan,
+      destinationWarning: plan.destinationWarning || supplierFileDestinationWarning(file.originalname || "", detected.type),
       detected_type: detected.type,
       label: detected.label,
     });
@@ -117,6 +131,7 @@ export async function handleSupplierBalanceConfirm(db, req, res) {
       force: opts.force,
       overwriteExistingOpeningBalances: opts.overwriteExistingOpeningBalances,
       openingBalanceDate,
+      includeTestRows: opts.includeTestRows,
     });
     await logAudit(db, req, AUDIT_ACTIONS.SUPPLIER_BALANCE, "suppliers", null, null, {
       import_type: summary.type,
@@ -147,4 +162,49 @@ export async function handleSupplierBalanceUpload(db, req, res) {
     req.query.opening_balance_date = shopTodayYmd();
   }
   await handleSupplierBalanceConfirm(db, req, res);
+}
+
+/**
+ * Dry-run: missing suppliers + mistaken credit customers from a supplier Excel.
+ */
+export async function handleSupplierRecoveryPreview(db, req, res) {
+  const file = requireImportFile(req, res);
+  if (!file) return;
+
+  try {
+    const plan = await planMisimportedSupplierRecovery(db, file.buffer, file.originalname || "");
+    res.json({ success: true, ...plan });
+  } catch (e) {
+    res.status(400).json({ error: e.message || "فشلت معاينة الاسترداد" });
+  }
+}
+
+/**
+ * Create missing suppliers. Deletes mistaken customers only when delete_customers=1.
+ */
+export async function handleSupplierRecoveryConfirm(db, req, res) {
+  const file = requireImportFile(req, res);
+  if (!file) return;
+
+  const deleteCustomers = String(req.query.delete_customers || "") === "1";
+  const opts = parseSupplierImportOptions(req);
+  const openingBalanceDate =
+    validateOpeningBalanceDate(opts.openingBalanceDate) || shopTodayYmd();
+
+  try {
+    const summary = await applyMisimportedSupplierRecovery(db, file.buffer, file.originalname || "", {
+      deleteCustomers,
+      openingBalanceDate,
+    });
+    await logAudit(db, req, AUDIT_ACTIONS.SUPPLIER_BALANCE, "suppliers", null, null, {
+      import_type: summary.type,
+      created: summary.suppliersCreated,
+      existing: summary.suppliersExisting,
+      customers_deleted: summary.customersDeleted,
+      delete_customers: deleteCustomers,
+    });
+    res.json({ success: true, ...summary, opening_balance_date: openingBalanceDate });
+  } catch (e) {
+    res.status(400).json({ error: e.message || "فشل استرداد الموردين" });
+  }
 }

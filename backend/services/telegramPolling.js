@@ -3,6 +3,7 @@ import {
   getApprovalBotPollConfigs,
   telegramGet,
 } from "../utils/telegram.js";
+import { loadPollOffset, processPolledUpdate } from "./telegramPollRecovery.js";
 
 const POLL_TIMEOUT_SEC = 30;
 const ERROR_RETRY_MS = 100;
@@ -26,8 +27,10 @@ export function isTelegramPollingEnabled() {
  */
 export function startTelegramBotPollLoops(db, bots, options = {}) {
   const get = options.get || telegramGet;
+  const handle = options.handle || handleTelegramUpdate;
   const pollTimeoutSec = options.pollTimeoutSec ?? POLL_TIMEOUT_SEC;
   const errorRetryMs = options.errorRetryMs ?? ERROR_RETRY_MS;
+  const maxAttempts = options.maxAttempts;
 
   /** @type {Record<string, number>} */
   const offsets = {};
@@ -35,6 +38,7 @@ export function startTelegramBotPollLoops(db, bots, options = {}) {
 
   for (const bot of bots) {
     void (async () => {
+      offsets[bot.kind] = await loadPollOffset(db, bot.kind);
       while (!stopped) {
         try {
           const updates = await get(
@@ -50,15 +54,24 @@ export function startTelegramBotPollLoops(db, bots, options = {}) {
           if (!Array.isArray(updates)) continue;
 
           for (const update of updates) {
-            if (update.update_id != null) {
-              offsets[bot.kind] = update.update_id + 1;
+            const outcome = await processPolledUpdate(db, bot.kind, update, {
+              handle,
+              maxAttempts,
+            });
+            if (outcome.advanced && update.update_id != null) {
+              offsets[bot.kind] = Number(update.update_id) + 1;
             }
-            const result = await handleTelegramUpdate(db, update);
-            if (result.action === "approve") {
-              console.log(`[telegram-poll] Approved ${result.kind} #${result.requestId}`);
-            } else if (result.action === "reject") {
-              console.log(`[telegram-poll] Rejected ${result.kind} #${result.requestId}`);
+            if (outcome.result?.action === "approve") {
+              console.log(`[telegram-poll] Approved ${outcome.result.kind} #${outcome.result.requestId}`);
+            } else if (outcome.result?.action === "reject") {
+              console.log(`[telegram-poll] Rejected ${outcome.result.kind} #${outcome.result.requestId}`);
             }
+            if (outcome.skipped) {
+              console.error(
+                `[telegram-poll] Skipped poison update ${update.update_id} (${bot.kind}) after ${outcome.attempts} failures`
+              );
+            }
+            if (!outcome.advanced) break;
           }
         } catch (e) {
           if (!stopped) {

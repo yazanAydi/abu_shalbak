@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { invalidatePromotionsCache } from "../utils/promotions.js";
 import { executeCheckoutSale } from "../services/checkoutSaleService.js";
@@ -36,10 +37,10 @@ describe("Checkout flow", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 2, price: product.price }],
         payment_method: "cash",
-      });
+      }));
 
     expect(res.status).toBe(201);
     expect(res.body.data.receipt_number).toMatch(/^INV-\d{4}-\d{6}$/);
@@ -79,10 +80,10 @@ describe("Checkout flow", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
 
     expect(res.status).toBe(201);
     expect(Number(res.body.data.discount)).toBe(0);
@@ -106,10 +107,10 @@ describe("Checkout flow", () => {
     const first = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     expect(first.status).toBe(201);
     expect(Number(first.body.data.discount)).toBeGreaterThan(0);
 
@@ -117,10 +118,10 @@ describe("Checkout flow", () => {
     const second = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     expect(second.status).toBe(201);
     expect(Number(second.body.data.discount)).toBe(0);
 

@@ -5,6 +5,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 import { buildPosDecisionSnapshot } from "../routes/pos.js";
@@ -130,11 +131,11 @@ describe("POS recovery after Telegram sulaf/zimma decisions", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "on_account",
         customer_id: cust.lastID,
-      });
+      }));
     expect(checkoutRes.status).toBe(202);
     const requestId = unwrap(checkoutRes.body).request_id;
 
@@ -157,11 +158,11 @@ describe("POS recovery after Telegram sulaf/zimma decisions", () => {
     const checkoutReject = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "on_account",
         customer_id: cust.lastID,
-      });
+      }));
     const rejectId = unwrap(checkoutReject.body).request_id;
     const rejected = await telegramCallback("zimma", "reject", rejectId);
     expect(rejected.action).toBe("reject");

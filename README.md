@@ -45,7 +45,7 @@ BACKUP_DIR=/app/backups
 npm run store:up
 ```
 
-Starts Docker and the Windows receipt print agent (Node.js LTS required on the shop PC for silent thermal printing).
+Starts Docker on port 3000. Receipts print from each cashier’s Microsoft Edge window after ترحيل — see `docs/RECEIPT_BROWSER_PRINT.md`. Do not mix this with Edge print policies on a development PC.
 
 ### 4. فتح التطبيق من أي جهاز في الشبكة
 
@@ -57,14 +57,20 @@ Starts Docker and the Windows receipt print agent (Node.js LTS required on the s
 
 > استبدل `192.168.1.10` بـ IP جهاز الخادم الفعلي.
 
-### 5. اختصارات سطح المكتب (اختياري)
+### 5. اختصارات سطح المكتب
 
-على كل جهاز، أنشئ اختصار Chrome/Edge:
+على **كل** جهاز كاشير أو مكتب أنشئ اختصار Edge `--app` (وليس تبويب متصفح عادي). استبدل IP الخادم:
 
-- **إدارة:** `http://192.168.1.10:3000/admin`
-- **كاشير:** `http://192.168.1.10:3000/pos`
+```powershell
+.\scripts\open-pos-app.ps1 -Url http://192.168.1.10:3000/pos -CreateShortcut
+.\scripts\open-admin-app.ps1 -Url http://192.168.1.10:3000/admin -CreateShortcut
+```
 
-**أجهزة الكاشير والإدارة تحتاج فقط متصفح Chrome أو Edge — لا حاجة لتثبيت Node أو React.**
+على **كل جهاز كاشير** (مرة واحدة، PowerShell كمسؤول): `.\scripts\setup-edge-silent-print.ps1` ثم عيّن الطابعة الحرارية كطابعة Windows الافتراضية. التفاصيل: `docs/RECEIPT_BROWSER_PRINT.md`.
+
+إذا فتح مسح الباركود في المكتب أدوات المطوّر: `docs/BARCODE_SCANNER.md`.
+
+**أجهزة الكاشير والمكتب تحتاج Microsoft Edge — لا حاجة لتثبيت Node أو React عليها.**
 
 ### 6. البيانات والنسخ الاحتياطي
 
@@ -73,12 +79,13 @@ Starts Docker and the Windows receipt print agent (Node.js LTS required on the s
 | `./data/` | قاعدة SQLite (`supermarket.db`) — **تبقى بعد إعادة تشغيل Docker** |
 | `./backups/` | نسخ احتياطي تلقائي يومياً الساعة 2:00 صباحاً |
 
-```bash
-# نسخ يدوي
-docker compose exec -T app cp /app/data/supermarket.db /app/backups/manual_$(date +%Y%m%d).db
+النسخ اليدوي يتم من التطبيق (`VACUUM INTO`، يشمل محتويات WAL) وليس بنسخ ملف القاعدة الحي:
 
-# أو انسخ مجلد ./data كاملاً إلى USB أو سحابة
-```
+- من حساب مدير: `POST /api/v1/admin/backup`
+- أو انتظر النسخ التلقائي الساعة 02:00
+- الملف الناتج: `backups/supermarket_YYYY-MM-DD_HHMMSS.db`
+
+لا تستخدم `cp` / `Copy-Item` على `supermarket.db` وهو يعمل — ذلك قد يُسقط الـ WAL. التحقق: انظر `RESTORE.md`.
 
 ### 7. إعادة البناء بعد تحديث الكود
 
@@ -184,13 +191,9 @@ npm start             # API :5000 + إدارة :3001 + POS :3002
 
 النسخ الاحتياطي التلقائي يعمل يومياً في الإنتاج (Docker). راجع قسم **تشغيل المتجر** أعلاه.
 
-```bash
-# نسخ يدوي (Docker)
-docker compose exec -T app cp /app/data/supermarket.db /app/backups/manual_$(date +%Y%m%d).db
-
-# أو انسخ مجلد ./data كاملاً
-cp -r ./data ./backup/data_$(date +%Y%m%d)
-```
+- مدير: `POST /api/v1/admin/backup` — يرد `filename` و`size` و`created_at`
+- تلقائي يومياً 02:00 ما لم يُضبط `DISABLE_AUTO_BACKUP=1`
+- تحقق من الملف في `backups/` كما في `RESTORE.md` (لا تنسخ `data/supermarket.db` مباشرة)
 
 ---
 

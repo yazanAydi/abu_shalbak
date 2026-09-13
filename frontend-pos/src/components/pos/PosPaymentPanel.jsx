@@ -8,6 +8,7 @@ export default function PosPaymentPanel({
   discount = 0,
   total,
   error,
+  printWarning,
   isLoading,
   canComplete,
   onComplete,
@@ -41,6 +42,7 @@ export default function PosPaymentPanel({
 
       <div className="pos-pay-actions">
         {error ? <p className="pos-err">{error}</p> : null}
+        {printWarning ? <p className="pos-print-warn">{printWarning}</p> : null}
 
         <button
           type="button"

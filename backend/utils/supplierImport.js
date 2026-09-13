@@ -1,10 +1,22 @@
 import { readXlsxMatrix, findHeaderRowIndex } from "./xlsxHelpers.js";
-import { detectImportType } from "./importDetect.js";
+import {
+  detectImportType,
+  filenameSuggestsCustomerBalances,
+  isAbuShalbakSupplierListExport,
+} from "./importDetect.js";
+import {
+  ABU_SHALBAK_SUPPLIER_LIST_TYPE,
+  parseAbuShalbakSupplierListMatrix,
+  buildSupplierListTransferPlan,
+  applySupplierListTransfer,
+} from "./supplierListTransfer.js";
 import { round2 } from "./tax.js";
 import { hesabatiBalanceDisplay } from "./hesabatiStatementFormat.js";
 import {
   normalizeArabicNameForMatch,
   parseBalanceSheetMatrix,
+  parseBalanceAmountStrict,
+  isBalanceSummaryRow,
   supplierHasLedgerActivity,
   hesabatiToSystemSupplierBalance,
   openingBalanceToDebitCredit,
@@ -17,6 +29,8 @@ export const HESABATI_OPENING_SOURCE = "hesabati_import";
 export const OPENING_ENTRY_SOURCE_TYPE = "opening_balance_import";
 export const OPENING_ENTRY_DESCRIPTION = "رصيد افتتاحي من نظام حساباتي";
 export const OPENING_ENTRY_NOTES = "Imported from Hesabati supplier balances file";
+export const SUPPLIER_IMPORT_DESTINATION = "supplier";
+export const SUPPLIER_IMPORT_DESTINATION_LABEL = "إدارة الموردين — بطاقة مورد (ليس زبوناً)";
 
 /**
  * @param {Buffer} buffer
@@ -24,6 +38,9 @@ export const OPENING_ENTRY_NOTES = "Imported from Hesabati supplier balances fil
  */
 export function parseSupplierBalanceFile(buffer, filename) {
   const { matrix } = readXlsxMatrix(buffer);
+  if (isAbuShalbakSupplierListExport(matrix, filename)) {
+    return parseAbuShalbakSupplierListMatrix(matrix, filename);
+  }
   if (!matrix.length) return [];
 
   const detected = detectImportType(matrix, filename);
@@ -31,23 +48,27 @@ export function parseSupplierBalanceFile(buffer, filename) {
     detected.headerRowIndex >= 0
       ? detected.headerRowIndex
       : findHeaderRowIndex(matrix, (headers) => {
-          const hasBalance = headers.some((h) => /^الرصيد$|^رصيد|^balance$/i.test(h));
+          const hasBalance = headers.some((h) => /^الرصيد|^رصيد|^balance$/i.test(h));
           const hasName = headers.some((h) => /^الاسم$|^اسم|^name$/i.test(h));
           return hasBalance && hasName;
         });
 
   if (headerIdx < 0) {
-    throw new Error("الملف لا يطابق تنسيق أرصدة الموردين من حساباتي.");
+    throw new Error(
+      "الملف لا يطابق تنسيق أرصدة الموردين. المتوقع أعمدة حساباتي: الرقم، الاسم، الرصيد. لا تستخدم تصدير CSV من إدارة الموردين."
+    );
   }
 
   return parseBalanceSheetMatrix(matrix, headerIdx).map((r) => {
-    const excelBalance = round2(Number(r.balance) || 0);
-    const systemBalance = hesabatiToSystemSupplierBalance(excelBalance);
+    const parsed = parseBalanceAmountStrict(r.rawBalance);
+    const excelBalance = parsed.ok ? parsed.value : null;
+    const systemBalance = parsed.ok ? hesabatiToSystemSupplierBalance(excelBalance) : null;
     return {
       ...r,
       excelBalance,
       balance: systemBalance,
       systemBalance,
+      balanceStatus: parsed.ok ? "ok" : parsed.reason,
       importType: "hesabati_supplier_balances",
     };
   });
@@ -110,7 +131,7 @@ export function dedupeSupplierBalanceRows(rows) {
 async function findExistingSupplier(db, row, name) {
   if (row.code) {
     const byCode = await db.get(`SELECT * FROM suppliers WHERE supplier_code = ?`, [row.code]);
-    if (byCode) return byCode;
+    return byCode || null;
   }
   const normalized = normalizeArabicNameForMatch(name);
   if (!normalized) return null;
@@ -156,34 +177,82 @@ function detectDuplicateNames(rows) {
 }
 
 /**
+ * @param {ReturnType<parseSupplierBalanceFile>[number]} row
+ */
+function resolveSupplierRowBalances(row) {
+  if (row.balanceStatus === "missing" || row.balanceStatus === "invalid") {
+    return {
+      status: row.balanceStatus,
+      excelBalance: null,
+      systemBalance: null,
+      statementBalance: null,
+    };
+  }
+  const hasExcel = row.excelBalance != null && row.excelBalance !== "";
+  const hasSystem = row.systemBalance != null && row.systemBalance !== "";
+  const hasBalance = row.balance != null && row.balance !== "";
+  if (!hasExcel && !hasSystem && !hasBalance && row.balanceStatus !== "ok") {
+    return {
+      status: "missing",
+      excelBalance: null,
+      systemBalance: null,
+      statementBalance: null,
+    };
+  }
+  const systemBalance = round2(Number(hasSystem ? row.systemBalance : row.balance) || 0);
+  const excelBalance = hasExcel
+    ? round2(Number(row.excelBalance) || 0)
+    : round2(-systemBalance);
+  return {
+    status: "ok",
+    excelBalance,
+    systemBalance,
+    statementBalance: hesabatiBalanceDisplay("supplier", systemBalance).hesabatiBalance,
+  };
+}
+
+function isNonzeroOpening(systemBalance) {
+  return Math.abs(Number(systemBalance) || 0) >= 0.009;
+}
+
+/**
  * @param {object} db
  * @param {ReturnType<parseSupplierBalanceFile>[number]} row
  * @param {string} name
- * @param {{ importZeroBalances?: boolean, overwriteExistingOpeningBalances?: boolean, force?: boolean }} options
+ * @param {{ overwriteExistingOpeningBalances?: boolean, force?: boolean }} options
  */
 async function classifySupplierBalanceRow(db, row, name, options = {}) {
-  const importZeroBalances = Boolean(options.importZeroBalances);
   const overwriteExistingOpeningBalances = Boolean(options.overwriteExistingOpeningBalances);
   const force = Boolean(options.force);
 
-  const excelBalance = round2(Number(row.excelBalance ?? row.balance) || 0);
-  const systemBalance = round2(Number(row.systemBalance ?? row.balance) || 0);
-  const statementBalance = hesabatiBalanceDisplay("supplier", systemBalance).hesabatiBalance;
-  const isZero = Math.abs(systemBalance) < 0.009;
+  if (isBalanceSummaryRow(name)) {
+    const balances = resolveSupplierRowBalances(row);
+    return {
+      action: "invalid",
+      reason: "صف إجمالي — ليس مورداً",
+      excelBalance: balances.excelBalance,
+      systemBalance: balances.systemBalance,
+      statementBalance: balances.statementBalance,
+      supplierId: null,
+    };
+  }
 
+  const balances = resolveSupplierRowBalances(row);
+  if (balances.status !== "ok") {
+    return {
+      action: "invalid",
+      reason: balances.status === "invalid" ? "الرصيد غير صالح" : "الرصيد مفقود",
+      excelBalance: null,
+      systemBalance: null,
+      statementBalance: null,
+      supplierId: null,
+    };
+  }
+
+  const { excelBalance, systemBalance, statementBalance } = balances;
   const existing = await findExistingSupplier(db, row, name);
 
   if (!existing) {
-    if (!importZeroBalances && isZero) {
-      return {
-        action: "skip",
-        reason: "رصيد صفر — لم يُستورد (فعّل خيار رصيد صفر)",
-        excelBalance,
-        systemBalance,
-        statementBalance,
-        supplierId: null,
-      };
-    }
     return {
       action: "create",
       reason: "مورد جديد",
@@ -199,7 +268,7 @@ async function classifySupplierBalanceRow(db, row, name, options = {}) {
 
   if (hasHesabatiOpening && !overwriteExistingOpeningBalances) {
     return {
-      action: "skip",
+      action: "existing",
       reason: "لديه رصيد افتتاحي من حساباتي — فعّل التجاوز لإعادة الاستيراد",
       excelBalance,
       systemBalance,
@@ -242,27 +311,32 @@ export async function buildSupplierBalanceImportPlan(db, rows, options = {}) {
   /** @type {object[]} */
   const planRows = [];
   /** @type {{ row: number, reason: string, name?: string, code?: string }[]} */
-  const errors = [...(options.droppedDuplicates || []), ...dropped];
+  const errors = [
+    ...(options.droppedDuplicates || []),
+    ...dropped.map((d) => ({ row: d.row, reason: d.reason, code: d.code })),
+  ];
 
   let matched = 0;
   let toCreate = 0;
-  let invalid = 0;
-  let alreadyImported = 0;
+  let invalid = dropped.length + (options.droppedDuplicates || []).length;
+  let existing = 0;
+  let skipped = 0;
   let totalPositiveExcel = 0;
   let totalNegativeExcel = 0;
 
   for (const row of dedupedRows) {
     const name = String(row.name ?? "").trim();
     if (!name) {
-      errors.push({ row: row.rowNum, reason: "الاسم مفقود" });
+      const err = { row: row.rowNum, reason: "الاسم مفقود", name: "", code: row.code || undefined };
+      errors.push(err);
       invalid++;
       planRows.push({
         rowNum: row.rowNum,
         code: row.code,
         name: "",
-        excelBalance: row.excelBalance ?? 0,
-        systemBalance: row.systemBalance ?? row.balance,
-        statementBalance: hesabatiBalanceDisplay("supplier", row.systemBalance ?? row.balance).hesabatiBalance,
+        excelBalance: row.excelBalance ?? null,
+        systemBalance: row.systemBalance ?? null,
+        statementBalance: null,
         action: "invalid",
         reason: "الاسم مفقود",
         supplierId: null,
@@ -270,16 +344,26 @@ export async function buildSupplierBalanceImportPlan(db, rows, options = {}) {
       continue;
     }
 
-    const excelBalance = round2(Number(row.excelBalance ?? 0) || 0);
-    if (excelBalance > 0) totalPositiveExcel = round2(totalPositiveExcel + excelBalance);
-    if (excelBalance < 0) totalNegativeExcel = round2(totalNegativeExcel + excelBalance);
-
     const classified = await classifySupplierBalanceRow(db, row, name, options);
+    const excelBalance = classified.excelBalance;
+    if (typeof excelBalance === "number") {
+      if (excelBalance > 0) totalPositiveExcel = round2(totalPositiveExcel + excelBalance);
+      if (excelBalance < 0) totalNegativeExcel = round2(totalNegativeExcel + excelBalance);
+    }
 
     if (classified.action === "create") toCreate++;
     if (classified.action === "update") matched++;
-    if (classified.action === "skip" && classified.reason.includes("رصيد افتتاحي")) alreadyImported++;
-    if (classified.action === "invalid") invalid++;
+    if (classified.action === "existing") existing++;
+    if (classified.action === "skip") skipped++;
+    if (classified.action === "invalid") {
+      invalid++;
+      errors.push({
+        row: row.rowNum,
+        reason: classified.reason,
+        name,
+        code: row.code || undefined,
+      });
+    }
 
     planRows.push({
       rowNum: row.rowNum,
@@ -294,18 +378,24 @@ export async function buildSupplierBalanceImportPlan(db, rows, options = {}) {
     });
   }
 
-  const skipped = planRows.filter((r) => r.action === "skip").length;
   const netTotalExcel = round2(totalPositiveExcel + totalNegativeExcel);
 
   return {
     type: "hesabati_supplier_balances",
+    destination: SUPPLIER_IMPORT_DESTINATION,
+    destinationLabel: SUPPLIER_IMPORT_DESTINATION_LABEL,
+    destinationWarning: filenameSuggestsCustomerBalances(options.filename || "")
+      ? "اسم الملف يشير إلى أرصدة زبائن/عملاء. هذا المسار ينشئ بطاقات في إدارة الموردين فقط — لن يُنشئ زبائن."
+      : null,
     stats: {
       totalRows: dedupedRows.length,
       matched,
       toCreate,
       invalid,
+      rejected: invalid,
+      existing,
       duplicateNames: duplicateNames.length,
-      alreadyImported,
+      alreadyImported: existing,
       skipped,
       totalPositiveExcel,
       totalNegativeExcel,
@@ -354,18 +444,28 @@ async function upsertSupplierOpeningEntry(db, supplierId, systemBalance, entryDa
 
 /**
  * @param {object} db
+ * @param {number} supplierId
+ */
+async function deleteSupplierOpeningEntry(db, supplierId) {
+  await db.run(
+    `DELETE FROM party_opening_entries
+     WHERE party_type = 'supplier' AND party_id = ? AND source_type = ?`,
+    [supplierId, OPENING_ENTRY_SOURCE_TYPE]
+  );
+}
+
+/**
+ * @param {object} db
  * @param {ReturnType<parseSupplierBalanceFile>[number][]} rows
  * @param {{ importZeroBalances?: boolean, force?: boolean, overwriteExistingOpeningBalances?: boolean, openingBalanceDate?: string, sourceId?: string, droppedDuplicates?: object[] }} [options]
  */
 export async function applySupplierBalanceImport(db, rows, options = {}) {
-  const importZeroBalances = Boolean(options.importZeroBalances);
   const force = Boolean(options.force);
   const overwriteExistingOpeningBalances = Boolean(options.overwriteExistingOpeningBalances);
   const openingBalanceDate = options.openingBalanceDate || shopTodayYmd();
   const sourceId = options.sourceId || null;
 
   const plan = await buildSupplierBalanceImportPlan(db, rows, {
-    importZeroBalances,
     force,
     overwriteExistingOpeningBalances,
     droppedDuplicates: options.droppedDuplicates,
@@ -374,12 +474,22 @@ export async function applySupplierBalanceImport(db, rows, options = {}) {
 
   let created = 0;
   let updated = 0;
+  let existing = 0;
+  let rejected = 0;
   let skipped = 0;
   const errors = [...plan.errors];
 
   await withTransaction(db, async () => {
     for (const planRow of plan.allRows) {
-      if (planRow.action === "invalid" || planRow.action === "skip") {
+      if (planRow.action === "invalid") {
+        rejected++;
+        continue;
+      }
+      if (planRow.action === "existing") {
+        existing++;
+        continue;
+      }
+      if (planRow.action === "skip") {
         skipped++;
         continue;
       }
@@ -391,8 +501,20 @@ export async function applySupplierBalanceImport(db, rows, options = {}) {
       }
 
       const name = String(row.name ?? "").trim();
-      const systemBalance = round2(Number(row.systemBalance ?? row.balance) || 0);
-      const excelBalance = round2(Number(row.excelBalance ?? -systemBalance) || 0);
+      const balances = resolveSupplierRowBalances(row);
+      if (balances.status !== "ok") {
+        errors.push({
+          row: row.rowNum,
+          name,
+          code: row.code || undefined,
+          reason: balances.status === "invalid" ? "الرصيد غير صالح" : "الرصيد مفقود",
+        });
+        rejected++;
+        continue;
+      }
+      const systemBalance = balances.systemBalance;
+      const excelBalance = balances.excelBalance;
+      const openingDate = isNonzeroOpening(systemBalance) ? openingBalanceDate : null;
 
       if (planRow.action === "create") {
         const supplierCode = await ensureEntityCode(db, "supplier", row.code);
@@ -401,24 +523,26 @@ export async function applySupplierBalanceImport(db, rows, options = {}) {
             (name, contact_phone, supplier_code, opening_balance, opening_balance_excel, balance,
              opening_balance_date, opening_balance_source)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [name, row.phone || null, supplierCode, systemBalance, excelBalance, systemBalance, openingBalanceDate, HESABATI_OPENING_SOURCE]
+          [name, row.phone || null, supplierCode, systemBalance, excelBalance, systemBalance, openingDate, HESABATI_OPENING_SOURCE]
         );
-        await upsertSupplierOpeningEntry(db, ins.lastID, systemBalance, openingBalanceDate, sourceId);
+        if (isNonzeroOpening(systemBalance)) {
+          await upsertSupplierOpeningEntry(db, ins.lastID, systemBalance, openingBalanceDate, sourceId);
+        }
         created++;
         continue;
       }
 
       if (planRow.action === "update") {
-        const existing = await db.get(`SELECT * FROM suppliers WHERE id = ?`, [planRow.supplierId]);
-        if (!existing) {
-          errors.push({ row: row.rowNum, name, reason: "المورد غير موجود" });
-          skipped++;
+        const current = await db.get(`SELECT * FROM suppliers WHERE id = ?`, [planRow.supplierId]);
+        if (!current) {
+          errors.push({ row: row.rowNum, name, code: row.code || undefined, reason: "المورد غير موجود" });
+          rejected++;
           continue;
         }
 
-        const oldOpening = round2(Number(existing.opening_balance) || 0);
-        const oldBalance = round2(Number(existing.balance) || 0);
-        const hasActivity = await supplierHasLedgerActivity(db, existing.id);
+        const oldOpening = round2(Number(current.opening_balance) || 0);
+        const oldBalance = round2(Number(current.balance) || 0);
+        const hasActivity = await supplierHasLedgerActivity(db, current.id);
         const newBalance = hasActivity
           ? round2(oldBalance - oldOpening + systemBalance)
           : systemBalance;
@@ -428,39 +552,72 @@ export async function applySupplierBalanceImport(db, rows, options = {}) {
               opening_balance = ?, opening_balance_excel = ?, balance = ?,
               opening_balance_date = ?, opening_balance_source = ?
            WHERE id = ?`,
-          [name, row.phone, systemBalance, excelBalance, newBalance, openingBalanceDate, HESABATI_OPENING_SOURCE, existing.id]
+          [name, row.phone, systemBalance, excelBalance, newBalance, openingDate, HESABATI_OPENING_SOURCE, current.id]
         );
-        await assignEntityCodeIfMissing(db, "supplier", existing.id);
-        await upsertSupplierOpeningEntry(db, existing.id, systemBalance, openingBalanceDate, sourceId);
+        await assignEntityCodeIfMissing(db, "supplier", current.id);
+        if (isNonzeroOpening(systemBalance)) {
+          await upsertSupplierOpeningEntry(db, current.id, systemBalance, openingBalanceDate, sourceId);
+        } else {
+          await deleteSupplierOpeningEntry(db, current.id);
+        }
         updated++;
       }
     }
   });
 
+  rejected += droppedDuplicateCount(plan.errors, plan.allRows);
+
   return {
     type: "hesabati_supplier_balances",
+    destination: plan.destination,
+    destinationLabel: plan.destinationLabel,
+    destinationWarning: plan.destinationWarning,
     created,
     updated,
+    existing,
+    rejected,
     skipped,
     errors,
     stats: plan.stats,
-    message: `تم استيراد أرصدة الموردين: ${created} جديد، ${updated} محدّث، ${skipped} تُرك`,
+    message: `تم استيراد أرصدة الموردين إلى إدارة الموردين: ${created} جديد، ${existing} موجود، ${updated} محدّث، ${rejected} مرفوض، ${skipped} تُرك`,
   };
+}
+
+/**
+ * Dedupe drops are in plan.errors but not in allRows — count them as rejected.
+ * @param {object[]} errors
+ * @param {object[]} allRows
+ */
+function droppedDuplicateCount(errors, allRows) {
+  const planRowNums = new Set(allRows.map((r) => r.rowNum));
+  return errors.filter((e) => e.row != null && !planRowNums.has(e.row)).length;
+}
+
+function isTransferImportRows(rows) {
+  return rows.some((r) => r.importType === ABU_SHALBAK_SUPPLIER_LIST_TYPE);
 }
 
 /**
  * @param {object} db
  * @param {Buffer} buffer
  * @param {string} filename
- * @param {{ importZeroBalances?: boolean, force?: boolean, overwriteExistingOpeningBalances?: boolean, openingBalanceDate?: string }} [options]
+ * @param {{ importZeroBalances?: boolean, force?: boolean, overwriteExistingOpeningBalances?: boolean, openingBalanceDate?: string, includeTestRows?: boolean }} [options]
  */
 export async function importSupplierBalancesFromBuffer(db, buffer, filename, options = {}) {
   const rows = parseSupplierBalanceFile(buffer, filename);
   if (!rows.length) {
     throw new Error("لا توجد صفوف بيانات");
   }
+  if (isTransferImportRows(rows)) {
+    return applySupplierListTransfer(db, rows, {
+      includeTestRows: options.includeTestRows,
+      openingBalanceDate: options.openingBalanceDate,
+      sourceId: filename || null,
+    });
+  }
   return applySupplierBalanceImport(db, rows, {
     ...options,
+    filename,
     sourceId: filename || null,
   });
 }
@@ -476,5 +633,11 @@ export async function previewSupplierBalancesFromBuffer(db, buffer, filename, op
   if (!rows.length) {
     throw new Error("لا توجد صفوف بيانات");
   }
-  return buildSupplierBalanceImportPlan(db, rows, options);
+  if (isTransferImportRows(rows)) {
+    return buildSupplierListTransferPlan(db, rows, {
+      includeTestRows: options.includeTestRows,
+      filename,
+    });
+  }
+  return buildSupplierBalanceImportPlan(db, rows, { ...options, filename });
 }

@@ -40,7 +40,11 @@ export const checkoutSchema = z
     original_amount: z.coerce.number().nonnegative().optional().nullable(),
     change_currency_id: z.coerce.number().int().positive().optional().nullable(),
     change_currency_code: z.string().trim().min(1).max(10).optional().nullable(),
-    idempotency_key: z.string().trim().min(8).max(100).optional().nullable(),
+    idempotency_key: z
+      .string({ required_error: "مفتاح التكرار مطلوب" })
+      .trim()
+      .min(8, "مفتاح التكرار مطلوب (8–100 حرفاً)")
+      .max(100),
     suspended_sale_id: z.coerce.number().int().positive().optional().nullable(),
   })
   .refine((data) => data.payment_method || (data.payments && data.payments.length > 0), {

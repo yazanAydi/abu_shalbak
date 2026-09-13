@@ -15,6 +15,17 @@ export function normalizeBarcode(raw) {
   return t;
 }
 
+/**
+ * Wedge-scanner payloads are digit-heavy and keep leading zeros.
+ * Name searches like "حليب كامل الدسم" must not be treated as a barcode submit.
+ */
+export function looksLikeBarcodeQuery(raw) {
+  const code = normalizeBarcode(raw);
+  if (code.length < 6) return false;
+  const digits = (code.match(/\d/g) || []).length;
+  return digits >= 6 && digits / code.length >= 0.7;
+}
+
 /** Whether the device can use the camera scanner (HTTPS + touch or narrow viewport). */
 export function supportsCamera() {
   if (typeof window === "undefined") return false;

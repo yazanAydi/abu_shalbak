@@ -85,6 +85,7 @@ function silentPrintHttpStatus(code) {
 export function createPrintRouter(db) {
   const router = Router();
 
+  // Legacy Windows-agent path. POS checkout prints in the cashier browser instead.
   router.post("/print-receipt/silent", requireAuth, requirePosAccess, async (req, res, next) => {
     const tid = Number((req.body || {}).transaction_id);
     if (!tid) {

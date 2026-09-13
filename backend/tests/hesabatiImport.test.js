@@ -3,9 +3,12 @@ import request from "supertest";
 import {
   detectFromBuffer,
   detectTypeFromFilename,
+  filenameSuggestsCustomerBalances,
+  isAbuShalbakSupplierListExport,
+  UNSIGNED_ABU_SHALBAK_SUPPLIER_EXPORT_ERROR,
   IMPORT_TYPE_LABELS,
 } from "../utils/importDetect.js";
-import { parseBalanceSheetMatrix } from "../utils/balanceSheetImport.js";
+import { parseBalanceSheetMatrix, parseBalanceAmount, parseBalanceAmountStrict, isBalanceSummaryRow } from "../utils/balanceSheetImport.js";
 import { applyCustomerBalanceImport } from "../utils/customerImport.js";
 import { applySupplierBalanceImport, parseSupplierBalanceFile, dedupeSupplierBalanceRows, buildSupplierBalanceImportPlan, HESABATI_OPENING_SOURCE } from "../utils/supplierImport.js";
 import { buildSupplierLedger } from "../utils/supplierLedger.js";
@@ -31,6 +34,13 @@ function xlsxBuffer(rows) {
   return XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
 }
 
+function systemSupplierCsvBuffer() {
+  const csv =
+    "\uFEFF\"الرقم\",\"الاسم\",\"الهاتف\",\"شروط الدفع\",\"الرصيد (مستحق)\"\n" +
+    "\"148\",\"شركة عنبتاوي توباكو\",\"—\",\"—\",\"₪0.00\"\n";
+  return Buffer.from(csv, "utf8");
+}
+
 describe("importDetect", () => {
   test("detects type from filename — قائمة الأسعار", () => {
     expect(detectTypeFromFilename("(3) حساباتي _ قائمة الأسعار.xlsx")).toBe("hesabati_price_list");
@@ -46,6 +56,13 @@ describe("importDetect", () => {
     expect(detectTypeFromFilename("(4)حساباتي _ أرصدة زبون.xlsx")).toBe(
       "hesabati_customer_balances"
     );
+  });
+
+  test("detects type from filename — أرصدة العملاء", () => {
+    expect(detectTypeFromFilename("حساباتي _ أرصدة العملاء (6).xlsx")).toBe(
+      "hesabati_customer_balances"
+    );
+    expect(filenameSuggestsCustomerBalances("حساباتي _ أرصدة العملاء (6).xlsx")).toBe(true);
   });
 
   test("detects arabic retail from headers", () => {
@@ -123,6 +140,46 @@ describe("balance sheet parsing", () => {
     expect(deduped[0].balance).toBe(0);
     expect(dropped).toHaveLength(1);
     expect(dropped[0].row).toBe(237);
+  });
+
+  test("parseBalanceAmount still coerces missing and invalid to 0", () => {
+    expect(parseBalanceAmount(null)).toBe(0);
+    expect(parseBalanceAmount("")).toBe(0);
+    expect(parseBalanceAmount("abc")).toBe(0);
+    expect(parseBalanceAmount(0)).toBe(0);
+  });
+
+  test("parseBalanceAmountStrict distinguishes zero from missing and invalid", () => {
+    expect(parseBalanceAmountStrict(0)).toEqual({ ok: true, value: 0, reason: null });
+    expect(parseBalanceAmountStrict("0")).toEqual({ ok: true, value: 0, reason: null });
+    expect(parseBalanceAmountStrict("0.00")).toEqual({ ok: true, value: 0, reason: null });
+    expect(parseBalanceAmountStrict(-290)).toEqual({ ok: true, value: -290, reason: null });
+    expect(parseBalanceAmountStrict(null)).toEqual({ ok: false, value: null, reason: "missing" });
+    expect(parseBalanceAmountStrict("")).toEqual({ ok: false, value: null, reason: "missing" });
+    expect(parseBalanceAmountStrict("—")).toEqual({ ok: false, value: null, reason: "invalid" });
+    expect(parseBalanceAmountStrict("abc")).toEqual({ ok: false, value: null, reason: "invalid" });
+    expect(parseBalanceAmountStrict("'-12.50")).toEqual({ ok: true, value: -12.5, reason: null });
+    expect(parseBalanceAmountStrict("'+100.00")).toEqual({ ok: true, value: 100, reason: null });
+  });
+
+  test("rejects unsigned ₪ أبو شلبك suppliers CSV (fresh signed export required)", () => {
+    const matrix = [
+      ["الرقم", "الاسم", "الهاتف", "شروط الدفع", "الرصيد (مستحق)"],
+      ["148", "شركة عنبتاوي توباكو", "—", "—", "₪0.00"],
+    ];
+    expect(isAbuShalbakSupplierListExport(matrix, "suppliers-2026-09-13.csv")).toBe(true);
+    expect(() => parseSupplierBalanceFile(systemSupplierCsvBuffer(), "suppliers-2026-09-13.csv")).toThrow(
+      UNSIGNED_ABU_SHALBAK_SUPPLIER_EXPORT_ERROR
+    );
+  });
+
+  test("isBalanceSummaryRow matches Hesabati totals labels", () => {
+    expect(isBalanceSummaryRow("الإجمالي")).toBe(true);
+    expect(isBalanceSummaryRow("الاجمالي")).toBe(true);
+    expect(isBalanceSummaryRow("المجموع")).toBe(true);
+    expect(isBalanceSummaryRow("total")).toBe(true);
+    expect(isBalanceSummaryRow("شركة الإجمالي للتجارة")).toBe(false);
+    expect(isBalanceSummaryRow("شركة عنبتاوي توباكو")).toBe(false);
   });
 });
 
@@ -245,9 +302,14 @@ describe("hesabati import apply", () => {
       },
     ], { importZeroBalances: true, overwriteExistingOpeningBalances: true, openingBalanceDate: "2024-06-01" });
     expect(summary.updated).toBe(1);
-    const s = await ctx.db.get("SELECT balance, opening_balance_source FROM suppliers WHERE name = ?", ["شركة مرسين"]);
+    const s = await ctx.db.get("SELECT id, balance, opening_balance_source FROM suppliers WHERE name = ?", ["شركة مرسين"]);
     expect(s.balance).toBe(0);
     expect(s.opening_balance_source).toBe(HESABATI_OPENING_SOURCE);
+    const entry = await ctx.db.get(
+      `SELECT id FROM party_opening_entries WHERE party_type = 'supplier' AND party_id = ?`,
+      [s.id]
+    );
+    expect(entry).toBeFalsy();
   });
 
   test("applySupplierBalanceImport creates supplier with opening entry metadata", async () => {
@@ -299,6 +361,27 @@ describe("hesabati import apply", () => {
     expect(plan.stats.toCreate).toBe(1);
     expect(plan.rows[0].action).toBe("create");
     expect(plan.rows[0].statementBalance).toBe(-100);
+    expect(plan.destination).toBe("supplier");
+    expect(plan.destinationLabel).toMatch(/إدارة الموردين/);
+  });
+
+  test("supplier plan warns when the uploaded filename looks like customer balances", async () => {
+    const plan = await buildSupplierBalanceImportPlan(ctx.db, [
+      {
+        rowNum: 2,
+        code: "WARN01",
+        name: "مورد تحذير الملف",
+        phone: null,
+        balance: 0,
+        systemBalance: 0,
+        excelBalance: 0,
+        balanceStatus: "ok",
+        importType: "hesabati_supplier_balances",
+      },
+    ], { filename: "حساباتي _ أرصدة العملاء (6).xlsx" });
+    expect(plan.destination).toBe("supplier");
+    expect(plan.destinationWarning).toMatch(/زبائن|عملاء/);
+    expect(plan.rows[0].action).toBe("create");
   });
 
   test("re-import blocked without overwrite flag", async () => {
@@ -327,7 +410,7 @@ describe("hesabati import apply", () => {
       },
     ], { openingBalanceDate: "2024-02-01" });
     expect(summary.updated).toBe(0);
-    expect(summary.skipped).toBeGreaterThanOrEqual(1);
+    expect(summary.existing).toBeGreaterThanOrEqual(1);
     const s = await ctx.db.get("SELECT opening_balance FROM suppliers WHERE name = ?", ["مورد إعادة"]);
     expect(s.opening_balance).toBe(500);
   });
@@ -427,6 +510,52 @@ describe("hesabati import HTTP routes", () => {
     expect(body.rows[0].excelBalance).toBe(-150);
     expect(body.rows[0].systemBalance).toBe(150);
     expect(body.rows[0].action).toBe("create");
+    expect(body.destination).toBe("supplier");
+    expect(body.destinationLabel).toMatch(/إدارة الموردين/);
+  });
+
+  test("POST supplier-balances/preview warns when filename looks like customer balances", async () => {
+    const buf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [6, "مورد من ملف عملاء", 0],
+    ]);
+    const res = await request(ctx.app)
+      .post("/api/v1/admin/import/supplier-balances/preview")
+      .set(authHeader(adminToken))
+      .attach("file", buf, {
+        filename: "حساباتي _ أرصدة العملاء (6).xlsx",
+        contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+    expect(res.status).toBe(200);
+    const body = res.body.data ?? res.body;
+    expect(body.destination).toBe("supplier");
+    expect(body.destinationWarning).toMatch(/زبائن|عملاء|موردين/);
+    expect(body.rows[0].action).toBe("create");
+  });
+
+  test("POST /api/admin/import/supplier-balances/confirm creates zero-balance supplier without import_zero_balances", async () => {
+    const buf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [88, "مورد صفر HTTP", 0],
+    ]);
+    const res = await request(ctx.app)
+      .post("/api/v1/admin/import/supplier-balances/confirm?opening_balance_date=2024-07-01")
+      .set(authHeader(adminToken))
+      .attach("file", buf, { filename: "أرصدة الموردين.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    expect(res.status).toBe(200);
+    const body = res.body.data ?? res.body;
+    expect(body.created).toBeGreaterThanOrEqual(1);
+    const s = await ctx.db.get("SELECT * FROM suppliers WHERE name = ?", ["مورد صفر HTTP"]);
+    expect(s).toBeTruthy();
+    expect(s.balance).toBe(0);
+    expect(s.opening_balance).toBe(0);
+    expect(s.opening_balance_source).toBe(HESABATI_OPENING_SOURCE);
+    expect(s.opening_balance_date).toBeNull();
+    const entry = await ctx.db.get(
+      `SELECT id FROM party_opening_entries WHERE party_type = 'supplier' AND party_id = ?`,
+      [s.id]
+    );
+    expect(entry).toBeFalsy();
   });
 
   test("POST /api/admin/import/supplier-balances/confirm imports", async () => {
@@ -462,6 +591,185 @@ describe("hesabati import HTTP routes", () => {
   });
 });
 
+describe("supplier balance import regression", () => {
+  let ctx;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  test("explicit Excel zero creates supplier without opening entry", async () => {
+    const buf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [401, "مورد رصيد صفر", 0],
+    ]);
+    const rows = parseSupplierBalanceFile(buf, "أرصدة الموردين.xlsx");
+    expect(rows[0].excelBalance).toBe(0);
+    expect(rows[0].systemBalance).toBe(0);
+    expect(rows[0].balanceStatus).toBe("ok");
+    const summary = await applySupplierBalanceImport(ctx.db, rows, { openingBalanceDate: "2024-08-01" });
+    expect(summary.created).toBe(1);
+    expect(summary.rejected).toBe(0);
+    const s = await ctx.db.get("SELECT * FROM suppliers WHERE supplier_code = ?", ["401"]);
+    expect(s.name).toBe("مورد رصيد صفر");
+    expect(s.balance).toBe(0);
+    expect(s.opening_balance).toBe(0);
+    expect(s.opening_balance_excel).toBe(0);
+    expect(s.opening_balance_source).toBe(HESABATI_OPENING_SOURCE);
+    expect(s.opening_balance_date).toBeNull();
+    const entry = await ctx.db.get(
+      `SELECT id FROM party_opening_entries WHERE party_type = 'supplier' AND party_id = ?`,
+      [s.id]
+    );
+    expect(entry).toBeFalsy();
+  });
+
+  test("nonzero Excel minus becomes system payable credit", async () => {
+    const buf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [402, "مورد رصيد سالب", -290],
+    ]);
+    const rows = parseSupplierBalanceFile(buf, "أرصدة الموردين.xlsx");
+    expect(rows[0].excelBalance).toBe(-290);
+    expect(rows[0].systemBalance).toBe(290);
+    const summary = await applySupplierBalanceImport(ctx.db, rows, { openingBalanceDate: "2024-08-01" });
+    expect(summary.created).toBe(1);
+    const s = await ctx.db.get("SELECT * FROM suppliers WHERE supplier_code = ?", ["402"]);
+    expect(s.balance).toBe(290);
+    expect(s.opening_balance).toBe(290);
+    expect(s.opening_balance_excel).toBe(-290);
+    expect(s.opening_balance_date).toBe("2024-08-01");
+    const entry = await ctx.db.get(
+      `SELECT * FROM party_opening_entries WHERE party_type = 'supplier' AND party_id = ?`,
+      [s.id]
+    );
+    expect(entry).toBeTruthy();
+    expect(entry.credit).toBe(290);
+    expect(entry.debit).toBe(0);
+  });
+
+  test("missing balance is rejected and does not insert", async () => {
+    const before = await ctx.db.get("SELECT COUNT(*) AS n FROM suppliers");
+    const buf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [403, "مورد بلا رصيد"],
+    ]);
+    const rows = parseSupplierBalanceFile(buf, "أرصدة الموردين.xlsx");
+    expect(rows[0].balanceStatus).toBe("missing");
+    expect(rows[0].excelBalance).toBeNull();
+    const summary = await applySupplierBalanceImport(ctx.db, rows);
+    expect(summary.created).toBe(0);
+    expect(summary.rejected).toBe(1);
+    expect(summary.errors.some((e) => e.reason === "الرصيد مفقود")).toBe(true);
+    const after = await ctx.db.get("SELECT COUNT(*) AS n FROM suppliers");
+    expect(after.n).toBe(before.n);
+    const s = await ctx.db.get("SELECT id FROM suppliers WHERE supplier_code = ?", ["403"]);
+    expect(s).toBeFalsy();
+  });
+
+  test("invalid balance is rejected and does not insert", async () => {
+    const before = await ctx.db.get("SELECT COUNT(*) AS n FROM suppliers");
+    const buf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [404, "مورد رصيد باطل", "—"],
+    ]);
+    const rows = parseSupplierBalanceFile(buf, "أرصدة الموردين.xlsx");
+    expect(rows[0].balanceStatus).toBe("invalid");
+    const summary = await applySupplierBalanceImport(ctx.db, rows);
+    expect(summary.created).toBe(0);
+    expect(summary.rejected).toBe(1);
+    expect(summary.errors.some((e) => e.reason === "الرصيد غير صالح")).toBe(true);
+    const after = await ctx.db.get("SELECT COUNT(*) AS n FROM suppliers");
+    expect(after.n).toBe(before.n);
+  });
+
+  test("trailing summary row is rejected and not imported as a supplier", async () => {
+    const buf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [405, "مورد قبل الإجمالي", -10],
+      ["", "الإجمالي", 9999],
+      ["", "المجموع", 8888],
+    ]);
+    const rows = parseSupplierBalanceFile(buf, "أرصدة الموردين.xlsx");
+    const summary = await applySupplierBalanceImport(ctx.db, rows, { openingBalanceDate: "2024-08-01" });
+    expect(summary.created).toBe(1);
+    expect(summary.rejected).toBe(2);
+    expect(summary.errors.filter((e) => e.reason === "صف إجمالي — ليس مورداً")).toHaveLength(2);
+    const total = await ctx.db.get("SELECT id FROM suppliers WHERE name = ?", ["الإجمالي"]);
+    const sum = await ctx.db.get("SELECT id FROM suppliers WHERE name = ?", ["المجموع"]);
+    expect(total).toBeFalsy();
+    expect(sum).toBeFalsy();
+  });
+
+  test("repeat import adds missing zeros without duplicating or rewriting existing", async () => {
+    const firstBuf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [410, "مورد موجود أولا", -50],
+      [411, "مورد صفر أولا", 0],
+    ]);
+    const first = await applySupplierBalanceImport(ctx.db, parseSupplierBalanceFile(firstBuf, "أرصدة الموردين.xlsx"), {
+      openingBalanceDate: "2024-01-01",
+    });
+    expect(first.created).toBe(2);
+
+    const existingRow = await ctx.db.get("SELECT * FROM suppliers WHERE supplier_code = ?", ["410"]);
+    expect(existingRow.opening_balance).toBe(50);
+    const openingsBefore = await ctx.db.get(
+      `SELECT COUNT(*) AS n FROM party_opening_entries WHERE party_type = 'supplier'`
+    );
+
+    const secondBuf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [410, "مورد موجود أولا", -999],
+      [411, "مورد صفر أولا", 0],
+      [412, "مورد صفر لاحق", 0],
+    ]);
+    const second = await applySupplierBalanceImport(ctx.db, parseSupplierBalanceFile(secondBuf, "أرصدة الموردين.xlsx"), {
+      openingBalanceDate: "2024-09-01",
+    });
+    expect(second.created).toBe(1);
+    expect(second.existing).toBe(2);
+    expect(second.updated).toBe(0);
+    expect(second.rejected).toBe(0);
+
+    const unchanged = await ctx.db.get("SELECT * FROM suppliers WHERE supplier_code = ?", ["410"]);
+    expect(unchanged.id).toBe(existingRow.id);
+    expect(unchanged.opening_balance).toBe(50);
+    expect(unchanged.balance).toBe(50);
+    expect(unchanged.opening_balance_date).toBe("2024-01-01");
+    const added = await ctx.db.get("SELECT * FROM suppliers WHERE supplier_code = ?", ["412"]);
+    expect(added.name).toBe("مورد صفر لاحق");
+    expect(added.balance).toBe(0);
+    const openingsAfter = await ctx.db.get(
+      `SELECT COUNT(*) AS n FROM party_opening_entries WHERE party_type = 'supplier'`
+    );
+    expect(openingsAfter.n).toBe(openingsBefore.n);
+  });
+
+  test("does not merge similar supplier names with different Hesabati IDs", async () => {
+    const buf = xlsxBuffer([
+      ["الرقم", "الاسم", "الرصيد"],
+      [148, "شركة عنبتاوي توباكو", 0],
+      [171, "شركة عنبتاوي توباكو / دخان", -25],
+    ]);
+    const summary = await applySupplierBalanceImport(ctx.db, parseSupplierBalanceFile(buf, "أرصدة الموردين.xlsx"), {
+      openingBalanceDate: "2024-08-01",
+    });
+    expect(summary.created).toBe(2);
+    const a = await ctx.db.get("SELECT * FROM suppliers WHERE supplier_code = ?", ["148"]);
+    const b = await ctx.db.get("SELECT * FROM suppliers WHERE supplier_code = ?", ["171"]);
+    expect(a.name).toBe("شركة عنبتاوي توباكو");
+    expect(b.name).toBe("شركة عنبتاوي توباكو / دخان");
+    expect(a.id).not.toBe(b.id);
+    expect(a.balance).toBe(0);
+    expect(b.balance).toBe(25);
+  });
+});
+
 describe("hesabati supplier fixture file", () => {
   let ctx;
 
@@ -473,16 +781,44 @@ describe("hesabati supplier fixture file", () => {
     await destroyTestContext(ctx);
   });
 
+  function findOptionalSupplierFixture() {
+    const candidates = [
+      SUPPLIER_FIXTURE,
+      path.join(__dirname, "../../data/imports/حساباتي _ أرصدة العملاء (6).xlsx"),
+      path.join(__dirname, "../fixtures/hesabati/حساباتي _ أرصدة العملاء (6).xlsx"),
+      path.join(__dirname, "../fixtures/hesabati/حساباتي _ أرصدة الموردين (2).xlsx"),
+    ];
+    return candidates.find((p) => fs.existsSync(p)) || null;
+  }
+
   test("parses real Hesabati supplier balances file when fixture present", async () => {
-    if (!fs.existsSync(SUPPLIER_FIXTURE)) {
+    const fixturePath = findOptionalSupplierFixture();
+    if (!fixturePath) {
       return;
     }
-    const buffer = fs.readFileSync(SUPPLIER_FIXTURE);
-    const rows = parseSupplierBalanceFile(buffer, path.basename(SUPPLIER_FIXTURE));
+    const buffer = fs.readFileSync(fixturePath);
+    const rows = parseSupplierBalanceFile(buffer, path.basename(fixturePath));
     expect(rows.length).toBeGreaterThan(0);
-    const plan = await buildSupplierBalanceImportPlan(ctx.db, rows, { importZeroBalances: true });
+    const plan = await buildSupplierBalanceImportPlan(ctx.db, rows);
     expect(plan.stats.totalRows).toBeGreaterThan(0);
     expect(plan.stats.totalRows).toBeLessThanOrEqual(rows.length);
-    expect(plan.stats.toCreate + plan.stats.matched + plan.stats.invalid).toBeGreaterThan(0);
+    expect(plan.stats.toCreate + plan.stats.matched + plan.stats.invalid + plan.stats.existing + plan.stats.skipped).toBeGreaterThan(0);
+  });
+
+  test("accounts for every named record in an isolated import when fixture present", async () => {
+    const fixturePath = findOptionalSupplierFixture();
+    if (!fixturePath) {
+      return;
+    }
+    const buffer = fs.readFileSync(fixturePath);
+    const rows = parseSupplierBalanceFile(buffer, path.basename(fixturePath));
+    const named = rows.filter((r) => String(r.name ?? "").trim() && !isBalanceSummaryRow(r.name));
+    const summary = await applySupplierBalanceImport(ctx.db, rows, { openingBalanceDate: "2024-01-01" });
+    expect(summary.created + summary.existing + summary.updated + summary.rejected + summary.skipped).toBeGreaterThanOrEqual(named.length);
+    expect(summary.created + summary.existing + summary.updated).toBe(named.filter((r) => r.balanceStatus === "ok").length);
+    if (named.length === 237) {
+      expect(summary.created + summary.existing).toBe(237);
+      expect(summary.errors.every((e) => e.reason === "صف إجمالي — ليس مورداً" || e.reason === "الاسم مفقود" || e.reason.includes("مكرر"))).toBe(true);
+    }
   });
 });

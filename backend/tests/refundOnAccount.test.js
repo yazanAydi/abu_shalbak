@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 
 describe("On-account refunds", () => {
@@ -53,7 +54,7 @@ describe("On-account refunds", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send(body);
+      .send(withCheckoutKey(body));
     expect(checkoutRes.status).toBe(202);
     const requestId = checkoutRes.body.data.request_id;
     const approveRes = await request(ctx.app)

@@ -18,6 +18,8 @@ import {
   handleSupplierBalanceUpload,
   handleSupplierBalancePreview,
   handleSupplierBalanceConfirm,
+  handleSupplierRecoveryPreview,
+  handleSupplierRecoveryConfirm,
 } from "./hesabatiUploadHandlers.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
@@ -52,6 +54,10 @@ import { purgeProductBarcodeRows, purgeProductBarcodeRowsForIds } from "../utils
 import path from "path";
 import { fileURLToPath } from "url";
 import { closeSqliteConnection, openSqliteConnection } from "../database/sqliteDriver.js";
+import {
+  listTelegramPollFailures,
+  retryTelegramPollFailure,
+} from "../services/telegramPollRecovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -206,6 +212,14 @@ export function createAdminRouter(db, dbPath) {
 
   router.post("/import/supplier-balances/confirm", importUploadMiddleware(), async (req, res) => {
     await handleSupplierBalanceConfirm(db, req, res);
+  });
+
+  router.post("/import/supplier-recovery/preview", importUploadMiddleware(), async (req, res) => {
+    await handleSupplierRecoveryPreview(db, req, res);
+  });
+
+  router.post("/import/supplier-recovery/confirm", importUploadMiddleware(), async (req, res) => {
+    await handleSupplierRecoveryConfirm(db, req, res);
   });
 
   router.post(
@@ -876,6 +890,31 @@ export function createAdminRouter(db, dbPath) {
       };
       await logAudit(db, req, AUDIT_ACTIONS.BACKUP_CREATE, "backup", null, null, safeResult);
       res.status(201).json(safeResult);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get("/telegram-poll-failures", async (req, res, next) => {
+    try {
+      const rows = await listTelegramPollFailures(db, {
+        status: req.query.status,
+        limit: req.query.limit,
+      });
+      res.json({ rows });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/telegram-poll-failures/:id/retry", async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) {
+        return res.status(400).json({ error: "معرّف غير صالح", code: "VALIDATION_ERROR" });
+      }
+      const result = await retryTelegramPollFailure(db, id);
+      res.json(result);
     } catch (e) {
       next(e);
     }

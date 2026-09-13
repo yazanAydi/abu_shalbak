@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { resolveCheckoutPayments } from "../utils/salePayments.js";
 import { sumShiftCashPayments, sumShiftCardPayments } from "../utils/salePayments.js";
@@ -41,7 +42,7 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({ items: saleItems(qty), payment_method: "cash" });
+      .send(withCheckoutKey({ items: saleItems(qty), payment_method: "cash" }));
     expect(res.status).toBe(201);
     const body = res.body.data ?? res.body;
     return body.total;
@@ -52,7 +53,7 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({ items: saleItems(qty), payment_method: "cash" });
+      .send(withCheckoutKey({ items: saleItems(qty), payment_method: "cash" }));
 
     expect(res.status).toBe(201);
     const body = res.body.data ?? res.body;
@@ -80,7 +81,7 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({ items: saleItems(2), payment_method: "visa" });
+      .send(withCheckoutKey({ items: saleItems(2), payment_method: "visa" }));
 
     expect(res.status).toBe(201);
     const body = res.body.data ?? res.body;
@@ -108,14 +109,14 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: saleItems(10),
         payment_method: "mixed",
         payments: [
           { method: "cash", amount: cashPart },
           { method: "visa", amount: visaPart },
         ],
-      });
+      }));
 
     expect(res.status).toBe(201);
     const body = res.body.data ?? res.body;
@@ -145,14 +146,14 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: saleItems(10),
         payment_method: "mixed",
         payments: [
           { method: "cash", amount: 30 },
           { method: "visa", amount: 20 },
         ],
-      });
+      }));
 
     expect(res.status).toBe(400);
     expect((res.body.error || res.body.data?.error || "").length).toBeGreaterThan(0);
@@ -168,7 +169,7 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: saleItems(10),
         payment_method: "mixed",
         payments: [
@@ -176,7 +177,7 @@ describe("Checkout payments", () => {
           { method: "visa", amount: visaPart },
         ],
         cash_tendered: cashTendered,
-      });
+      }));
 
     expect(res.status).toBe(201);
     const body = res.body.data ?? res.body;
@@ -195,14 +196,14 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: saleItems(10),
         payment_method: "mixed",
         payments: [
           { method: "cash", amount: 40 },
           { method: "visa", amount: total + 30 },
         ],
-      });
+      }));
 
     expect(res.status).toBe(400);
   });
@@ -283,12 +284,12 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: 45 }],
         payment_method: "cash",
         payments: [{ method: "cash", original_amount: 45 }],
         cash_tendered: 50,
-      });
+      }));
 
     expect(res.status).toBe(201);
     const body = res.body.data ?? res.body;
@@ -330,11 +331,11 @@ describe("Checkout payments", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: 45 }],
         payment_method: "cash",
         payments: [{ method: "cash", original_amount: 50 }],
-      });
+      }));
 
     expect(res.status).toBe(201);
     const body = res.body.data ?? res.body;
@@ -401,11 +402,11 @@ describe("physical multi-currency drawer", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: 5 }],
         payment_method: "cash",
         payments: [{ method: "cash", currency_id: usd.id, original_amount: 10 }],
-      });
+      }));
 
     expect(res.status).toBe(201);
     const body = res.body.data ?? res.body;
@@ -478,23 +479,23 @@ describe("physical multi-currency drawer", () => {
     const blocked = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: 5 }],
         payment_method: "cash",
         payments: [{ method: "cash", currency_id: usd.id, original_amount: 10 }],
-      });
+      }));
     expect(blocked.status).toBe(400);
     expect(blocked.body.code || blocked.body.data?.code).toBe("INSUFFICIENT_CHANGE");
 
     const withUsdChange = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: 5 }],
         payment_method: "cash",
         payments: [{ method: "cash", currency_id: usd.id, original_amount: 10 }],
         change_currency_id: usd.id,
-      });
+      }));
     expect(withUsdChange.status).toBe(201);
   });
 });

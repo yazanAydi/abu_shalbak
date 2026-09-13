@@ -1,0 +1,16 @@
+---
+description: Admin and POS React conventions
+globs: frontend/**/*.{js,jsx},frontend-pos/**/*.{js,jsx}
+alwaysApply: false
+---
+
+# Frontend conventions
+
+- RTL Arabic UI (`dir="rtl"`). Keep Western digits (`forceLatinDigits`).
+- Office: `admin` / `accountant` only. POS login: `cashier` only.
+- Admin API is same-origin in dev (`setupProxy.js` → `:5001`). POS uses `REACT_APP_API_BASE`.
+- Both clients rewrite `/api` → `/api/v1` and unwrap `{ success, data }`.
+- `components/ui/*` is duplicated per app — change both if the pattern is shared.
+- POS cart state: `frontend-pos/src/utils/checkoutCartReducer.js`. Checkout orchestrator: `pages/Checkout.jsx`.
+- Office routes and ACL: `frontend/src/App.js` + `components/layout/officeNavConfig.js`.
+- User-facing strings stay Arabic.

@@ -1,11 +1,13 @@
+import fs from "fs";
+import path from "path";
 import {
   printReceipt,
-  setPrintEnvForTests,
-  shouldFallbackToBrowser,
+  saleSavedPrintFailedMessage,
   STORE_PRINT_UNAVAILABLE_AR,
 } from "./printReceipt";
 
 const mockPost = jest.fn();
+const mockIframePrint = jest.fn();
 
 jest.mock("../apiClient", () => ({
   __esModule: true,
@@ -18,124 +20,60 @@ jest.mock("./auth", () => ({
   getAuthHeaders: () => ({ Authorization: "Bearer test" }),
 }));
 
-function mockPrintWindow() {
-  const print = jest.fn();
-  const write = jest.fn();
-  const doc = {
-    write,
-    close: jest.fn(),
-    images: [],
-    defaultView: null,
-  };
-  const w = {
-    document: doc,
-    print,
-    focus: jest.fn(),
-    close: jest.fn(),
-    opener: {},
-    addEventListener: jest.fn(),
-  };
-  doc.defaultView = w;
-  const open = jest.spyOn(window, "open").mockReturnValue(w);
-  return { open, print, write };
-}
+jest.mock("./printDocument", () => ({
+  printHtmlInHiddenIframe: (...args) => mockIframePrint(...args),
+}));
 
-function agentUnavailable(status, code) {
-  const err = new Error("تعذر الاتصال بطابعة الإيصالات. تأكد من تشغيل خدمة الطباعة ثم حاول مرة أخرى.");
-  err.response = { status, data: { error: err.message, code } };
-  return err;
-}
+const RECEIPT_HTML =
+  '<html lang="ar" dir="rtl"><body><div class="receipt">إيصال خبز</div></body></html>';
 
-describe("printReceipt", () => {
+describe("printReceipt (saved sale → browser iframe)", () => {
   beforeEach(() => {
     mockPost.mockReset();
-    setPrintEnvForTests({ NODE_ENV: "production" });
+    mockIframePrint.mockReset();
+    mockIframePrint.mockResolvedValue({ ok: true, dispatched: true });
+    mockPost.mockResolvedValue({ data: { receipt_html: RECEIPT_HTML } });
     jest.spyOn(window, "alert").mockImplementation(() => {});
+    jest.spyOn(window, "open");
   });
 
   afterEach(() => {
-    setPrintEnvForTests(null);
     window.alert.mockRestore();
-    if (window.open.mockRestore) window.open.mockRestore();
+    window.open.mockRestore();
   });
 
-  test("production silent success never calls window.print", async () => {
-    const { open, print } = mockPrintWindow();
-    mockPost.mockResolvedValue({ data: { printed: true } });
-    await printReceipt({ transaction_id: 42 });
+  test("loads the saved sale HTML then prints in an iframe", async () => {
+    const result = await printReceipt({ transaction_id: 42 });
+    expect(result).toEqual({ ok: true, dispatched: true });
     expect(mockPost).toHaveBeenCalledTimes(1);
     expect(mockPost).toHaveBeenCalledWith(
-      "/api/print-receipt/silent",
+      "/api/print-receipt",
       { transaction_id: 42 },
       expect.any(Object)
     );
-    expect(open).not.toHaveBeenCalled();
-    expect(print).not.toHaveBeenCalled();
+    expect(mockIframePrint).toHaveBeenCalledTimes(1);
+    expect(mockIframePrint).toHaveBeenCalledWith(RECEIPT_HTML);
+    expect(window.open).not.toHaveBeenCalled();
     expect(window.alert).not.toHaveBeenCalled();
   });
 
-  test("production 503 AGENT_UNAVAILABLE alerts and never window.print", async () => {
-    const { open, print } = mockPrintWindow();
-    mockPost.mockRejectedValue(agentUnavailable(503, "AGENT_UNAVAILABLE"));
-    await printReceipt({ transaction_id: 11 });
-    expect(mockPost).toHaveBeenCalledTimes(1);
-    expect(open).not.toHaveBeenCalled();
-    expect(print).not.toHaveBeenCalled();
-    expect(window.alert).toHaveBeenCalledWith(STORE_PRINT_UNAVAILABLE_AR);
+  test("does not POST checkout and does not call the silent agent API", async () => {
+    await printReceipt({ transaction_id: 8 });
+    const urls = mockPost.mock.calls.map((c) => c[0]);
+    expect(urls).toEqual(["/api/print-receipt"]);
+    expect(urls.some((u) => String(u).includes("checkout"))).toBe(false);
+    expect(urls.some((u) => String(u).includes("silent"))).toBe(false);
   });
 
-  test("production 501 SILENT_PRINT_UNSUPPORTED alerts and never window.print", async () => {
-    const { open, print } = mockPrintWindow();
-    mockPost.mockRejectedValue(agentUnavailable(501, "SILENT_PRINT_UNSUPPORTED"));
-    await printReceipt({ transaction_id: 3 });
-    expect(mockPost).toHaveBeenCalledTimes(1);
-    expect(open).not.toHaveBeenCalled();
-    expect(print).not.toHaveBeenCalled();
-    expect(window.alert).toHaveBeenCalledWith(STORE_PRINT_UNAVAILABLE_AR);
-  });
-
-  test("production unexpected 500 alerts and never window.print", async () => {
-    const { open } = mockPrintWindow();
-    const err = new Error("خطأ داخلي");
-    err.response = { status: 500, data: { error: err.message, code: "PRINT_FAILED" } };
-    mockPost.mockRejectedValue(err);
-    await printReceipt({ transaction_id: 21 });
-    expect(open).not.toHaveBeenCalled();
-    expect(window.alert).toHaveBeenCalledWith(err.message);
-  });
-
-  test("development 503 may use browser fallback", async () => {
-    setPrintEnvForTests({ NODE_ENV: "development" });
-    const { open, write } = mockPrintWindow();
-    const html = "<html><body><div class=\"receipt\">إيصال</div></body></html>";
-    mockPost
-      .mockRejectedValueOnce(agentUnavailable(503, "AGENT_UNAVAILABLE"))
-      .mockResolvedValueOnce({ data: { receipt_html: html } });
-    await printReceipt({ transaction_id: 11 });
+  test("reprint of the same saved sale fetches HTML again and does not create a sale", async () => {
+    await printReceipt({ transaction_id: 15 });
+    await printReceipt({ transaction_id: 15 });
     expect(mockPost).toHaveBeenCalledTimes(2);
-    expect(open).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledWith(html);
-    expect(window.alert).not.toHaveBeenCalled();
+    expect(mockPost.mock.calls.every((c) => c[0] === "/api/print-receipt")).toBe(true);
+    expect(mockIframePrint).toHaveBeenCalledTimes(2);
   });
 
-  test("retry after agent outage can silent-print", async () => {
-    const { open } = mockPrintWindow();
-    mockPost.mockRejectedValueOnce(agentUnavailable(503, "AGENT_UNAVAILABLE"));
-    await printReceipt({ transaction_id: 55 });
-    expect(window.alert).toHaveBeenCalledWith(STORE_PRINT_UNAVAILABLE_AR);
-    expect(open).not.toHaveBeenCalled();
-
-    mockPost.mockReset();
-    mockPost.mockResolvedValue({ data: { printed: true } });
-    window.alert.mockClear();
-    await printReceipt({ transaction_id: 55 });
-    expect(mockPost).toHaveBeenCalledTimes(1);
-    expect(mockPost.mock.calls[0][0]).toBe("/api/print-receipt/silent");
-    expect(open).not.toHaveBeenCalled();
-    expect(window.alert).not.toHaveBeenCalled();
-  });
-
-  test("overlapping prints for the same sale send one POST", async () => {
+  test("overlapping prints for the same sale send one request", async () => {
     let release;
     mockPost.mockReturnValue(
       new Promise((resolve) => {
@@ -145,54 +83,66 @@ describe("printReceipt", () => {
     const first = printReceipt({ transaction_id: 7 });
     const second = printReceipt({ transaction_id: 7 });
     expect(mockPost).toHaveBeenCalledTimes(1);
-    release({ data: { printed: true } });
-    await Promise.all([first, second]);
-    expect(mockPost).toHaveBeenCalledTimes(1);
+    release({ data: { receipt_html: RECEIPT_HTML } });
+    const results = await Promise.all([first, second]);
+    expect(results.some((r) => r.skipped)).toBe(true);
+    expect(mockIframePrint).toHaveBeenCalledTimes(1);
   });
 
-  test("printer error alerts and does not open a print dialog", async () => {
-    const { open } = mockPrintWindow();
-    const err = new Error("الطابعة الافتراضية هي \"Microsoft Print to PDF\"");
-    err.response = { status: 409, data: { error: err.message, code: "VIRTUAL_PRINTER" } };
-    mockPost.mockRejectedValue(err);
-    await printReceipt({ transaction_id: 9 });
-    expect(window.alert).toHaveBeenCalledWith(err.message);
-    expect(open).not.toHaveBeenCalled();
-  });
-
-  test("shouldFallbackToBrowser is off in production and on in development", () => {
-    const unavailable = { response: { status: 503, data: { code: "AGENT_UNAVAILABLE" } } };
-    expect(shouldFallbackToBrowser(unavailable, { NODE_ENV: "production" })).toBe(false);
-    expect(shouldFallbackToBrowser(unavailable, { NODE_ENV: "test" })).toBe(false);
-    expect(shouldFallbackToBrowser(unavailable, { NODE_ENV: "development" })).toBe(true);
-    expect(
-      shouldFallbackToBrowser(
-        { response: { status: 500, data: { code: "PRINT_FAILED" } } },
-        { NODE_ENV: "development" }
-      )
-    ).toBe(false);
-  });
-
-  test("save test-mode response is success with no dialog or alert", async () => {
-    const { open } = mockPrintWindow();
-    mockPost.mockResolvedValue({
-      data: {
-        success: true,
-        testMode: true,
-        pdfPath: "C:\\abo_shalbak\\tmp\\receipt-test\\receipt.pdf",
-        widthMm: 80,
-        heightMm: 112,
-      },
+  test("fetch failure after save uses checkout HTML fallback and still prints", async () => {
+    mockPost.mockRejectedValueOnce(new Error("network"));
+    const result = await printReceipt({
+      transaction_id: 9,
+      receipt_html: RECEIPT_HTML,
+      receipt_number: "INV-9",
     });
-    await printReceipt({ transaction_id: 15 });
-    expect(mockPost).toHaveBeenCalledTimes(1);
-    expect(window.alert).not.toHaveBeenCalled();
-    expect(open).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    expect(mockIframePrint).toHaveBeenCalledWith(RECEIPT_HTML);
+  });
+
+  test("fetch failure without HTML alerts and does not print", async () => {
+    mockPost.mockRejectedValueOnce({
+      message: "تعذر الاتصال",
+      response: { status: 500, data: { error: "تعذر الاتصال" } },
+    });
+    const result = await printReceipt({ transaction_id: 21 });
+    expect(result.ok).toBe(false);
+    expect(mockIframePrint).not.toHaveBeenCalled();
+    expect(window.alert).toHaveBeenCalledWith("تعذر الاتصال");
+  });
+
+  test("iframe print failure alerts Arabic copy and is not a print-success claim", async () => {
+    mockIframePrint.mockResolvedValueOnce({
+      ok: false,
+      error: STORE_PRINT_UNAVAILABLE_AR,
+    });
+    const result = await printReceipt({ transaction_id: 3 });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe(STORE_PRINT_UNAVAILABLE_AR);
+    expect(window.alert).toHaveBeenCalledWith(STORE_PRINT_UNAVAILABLE_AR);
   });
 
   test("missing sale id alerts and does not POST", async () => {
-    await printReceipt("plain text receipt");
+    const result = await printReceipt("plain text receipt");
+    expect(result).toEqual({ ok: false, error: "لا يوجد رقم عملية للطباعة" });
     expect(mockPost).not.toHaveBeenCalled();
+    expect(mockIframePrint).not.toHaveBeenCalled();
     expect(window.alert).toHaveBeenCalledWith("لا يوجد رقم عملية للطباعة");
+  });
+
+  test("sale-saved print-failed copy keeps the receipt number", () => {
+    expect(saleSavedPrintFailedMessage("INV-2026-000001")).toBe(
+      "تم حفظ عملية البيع رقم INV-2026-000001، لكن تعذّرت طباعة الإيصال. لا تُعد إدخال البيع."
+    );
+  });
+
+  test("POS print source never talks to the Windows print-agent or silent API", () => {
+    const src = fs.readFileSync(path.join(__dirname, "printReceipt.js"), "utf8");
+    expect(src).not.toMatch(/17891/);
+    expect(src).not.toMatch(/print-agent/i);
+    expect(src).not.toContain('"/api/print-receipt/silent"');
+    expect(src).not.toMatch(/127\.0\.0\.1:\d+/);
+    expect(src).toContain("/api/print-receipt");
+    expect(src).toContain("printHtmlInHiddenIframe");
   });
 });

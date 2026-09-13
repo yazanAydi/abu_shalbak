@@ -3,6 +3,7 @@ import { getAppSettings } from "../utils/settings.js";
 import { computeSaleTotals, productTaxRate, round2, roundScaleSaleTotal } from "../utils/tax.js";
 import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js";
 import { ensureDefaultProductUnit, isWeighedBaseUnit } from "../utils/productUnits.js";
+import { HttpError } from "../utils/httpError.js";
 
 function normalizeNote(note) {
   if (note == null) return null;
@@ -428,8 +429,15 @@ export async function loadSuspendedSaleItemMap(db, suspendedSaleId) {
 }
 
 export async function markSuspendedSaleCompleted(db, suspendedSaleId) {
-  await db.run(
+  const info = await db.run(
     `UPDATE suspended_sales SET status = 'completed', updated_at = datetime('now') WHERE id = ? AND status = 'suspended'`,
     [suspendedSaleId]
   );
+  if (!info.changes) {
+    throw new HttpError(
+      409,
+      "الفاتورة المعلقة مكتملة أو غير موجودة",
+      "SUSPENDED_ALREADY_COMPLETED"
+    );
+  }
 }

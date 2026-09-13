@@ -31,6 +31,15 @@ export default function HesabatiImportCard({
   async function onUpload(ev) {
     const file = ev.target.files?.[0];
     if (!file) return;
+    if (/موردين/.test(file.name)) {
+      const ok = window.confirm(
+        "اسم الملف يشير إلى أرصدة موردين. الرفع من هذه الصفحة ينشئ زبائن في إدارة العملاء (عميل آجل) — ليس موردين. هل تريد المتابعة؟"
+      );
+      if (!ok) {
+        ev.target.value = "";
+        return;
+      }
+    }
     setUploading(true);
     setFeedback(null);
     const fd = new FormData();
@@ -88,7 +97,7 @@ export default function HesabatiImportCard({
               onChange={(e) => setImportZeroBalances(e.target.checked)}
               disabled={uploading}
             />
-            <span>استيراد الموردين/الزبائن برصيد صفر أيضاً</span>
+            <span>استيراد الزبائن برصيد صفر أيضاً — يُنشئ زبائن في إدارة العملاء فقط</span>
           </label>
           <input
             type="file"

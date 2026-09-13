@@ -360,7 +360,7 @@ export function parseArabicRetailMatrix(rows, headerRowIndex = 0, sheet = null) 
     }
 
     const stockRaw = stockCol != null ? parseMoneyCell(row[stockCol]) : NaN;
-    const stock = Number.isNaN(stockRaw) ? 0 : Math.max(0, stockRaw);
+    const stock = Number.isNaN(stockRaw) ? 0 : stockRaw;
     const costRaw = costCol != null ? parseMoneyCell(row[costCol]) : NaN;
     const cost = Number.isNaN(costRaw) ? 0 : costRaw;
     const category =
@@ -826,7 +826,7 @@ export function normalizeProductRow(row) {
   const name = c.name;
   const price = c.price !== "" ? parseMoneyCell(c.price) : NaN;
   const stockRaw = c.stock !== "" ? parseMoneyCell(c.stock) : NaN;
-  const stock = Number.isNaN(stockRaw) ? 0 : Math.max(0, Math.floor(stockRaw));
+  const stock = Number.isNaN(stockRaw) ? 0 : stockRaw;
   const cost = c.cost !== "" ? parseMoneyCell(c.cost) : 0;
   const category =
     c.category != null && String(c.category).trim() !== ""

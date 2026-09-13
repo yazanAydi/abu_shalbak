@@ -46,13 +46,18 @@ export function createSuppliersRouter(db) {
 
   router.get("/", requireAuth, requireSuppliersOrFinance, async (req, res, next) => {
     const { q } = req.query;
+    const unlimited = String(req.query.all || "") === "1";
     let rows;
     if (q) {
       const like = `%${q}%`;
       rows = await db.all(
-        `SELECT * FROM suppliers WHERE name LIKE ? OR contact_phone LIKE ? OR supplier_code LIKE ? ORDER BY id ASC LIMIT 200`,
+        unlimited
+          ? `SELECT * FROM suppliers WHERE name LIKE ? OR contact_phone LIKE ? OR supplier_code LIKE ? ORDER BY id ASC`
+          : `SELECT * FROM suppliers WHERE name LIKE ? OR contact_phone LIKE ? OR supplier_code LIKE ? ORDER BY id ASC LIMIT 200`,
         [like, like, like]
       );
+    } else if (unlimited) {
+      rows = await db.all("SELECT * FROM suppliers ORDER BY id ASC");
     } else {
       rows = await db.all("SELECT * FROM suppliers ORDER BY id ASC LIMIT 500");
     }

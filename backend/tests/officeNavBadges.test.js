@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 
 function unwrapData(body) {
@@ -44,10 +45,10 @@ describe("office nav badges", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     transactionId = checkoutRes.body.data?.transaction_id ?? checkoutRes.body.transaction_id;
 
     await request(ctx.app)

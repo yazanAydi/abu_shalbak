@@ -3,6 +3,8 @@ WORKDIR /frontend
 COPY frontend/package.json ./
 RUN npm install
 COPY frontend/ ./
+# Same-origin /admin on :3000. Never bake a loopback API URL.
+ENV REACT_APP_API_BASE=
 RUN npm run build
 
 FROM node:20-bookworm-slim AS pos-builder
@@ -10,7 +12,14 @@ WORKDIR /pos
 COPY frontend-pos/package.json ./
 RUN npm install
 COPY frontend-pos/ ./
+# Store POS is served at /pos on :3000. Empty API base = same host as the page.
+# Dev .env / npm start set a loopback API URL; that must not ship here.
+ENV REACT_APP_API_BASE=
+ENV REACT_APP_ADMIN_URL=
+ENV GENERATE_SOURCEMAP=false
+RUN rm -f .env .env.local .env.development .env.development.local .env.production .env.production.local
 RUN npm run build
+RUN if grep -R -F "http://127.0.0.1:5001" build/; then echo "POS store bundle must not contain http://127.0.0.1:5001" >&2; exit 1; fi
 
 FROM node:20-bookworm-slim
 WORKDIR /app

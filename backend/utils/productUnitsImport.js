@@ -14,6 +14,7 @@ import {
 } from "./productUnits.js";
 import { looksLikePackOnlyProduct, normalizeUnitName } from "./unitNames.js";
 import { ensureProductCategory } from "./productCategories.js";
+import { addLedgerEntry } from "./inventoryLedger.js";
 
 /**
  * @param {object} db
@@ -207,14 +208,13 @@ export async function persistProductImportRows(db, validRows) {
             ? String(category).trim()
             : existing?.category ?? null;
         const stockProvided = stock != null && stock !== "" && Number(stock) !== 0;
-        const nextStock = stockProvided ? Number(stock) : existing?.stock ?? 0;
+        const currentStock = Number(existing?.stock) || 0;
         const updateFields = [
           name,
           name_en ?? null,
           currentRowPrice,
           Number(cost) || 0,
           nextCategory,
-          nextStock,
           tax_rate ?? null,
           unit ?? null,
           expiry_date ?? null,
@@ -222,11 +222,24 @@ export async function persistProductImportRows(db, validRows) {
           max_price ?? null,
         ];
         await db.run(
-          `UPDATE products SET name = ?, name_en = ?, price = ?, cost = ?, category = ?, stock = ?,
+          `UPDATE products SET name = ?, name_en = ?, price = ?, cost = ?, category = ?,
               tax_rate = ?, unit = ?, expiry_date = ?, min_price = ?, max_price = ?, updated_at = datetime('now')
            WHERE id = ?`,
           [...updateFields, productId]
         );
+        if (stockProvided) {
+          const delta = Number(stock) - currentStock;
+          if (delta !== 0) {
+            await addLedgerEntry(db, {
+              productId,
+              movementType: "manual_adjustment",
+              delta,
+              referenceType: "product_import",
+              referenceId: productId,
+              notes: "تعديل استيراد",
+            });
+          }
+        }
         await assignEntityCodeIfMissing(db, "product", productId);
         products_updated++;
       } else if (isPackOnly && linkedOwner) {
@@ -234,12 +247,25 @@ export async function persistProductImportRows(db, validRows) {
         absorbedRows.add(rowNum);
       } else {
         const insertSku = await ensureEntityCode(db, "product", sku);
+        const opening = Number(stock);
+        const insertFields = [...productFields];
+        insertFields[5] = 0;
         const info = await db.run(
           `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [primaryBc, ...productFields, insertSku]
+          [primaryBc, ...insertFields, insertSku]
         );
         productId = info.lastID;
+        if (Number.isFinite(opening) && opening !== 0) {
+          await addLedgerEntry(db, {
+            productId,
+            movementType: "manual_adjustment",
+            delta: opening,
+            referenceType: "product_import",
+            referenceId: productId,
+            notes: "رصيد افتتاحي",
+          });
+        }
         products_created++;
       }
 

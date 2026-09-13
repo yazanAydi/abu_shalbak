@@ -1,4 +1,4 @@
-import { ils, qty } from "./format";
+import { ils, ilsKnown, qty, INCOMPLETE_PROFIT_AR } from "./format";
 
 const ilsCell = (n) => ils(n);
 
@@ -17,7 +17,14 @@ export const RANGE_BY_DAY_COLUMNS = [
   { key: "items_sold", header: "القطع", value: (r) => qty(r.items_sold) },
   { key: "cash_total", header: "نقد", value: (r) => ilsCell(r.cash_total) },
   { key: "card_total", header: "بطاقة", value: (r) => ilsCell(r.card_total) },
+  { key: "cost", header: "التكلفة", value: (r) => ilsKnown(r.cost, r.cost_unknown) },
+  { key: "profit", header: "الربح", value: (r) => ilsKnown(r.profit, r.cost_unknown) },
 ];
+
+export function incompleteProfitNote(report) {
+  if (!report?.cost_unknown) return null;
+  return INCOMPLETE_PROFIT_AR;
+}
 
 /**
  * @param {object | null} report — /api/reports/daily payload
@@ -37,6 +44,8 @@ export function buildDailySummaryItems(report) {
     { label: "الباقي المُرجَع", value: ils(report.change_total) },
     { label: "صافي النقد", value: ils(report.net_cash_total) },
     { label: "صافي البطاقة", value: ils(report.net_card_total) },
+    { label: "تكلفة المبيعات", value: ilsKnown(report.cost, report.cost_unknown) },
+    { label: "الربح", value: ilsKnown(report.profit, report.cost_unknown) },
   ];
 }
 
@@ -75,6 +84,8 @@ export function buildRangeSummaryItems(report) {
     { label: "القطع المباعة", value: String(report.items_sold ?? 0) },
     { label: "نقد (إجمالي)", value: ils(report.cash_total) },
     { label: "بطاقة (إجمالي)", value: ils(report.card_total) },
+    { label: "تكلفة المبيعات", value: ilsKnown(report.cost, report.cost_unknown) },
+    { label: "الربح", value: ilsKnown(report.profit, report.cost_unknown) },
   ];
 }
 

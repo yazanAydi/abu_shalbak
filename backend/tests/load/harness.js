@@ -7,6 +7,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "../helpers.js";
 import { insertCashier, insertCustomer, insertProduct } from "./factories.js";
 import { captureBaseline } from "./snapshot.js";
@@ -112,7 +113,7 @@ export function checkoutBody({ productId, quantity = 1, price = 10, payment_meth
 }
 
 export function checkout(app, token, body) {
-  return request(app).post("/api/v1/checkout").set(authHeader(token)).send(body);
+  return request(app).post("/api/v1/checkout").set(authHeader(token)).send(withCheckoutKey(body));
 }
 
 export async function checkoutCash(app, token, productId, price, quantity = 1, key) {

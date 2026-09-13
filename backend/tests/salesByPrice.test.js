@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 
 function round2(n) {
@@ -14,10 +15,10 @@ async function checkout(app, token, productId, quantity, price) {
   return request(app)
     .post("/api/v1/checkout")
     .set(authHeader(token))
-    .send({
+    .send(withCheckoutKey({
       items: [{ product_id: productId, quantity, price }],
       payment_method: "cash",
-    });
+    }));
 }
 
 describe("Sales by price report", () => {

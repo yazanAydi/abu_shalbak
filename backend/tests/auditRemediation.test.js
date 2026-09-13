@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { snapshotSalesCogsForRange, snapshotRefundCogsForRange } from "../utils/cogs.js";
 import { fetchTransactionsForShopDate } from "../utils/businessDay.js";
@@ -72,8 +73,10 @@ describe("audit remediation regressions", () => {
     const cogs = await snapshotSalesCogsForRange(ctx.db, "2026-08-27", "2026-08-27");
     const cogsPrev = await snapshotSalesCogsForRange(ctx.db, "2026-08-26", "2026-08-26");
     expect(revenueRows.some((r) => r.id === tx.id)).toBe(true);
-    expect(cogs).toBeCloseTo(Number(product.cost) || 5, 2);
-    expect(cogsPrev).toBe(0);
+    expect(cogs.unknown).toBe(false);
+    expect(cogs.cogs).toBeCloseTo(Number(product.cost) || 5, 2);
+    expect(cogsPrev.unknown).toBe(false);
+    expect(cogsPrev.cogs).toBe(0);
   });
 
   test("rejected refunds are excluded from refund COGS", async () => {
@@ -89,7 +92,8 @@ describe("audit remediation regressions", () => {
     );
     const today = shopYmdFromTimestamp(new Date().toISOString());
     const cogs = await snapshotRefundCogsForRange(ctx.db, today, today);
-    expect(cogs).toBe(0);
+    expect(cogs.unknown).toBe(false);
+    expect(cogs.cogs).toBe(0);
   });
 
   test("suspended sale rejects a tampered price", async () => {
@@ -108,10 +112,10 @@ describe("audit remediation regressions", () => {
     const checkout = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 2, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     expect(checkout.status).toBe(201);
     const tid = checkout.body.data.transaction_id;
     await ctx.db.run("UPDATE transactions SET discount = 2, total = total - 2 WHERE id = ?", [tid]);
@@ -131,7 +135,7 @@ describe("audit remediation regressions", () => {
     const checkout = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "mixed",
         payments: [
@@ -139,7 +143,7 @@ describe("audit remediation regressions", () => {
           { method: "visa", amount: 0 },
         ],
         cash_tendered: 15,
-      });
+      }));
     if (checkout.status === 201) {
       const cash = await sumShiftCashPayments(ctx.db, shiftId);
       const changeRow = await ctx.db.get(
@@ -191,7 +195,7 @@ describe("audit remediation regressions", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [
           {
             product_id: ctx.productId,
@@ -201,7 +205,7 @@ describe("audit remediation regressions", () => {
           },
         ],
         payment_method: "cash",
-      });
+      }));
     expect(res.status).toBe(201);
     expect(res.body.data.transaction_id).toBeTruthy();
   });
@@ -211,10 +215,10 @@ describe("audit remediation regressions", () => {
     const checkout = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     expect(checkout.status).toBe(201);
     const tid = checkout.body.data.transaction_id;
     const payload = {

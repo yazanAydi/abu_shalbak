@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { ils } from "../utils/format";
+import { ils, ilsKnown, INCOMPLETE_PROFIT_AR } from "../utils/format";
 import { getDatePresets, todayYmd, firstOfCurrentMonthYmd } from "../utils/reportDates";
 import {
   TOP_PRODUCT_COLUMNS,
@@ -11,6 +11,7 @@ import {
   buildCollectionSummaryItems,
   buildRangeSummaryItems,
   getTopProductsFromDaily,
+  incompleteProfitNote,
 } from "../utils/salesReportHelpers";
 import { printSalesDailyReport, printSalesRangeReport } from "../utils/salesReportPrint";
 import { exportToCsv } from "../utils/reportExport";
@@ -162,6 +163,12 @@ export default function SalesReports() {
       { label: "عدد العمليات", value: String(dailyReport.total_transactions ?? 0) },
       { label: "الاسترجاعات", value: ils(dailyReport.refunds_total), tone: "orange" },
       { label: "القطع المباعة", value: String(dailyReport.items_sold ?? 0) },
+      { label: "تكلفة المبيعات", value: ilsKnown(dailyReport.cost, dailyReport.cost_unknown) },
+      {
+        label: "الربح",
+        value: ilsKnown(dailyReport.profit, dailyReport.cost_unknown),
+        tone: dailyReport.cost_unknown ? "orange" : "teal",
+      },
     ];
   }, [dailyReport]);
 
@@ -172,6 +179,12 @@ export default function SalesReports() {
       { label: "عدد العمليات", value: String(rangeReport.total_transactions ?? 0) },
       { label: "الاسترجاعات", value: ils(rangeReport.refunds_total), tone: "orange" },
       { label: "القطع المباعة", value: String(rangeReport.items_sold ?? 0) },
+      { label: "تكلفة المبيعات", value: ilsKnown(rangeReport.cost, rangeReport.cost_unknown) },
+      {
+        label: "الربح",
+        value: ilsKnown(rangeReport.profit, rangeReport.cost_unknown),
+        tone: rangeReport.cost_unknown ? "orange" : "teal",
+      },
     ];
   }, [rangeReport]);
 
@@ -277,6 +290,11 @@ export default function SalesReports() {
         </div>
       ) : mode === "day" && dailyReport ? (
         <>
+          {incompleteProfitNote(dailyReport) ? (
+            <p className="dashboard-meta-line muted ui-mt-md" role="status">
+              {INCOMPLETE_PROFIT_AR}
+            </p>
+          ) : null}
           <div className="ui-stat-grid ui-mt-md">
             {dailyStatCards.map((c) => (
               <StatCard key={c.label} label={c.label} value={c.value} tone={c.tone} icon="finance" />
@@ -319,6 +337,11 @@ export default function SalesReports() {
         </>
       ) : mode === "range" && rangeReport ? (
         <>
+          {incompleteProfitNote(rangeReport) ? (
+            <p className="dashboard-meta-line muted ui-mt-md" role="status">
+              {INCOMPLETE_PROFIT_AR}
+            </p>
+          ) : null}
           <div className="ui-stat-grid ui-mt-md">
             {rangeStatCards.map((c) => (
               <StatCard key={c.label} label={c.label} value={c.value} tone={c.tone} icon="finance" />

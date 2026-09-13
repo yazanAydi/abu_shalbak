@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 
 describe("Refund request flow", () => {
@@ -28,10 +29,10 @@ describe("Refund request flow", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 5, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     transactionId = checkoutRes.body.data.transaction_id;
   });
 

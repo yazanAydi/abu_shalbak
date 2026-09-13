@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 
 /** Stage 7 — product deactivation (Scenario H). */
@@ -35,10 +36,10 @@ describe("Product deactivation (Scenario H)", () => {
     return request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
         payment_method: "cash",
-      });
+      }));
   }
 
   test("admin can deactivate a product", async () => {

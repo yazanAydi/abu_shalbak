@@ -5,6 +5,7 @@ import { insertSalePayments, netDrawerCashNis } from "../utils/salePayments.js";
 import { markSuspendedSaleCompleted } from "../services/suspendedSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { invalidatePromotionsCache } from "../utils/promotions.js";
+import { HttpError } from "../utils/httpError.js";
 
 /**
  * Execute a validated checkout sale (inventory, payments, customer balance, cash movement).
@@ -36,13 +37,33 @@ async function executeCheckoutSaleCore(db, params) {
     changeCurrencyId,
     changeOriginalAmount,
     idempotencyKey,
+    payloadFingerprint,
     suspendedSaleId,
     promoBreakdown,
   } = params;
 
   if (idempotencyKey) {
-    const dup = await db.get("SELECT id FROM transactions WHERE idempotency_key = ?", [idempotencyKey]);
-    if (dup) return { replayTxId: dup.id };
+    const dup = await db.get(
+      "SELECT id, cashier_id, payload_fingerprint FROM transactions WHERE idempotency_key = ?",
+      [idempotencyKey]
+    );
+    if (dup) {
+      if (Number(dup.cashier_id) !== Number(cashierId)) {
+        throw new HttpError(403, "مفتاح التكرار لا يخص هذا الصندوق", "IDEMPOTENCY_OWNER_MISMATCH");
+      }
+      if (
+        dup.payload_fingerprint &&
+        payloadFingerprint &&
+        dup.payload_fingerprint !== payloadFingerprint
+      ) {
+        throw new HttpError(
+          409,
+          "تم استخدام مفتاح التكرار مع محتوى مختلف. لا تُعد الإرسال بمحتوى جديد تحت نفس المفتاح.",
+          "IDEMPOTENCY_KEY_REUSE"
+        );
+      }
+      return { replayTxId: dup.id };
+    }
   }
 
   if (shiftId) {
@@ -58,11 +79,15 @@ async function executeCheckoutSaleCore(db, params) {
     }
   }
 
+  if (suspendedSaleId) {
+    await markSuspendedSaleCompleted(db, suspendedSaleId);
+  }
+
   const receiptNumber = await nextReceiptNumber(db, 1);
 
     const ins = await db.run(
-      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?)`,
+      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id, idempotency_key, payload_fingerprint)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?, ?)`,
       [
         cashierId,
         JSON.stringify(itemsForJson),
@@ -78,6 +103,7 @@ async function executeCheckoutSaleCore(db, params) {
         custId,
         receiptNumber,
         idempotencyKey,
+        payloadFingerprint || null,
       ]
     );
     const transactionId = ins.lastID;
@@ -157,10 +183,6 @@ async function executeCheckoutSaleCore(db, params) {
 
     if (custId && onAccountTotal > 0) {
       await db.run("UPDATE customers SET balance = balance + ? WHERE id = ?", [onAccountTotal, custId]);
-    }
-
-    if (suspendedSaleId) {
-      await markSuspendedSaleCompleted(db, suspendedSaleId);
     }
 
     if (promoBreakdown.length > 0) {

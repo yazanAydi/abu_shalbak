@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { withTransaction } from "../utils/dbTx.js";
 
@@ -32,10 +33,10 @@ describe("Concurrent sales with negative stock allowed (Scenario F)", () => {
     return request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity, price: 10 }],
         payment_method: "cash",
-      });
+      }));
   }
 
   test("two simultaneous sales from stock 1 both succeed, final stock is -1, no lost update", async () => {

@@ -21,8 +21,16 @@ function renderSupplierBalance(systemBalance) {
   return <span className={className}>{ils(displayAmount)}</span>;
 }
 
+/** Signed system balance for CSV transfer: positive = we owe, negative = supplier credit. */
 function supplierBalanceExportValue(systemBalance) {
-  return ils(supplierBalanceView(systemBalance).displayAmount);
+  const n = Number(systemBalance);
+  if (!Number.isFinite(n)) return "0.00";
+  return n.toFixed(2);
+}
+
+function supplierExportCode(supplier) {
+  const code = supplier?.supplier_code != null ? String(supplier.supplier_code).trim() : "";
+  return code ? displayEntityCode(code) : "";
 }
 
 const emptyForm = {
@@ -136,10 +144,10 @@ export default function SupplierManagement() {
   const evLabel = { opening: "رصيد افتتاحي", purchase: "فاتورة شراء", purchase_return: "مرتجع شراء", payment: "دفعة" };
 
   const columns = [
-    { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => displayEntityCode(s.supplier_code), render: (s, i) => displayListRowNumber(0, 0, i) },
+    { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => supplierExportCode(s), render: (s, i) => displayListRowNumber(0, 0, i) },
     { key: "name", header: "الاسم", value: (s) => s.name, render: (s) => <strong>{s.name}</strong> },
-    { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "—", render: (s) => s.contact_phone || "—" },
-    { key: "payment_terms", header: "شروط الدفع", hideOnMobile: true, value: (s) => s.payment_terms || "—", render: (s) => s.payment_terms || "—" },
+    { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "", render: (s) => s.contact_phone || "—" },
+    { key: "payment_terms", header: "شروط الدفع", hideOnMobile: true, value: (s) => s.payment_terms || "", render: (s) => s.payment_terms || "—" },
     { key: "balance", header: "الرصيد (مستحق)", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
     {
       key: "actions", header: "إجراءات",
@@ -160,9 +168,9 @@ export default function SupplierManagement() {
   ];
 
   const balanceColumns = [
-    { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => displayEntityCode(s.supplier_code), render: (s, i) => displayListRowNumber(0, 0, i) },
+    { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => supplierExportCode(s), render: (s, i) => displayListRowNumber(0, 0, i) },
     { key: "name", header: "الاسم" },
-    { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "—", render: (s) => s.contact_phone || "—" },
+    { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "", render: (s) => s.contact_phone || "—" },
     { key: "balance", header: "الرصيد", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
   ];
 
@@ -202,6 +210,17 @@ export default function SupplierManagement() {
               filename={reportConfig.filename}
               summary={reportConfig.summary}
               disabled={loading}
+              getExportRows={
+                tab === "list"
+                  ? async () => {
+                      const { data } = await api.get("/api/suppliers", {
+                        params: { all: 1 },
+                        headers: getAuthHeaders(),
+                      });
+                      return Array.isArray(data) ? data : [];
+                    }
+                  : undefined
+              }
             />
             <Button icon="plus" onClick={startNew}>مورد جديد</Button>
           </>
@@ -211,9 +230,10 @@ export default function SupplierManagement() {
       {canImport ? (
       <Card>
         <CardBody>
-          <h3 style={{ marginTop: 0 }}>استيراد أرصدة الموردين من حساباتي</h3>
+          <h3 style={{ marginTop: 0 }}>استيراد أرصدة الموردين</h3>
           <p style={{ color: "var(--office-text-muted)" }}>
-            استيراد الرصيد الافتتاحي مع معاينة قبل الحفظ — لا يُنشئ فواتير مشتريات.
+            ملف حساباتي Excel، أو تصدير CSV موقّع من هذه الشاشة لنقل الموردين إلى جهاز آخر.
+            صدّر بعد هذا التحديث — الملفات القديمة بعلامة ₪ لا تفرّق بين مستحق ودائن.
           </p>
           <Link to="/import-supplier-balances">
             <Button icon="suppliers">فتح صفحة الاستيراد</Button>

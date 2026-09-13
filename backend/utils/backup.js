@@ -28,6 +28,8 @@ function vacuumInto(source, destPath) {
 }
 
 async function verifyBackup(destPath) {
+  // VACUUM INTO writes a standalone DELETE-journal file. Opening it readonly
+  // must not run PRAGMA journal_mode=WAL (see sqliteDriver applyPragmas*).
   const verify = await openSqliteConnection(destPath, { readonly: true, isolated: true });
   try {
     const row = await verify.get("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'");

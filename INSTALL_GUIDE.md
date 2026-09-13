@@ -35,8 +35,8 @@
     ├── نقطة البيع POS   →  /pos     (كاشير)
     └── نسخ احتياطي تلقائي يومياً
 
-أجهزة الكاشير والمكتب → متصفح Chrome أو Edge فقط
-(لا Docker، لا Node.js، لا تثبيت إضافي)
+أجهزة الكاشير والمكتب → Microsoft Edge (اختصار تطبيق)
+(لا Docker، لا Node.js على أجهزة الكاشير)
 ```
 
 **الفكرة:** جهاز واحد يشغّل النظام. باقي الأجهزة تفتح رابط في المتصفح فقط.
@@ -48,8 +48,8 @@
 | العنصر | التفاصيل |
 |--------|----------|
 | **جهاز الخادم** | PC يبقى مشغّلاً أثناء ساعات العمل |
-| **أجهزة الكاشير** | أي PC بنظام Windows + Chrome أو Edge |
-| **جهاز المكتب** | للمدير أو المحاسب — متصفح فقط |
+| **أجهزة الكاشير** | Windows + Microsoft Edge 144+ (اختصار `open-pos-app.ps1`) |
+| **جهاز المكتب** | مدير / محاسب — Edge `--app` (`open-admin-app.ps1`) |
 | **الشبكة** | كل الأجهزة على **نفس Wi‑Fi / LAN** |
 | **الإنترنت** | اختياري (مطلوب فقط لـ Telegram) |
 
@@ -239,9 +239,7 @@ cd C:\abo_shalbak
 npm run store:up
 ```
 
-This starts Docker **and** the Windows receipt print agent (needs [Node.js LTS](https://nodejs.org/) on the shop PC). Sales still work if Node is missing; receipts will not print until the agent is running.
-
-Equivalent: `scripts\start-store.ps1`. To start Docker only: `docker compose up -d`.
+This starts Docker on port 3000. Receipts print from each cashier’s Edge window (`docs/RECEIPT_BROWSER_PRINT.md`). Equivalent: `scripts\start-store.ps1`. To start Docker only: `docker compose up -d`.
 
 **أول مرة تستغرق 5–15 دقيقة** (تحميل + بناء واجهة الإدارة ونقطة البيع).
 
@@ -381,35 +379,42 @@ http://192.168.1.15:3000/pos
 
 تأكد أن الجهاز على **نفس Wi‑Fi / LAN** مثل جهاز الخادم.
 
-### الخطوة 7.2 — ثبّت المتصفح
+### الخطوة 7.2 — ثبّت Microsoft Edge
 
-ثبّت **Google Chrome** أو **Microsoft Edge** إن لم يكن موجوداً.
+ثبّت **Microsoft Edge** إن لم يكن موجوداً (كاشير الإيصالات يحتاج Edge 144+ للطباعة الصامتة). Chrome لا يطبّق سياسات Edge.
 
 ### الخطوة 7.3 — أنشئ اختصار الكاشير
 
-1. انقر بالزر الأيمن على **Desktop** (سطح المكتب) → **New** → **Shortcut**.
-2. في "Type the location of the item" اكتب (استبدل IP):
+على جهاز الكاشير (استبدل IP الخادم):
 
-```
-http://192.168.1.15:3000/pos
+```powershell
+cd C:\abo_shalbak
+.\scripts\open-pos-app.ps1 -Url http://192.168.1.15:3000/pos -CreateShortcut
 ```
 
-3. **Next** → الاسم: `كاشير - أبو شلبك` → **Finish**.
-4. انقر مرتين على الاختصار → يجب أن تظهر صفحة تسجيل الدخول.
+يظهر على سطح المكتب `POS - Abu Shalbak.lnk` (نافذة تطبيق Edge، ليست تبويب متصفح). افتح نقطة البيع من هذا الاختصار فقط.
+
+ثم مرة واحدة في PowerShell **كمسؤول**:
+
+```powershell
+.\scripts\setup-edge-silent-print.ps1
+```
+
+عيّن الطابعة الحرارية كطابعة Windows الافتراضية، حجم الورق 80 مم، وأوقف «Let Windows manage my default printer». Microsoft Print to PDF ليست وجهة الإيصال. في مربع طباعة Edge أوقف «Headers and footers» (التاريخ/العنوان). التفاصيل: `docs/RECEIPT_BROWSER_PRINT.md`.
 
 ### الخطوة 7.4 — أنشئ اختصار الإدارة (جهاز المكتب)
 
-نفس الخطوات، لكن الرابط:
+المدير والمحاسب يستخدمان نفس `/admin`:
 
+```powershell
+.\scripts\open-admin-app.ps1 -Url http://192.168.1.15:3000/admin -CreateShortcut
 ```
-http://192.168.1.15:3000/admin
-```
 
-الاسم: `إدارة - أبو شلبك`
+الاسم: `AboShalbak-Admin.lnk`. إذا فتح مسح الباركود أدوات المطوّر، اضبط لاحقة الماسح على Enter — `docs/BARCODE_SCANNER.md`.
 
-### الخطوة 7.5 — (اختياري) ملء الشاشة للكاشير
+### الخطوة 7.5 — نافذة التطبيق
 
-في Chrome/Edge اضغط **F11** لوضع ملء الشاشة.
+لا تعتمد على F11. الاختصارات أعلاه تفتح Edge بـ `--app` (نافذة تطبيق). للتحقق من نوع اختصار موجود: `.\scripts\open-pos-app.ps1 -Inspect`.
 
 ---
 
@@ -517,16 +522,16 @@ http://192.168.1.15:3000/admin
 
 ### نسخ احتياطي يدوي
 
-```powershell
-cd C:\abo_shalbak
-docker compose exec -T app cp /app/data/supermarket.db /app/backups/manual_backup.db
-```
+استخدم نسخ التطبيق (`VACUUM INTO`، يشمل WAL). لا تنسخ `data\supermarket.db` بـ `cp` / `Copy-Item` والمتجر يعمل.
 
-أو انسخ مجلد `data` إلى USB:
+من حساب مدير (بعد تسجيل الدخول للمكتب):
 
 ```powershell
-xcopy C:\abo_shalbak\data D:\backup\data /E /I
+# استبدل TOKEN برمز المدير
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3000/api/v1/admin/backup" -Headers @{ Authorization = "Bearer TOKEN" }
 ```
+
+الملف يظهر في `C:\abo_shalbak\backups\supermarket_YYYY-MM-DD_HHMMSS.db`. طريقة التحقق في `RESTORE.md`.
 
 ### التشغيل اليومي
 
@@ -543,7 +548,7 @@ xcopy C:\abo_shalbak\data D:\backup\data /E /I
 
 - [ ] IP ثابت ([القسم 5](#5-كيف-تجعل-ip-ثابتا))
 - [ ] Docker يعمل (`docker compose ps`)
-- [ ] وكيل الطباعة يعمل (`http://127.0.0.1:17891/health`)
+- [ ] اختصار Edge للكاشير + سياسات الطباعة على كل جهاز كاشير (`docs/RECEIPT_BROWSER_PRINT.md`)
 - [ ] جدار الحماية مفتوح ([الخطوة 6.6](#الخطوة-66--افتح-المنفذ-3000-في-جدار-الحماية))
 - [ ] Admin و POS يفتحان من كل الأجهزة ([الخطوة 6.7](#الخطوة-67--اختبر-أن-الصفحتين-تعملان))
 - [ ] كلمات المرور الافتراضية تغيّرت

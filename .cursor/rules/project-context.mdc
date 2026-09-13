@@ -1,0 +1,17 @@
+---
+description: Abu Shalbak project map — stack, apps, and where to edit
+alwaysApply: true
+---
+
+# أبو شلبك — project map
+
+Supermarket + bakery POS/ERP (Hesabati replacement). Arabic RTL. NIS. TZ `Asia/Hebron`.
+
+- `backend/` — Express ESM + SQLite. Schema only in `database/init.js`.
+- `frontend/` — office `/admin` (dev `:3001`, proxy to API `:5001`).
+- `frontend-pos/` — cashier `/pos` (dev `:3002` → API `:5001` directly).
+- Production: Docker `:3000` serves API + static `/admin` and `/pos`.
+
+Start from **repo root**: `npm start` (dev), `npm run store:up` (live shop). Never mix `.env.development` with `.env.store` or Telegram tokens.
+
+Read `AGENTS.md` for the full map, invariants, and file pointers.

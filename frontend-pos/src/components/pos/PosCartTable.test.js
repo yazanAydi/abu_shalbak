@@ -6,10 +6,13 @@ if (typeof globalThis.IS_REACT_ACT_ENVIRONMENT === "undefined") {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 }
 
+const mountedRoots = [];
+
 function renderTable(cartItems, onQuantityChange = jest.fn()) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  mountedRoots.push(root);
   act(() => {
     root.render(
       <PosCartTable
@@ -39,6 +42,11 @@ describe("cart quantity stepper math", () => {
 
 describe("POS cart quantity buttons", () => {
   afterEach(() => {
+    act(() => {
+      while (mountedRoots.length) {
+        mountedRoots.pop().unmount();
+      }
+    });
     document.body.innerHTML = "";
   });
 

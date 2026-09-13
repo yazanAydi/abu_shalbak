@@ -39,40 +39,34 @@ If sales were already recorded with a wrong clock, stop the store (`npm run stor
 - [ ] Browser bookmark: `http://SERVER_IP:5000/pos` (cashier) or `/admin` (office)
 - [ ] No separate API URL needed in production (same origin)
 - [ ] For dev builds: set `REACT_APP_API_BASE=http://SERVER_IP:5000` in frontend `.env`
-- [ ] After a POS rebuild: hard-reload (`Ctrl+F5`) so cashiers pick up the new F9 complete-sale shortcut (F12 is Edge DevTools)
+- [ ] After a POS rebuild: hard-reload (`Ctrl+F5`) so cashiers pick up the new F9 complete-sale shortcut (F12 is Edge DevTools — do not bind it)
+- [ ] Recreate Edge `--app` shortcuts if cashiers still use a Chrome/PWA/.url shortcut (`.\scripts\open-pos-app.ps1 -Inspect`)
 - [ ] One-time if DevTools is already open: close the console, then fully quit Edge (not just the tab) so it does not restore the docked tools on the next launch
-- [ ] Recommended on cashier machines only — block DevTools in Edge so F12 cannot open the console. In an elevated PowerShell:
 
-```powershell
-$policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
-if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
-# 2 = Developer tools are not allowed. Do NOT set this on the development PC.
-Set-ItemProperty -Path $policyPath -Name "DeveloperToolsAvailability" -Type DWord -Value 2
-```
+## Receipt printer (browser print)
 
-  Restart Edge after setting the policy. Development machines stay unchanged so you can still open DevTools manually while coding.
+After ترحيل the sale is saved first. POS then loads `POST /api/v1/print-receipt` and prints in a hidden iframe in the cashier’s Edge window. A print problem never rolls back the sale. Reprint with **طباعة الإيصال**. `afterprint` is not proof that paper printed.
 
-## Receipt printer (silent print)
+Full steps: `docs/RECEIPT_BROWSER_PRINT.md`. Do **not** run the Edge policy script on the development PC.
 
-After ترحيل the POS calls `POST /api/v1/print-receipt/silent`. There is **no** Edge print preview.
-
-On **Docker store** (`npm run store:up` / `scripts/start-store.ps1`), a Windows print agent on the shop PC (`http://127.0.0.1:17891`) receives the receipt from the Linux container and sends it to the thermal printer. On **native Windows API** (`npm start` / `production:start`) the API prints directly.
-
-If the agent is not running, the sale still saves and the POS shows an Arabic alert (no browser dialog). Reprint with **طباعة الإيصال**. Do not use `scripts/open-pos-silent-print.ps1`.
-
-- [ ] Install **Node.js LTS** on the shop Windows PC (needed for the print agent next to Docker)
-- [ ] Install the thermal / receipt printer driver on that same PC
-- [ ] Settings → Bluetooth & devices → Printers & scanners → set that printer as **Default**
-- [ ] Confirm it is not Print to PDF, XPS, OneNote, or Fax
-- [ ] Optional: set `RECEIPT_PRINTER=Exact Printer Name` in `.env.store`
-- [ ] Start with `npm run store:up` so Docker **and** the print agent run
-- [ ] Confirm `http://127.0.0.1:17891/health` returns `ok`
-- [ ] Complete a test sale — paper should come out with **no** print preview
+- [ ] Each cashier PC: Microsoft Edge 144+ (silent print). Chrome will still show a print dialog.
+- [ ] Each cashier PC (elevated, once): `.\scripts\setup-edge-silent-print.ps1`
+- [ ] Confirm `edge://policy` in the **POS shortcut profile** (`.\scripts\open-pos-app.ps1 -OpenPolicy`)
+- [ ] Desktop shortcut is Edge `--app` from `open-pos-app.ps1`, not a plain URL and not Chrome
+- [ ] Thermal printer installed on **that** PC (USB or Windows shared printer) and set as **Windows default**
+- [ ] “Let Windows manage my default printer” is off; default is **not** Print to PDF / XPS / OneNote / Fax
+- [ ] Printer paper size matches the roll (usually 80 mm). Replacing a printer is Windows install + default + paper — no code/Docker change
+- [ ] Edge print dialog: **Headers and footers** off (receipts use an empty title; the date line is this checkbox)
+- [ ] Do not judge thermal layout from **Microsoft Print to PDF** (Letter/A4 virtual printer)
+- [ ] Complete a test sale from the **actual POS shortcut** — paper should come out without choosing a printer. A brief preview flash can still occur.
 - [ ] If printing fails, reprint with **طباعة الإيصال** — do not create a second sale
+- [ ] Office-only PCs should skip `SilentPrintingEnabled` if they need a normal print dialog for A4 reports
 
-If the default printer is still Print to PDF, the sale succeeds and an Arabic alert explains the printer problem. Edge preview does not appear.
+`RECEIPT_WIDTH_MM` (default 80, or 58) still controls receipt HTML width on the server. It is not a per-printer setting.
 
-To test the **same HTML→PDF** path without a thermal printer, set `RECEIPT_PRINT_TEST_MODE=save` in `.env.development` (native `npm run dev`) or `.env.store` (Docker + print agent), then restart. ترحيل writes `tmp/receipt-test/*.pdf` and returns `widthMm` / `heightMm` from that file. The page height is the rendered content plus `RECEIPT_BOTTOM_MARGIN_MM` (default 5). Leave test mode unset in production.
+## Barcode scanners (office)
+
+If scanning on admin/accountant pages opens DevTools, the scanner suffix is likely F12 (or Ctrl+Shift+I). JavaScript cannot reliably block that. Configure the scanner terminator to Enter — `docs/BARCODE_SCANNER.md`. Use `AboShalbak-Admin.lnk` (Edge `--app`) for both roles.
 
 ## Network
 
@@ -82,14 +76,15 @@ To test the **same HTML→PDF** path without a thermal printer, set `RECEIPT_PRI
 
 ## Operations
 
-- [ ] Nightly backup cron enabled (default 02:00 unless `DISABLE_AUTO_BACKUP=1`)
+- [ ] Nightly backup cron enabled (default 02:00 unless `DISABLE_AUTO_BACKUP=1`) — uses `VACUUM INTO`, not a live-file copy
+- [ ] Manual backup: admin `POST /api/v1/admin/backup`; verify as in `RESTORE.md`
 - [ ] Test restore from backup (`RESTORE.md`)
 - [ ] Document official DB path for all staff — only one file is authoritative
-- [ ] Do not copy stray `.db` files without understanding which is live
+- [ ] Do not `cp` / `Copy-Item` the live `supermarket.db` while the store is running
 
 ## Post-deploy smoke test
 
 1. Admin login → product list loads
-2. Cashier login → start shift → scan barcode → complete sale → receipt prints with no preview (Windows API + default receipt printer)
+2. Cashier login → start shift → scan barcode → complete sale → receipt prints from the cashier Edge shortcut (Windows default thermal printer; a brief preview flash can still occur)
 3. Admin → reports today matches sale total
 4. Refund request → approve in admin → cashier sees notification

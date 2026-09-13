@@ -9,6 +9,22 @@ export function ils(n) {
   return `₪${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+export const UNKNOWN_MONEY_AR = "غير معروف";
+export const INCOMPLETE_PROFIT_AR = "الربح غير مكتمل — تكلفة بعض المبيعات غير معروفة";
+
+/**
+ * Historical cost/profit: valid 0 stays ₪0.00. Missing/unknown is never ₪0 or NaN.
+ * @param {number | null | undefined} n
+ * @param {boolean} [unknown]
+ */
+export function ilsKnown(n, unknown = false) {
+  if (unknown === true) return UNKNOWN_MONEY_AR;
+  if (n == null || n === "") return UNKNOWN_MONEY_AR;
+  const v = Number(n);
+  if (!Number.isFinite(v)) return UNKNOWN_MONEY_AR;
+  return ils(v);
+}
+
 export function num(n, digits = 2) {
   return Number(n ?? 0).toLocaleString("en-US", {
     minimumFractionDigits: digits,

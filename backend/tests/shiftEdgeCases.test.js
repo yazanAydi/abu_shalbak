@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { approveRefundRequest } from "../services/refundRequestService.js";
 import { invalidateCurrencyCache } from "../utils/currencies.js";
@@ -59,10 +60,10 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: qty, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     expect(res.status).toBe(201);
     return res.body.data?.transaction_id ?? res.body.transaction_id;
   }
@@ -224,11 +225,11 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
     const sale = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: 5 }],
         payment_method: "cash",
         payments: [{ method: "cash", currency_id: usd.id, original_amount: 10 }],
-      });
+      }));
     expect(sale.status).toBe(201);
 
     await closeShiftAsCashier(shiftId);

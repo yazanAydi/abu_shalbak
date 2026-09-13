@@ -4,6 +4,7 @@ import {
   createTestContext,
   destroyTestContext,
   login,
+  withCheckoutKey,
 } from "./helpers.js";
 import {
   setSilentPrintTestAdapter,
@@ -29,10 +30,10 @@ describe("silent receipt print", () => {
     const sale = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     transactionId = sale.body.data.transaction_id;
     saleTotal = Number(sale.body.data.total);
   });
@@ -59,6 +60,18 @@ describe("silent receipt print", () => {
       .set(authHeader(cashierToken))
       .send({ transaction_id: 999999 });
     expect(res.status).toBe(404);
+  });
+
+  test("LAN POS origin can call silent print on the same host", async () => {
+    const res = await request(ctx.app)
+      .post("/api/v1/print-receipt/silent")
+      .set(authHeader(cashierToken))
+      .set("Host", "192.168.1.40:3000")
+      .set("Origin", "http://192.168.1.40:3000")
+      .send({ transaction_id: transactionId });
+    expect(res.status).toBe(200);
+    expect(res.headers["access-control-allow-origin"]).toBe("http://192.168.1.40:3000");
+    expect(res.body.data?.printed ?? res.body.printed).toBe(true);
   });
 
   test("dry-runs print in test env", async () => {

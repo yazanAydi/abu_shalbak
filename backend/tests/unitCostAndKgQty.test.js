@@ -6,7 +6,10 @@
  *            is كغم, even when is_weighed = 0.
  */
 import request from "supertest";
-import { createTestContext, destroyTestContext, login, authHeader } from "./helpers.js";
+import {
+  createTestContext, destroyTestContext, login, authHeader,
+  withCheckoutKey,
+} from "./helpers.js";
 import {
   upsertProductUnit,
   syncProductFromDefaultUnit,
@@ -45,7 +48,7 @@ describe("unit cost derivation and fractional KG quantities", () => {
     return request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({ payment_method: "cash", items });
+      .send(withCheckoutKey({ payment_method: "cash", items }));
   }
 
   async function postPurchaseInvoice(items) {

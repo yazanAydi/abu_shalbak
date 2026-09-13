@@ -19,7 +19,8 @@ import PosRefundNotifications from "../components/pos/PosRefundNotifications";
 import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
 import { requiresShiftForPos } from "../utils/roles";
 import ShiftStart from "../components/ShiftStart";
-import { printReceipt } from "../utils/printReceipt";
+import { printReceipt, saleSavedPrintFailedMessage } from "../utils/printReceipt";
+import { submitCompleteSale } from "../utils/completeSaleSubmit";
 import { estimateCartTotals, buildCartLineDiscounts } from "../utils/posTotals";
 import { checkoutReducer, checkoutInitialState } from "../utils/checkoutCartReducer";
 import {
@@ -29,7 +30,7 @@ import {
 import { matchesShortcut, shouldHandlePosShortcut } from "../utils/posKeyboard";
 import { focusBarcodeInput } from "../utils/focusBarcodeInput";
 import { readWaitingRequestId, writeWaitingRequestId } from "../utils/posWaitingRequests";
-import { playCheckoutDone, playScanSuccess, unlockPosAudio, warmPosSounds } from "../utils/posSounds";
+import { playScanSuccess, warmPosSounds } from "../utils/posSounds";
 import {
   cartItemsToSuspendPayload,
   suspendedItemsToCartItems,
@@ -53,15 +54,6 @@ const PosAdvanceRequestModal = lazy(() => import("../components/pos/PosAdvanceRe
 const PosApprovalWaitingModal = lazy(() => import("../components/pos/PosApprovalWaitingModal"));
 const ShiftEnd = lazy(() => import("../components/ShiftEnd"));
 
-function newIdempotencyKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `idem-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random()
-    .toString(36)
-    .slice(2)}`;
-}
-
 function extractApiError(e, fallback) {
   const body = e?.response?.data;
   if (body && typeof body === "object" && body.error) return String(body.error);
@@ -75,7 +67,7 @@ export default function Checkout() {
   const navigate = useNavigate();
   const user = getUser();
   const [state, dispatch] = useReducer(checkoutReducer, checkoutInitialState);
-  const { cartItems, lastScannedCartKey, error, blockedScan, receiptData } = state;
+  const { cartItems, lastScannedCartKey, error, blockedScan, receiptData, printWarning } = state;
 
   const [appSettings, setAppSettings] = useState(null);
   const [activePromos, setActivePromos] = useState([]);
@@ -139,6 +131,7 @@ export default function Checkout() {
   );
 
   const idempotencyKeyRef = useRef(null);
+  const submittedPayloadRef = useRef(null);
   const isSubmittingRef = useRef(false);
 
   const loadActivePromos = useCallback(() => {
@@ -339,79 +332,27 @@ export default function Checkout() {
 
   const completeSale = useCallback(
     async (paymentPayload = null) => {
-      const pay = paymentPayload || { payment_method: selectedPayment };
-      if (!cartItems.length || !pay.payment_method || isLoading || isSubmittingRef.current) return;
-      isSubmittingRef.current = true;
-      if (pay.payment_method === "on_account" && !customerId) {
-        dispatch({
-          type: "CHECKOUT_ERROR",
-          fallback: "اختر عميلاً للبيع على الذمة",
-        });
-        return;
-      }
-      dispatch({ type: "CLEAR_SALE_ERR" });
-      setIsLoading(true);
-      unlockPosAudio();
-      if (!idempotencyKeyRef.current) {
-        idempotencyKeyRef.current = newIdempotencyKey();
-      }
-      let receiptToPrint = null;
-      try {
-        const items = cartItems.map((c) => ({
-          product_id: c.id,
-          unit_id: c.unitId,
-          quantity: c.quantity,
-          price: c.price,
-          ...(c.scanned_barcode ? { scanned_barcode: c.scanned_barcode } : {}),
-        }));
-        const body = {
-          items,
-          idempotency_key: idempotencyKeyRef.current,
-          ...pay,
-        };
-        if (customerId) body.customer_id = customerId;
-        if (activeSuspendedSaleId) {
-          await syncSuspendedCart(activeSuspendedSaleId, cartItems);
-          body.suspended_sale_id = activeSuspendedSaleId;
-        }
-
-        const { data } = await api.post("/api/checkout", body, {
-          headers: {
-            ...getAuthHeaders(),
-            "Content-Type": "application/json",
-          },
-        });
-        const payload = data?.data ?? data;
-        if (payload?.pending_approval && payload?.request_id) {
-          writeWaitingRequestId("onAccount", payload.request_id);
-          setOnAccountWaitingId(payload.request_id);
-          setPayModalOpen(false);
-          return;
-        }
-        dispatch({ type: "CHECKOUT_SUCCESS", data: payload });
-        playCheckoutDone();
-        receiptToPrint = payload?.receipt_html || payload?.receipt_text ? payload : null;
-        idempotencyKeyRef.current = null;
-        setSelectedPayment(null);
-        setCustomerId(null);
-        setPayModalOpen(false);
-        setActiveSuspendedSaleId(null);
-        loadShift();
-        loadSuspendedList();
-        focusBarcodeInput();
-      } catch (e) {
-        dispatch({
-          type: "CHECKOUT_ERROR",
-          payload: e.response?.data,
-          fallback: e.message || "فشل إتمام البيع",
-        });
-      } finally {
-        setIsLoading(false);
-        isSubmittingRef.current = false;
-      }
-      if (receiptToPrint) {
-        printReceipt(receiptToPrint);
-      }
+      await submitCompleteSale({
+        paymentPayload,
+        selectedPayment,
+        cartItems,
+        customerId,
+        isLoading,
+        isSubmittingRef,
+        idempotencyKeyRef,
+        submittedPayloadRef,
+        activeSuspendedSaleId,
+        dispatch,
+        setIsLoading,
+        setOnAccountWaitingId,
+        setPayModalOpen,
+        setSelectedPayment,
+        setCustomerId,
+        setActiveSuspendedSaleId,
+        loadShift,
+        loadSuspendedList,
+        syncSuspendedCart,
+      });
     },
     [
       cartItems,
@@ -434,6 +375,7 @@ export default function Checkout() {
       if (requestId) finalizedOnAccountRef.current.add(Number(requestId));
       dispatch({ type: "CHECKOUT_SUCCESS", data: checkout });
       idempotencyKeyRef.current = null;
+      submittedPayloadRef.current = null;
       setSelectedPayment(null);
       setCustomerId(null);
       writeWaitingRequestId("onAccount", null);
@@ -442,8 +384,15 @@ export default function Checkout() {
       loadShift();
       loadSuspendedList();
       focusBarcodeInput();
-      if (checkout.receipt_html || checkout.receipt_text) {
-        printReceipt(checkout);
+      if (checkout.transaction_id) {
+        printReceipt(checkout, { alert: false }).then((printed) => {
+          if (!printed?.ok) {
+            dispatch({
+              type: "CHECKOUT_PRINT_WARNING",
+              message: saleSavedPrintFailedMessage(checkout.receipt_number),
+            });
+          }
+        });
       }
     },
     [loadShift, loadSuspendedList]
@@ -497,7 +446,9 @@ export default function Checkout() {
   }
 
   function doPrintLocal() {
-    if (receiptData?.receipt_html || receiptData?.receipt_text) printReceipt(receiptData);
+    if (receiptData?.transaction_id) {
+      printReceipt(receiptData);
+    }
   }
 
   function handleCompleteClick() {
@@ -784,6 +735,7 @@ export default function Checkout() {
           discount={discount}
           total={total}
           error={error}
+          printWarning={printWarning}
           isLoading={isLoading}
           canComplete={canComplete}
           onComplete={handleCompleteClick}

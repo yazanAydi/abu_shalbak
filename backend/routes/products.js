@@ -67,11 +67,12 @@ import {
 import { round2 } from "../utils/money.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { MISSING_CATALOG_FILTER } from "../utils/catalogMissingFilter.js";
+import { addLedgerEntry } from "../utils/inventoryLedger.js";
 
-function clampProductStock(raw) {
+function parseProductStock(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.round(n * 1000) / 1000);
+  return Math.round(n * 1000) / 1000;
 }
 
 function isSqliteConstraint(err) {
@@ -1182,6 +1183,7 @@ export function createProductsRouter(db) {
           min_stock !== undefined && min_stock !== null && min_stock !== ""
             ? Number(min_stock)
             : null;
+        const openingStock = parseProductStock(stock);
         const info = await db.run(
           `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, is_weighed, inventory_scope, min_stock, needs_review)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1192,7 +1194,7 @@ export function createProductsRouter(db) {
             finalPrice,
             c,
             finalCategory,
-            clampProductStock(stock),
+            0,
             taxR,
             unitName,
             expiry_date ? String(expiry_date).trim() : null,
@@ -1206,6 +1208,17 @@ export function createProductsRouter(db) {
             needsReview,
           ]
         );
+        if (openingStock !== 0) {
+          await addLedgerEntry(db, {
+            productId: info.lastID,
+            movementType: "manual_adjustment",
+            delta: openingStock,
+            referenceType: "product_create",
+            referenceId: info.lastID,
+            userId: req.user?.id ?? null,
+            notes: "رصيد افتتاحي",
+          });
+        }
         await ensureProductBarcodeOnCreate(db, info.lastID, resolvedBarcode);
         if (isWeighed) {
           await ensureWeighedProductUnits(db, info.lastID, {

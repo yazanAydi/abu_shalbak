@@ -83,6 +83,17 @@ describe("receipt PDF page sizing", () => {
     ).toBeNull();
   });
 
+  test("viewport-tall body does not stretch a found .receipt", () => {
+    const diag = assembleReceiptHeightMeasure({
+      receiptSelectorFound: true,
+      rectHeight: 454,
+      receiptScrollHeight: 454,
+      bodyScrollHeight: 1512,
+    });
+    expect(diag.calculatedHeightPx).toBe(454);
+    expect(diag.calculatedHeightMm).toBeLessThan(200);
+  });
+
   test("missing .receipt still uses body scroll height", () => {
     const diag = assembleReceiptHeightMeasure({
       receiptSelectorFound: false,

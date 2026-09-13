@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 
 function unwrapData(body) {
@@ -95,10 +96,10 @@ describe("bakery supplies inventory", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: bakeryProductId, quantity: 1, price: 0 }],
         payment_method: "cash",
-      });
+      }));
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("BAKERY_SUPPLY_NOT_SELLABLE");
   });

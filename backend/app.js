@@ -41,45 +41,12 @@ import { createAttendanceRouter } from "./routes/attendance.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { responseEnvelope } from "./middleware/responseEnvelope.js";
 import { apiLimiter } from "./middleware/rateLimit.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAuth, enforceMustChangePassword } from "./middleware/auth.js";
 import { HttpError } from "./utils/httpError.js";
 import { queryCountMiddleware } from "./utils/queryStats.js";
+import { isOriginAllowed, parseAllowedOrigins } from "./utils/corsOrigins.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-function parseAllowedOrigins() {
-  const raw = process.env.ALLOWED_ORIGINS;
-  if (raw && String(raw).trim()) {
-    return String(raw)
-      .split(",")
-      .map((o) => o.trim())
-      .filter(Boolean);
-  }
-  if (process.env.NODE_ENV === "production") return [];
-  return [
-    "http://127.0.0.1:3001",
-    "http://127.0.0.1:3002",
-    "http://localhost:3001",
-    "http://localhost:3002",
-  ];
-}
-
-/** Dev phone access via Tailscale Serve uses https://machine.tailXXXX.ts.net */
-function isDevTailscaleOrigin(origin) {
-  if (process.env.NODE_ENV !== "development" || !origin) return false;
-  try {
-    const { protocol, hostname } = new URL(origin);
-    return protocol === "https:" && hostname.endsWith(".ts.net");
-  } catch {
-    return false;
-  }
-}
-
-function isOriginAllowed(origin, allowedOrigins) {
-  if (!origin) return true;
-  if (allowedOrigins.includes(origin)) return true;
-  return isDevTailscaleOrigin(origin);
-}
 
 function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   if (useEnvelope) router.use(responseEnvelope);
@@ -96,6 +63,7 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
     if (req.path.startsWith("/attendance/kiosk")) return next();
     requireAuth(req, res, next);
   });
+  router.use(enforceMustChangePassword(db));
   router.use("/products", createProductsRouter(db));
   router.use("/checkout", createCheckoutRouter(db));
   router.use("/reports", createReportsRouter(db));
@@ -136,7 +104,7 @@ export function createApp(db, dbPath, options = {}) {
   const allowedOrigins = parseAllowedOrigins();
   if (process.env.NODE_ENV === "production" && allowedOrigins.length === 0) {
     console.warn(
-      "[cors] ALLOWED_ORIGINS is empty in production — browser cross-origin requests will be denied."
+      "[cors] ALLOWED_ORIGINS is empty — same-origin /pos and /admin are allowed; extra hosts (Tailscale) will be denied."
     );
   }
   const app = express();
@@ -161,13 +129,15 @@ export function createApp(db, dbPath, options = {}) {
   app.use(compression());
   app.use(requestIdMiddleware);
   app.use(queryCountMiddleware);
-  app.use(
+  app.use((req, res, next) => {
     cors({
       origin(origin, callback) {
-        if (isOriginAllowed(origin, allowedOrigins)) {
+        if (isOriginAllowed(origin, allowedOrigins, req)) {
           callback(null, true);
         } else {
-          callback(new Error("Not allowed by CORS"));
+          // Do not next(err): that 500s same-origin LAN POS (Origin is sent,
+          // but the page and /api share the shop server). False = no ACAO.
+          callback(null, false);
         }
       },
       credentials: true,
@@ -181,8 +151,8 @@ export function createApp(db, dbPath, options = {}) {
         "X-Kiosk-Key",
         "X-Confirm-Password",
       ],
-    })
-  );
+    })(req, res, next);
+  });
   app.use(express.json({ limit: "2mb" }));
   app.use("/api", apiLimiter);
 

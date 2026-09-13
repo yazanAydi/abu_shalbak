@@ -4,6 +4,8 @@ import {
   noteScannerKey,
   resetScannerBurstForTests,
   shouldBlockBrowserShortcut,
+  SCANNER_SUBMIT_EVENT,
+  installBlockDevToolsShortcuts,
 } from "./blockDevToolsShortcuts";
 
 function keyEvent(partial) {
@@ -15,6 +17,9 @@ function keyEvent(partial) {
     shiftKey: false,
     altKey: false,
     metaKey: false,
+    preventDefault: jest.fn(),
+    stopPropagation: jest.fn(),
+    stopImmediatePropagation: jest.fn(),
     ...partial,
   };
 }
@@ -34,9 +39,9 @@ describe("blockDevToolsShortcuts", () => {
     expect(isDevToolsShortcut(keyEvent({ key: "F9" }))).toBe(false);
   });
 
-  test("F12 is always blocked even without a scan burst", () => {
+  test("F12 is not blocked unless a scanner burst just happened", () => {
     expect(shouldBlockBrowserShortcut(keyEvent({ key: "F12", code: "F12" }))).toBe(
-      true
+      false
     );
   });
 
@@ -54,5 +59,30 @@ describe("blockDevToolsShortcuts", () => {
     }
     expect(isRecentScannerBurst()).toBe(true);
     expect(shouldBlockBrowserShortcut(print)).toBe(true);
+    expect(shouldBlockBrowserShortcut(keyEvent({ key: "F12", code: "F12" }))).toBe(true);
+  });
+
+  test("F12 after a scan burst asks the focused field to submit once", () => {
+    const dispose = installBlockDevToolsShortcuts();
+    const input = document.createElement("input");
+    const submits = [];
+    input.addEventListener(SCANNER_SUBMIT_EVENT, () => submits.push("go"));
+    document.body.appendChild(input);
+    input.focus();
+    for (const d of "00012345") {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: d, bubbles: true, cancelable: true })
+      );
+    }
+    const f12 = new KeyboardEvent("keydown", {
+      key: "F12",
+      code: "F12",
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(f12);
+    expect(submits).toEqual(["go"]);
+    input.remove();
+    dispose();
   });
 });

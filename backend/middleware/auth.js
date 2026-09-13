@@ -63,6 +63,27 @@ export function requireAuth(req, res, next) {
   }
 }
 
+/**
+ * Re-read must_change_password from the DB (JWT has no flag).
+ * Allow /auth/me, /auth/change-password, /auth/logout via router mount order.
+ */
+export function enforceMustChangePassword(db) {
+  return async (req, res, next) => {
+    if (!req.user?.id) return next();
+    try {
+      const row = await db.get("SELECT must_change_password FROM users WHERE id = ?", [req.user.id]);
+      if (!row || !Number(row.must_change_password)) return next();
+      return res.status(403).json({
+        success: false,
+        error: "يجب تغيير كلمة المرور قبل المتابعة",
+        code: "PASSWORD_CHANGE_REQUIRED",
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
 export function requireAdmin(req, res, next) {
   if (!isAdmin(req.user?.role)) {
     return res.status(403).json({ success: false, error: "للمسؤول فقط", code: "FORBIDDEN" });

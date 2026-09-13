@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { upsertProductUnit } from "../utils/productUnits.js";
 import { round2 } from "../utils/money.js";
@@ -298,10 +299,10 @@ describe("purchase inventory policy (returns, discount, fractional)", () => {
     const sale = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         payment_method: "cash",
         items: [{ product_id: p.id, unit_id: p.kgId, quantity: 1, price: 6 }],
-      });
+      }));
     expect(sale.status).toBe(201);
     const before = await ctx.db.get(
       `SELECT unit_cost_at_sale, gross_profit FROM transaction_items

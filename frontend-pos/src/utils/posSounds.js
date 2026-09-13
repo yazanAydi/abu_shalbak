@@ -14,7 +14,7 @@ const MAX_MS = {
   scanSuccess: 650,
   productNotFound: 1300,
   checkoutDone: 1200,
-  approvalDecision: 850,
+  approvalDecision: 1200,
 };
 
 const pools = {};
@@ -23,6 +23,7 @@ let audioCtx = null;
 let unlocked = false;
 let active = null;
 let stopTimer = null;
+let pendingPlayback = null;
 
 const unlockClip = new Audio(
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"
@@ -94,14 +95,43 @@ function stopActive() {
   active = null;
 }
 
+function primePools() {
+  for (const name of Object.keys(URLS)) {
+    const pool = initPool(name);
+    for (const audio of [pool[0], pool[1]]) {
+      audio.muted = true;
+      audio.volume = 0;
+      audio
+        .play()
+        .then(() => {
+          audio.pause();
+          audio.currentTime = 0;
+          audio.muted = false;
+          audio.volume = 1;
+        })
+        .catch(() => {
+          audio.muted = false;
+          audio.volume = 1;
+        });
+    }
+  }
+}
+
 export function unlockPosAudio() {
   warmPosSounds();
   const ctx = getAudioContext();
   if (ctx?.state === "suspended") ctx.resume().catch(() => {});
-  if (unlocked) return;
-  unlocked = true;
-  unlockClip.volume = 0.01;
-  unlockClip.play().catch(() => {});
+  if (!unlocked) {
+    unlocked = true;
+    unlockClip.volume = 0.01;
+    unlockClip.play().catch(() => {});
+    primePools();
+  }
+  if (pendingPlayback) {
+    const name = pendingPlayback;
+    pendingPlayback = null;
+    play(name);
+  }
 }
 
 function scheduleStop(handle, maxMs) {
@@ -110,35 +140,61 @@ function scheduleStop(handle, maxMs) {
   }, maxMs);
 }
 
-function startPlayback(name) {
+function startHtml(name) {
   const maxMs = MAX_MS[name];
-  const maxSec = maxMs / 1000;
-  const buffer = buffers[name];
-  const ctx = getAudioContext();
-
-  if (buffer && ctx) {
-    if (ctx.state === "suspended") ctx.resume().catch(() => {});
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    source.onended = () => {
-      if (active === source) stopActive();
-    };
-    active = source;
-    const playLen = Math.min(maxSec, buffer.duration);
-    source.start(0, 0, playLen);
-    scheduleStop(source, maxMs);
-    return source;
-  }
-
   const audio = takeFromPool(name);
+  audio.muted = false;
+  audio.volume = 1;
   active = audio;
   audio.onended = () => {
     if (active === audio) stopActive();
   };
-  audio.play().catch(() => {});
+  const started = audio.play();
+  if (started && typeof started.catch === "function") {
+    started.catch(() => {
+      pendingPlayback = name;
+    });
+  }
   scheduleStop(audio, maxMs);
   return audio;
+}
+
+function startBuffer(name) {
+  const maxMs = MAX_MS[name];
+  const maxSec = maxMs / 1000;
+  const buffer = buffers[name];
+  const ctx = getAudioContext();
+  if (!buffer || !ctx || ctx.state !== "running") return startHtml(name);
+
+  const source = ctx.createBufferSource();
+  const gain = ctx.createGain();
+  gain.gain.value = name === "approvalDecision" ? 2.2 : 1;
+  source.buffer = buffer;
+  source.connect(gain);
+  gain.connect(ctx.destination);
+  source.onended = () => {
+    if (active === source) stopActive();
+  };
+  active = source;
+  const playLen = Math.min(maxSec, buffer.duration);
+  source.start(0, 0, playLen);
+  scheduleStop(source, maxMs);
+  return source;
+}
+
+function startPlayback(name) {
+  const buffer = buffers[name];
+  const ctx = getAudioContext();
+  if (buffer && ctx) {
+    if (ctx.state === "suspended") {
+      ctx.resume()
+        .then(() => startBuffer(name))
+        .catch(() => startHtml(name));
+      return null;
+    }
+    return startBuffer(name);
+  }
+  return startHtml(name);
 }
 
 function play(name) {
@@ -183,12 +239,15 @@ export function playApprovalDecision(kind, id) {
     if (announcedDecisions.has(key)) return;
     announcedDecisions.add(key);
   }
-  play("approvalDecision");
+  delete buffers.approvalDecision;
+  decodeSound("approvalDecision").finally(() => {
+    play("approvalDecision");
+  });
 }
 
 if (typeof window !== "undefined") {
   warmPosSounds();
-  const opts = { once: true, capture: true };
+  const opts = { capture: true };
   window.addEventListener("pointerdown", unlockPosAudio, opts);
   window.addEventListener("keydown", unlockPosAudio, opts);
 }

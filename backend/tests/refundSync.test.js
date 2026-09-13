@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { approveRefundRequest } from "../services/refundRequestService.js";
 
@@ -31,10 +32,10 @@ describe("Refund sync (sections G + J)", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 3, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     transactionId = checkoutRes.body.data.transaction_id;
   });
 
@@ -127,10 +128,10 @@ describe("Refund sync (sections G + J)", () => {
     const sale = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 2, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     expect(sale.status).toBe(201);
     const txId = sale.body.data.transaction_id;
 

@@ -1884,6 +1884,22 @@ async function migrateOnAccountRequestsTable(db) {
   `);
 }
 
+async function migrateCheckoutIdempotencyFingerprint(db) {
+  if (!(await tableHasColumn(db, "transactions", "payload_fingerprint"))) {
+    await db.run("ALTER TABLE transactions ADD COLUMN payload_fingerprint TEXT");
+  }
+  if (!(await tableHasColumn(db, "on_account_requests", "idempotency_key"))) {
+    await db.run("ALTER TABLE on_account_requests ADD COLUMN idempotency_key TEXT");
+  }
+  if (!(await tableHasColumn(db, "on_account_requests", "payload_fingerprint"))) {
+    await db.run("ALTER TABLE on_account_requests ADD COLUMN payload_fingerprint TEXT");
+  }
+  await db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_on_account_requests_idempotency_key
+     ON on_account_requests(idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
+}
+
 async function migrateRepairPartialMigrationTables(db) {
   const partial = await db.all(
     `SELECT name FROM sqlite_master
@@ -2008,6 +2024,32 @@ async function migrateMustChangePasswordColumn(db) {
       "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
     );
   }
+}
+
+async function migrateTelegramPollRecoveryTables(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS telegram_poll_offsets (
+      bot_kind TEXT PRIMARY KEY,
+      next_offset INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS telegram_poll_failures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_kind TEXT NOT NULL,
+      update_id INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      error TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'skipped', 'retried')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (bot_kind, update_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_telegram_poll_failures_status
+      ON telegram_poll_failures(status, updated_at);
+  `);
 }
 
 async function migrateUserPermissionsColumn(db) {
@@ -2355,6 +2397,8 @@ export async function initDatabase(dbPath) {
   await migrateSuspendedSalesTables(db);
   await migrateFractionalInventoryQuantityTypes(db);
   await migrateRefundPaymentMethodOnAccount(db);
+  await migrateCheckoutIdempotencyFingerprint(db);
+  await migrateTelegramPollRecoveryTables(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);

@@ -17,49 +17,52 @@ import { validateCustomerCredit, throwCreditError } from "../utils/customerCredi
 
 export { getTelegramManagerUser };
 
-export async function createOnAccountRequest(db, params) {
-  const { cashierId, shiftId, custId, saleSnapshot, totals, req } = params;
+async function insertOnAccountRequest(db, params) {
+  const { cashierId, shiftId, custId, saleSnapshot, totals, req, idempotencyKey, payloadFingerprint } =
+    params;
+  const ins = await db.run(
+    `INSERT INTO on_account_requests (
+      cashier_id, shift_id, customer_id, sale_snapshot_json,
+      subtotal, tax, total_amount, on_account_amount, payment_method, status,
+      idempotency_key, payload_fingerprint
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    [
+      cashierId,
+      shiftId,
+      custId,
+      JSON.stringify(saleSnapshot),
+      totals.subtotal,
+      totals.tax,
+      totals.total,
+      totals.onAccountTotal,
+      totals.summaryMethod,
+      idempotencyKey || saleSnapshot?.idempotencyKey || null,
+      payloadFingerprint || null,
+    ]
+  );
+  const requestId = ins.lastID;
+  const row = await db.get("SELECT * FROM on_account_requests WHERE id = ?", [requestId]);
+  const cashier = await db.get("SELECT username FROM users WHERE id = ?", [cashierId]);
+  const customer = await db.get("SELECT name FROM customers WHERE id = ?", [custId]);
 
-  const created = await withTransaction(db, async () => {
-    const ins = await db.run(
-      `INSERT INTO on_account_requests (
-        cashier_id, shift_id, customer_id, sale_snapshot_json,
-        subtotal, tax, total_amount, on_account_amount, payment_method, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [
-        cashierId,
-        shiftId,
-        custId,
-        JSON.stringify(saleSnapshot),
-        totals.subtotal,
-        totals.tax,
-        totals.total,
-        totals.onAccountTotal,
-        totals.summaryMethod,
-      ]
-    );
-    const requestId = ins.lastID;
-    const row = await db.get("SELECT * FROM on_account_requests WHERE id = ?", [requestId]);
-    const cashier = await db.get("SELECT username FROM users WHERE id = ?", [cashierId]);
-    const customer = await db.get("SELECT name FROM customers WHERE id = ?", [custId]);
+  if (req?.user) {
+    await logAuditUser(db, req.user, AUDIT_ACTIONS.ON_ACCOUNT_REQUEST_CREATE, "on_account_requests", requestId, null, {
+      customer_id: custId,
+      on_account_amount: totals.onAccountTotal,
+      total: totals.total,
+    });
+  }
 
-    if (req?.user) {
-      await logAuditUser(db, req.user, AUDIT_ACTIONS.ON_ACCOUNT_REQUEST_CREATE, "on_account_requests", requestId, null, {
-        customer_id: custId,
-        on_account_amount: totals.onAccountTotal,
-        total: totals.total,
-      });
-    }
+  return {
+    request: row,
+    request_id: requestId,
+    cashier,
+    customer,
+    totals,
+  };
+}
 
-    return {
-      request: row,
-      request_id: requestId,
-      cashier,
-      customer,
-      totals,
-    };
-  });
-
+export async function notifyOnAccountRequestTelegram(db, created, cashierId, custId) {
   let telegramMessageId = null;
   if (isZimmaTelegramConfigured()) {
     try {
@@ -79,10 +82,26 @@ export async function createOnAccountRequest(db, params) {
       console.error("Telegram zimma send failed:", e.message);
     }
   }
+  return telegramMessageId;
+}
+
+export async function createOnAccountRequest(db, params, options = {}) {
+  const { cashierId, custId } = params;
+  const created = options.inTransaction
+    ? await insertOnAccountRequest(db, params)
+    : await withTransaction(db, () => insertOnAccountRequest(db, params));
+
+  let telegramMessageId = null;
+  if (!options.skipTelegram) {
+    telegramMessageId = await notifyOnAccountRequestTelegram(db, created, cashierId, custId);
+  }
 
   return {
     request: created.request,
     request_id: created.request_id,
+    cashier: created.cashier,
+    customer: created.customer,
+    totals: created.totals,
     pending_approval: true,
     telegram: isZimmaTelegramConfigured() && !!telegramMessageId,
     message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
@@ -371,6 +390,7 @@ export async function approveOnAccountRequest(
         changeCurrencyId: snapshot.changeCurrencyId,
         changeOriginalAmount: snapshot.changeOriginalAmount,
         idempotencyKey: snapshot.idempotencyKey,
+        payloadFingerprint: request.payload_fingerprint || snapshot.payloadFingerprint || null,
         suspendedSaleId: snapshot.suspendedSaleId,
         promoBreakdown: snapshot.promoBreakdown || [],
       },

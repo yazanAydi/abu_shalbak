@@ -3,6 +3,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import {
   parseWeightBarcode,
@@ -163,7 +164,7 @@ describe("weight-embedded scale barcodes", () => {
     const res = await request(ctx.app)
       .post("/api/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         payment_method: "cash",
         items: [
           {
@@ -174,7 +175,7 @@ describe("weight-embedded scale barcodes", () => {
             scanned_barcode: "2100006012500",
           },
         ],
-      });
+      }));
 
     expect(res.status).toBe(201);
     const total = res.body?.data?.total ?? res.body.total;

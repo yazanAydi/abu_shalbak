@@ -1,0 +1,16 @@
+---
+description: Keep development and the live shop isolated
+alwaysApply: true
+---
+
+# Dev vs store
+
+| | Dev | Live shop |
+|---|-----|-----------|
+| Env file | `.env.development` | `.env.store` |
+| Command | `npm start` from repo root | `npm run store:up` |
+| API | `:5001` | Docker `:3000` |
+| DB | `supermarket-dev.db` | `./data/supermarket.db` |
+| Telegram | tokens **empty** | store tokens only |
+
+Do not run `npm start` inside `frontend/` or `frontend-pos/` alone. Do not set `REACT_APP_API_BASE` in `frontend/.env` (admin uses the proxy). Cashiers on LAN use `:3000/pos`, not `:3002`.

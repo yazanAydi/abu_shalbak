@@ -1,0 +1,16 @@
+---
+description: Money, stock, and sale invariants that must not be broken
+globs: backend/**/*.{js,mjs}
+alwaysApply: false
+---
+
+# Invariants
+
+- Round money with `round2` / `sumMoney` from `utils/money.js`. Weighed KG POS lines: `roundScaleSaleTotal`.
+- POS sale tax is always **0** (`utils/tax.js`). Purchase invoices may have VAT.
+- Stock truth is `inventory_ledger`. Update `products.stock` only as an atomic cache. Negative stock is allowed.
+- Historical profit: `transaction_items.unit_cost_at_sale` — never live `products.cost`.
+- Completed `transactions` are immutable. Refunds only. Checkout needs `idempotency_key`.
+- Multi-row money/stock writes go through `withTransaction` (`utils/dbTx.js`).
+- Schema changes: `database/init.js` only. Do not execute `migrations/archive/`.
+- `products.sku` is not a barcode. Operational `store_id` is `1`.

@@ -5,6 +5,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import {
   extractBarcodesFromText,
@@ -159,7 +160,7 @@ describe("Product barcodes", () => {
     const sale = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [
           {
             product_id: productId,
@@ -170,7 +171,7 @@ describe("Product barcodes", () => {
           },
         ],
         payment_method: "cash",
-      });
+      }));
     expect(sale.status).toBe(201);
 
     const saleBody = sale.body.data ?? sale.body;

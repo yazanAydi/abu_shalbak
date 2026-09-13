@@ -1,15 +1,26 @@
 import axios from "axios";
 import { getToken, removeToken } from "./utils/auth";
 
-function getBaseURL() {
-  const env = process.env.REACT_APP_API_BASE;
-  if (env != null && String(env).trim() !== "") {
-    return String(env).trim().replace(/\/$/, "");
+/**
+ * POS API root. Store/production must be "" (same host that served /pos).
+ * Dev `npm start` sets REACT_APP_API_BASE from the root script / .env.
+ */
+export function getPosApiBaseURL(env) {
+  if (process.env.NODE_ENV === "production") {
+    return "";
   }
-  if (process.env.NODE_ENV === "development") {
-    return "http://127.0.0.1:5001";
+  if (env && env.NODE_ENV === "production") {
+    return "";
+  }
+  const raw = env ? env.REACT_APP_API_BASE : process.env.REACT_APP_API_BASE;
+  if (raw != null && String(raw).trim() !== "") {
+    return String(raw).trim().replace(/\/$/, "");
   }
   return "";
+}
+
+function getBaseURL() {
+  return getPosApiBaseURL();
 }
 
 /** Absolute API URL for fetch/SSE (axios already applies baseURL). */

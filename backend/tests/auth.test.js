@@ -63,7 +63,7 @@ describe("Auth", () => {
     expect(res.body.data.user.username).toBe("testadmin");
   });
 
-  test("must_change_password does not block shift start", async () => {
+  test("must_change_password blocks mutations until the password is changed", async () => {
     const hash = await bcrypt.hash("oldpass123", 4);
     await ctx.db.run(
       "INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, 'cashier', 1)",
@@ -75,16 +75,58 @@ describe("Auth", () => {
     expect(loginRes.body.user.must_change_password).toBe(true);
     const token = loginRes.body.token;
 
-    const current = await request(ctx.app)
-      .get("/api/v1/shifts/current")
-      .set(authHeader(token));
-    expect(current.status).toBe(200);
+    const me = await request(ctx.app).get("/api/v1/auth/me").set(authHeader(token));
+    expect(me.status).toBe(200);
+    expect(me.body.data.user.must_change_password).toBe(true);
 
     const started = await request(ctx.app)
       .post("/api/v1/shifts/start")
       .set(authHeader(token))
       .send({});
-    expect(started.status).toBe(201);
-    expect(started.body.data?.shift_id ?? started.body.shift_id).toBeTruthy();
+    expect(started.status).toBe(403);
+    expect(started.body.code).toBe("PASSWORD_CHANGE_REQUIRED");
+
+    const changed = await request(ctx.app)
+      .post("/api/v1/auth/change-password")
+      .set(authHeader(token))
+      .send({ current_password: "oldpass123", new_password: "newpass123" });
+    expect(changed.status).toBe(200);
+
+    const startedAfter = await request(ctx.app)
+      .post("/api/v1/shifts/start")
+      .set(authHeader(token))
+      .send({});
+    expect(startedAfter.status).toBe(201);
+    expect(startedAfter.body.data?.shift_id ?? startedAfter.body.shift_id).toBeTruthy();
+  });
+
+  test("office admin with must_change_password cannot mutate products until change", async () => {
+    const hash = await bcrypt.hash("oldadmin1", 4);
+    await ctx.db.run(
+      "INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, 'admin', 1)",
+      ["newadmin", hash]
+    );
+    const loginRes = await login(ctx.app, "newadmin", "oldadmin1", "office");
+    expect(loginRes.status).toBe(200);
+    const token = loginRes.body.token;
+
+    const blocked = await request(ctx.app)
+      .post("/api/v1/products")
+      .set(authHeader(token))
+      .send({ barcode: "8800990001", name: "محظور", price: 1, stock: 0 });
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.code).toBe("PASSWORD_CHANGE_REQUIRED");
+
+    const changed = await request(ctx.app)
+      .post("/api/v1/auth/change-password")
+      .set(authHeader(token))
+      .send({ current_password: "oldadmin1", new_password: "newadmin1" });
+    expect(changed.status).toBe(200);
+
+    const allowed = await request(ctx.app)
+      .post("/api/v1/products")
+      .set(authHeader(token))
+      .send({ barcode: "8800990001", name: "مسموح", price: 1, stock: 0, unit: "حبة" });
+    expect(allowed.status).toBe(201);
   });
 });

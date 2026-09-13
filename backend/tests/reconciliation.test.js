@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { deriveStockFromLedger } from "../utils/inventoryLedger.js";
@@ -43,10 +44,10 @@ describe("Reporting reconciliation and inventory source of truth", () => {
     return request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity, price: 10 }],
         payment_method: "cash",
-      });
+      }));
   }
 
   test("Scenario I: dashboard/today + last-7-days reconcile with raw source-table sums", async () => {

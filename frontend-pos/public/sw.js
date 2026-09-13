@@ -1,5 +1,5 @@
 /* Cache hashed CRA bundles and self-hosted fonts. HTML and /api stay on the network. */
-const CACHE = "abo-shalbak-pos-static-v1";
+const CACHE = "abo-shalbak-pos-static-v2";
 
 self.addEventListener("install", () => {
   self.skipWaiting();

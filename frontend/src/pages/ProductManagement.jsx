@@ -26,6 +26,7 @@ import { pickExportColumns } from "../utils/reportExport";
 import "./productDashboard/productBarcodes.css";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import { fetchBarcodeLookup, normalizeBarcode } from "../utils/barcode";
+import { SCANNER_SUBMIT_EVENT } from "../utils/blockDevToolsShortcuts";
 import { focusNextField } from "../utils/focusNavigation";
 import {
   displayProductBarcode,
@@ -406,6 +407,16 @@ export default function ProductManagement() {
     checkBarcodeConflict(e.target.value);
     focusNextField(e.target);
   }
+
+  useEffect(() => {
+    function onScannerSubmit(e) {
+      const el = e.target;
+      if (!el || el.name !== "add-barcode") return;
+      checkBarcodeConflict(el.value);
+    }
+    document.addEventListener(SCANNER_SUBMIT_EVENT, onScannerSubmit);
+    return () => document.removeEventListener(SCANNER_SUBMIT_EVENT, onScannerSubmit);
+  }, [checkBarcodeConflict]);
 
   async function onUpload(ev) {
     const file = ev.target.files?.[0];
@@ -987,6 +998,9 @@ export default function ProductManagement() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="بحث بالباركود أو الاسم أو الرقم"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.preventDefault();
+                }}
               />
               <CameraBarcodeButton
                 onScan={(code) => setSearch(normalizeBarcode(code))}

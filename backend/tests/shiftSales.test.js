@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 
 describe("shift current sales for refund picker", () => {
@@ -46,20 +47,20 @@ describe("shift current sales for refund picker", () => {
     const sale1 = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     expect(sale1.status).toBe(201);
     const tx1 = sale1.body.data?.transaction_id ?? sale1.body.transaction_id;
 
     const sale2 = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 2, price: product.price }],
         payment_method: "visa",
-      });
+      }));
     expect(sale2.status).toBe(201);
     const tx2 = sale2.body.data?.transaction_id ?? sale2.body.transaction_id;
 
@@ -86,10 +87,10 @@ describe("shift current sales for refund picker", () => {
     const sale = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: product.price }],
         payment_method: "cash",
-      });
+      }));
     const txId = sale.body.data?.transaction_id ?? sale.body.transaction_id;
 
     await ctx.db.run(

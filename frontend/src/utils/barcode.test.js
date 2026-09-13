@@ -1,4 +1,4 @@
-import { fetchBarcodeLookup, lookupProductByBarcode } from "./barcode";
+import { fetchBarcodeLookup, lookupProductByBarcode, looksLikeBarcodeQuery, normalizeBarcode } from "./barcode";
 
 const mockGet = jest.fn();
 
@@ -44,5 +44,17 @@ describe("admin barcode lookup", () => {
       id: 9,
       name: "حليب",
     });
+  });
+
+  test("normalizeBarcode keeps leading zeros and converts Arabic digits", () => {
+    expect(normalizeBarcode("00012345")).toBe("00012345");
+    expect(normalizeBarcode("  ٠١٢٣٤٥٦  ")).toBe("0123456");
+  });
+
+  test("looksLikeBarcodeQuery accepts scanner digits and rejects product names", () => {
+    expect(looksLikeBarcodeQuery("00012345")).toBe(true);
+    expect(looksLikeBarcodeQuery("7290000107189")).toBe(true);
+    expect(looksLikeBarcodeQuery("حليب كامل الدسم")).toBe(false);
+    expect(looksLikeBarcodeQuery("123")).toBe(false);
   });
 });

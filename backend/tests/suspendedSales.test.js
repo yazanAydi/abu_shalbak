@@ -4,7 +4,9 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
+import { executeCheckoutSale } from "../services/checkoutSaleService.js";
 
 describe("Suspended sales (hold cart)", () => {
   let ctx;
@@ -145,14 +147,14 @@ describe("Suspended sales (hold cart)", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [
           { product_id: ctx.productId, quantity: 2, price: 10 },
           { product_id: extraProductId, quantity: 1, price: 5 },
         ],
         payment_method: "cash",
         suspended_sale_id: suspendedId,
-      });
+      }));
 
     expect(checkoutRes.status).toBe(201);
     expect(checkoutRes.body.data.total).toBe(25);
@@ -176,14 +178,14 @@ describe("Suspended sales (hold cart)", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [
           { product_id: ctx.productId, quantity: 2, price: 10 },
           { product_id: extraProductId, quantity: 1, price: 5 },
         ],
         payment_method: "cash",
         suspended_sale_id: suspendedId,
-      });
+      }));
 
     expect(checkoutRes.status).toBe(201);
     expect(checkoutRes.body.data.total).toBe(25);
@@ -210,11 +212,11 @@ describe("Suspended sales (hold cart)", () => {
     const checkoutRes = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 2, price: 10 }],
         payment_method: "cash",
         suspended_sale_id: suspendedId,
-      });
+      }));
 
     expect(checkoutRes.status).toBe(201);
     expect(checkoutRes.body.data.total).toBe(20);
@@ -259,12 +261,234 @@ describe("Suspended sales (hold cart)", () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
         payment_method: "cash",
-      });
+      }));
 
     expect(res.status).toBe(409);
     expect(res.body.data?.code || res.body.code).toBe("PRICE_MISMATCH");
+  });
+
+  async function restoreShelfPrice(price = 10) {
+    await ctx.db.run("UPDATE products SET price = ? WHERE id = ?", [price, ctx.productId]);
+    await ctx.db.run(
+      "UPDATE product_units SET price = ? WHERE product_id = ? AND is_default = 1",
+      [price, ctx.productId]
+    );
+  }
+
+  test("second checkout of the same hold with a new key does not create another sale", async () => {
+    await restoreShelfPrice(10);
+    const suspendRes = await suspendItem(1, 10);
+    const suspendedId = suspendRes.body.data.id;
+    const stockBefore = (
+      await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId])
+    ).stock;
+    const txBefore = await ctx.db.get("SELECT COUNT(*) AS c FROM transactions");
+    const payBefore = await ctx.db.get("SELECT COUNT(*) AS c FROM sale_payments");
+    const ledgerBefore = await ctx.db.get(
+      "SELECT COUNT(*) AS c FROM inventory_ledger WHERE product_id = ? AND movement_type = 'sale'",
+      [ctx.productId]
+    );
+
+    const first = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+        payment_method: "cash",
+        suspended_sale_id: suspendedId,
+        idempotency_key: "hold-first-key-aaaaaa",
+      });
+    expect(first.status).toBe(201);
+    const firstTx = first.body.data.transaction_id;
+
+    const second = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+        payment_method: "cash",
+        suspended_sale_id: suspendedId,
+        idempotency_key: "hold-second-key-bbbbbb",
+      });
+    expect(second.status).toBe(409);
+    expect(second.body.data?.code || second.body.code).toBe("SUSPENDED_ALREADY_COMPLETED");
+
+    const replay = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+        payment_method: "cash",
+        suspended_sale_id: suspendedId,
+        idempotency_key: "hold-first-key-aaaaaa",
+      });
+    expect(replay.status).toBe(200);
+    expect(replay.body.data.idempotent_replay).toBe(true);
+    expect(replay.body.data.transaction_id).toBe(firstTx);
+
+    const txAfter = await ctx.db.get("SELECT COUNT(*) AS c FROM transactions");
+    const payAfter = await ctx.db.get("SELECT COUNT(*) AS c FROM sale_payments");
+    const ledgerAfter = await ctx.db.get(
+      "SELECT COUNT(*) AS c FROM inventory_ledger WHERE product_id = ? AND movement_type = 'sale'",
+      [ctx.productId]
+    );
+    const stockAfter = (
+      await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId])
+    ).stock;
+    expect(Number(txAfter.c)).toBe(Number(txBefore.c) + 1);
+    expect(Number(payAfter.c)).toBe(Number(payBefore.c) + 1);
+    expect(Number(ledgerAfter.c)).toBe(Number(ledgerBefore.c) + 1);
+    expect(stockAfter).toBe(stockBefore - 1);
+  });
+
+  test("concurrent checkouts of the same hold with different keys create one sale", async () => {
+    await restoreShelfPrice(10);
+    const suspendRes = await suspendItem(1, 10);
+    const suspendedId = suspendRes.body.data.id;
+    const txBefore = await ctx.db.get("SELECT COUNT(*) AS c FROM transactions");
+
+    const [a, b] = await Promise.all([
+      request(ctx.app)
+        .post("/api/v1/checkout")
+        .set(authHeader(cashierToken))
+        .send({
+          items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+          payment_method: "cash",
+          suspended_sale_id: suspendedId,
+          idempotency_key: "hold-conc-key-aaaaaaa1",
+        }),
+      request(ctx.app)
+        .post("/api/v1/checkout")
+        .set(authHeader(cashierToken))
+        .send({
+          items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+          payment_method: "cash",
+          suspended_sale_id: suspendedId,
+          idempotency_key: "hold-conc-key-bbbbbbb2",
+        }),
+    ]);
+
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([201, 409]);
+    const winner = a.status === 201 ? a : b;
+    const loser = a.status === 409 ? a : b;
+    expect(loser.body.data?.code || loser.body.code).toBe("SUSPENDED_ALREADY_COMPLETED");
+
+    const txAfter = await ctx.db.get("SELECT COUNT(*) AS c FROM transactions");
+    expect(Number(txAfter.c)).toBe(Number(txBefore.c) + 1);
+    const hold = await ctx.db.get("SELECT status FROM suspended_sales WHERE id = ?", [suspendedId]);
+    expect(hold.status).toBe("completed");
+    expect(winner.body.data.transaction_id).toBeTruthy();
+  });
+
+  test("failed checkout after claiming a hold rolls the hold back to suspended", async () => {
+    await restoreShelfPrice(10);
+    const suspendRes = await suspendItem(1, 10);
+    const suspendedId = suspendRes.body.data.id;
+    const cashier = await ctx.db.get("SELECT id FROM users WHERE username = 'testcashier'");
+    const promo = await ctx.db.run(
+      `INSERT INTO promotions
+         (name, offer_type, product_id, discount_value, limit_qty, used_qty, active)
+       VALUES ('Hold rollback cap', 'percentage', ?, 10, 1, 1, 1)`,
+      [ctx.productId]
+    );
+    const txBefore = await ctx.db.get("SELECT COUNT(*) AS c FROM transactions");
+
+    await expect(
+      executeCheckoutSale(ctx.db, {
+        cashierId: cashier.id,
+        shiftId,
+        custId: null,
+        itemsForJson: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+        normalized: [
+          {
+            product_id: ctx.productId,
+            barcode: "9990001",
+            name: "Test Product",
+            quantity: 1,
+            price: 10,
+            cost: 5,
+            taxRate: 0,
+            stock_delta: 1,
+            scanned_barcode: null,
+            product_barcode_id: null,
+            product_unit_id: null,
+            unit_name: "حبة",
+            conversion_to_base: 1,
+          },
+        ],
+        detailed: [{ lineNet: 10, lineTax: 0, lineGross: 10 }],
+        subtotal: 10,
+        tax: 0,
+        total: 10,
+        discount: 0,
+        paymentLines: [{ method: "cash", amount: 10, nis_equivalent: 10, original_amount: 10 }],
+        summaryMethod: "cash",
+        onAccountTotal: 0,
+        cashTotal: 10,
+        changeNis: 0,
+        changeCurrencyId: null,
+        changeOriginalAmount: 0,
+        idempotencyKey: "hold-rollback-key-xxxxxx",
+        suspendedSaleId: suspendedId,
+        promoBreakdown: [{ promotion_id: promo.lastID, units_used: 1 }],
+      })
+    ).rejects.toMatchObject({ code: "PROMO_LIMIT", status: 409 });
+
+    const hold = await ctx.db.get("SELECT status FROM suspended_sales WHERE id = ?", [suspendedId]);
+    expect(hold.status).toBe("suspended");
+    const txAfter = await ctx.db.get("SELECT COUNT(*) AS c FROM transactions");
+    expect(Number(txAfter.c)).toBe(Number(txBefore.c));
+  });
+});
+
+describe("Negative stock is allowed at POS checkout", () => {
+  let ctx;
+  let cashierToken;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+    cashierToken = (await login(ctx.app, "testcashier", "cashpass123", "pos")).body.token;
+    await request(ctx.app)
+      .post("/api/v1/shifts/start")
+      .set(authHeader(cashierToken))
+      .send({ opening_cash: 50 });
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  test("selling 5 units with stock 2 succeeds and leaves stock at -3", async () => {
+    await ctx.db.run("UPDATE products SET stock = 2, price = 10 WHERE id = ?", [ctx.productId]);
+    await ctx.db.run(
+      "UPDATE product_units SET price = 10 WHERE product_id = ? AND is_default = 1",
+      [ctx.productId]
+    );
+
+    const res = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send({
+        items: [{ product_id: ctx.productId, quantity: 5, price: 10 }],
+        payment_method: "cash",
+        idempotency_key: "neg-stock-sale-5-vs-2",
+      });
+
+    expect(res.status).toBe(201);
+    const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
+    expect(product.stock).toBe(-3);
+    const ledger = await ctx.db.all(
+      `SELECT quantity_delta, qty_after FROM inventory_ledger
+       WHERE product_id = ? AND movement_type = 'sale'
+       ORDER BY id`,
+      [ctx.productId]
+    );
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].quantity_delta).toBe(-5);
+    expect(ledger[0].qty_after).toBe(-3);
   });
 });

@@ -6,7 +6,7 @@ import {
   readXlsxMatrix,
 } from "./xlsxHelpers.js";
 
-/** @typedef {'hesabati_price_list' | 'hesabati_supplier_balances' | 'hesabati_customer_balances' | 'hesabati_operator_balances' | 'hesabati_building_balances' | 'arabic_retail' | 'generic_products' | 'unknown'} ImportType */
+/** @typedef {'hesabati_price_list' | 'hesabati_supplier_balances' | 'hesabati_customer_balances' | 'hesabati_operator_balances' | 'hesabati_building_balances' | 'abu_shalbak_supplier_list' | 'arabic_retail' | 'generic_products' | 'unknown'} ImportType */
 
 export const IMPORT_TYPE_LABELS = {
   hesabati_price_list: "قائمة الأسعار — حساباتي",
@@ -14,6 +14,7 @@ export const IMPORT_TYPE_LABELS = {
   hesabati_customer_balances: "أرصدة الزبائن — حساباتي",
   hesabati_operator_balances: "أرصدة المشغلين — حساباتي",
   hesabati_building_balances: "أرصدة العمارة — حساباتي",
+  abu_shalbak_supplier_list: "قائمة الموردين — أبو شلبك (نقل بين الأجهزة)",
   arabic_retail: "بطاقة الأصناف — حساباتي",
   generic_products: "منتجات (CSV/Excel عام)",
   unknown: "غير معروف",
@@ -45,10 +46,64 @@ export function detectTypeFromFilename(filename) {
   if (n.includes("أرصدة الموردين") || n.includes("ارصدة الموردين")) return "hesabati_supplier_balances";
   if (n.includes("أرصدة المشغلين") || n.includes("ارصدة المشغلين")) return "hesabati_operator_balances";
   if (n.includes("أرصدة العمارة") || n.includes("ارصدة العمارة")) return "hesabati_building_balances";
-  if (n.includes("أرصدة زبون") || n.includes("ارصدة زبون") || n.includes("أرصدة الزبون")) {
+  if (
+    n.includes("أرصدة زبون") ||
+    n.includes("ارصدة زبون") ||
+    n.includes("أرصدة الزبون") ||
+    n.includes("أرصدة العملاء") ||
+    n.includes("ارصدة العملاء") ||
+    n.includes("أرصدة الزبائن") ||
+    n.includes("ارصدة الزبائن")
+  ) {
     return "hesabati_customer_balances";
   }
   return null;
+}
+
+/**
+ * Filename hints at Hesabati customer/party balances (not suppliers).
+ * @param {string} filename
+ */
+export function filenameSuggestsCustomerBalances(filename) {
+  return detectTypeFromFilename(filename) === "hesabati_customer_balances";
+}
+
+/**
+ * Filename hints at Hesabati supplier balances.
+ * @param {string} filename
+ */
+export function filenameSuggestsSupplierBalances(filename) {
+  return detectTypeFromFilename(filename) === "hesabati_supplier_balances";
+}
+
+export const ABU_SHALBAK_SUPPLIER_LIST_EXPORT_ERROR =
+  "هذا ملف تصدير قائمة الموردين من أبو شلبك. لنقل الموردين بين الأجهزة ارفعه من استيراد أرصدة الموردين. " +
+  "استرداد الزبائن يحتاج ملف Excel من حساباتي أو missing-suppliers.xlsx.";
+
+export const UNSIGNED_ABU_SHALBAK_SUPPLIER_EXPORT_ERROR =
+  "هذا تصدير قديم بأرصدة مطلقة (₪) ولا يفرّق بين مستحق للمورد ودائن. " +
+  "صدّر الملف من جديد من إدارة الموردين بعد التحديث ثم ارفعه.";
+
+export const ABU_SHALBAK_SUPPLIER_LIST_RECOVERY_ERROR =
+  "استرداد الموردين يعمل على ملف Excel من حساباتي أو missing-suppliers.xlsx، وليس تصدير قائمة الموردين. " +
+  "لنقل الموردين بين الأجهزة استخدم استيراد أرصدة الموردين.";
+
+/**
+ * System CSV from إدارة الموردين (suppliers-YYYY-MM-DD.csv).
+ * @param {unknown[][]} matrix
+ * @param {string} [filename]
+ */
+export function isAbuShalbakSupplierListExport(matrix, filename = "") {
+  const n = normalizeFilename(filename);
+  if (/(^|[\\/])suppliers-\d{4}-\d{2}-\d{2}/i.test(n) || /(^|[\\/])supplier-balances-\d{4}-\d{2}-\d{2}/i.test(n)) {
+    return true;
+  }
+  const headers = (Array.isArray(matrix) && matrix[0] ? matrix[0] : []).map(normalizeHeaderCell);
+  if (!headers.length) return false;
+  const hasName = headers.some((h) => /^الاسم$|^name$/i.test(h));
+  const hasSystemBalance = headers.some((h) => /الرصيد\s*\(\s*مستحق\s*\)/.test(h));
+  const hasPaymentTerms = headers.some((h) => /شروط\s*الدفع/.test(h));
+  return hasName && (hasSystemBalance || hasPaymentTerms);
 }
 
 /**
@@ -88,6 +143,10 @@ function headersHaveGenericProducts(headers) {
  * @param {string} [filename]
  */
 export function detectImportType(matrix, filename = "") {
+  if (isAbuShalbakSupplierListExport(matrix, filename)) {
+    return { type: "abu_shalbak_supplier_list", confidence: "headers", headerRowIndex: 0 };
+  }
+
   const fromName = detectTypeFromFilename(filename);
   if (fromName) {
     return { type: fromName, confidence: "filename", headerRowIndex: findBalanceOrProductHeader(matrix, fromName) };

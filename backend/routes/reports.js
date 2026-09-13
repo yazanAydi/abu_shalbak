@@ -183,13 +183,15 @@ async function aggregateDayProfit(db, dateStr) {
   // so changing a cost today cannot alter the profit of an old sale.
   const cogsSales = await snapshotSalesCogsForRange(db, dateStr, dateStr);
   const cogsRef = await snapshotRefundCogsForRange(db, dateStr, dateStr);
-  const cost = round2(cogsSales - cogsRef);
-  const profit = round2(base.net_sales - cost);
+  const unknown = !!(cogsSales.unknown || cogsRef.unknown);
+  const cost = unknown ? null : round2((cogsSales.cogs || 0) - (cogsRef.cogs || 0));
+  const profit = unknown ? null : round2(base.net_sales - cost);
   return {
     date: dateStr,
     revenue: base.net_sales,
     cost,
     profit,
+    cost_unknown: unknown,
     total_sales: base.total_sales,
     net_sales: base.net_sales,
     total_transactions: base.total_transactions,
@@ -205,6 +207,7 @@ function emptyProfitDay(dateStr) {
     revenue: 0,
     cost: 0,
     profit: 0,
+    cost_unknown: false,
     total_sales: 0,
     net_sales: 0,
     total_transactions: 0,
@@ -259,11 +262,15 @@ async function aggregateProfitRange(db, fromYmd, toYmd) {
 
   for (const dateStr of dates) {
     const bucket = days.get(dateStr);
-    const cost = round2((salesCogs.get(dateStr) || 0) - (refundCogs.get(dateStr) || 0));
+    const salesDay = salesCogs.get(dateStr) || { known: 0, unknown: false };
+    const refundDay = refundCogs.get(dateStr) || { known: 0, unknown: false };
+    const unknown = !!(salesDay.unknown || refundDay.unknown);
+    const cost = unknown ? null : round2(salesDay.known - refundDay.known);
     bucket.net_sales = round2(bucket.total_sales - bucket.refunds_total);
     bucket.revenue = bucket.net_sales;
     bucket.cost = cost;
-    bucket.profit = round2(bucket.net_sales - cost);
+    bucket.profit = unknown ? null : round2(bucket.net_sales - cost);
+    bucket.cost_unknown = unknown;
   }
 
   return dates.map((dateStr) => days.get(dateStr));
@@ -412,7 +419,13 @@ export function createReportsRouter(db) {
         ? req.query.date.trim()
         : shopTodayYmd();
     const report = await aggregateDay(db, date);
-    res.json(report);
+    const profit = await aggregateDayProfit(db, date);
+    res.json({
+      ...report,
+      cost: profit.cost,
+      profit: profit.profit,
+      cost_unknown: profit.cost_unknown,
+    });
   });
 
   router.get("/range", salesReports, async (req, res) => {
@@ -436,9 +449,13 @@ export function createReportsRouter(db) {
     let refund_count = 0;
     let cash_total = 0;
     let card_total = 0;
+    let on_account_total = 0;
+    const profitDays = await aggregateProfitRange(db, from, to);
+    const profitByDate = new Map(profitDays.map((d) => [d.date, d]));
     const byDay = [];
     for (const dateStr of dates) {
       const r = await aggregateDay(db, dateStr);
+      const p = profitByDate.get(dateStr) || {};
       total_sales = round2(total_sales + r.total_sales);
       total_transactions += r.total_transactions;
       items_sold += r.items_sold;
@@ -447,6 +464,7 @@ export function createReportsRouter(db) {
       refund_count += r.refund_count;
       cash_total = round2(cash_total + r.cash_total);
       card_total = round2(card_total + r.card_total);
+      on_account_total = round2(on_account_total + r.on_account_total);
       byDay.push({
         date: dateStr,
         total_sales: r.total_sales,
@@ -457,8 +475,19 @@ export function createReportsRouter(db) {
         items_sold: r.items_sold,
         cash_total: r.cash_total,
         card_total: r.card_total,
+        on_account_total: r.on_account_total,
+        cost: p.cost ?? null,
+        profit: p.profit ?? null,
+        cost_unknown: !!p.cost_unknown,
       });
     }
+    const rangeUnknown = byDay.some((d) => d.cost_unknown);
+    const cost = rangeUnknown
+      ? null
+      : round2(byDay.reduce((s, d) => s + (Number(d.cost) || 0), 0));
+    const profit = rangeUnknown
+      ? null
+      : round2(byDay.reduce((s, d) => s + (Number(d.profit) || 0), 0));
     res.json({
       success: true,
       from,
@@ -471,6 +500,10 @@ export function createReportsRouter(db) {
       refund_count,
       cash_total,
       card_total,
+      on_account_total,
+      cost,
+      profit,
+      cost_unknown: rangeUnknown,
       by_day: byDay,
     });
   });

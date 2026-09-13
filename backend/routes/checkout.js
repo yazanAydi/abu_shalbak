@@ -17,11 +17,18 @@ import {
 import {
   loadSuspendedSaleItemMap,
 } from "../services/suspendedSaleService.js";
-import { createOnAccountRequest } from "../services/onAccountRequestService.js";
+import {
+  createOnAccountRequest,
+  notifyOnAccountRequestTelegram,
+} from "../services/onAccountRequestService.js";
 import { executeCheckoutSale } from "../services/checkoutSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { validateCustomerCredit } from "../utils/customerCredit.js";
 import { partyBalanceForSale } from "../utils/partyBalanceAroundMove.js";
+import {
+  fingerprintCheckoutPayload,
+  resolveCheckoutIdempotency,
+} from "../utils/checkoutIdempotency.js";
 
 const SUSPENDED_QTY_TOLERANCE = 0.0001;
 
@@ -142,33 +149,64 @@ export function createCheckoutRouter(db) {
     }
 
     const { items, customer_id } = req.body;
-    const idempotencyKey = req.body.idempotency_key
-      ? String(req.body.idempotency_key).trim()
-      : null;
+    const idempotencyKey = String(req.body.idempotency_key).trim();
     const settings = await getAppSettings(db);
     const custId = customer_id ? Number(customer_id) : null;
     const suspendedSaleId = req.body.suspended_sale_id ? Number(req.body.suspended_sale_id) : null;
+    const payloadFingerprint = fingerprintCheckoutPayload({
+      items,
+      payments: req.body.payments,
+      payment_method: req.body.payment_method,
+      customer_id: custId,
+      suspended_sale_id: suspendedSaleId,
+    });
+
+    try {
+      const early = await resolveCheckoutIdempotency(db, {
+        key: idempotencyKey,
+        fingerprint: payloadFingerprint,
+        userId: req.user.id,
+      });
+      if (early.kind === "sale") {
+        return res.status(200).json(await buildResponseFromTransaction(early.transactionId, settings));
+      }
+      if (early.kind === "oa_pending") {
+        return res.status(202).json({
+          pending_approval: true,
+          request_id: early.requestId,
+          message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
+          telegram: false,
+          idempotent_replay: true,
+        });
+      }
+    } catch (e) {
+      if (e?.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      throw e;
+    }
 
     let suspendedContext = null;
     if (suspendedSaleId) {
-      const { sale, itemMap } = await loadSuspendedSaleItemMap(db, suspendedSaleId);
-      if (!sale || !itemMap) {
+      const hold = await db.get("SELECT * FROM suspended_sales WHERE id = ?", [suspendedSaleId]);
+      if (!hold) {
         return res.status(404).json({
           error: "الفاتورة المعلقة غير موجودة أو مكتملة",
           code: "SUSPENDED_NOT_FOUND",
         });
       }
-      suspendedContext = { sale, itemMap, usedKeys: new Set() };
-    }
-
-    if (idempotencyKey) {
-      const existing = await db.get(
-        "SELECT id FROM transactions WHERE idempotency_key = ?",
-        [idempotencyKey]
-      );
-      if (existing) {
-        return res.status(200).json(await buildResponseFromTransaction(existing.id, settings));
+      if (hold.status !== "suspended") {
+        return res.status(409).json({
+          error: "الفاتورة المعلقة مكتملة أو غير موجودة",
+          code: "SUSPENDED_ALREADY_COMPLETED",
+        });
       }
+      const { sale, itemMap } = await loadSuspendedSaleItemMap(db, suspendedSaleId);
+      if (!sale || !itemMap) {
+        return res.status(409).json({
+          error: "الفاتورة المعلقة مكتملة أو غير موجودة",
+          code: "SUSPENDED_ALREADY_COMPLETED",
+        });
+      }
+      suspendedContext = { sale, itemMap, usedKeys: new Set() };
     }
 
     const uniqueProductIds = [
@@ -472,56 +510,60 @@ export function createCheckoutRouter(db) {
 
     const detailed = saleTotals.lines;
 
-    if (onAccountTotal > 0) {
-      try {
-        const saleSnapshot = {
-          itemsForJson,
-          normalized,
-          detailed,
-          subtotal,
-          tax,
-          total,
-          discount,
-          paymentLines,
-          summaryMethod,
-          cashTendered,
-          onAccountTotal,
-          cashTotal,
-          changeNis,
-          changeCurrencyId,
-          changeOriginalAmount: changeOriginal,
-          idempotencyKey,
-          suspendedSaleId: suspendedSaleId || null,
-          promoBreakdown,
-        };
-        const result = await createOnAccountRequest(db, {
-          cashierId: req.user.id,
-          shiftId: shift.id,
-          custId,
-          saleSnapshot,
-          totals: {
+    try {
+      const result = await withTransaction(db, async () => {
+        const resolved = await resolveCheckoutIdempotency(db, {
+          key: idempotencyKey,
+          fingerprint: payloadFingerprint,
+          userId: req.user.id,
+        });
+        if (resolved.kind !== "proceed") return resolved;
+
+        if (onAccountTotal > 0) {
+          const saleSnapshot = {
+            itemsForJson,
+            normalized,
+            detailed,
             subtotal,
             tax,
             total,
-            onAccountTotal,
+            discount,
+            paymentLines,
             summaryMethod,
-          },
-          req,
-        });
-        return res.status(202).json({
-          pending_approval: true,
-          request_id: result.request_id,
-          message: result.message,
-          telegram: result.telegram,
-        });
-      } catch (e) {
-        if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
-        return next(e);
-      }
-    }
+            cashTendered,
+            onAccountTotal,
+            cashTotal,
+            changeNis,
+            changeCurrencyId,
+            changeOriginalAmount: changeOriginal,
+            idempotencyKey,
+            payloadFingerprint,
+            suspendedSaleId: suspendedSaleId || null,
+            promoBreakdown,
+          };
+          const created = await createOnAccountRequest(
+            db,
+            {
+              cashierId: req.user.id,
+              shiftId: shift.id,
+              custId,
+              saleSnapshot,
+              totals: {
+                subtotal,
+                tax,
+                total,
+                onAccountTotal,
+                summaryMethod,
+              },
+              req,
+              idempotencyKey,
+              payloadFingerprint,
+            },
+            { inTransaction: true, skipTelegram: true }
+          );
+          return { kind: "oa_created", created };
+        }
 
-    try {
-      const result = await withTransaction(db, async () => {
         const creditErr = await validateCustomerCredit(db, custId, onAccountTotal);
         if (creditErr) {
           const err = new Error(creditErr.error);
@@ -540,7 +582,7 @@ export function createCheckoutRouter(db) {
           err.code = changeErr.code;
           throw err;
         }
-        return executeCheckoutSale(db, {
+        const sale = await executeCheckoutSale(db, {
         cashierId: req.user.id,
         shiftId: shift.id,
         custId,
@@ -559,16 +601,42 @@ export function createCheckoutRouter(db) {
         changeCurrencyId,
         changeOriginalAmount: changeOriginal,
         idempotencyKey,
+        payloadFingerprint,
         suspendedSaleId: suspendedSaleId || null,
         promoBreakdown,
         }, { inTransaction: true });
+        if (sale.replayTxId) return { kind: "sale", transactionId: sale.replayTxId };
+        return { kind: "sale_created", sale };
       });
 
-      if (result.replayTxId) {
-        return res.status(200).json(await buildResponseFromTransaction(result.replayTxId, settings));
+      if (result.kind === "sale") {
+        return res.status(200).json(await buildResponseFromTransaction(result.transactionId, settings));
+      }
+      if (result.kind === "oa_pending") {
+        return res.status(202).json({
+          pending_approval: true,
+          request_id: result.requestId,
+          message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
+          telegram: false,
+          idempotent_replay: true,
+        });
+      }
+      if (result.kind === "oa_created") {
+        const telegramMessageId = await notifyOnAccountRequestTelegram(
+          db,
+          result.created,
+          req.user.id,
+          custId
+        );
+        return res.status(202).json({
+          pending_approval: true,
+          request_id: result.created.request_id,
+          message: result.created.message || "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
+          telegram: !!telegramMessageId,
+        });
       }
 
-      const { transactionId, receiptNumber } = result;
+      const { transactionId, receiptNumber } = result.sale;
       const row = await db.get("SELECT * FROM transactions WHERE id = ?", [transactionId]);
       const receiptLines = normalized.map((L, i) => ({
         name: L.unit_name ? `${L.name} (${L.unit_name})` : L.name,
@@ -627,12 +695,28 @@ export function createCheckoutRouter(db) {
         String(e.code || "").startsWith("SQLITE_CONSTRAINT") &&
         /idempotency/i.test(String(e.message || ""))
       ) {
-        const existing = await db.get(
-          "SELECT id FROM transactions WHERE idempotency_key = ?",
-          [idempotencyKey]
-        );
-        if (existing) {
-          return res.status(200).json(await buildResponseFromTransaction(existing.id, settings));
+        try {
+          const existing = await resolveCheckoutIdempotency(db, {
+            key: idempotencyKey,
+            fingerprint: payloadFingerprint,
+            userId: req.user.id,
+          });
+          if (existing.kind === "sale") {
+            return res.status(200).json(await buildResponseFromTransaction(existing.transactionId, settings));
+          }
+          if (existing.kind === "oa_pending") {
+            return res.status(202).json({
+              pending_approval: true,
+              request_id: existing.requestId,
+              message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
+              telegram: false,
+              idempotent_replay: true,
+            });
+          }
+        } catch (replayErr) {
+          if (replayErr?.status) {
+            return res.status(replayErr.status).json({ error: replayErr.message, code: replayErr.code });
+          }
         }
       }
       next(e);

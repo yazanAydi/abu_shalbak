@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 
 function unwrap(res) {
@@ -212,10 +213,10 @@ describe("product organization (category/unit)", () => {
     const checkout = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
-      .send({
+      .send(withCheckoutKey({
         items: [{ product_id: product.id, quantity: 2, price: live.price }],
         payment_method: "cash",
-      });
+      }));
     expect(checkout.status).toBe(201);
     const txId = unwrap(checkout).transaction_id;
     expect(txId).toBeTruthy();

@@ -3,6 +3,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  withCheckoutKey,
 } from "./helpers.js";
 import {
   normalizeUnitName,
