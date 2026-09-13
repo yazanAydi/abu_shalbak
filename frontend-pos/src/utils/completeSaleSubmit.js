@@ -208,7 +208,7 @@ export async function submitCompleteSale({
     if (!printed?.ok) {
       dispatch({
         type: "CHECKOUT_PRINT_WARNING",
-        message: saleSavedPrintFailedMessage(receiptToPrint.receipt_number),
+        message: saleSavedPrintFailedMessage(receiptToPrint.receipt_number, printed?.error),
       });
     }
   }

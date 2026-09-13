@@ -145,6 +145,9 @@ describe("printReceipt (saved sale → Windows helper)", () => {
     expect(saleSavedPrintFailedMessage("INV-2026-000001")).toBe(
       "تم حفظ عملية البيع رقم INV-2026-000001، لكن تعذّرت طباعة الإيصال. لا تُعد إدخال البيع."
     );
+    expect(saleSavedPrintFailedMessage("INV-2026-000001", "تعذر الاتصال بمساعد طباعة ويندوز. تم حفظ البيع. استخدم إعادة الطباعة.")).toBe(
+      "تم حفظ عملية البيع رقم INV-2026-000001، لكن تعذّرت طباعة الإيصال. لا تُعد إدخال البيع. تعذر الاتصال بمساعد طباعة ويندوز. تم حفظ البيع. استخدم إعادة الطباعة."
+    );
   });
 
   test("POS print source uses the local helper and never the silent agent or Edge iframe", async () => {

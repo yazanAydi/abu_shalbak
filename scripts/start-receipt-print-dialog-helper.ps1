@@ -21,7 +21,7 @@ if (Test-Path $pidFile) {
   }
 }
 
-$env:ABO_ENV = "store"
+if (-not $env:ABO_ENV) { $env:ABO_ENV = "store" }
 $proc = Start-Process -FilePath $node.Source `
   -ArgumentList "backend/scripts/receipt-print-dialog-helper.mjs" `
   -WorkingDirectory (Get-Location) `

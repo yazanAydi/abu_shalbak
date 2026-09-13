@@ -17,9 +17,11 @@ export const RECEIPT_POPUP_BLOCKED_AR = "اسمح بفتح النافذة الم
 export { RECEIPT_PRINT_REVISION };
 
 /** Print dispatch failed after the sale was already saved. Never resubmit checkout. */
-export function saleSavedPrintFailedMessage(receiptNumber) {
+export function saleSavedPrintFailedMessage(receiptNumber, detail) {
   const num = receiptNumber != null && String(receiptNumber).trim() !== "" ? String(receiptNumber) : "—";
-  return `تم حفظ عملية البيع رقم ${num}، لكن تعذّرت طباعة الإيصال. لا تُعد إدخال البيع.`;
+  const base = `تم حفظ عملية البيع رقم ${num}، لكن تعذّرت طباعة الإيصال. لا تُعد إدخال البيع.`;
+  const extra = detail != null ? String(detail).trim() : "";
+  return extra ? `${base} ${extra}` : base;
 }
 
 function normalizeReceiptInput(receiptOrPayload, options = {}) {

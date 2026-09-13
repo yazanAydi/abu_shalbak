@@ -31,8 +31,8 @@ const mockPrintReceipt = jest.fn(async () => ({ ok: true }));
 
 jest.mock("./printReceipt", () => ({
   printReceipt: (...args) => mockPrintReceipt(...args),
-  saleSavedPrintFailedMessage: (n) =>
-    `تم حفظ عملية البيع رقم ${n}، لكن تعذّرت طباعة الإيصال. لا تُعد إدخال البيع.`,
+  saleSavedPrintFailedMessage: (n, detail) =>
+    `تم حفظ عملية البيع رقم ${n}، لكن تعذّرت طباعة الإيصال. لا تُعد إدخال البيع.${detail ? ` ${detail}` : ""}`,
 }));
 
 jest.mock("./posSounds", () => ({
@@ -289,5 +289,6 @@ describe("checkout conflict codes", () => {
     expect(mockPrintReceipt).toHaveBeenCalledTimes(1);
     expect(warnings[0].message).toContain("INV-9");
     expect(warnings[0].message).toContain("لا تُعد إدخال البيع");
+    expect(warnings[0].message).toContain("dispatch failed");
   });
 });
