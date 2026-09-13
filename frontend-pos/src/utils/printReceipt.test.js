@@ -9,7 +9,7 @@ import {
 } from "./printReceipt";
 
 const mockPost = jest.fn();
-const mockIframePrint = jest.fn();
+const mockWindowsPrint = jest.fn();
 const mockFillTab = jest.fn();
 
 jest.mock("../apiClient", () => ({
@@ -24,21 +24,24 @@ jest.mock("./auth", () => ({
 }));
 
 jest.mock("./printDocument", () => ({
-  printHtmlInHiddenIframe: (...args) => mockIframePrint(...args),
   fillReceiptPrintTab: (...args) => mockFillTab(...args),
   RECEIPT_PRINT_REVISION: "receipt-print-rev-20260913c-lifecycle-hold-tab-compare",
   RECEIPT_PRINT_TAB_NAME: "abo-receipt-print-tab",
 }));
 
+jest.mock("./windowsReceiptPrint", () => ({
+  printHtmlViaWindowsHelper: (...args) => mockWindowsPrint(...args),
+}));
+
 const RECEIPT_HTML =
   '<html lang="ar" dir="rtl"><body><div class="receipt">إيصال خبز</div></body></html>';
 
-describe("printReceipt (saved sale → browser iframe)", () => {
+describe("printReceipt (saved sale → Windows helper)", () => {
   beforeEach(() => {
     mockPost.mockReset();
-    mockIframePrint.mockReset();
+    mockWindowsPrint.mockReset();
     mockFillTab.mockReset();
-    mockIframePrint.mockResolvedValue({ ok: true, dispatched: true });
+    mockWindowsPrint.mockResolvedValue({ ok: true, printed: true, printTarget: "windows-helper" });
     mockFillTab.mockResolvedValue({ ok: true, opened: true, printTarget: "tab" });
     mockPost.mockResolvedValue({ data: { receipt_html: RECEIPT_HTML } });
     jest.spyOn(window, "alert").mockImplementation(() => {});
@@ -50,17 +53,17 @@ describe("printReceipt (saved sale → browser iframe)", () => {
     window.open.mockRestore();
   });
 
-  test("loads the saved sale HTML then prints in an iframe", async () => {
+  test("loads the saved sale HTML then prints through the Windows helper", async () => {
     const result = await printReceipt({ transaction_id: 42 });
-    expect(result).toEqual({ ok: true, dispatched: true });
+    expect(result).toEqual({ ok: true, printed: true, printTarget: "windows-helper" });
     expect(mockPost).toHaveBeenCalledTimes(1);
     expect(mockPost).toHaveBeenCalledWith(
       "/api/print-receipt",
       { transaction_id: 42 },
       expect.any(Object)
     );
-    expect(mockIframePrint).toHaveBeenCalledTimes(1);
-    expect(mockIframePrint).toHaveBeenCalledWith(RECEIPT_HTML);
+    expect(mockWindowsPrint).toHaveBeenCalledTimes(1);
+    expect(mockWindowsPrint).toHaveBeenCalledWith(RECEIPT_HTML, expect.objectContaining({ transactionId: 42 }));
     expect(window.open).not.toHaveBeenCalled();
     expect(window.alert).not.toHaveBeenCalled();
   });
@@ -78,7 +81,7 @@ describe("printReceipt (saved sale → browser iframe)", () => {
     await printReceipt({ transaction_id: 15 });
     expect(mockPost).toHaveBeenCalledTimes(2);
     expect(mockPost.mock.calls.every((c) => c[0] === "/api/print-receipt")).toBe(true);
-    expect(mockIframePrint).toHaveBeenCalledTimes(2);
+    expect(mockWindowsPrint).toHaveBeenCalledTimes(2);
   });
 
   test("overlapping prints for the same sale send one request", async () => {
@@ -94,7 +97,7 @@ describe("printReceipt (saved sale → browser iframe)", () => {
     release({ data: { receipt_html: RECEIPT_HTML } });
     const results = await Promise.all([first, second]);
     expect(results.some((r) => r.skipped)).toBe(true);
-    expect(mockIframePrint).toHaveBeenCalledTimes(1);
+    expect(mockWindowsPrint).toHaveBeenCalledTimes(1);
   });
 
   test("fetch failure after save uses checkout HTML fallback and still prints", async () => {
@@ -105,7 +108,7 @@ describe("printReceipt (saved sale → browser iframe)", () => {
       receipt_number: "INV-9",
     });
     expect(result.ok).toBe(true);
-    expect(mockIframePrint).toHaveBeenCalledWith(RECEIPT_HTML);
+    expect(mockWindowsPrint).toHaveBeenCalledWith(RECEIPT_HTML, expect.objectContaining({ transactionId: 9 }));
   });
 
   test("fetch failure without HTML alerts and does not print", async () => {
@@ -115,12 +118,12 @@ describe("printReceipt (saved sale → browser iframe)", () => {
     });
     const result = await printReceipt({ transaction_id: 21 });
     expect(result.ok).toBe(false);
-    expect(mockIframePrint).not.toHaveBeenCalled();
+    expect(mockWindowsPrint).not.toHaveBeenCalled();
     expect(window.alert).toHaveBeenCalledWith("تعذر الاتصال");
   });
 
-  test("iframe print failure alerts Arabic copy and is not a print-success claim", async () => {
-    mockIframePrint.mockResolvedValueOnce({
+  test("helper print failure alerts Arabic copy and is not a print-success claim", async () => {
+    mockWindowsPrint.mockResolvedValueOnce({
       ok: false,
       error: STORE_PRINT_UNAVAILABLE_AR,
     });
@@ -134,7 +137,7 @@ describe("printReceipt (saved sale → browser iframe)", () => {
     const result = await printReceipt("plain text receipt");
     expect(result).toEqual({ ok: false, error: "لا يوجد رقم عملية للطباعة" });
     expect(mockPost).not.toHaveBeenCalled();
-    expect(mockIframePrint).not.toHaveBeenCalled();
+    expect(mockWindowsPrint).not.toHaveBeenCalled();
     expect(window.alert).toHaveBeenCalledWith("لا يوجد رقم عملية للطباعة");
   });
 
@@ -144,19 +147,18 @@ describe("printReceipt (saved sale → browser iframe)", () => {
     );
   });
 
-  test("POS print source never talks to the Windows print-agent or silent API", () => {
+  test("POS print source uses the local helper and never the silent agent or Edge iframe", async () => {
     const src = fs.readFileSync(path.join(__dirname, "printReceipt.js"), "utf8");
     expect(src).not.toMatch(/17891/);
     expect(src).not.toMatch(/print-agent/i);
     expect(src).not.toContain('"/api/print-receipt/silent"');
-    expect(src).not.toMatch(/127\.0\.0\.1:\d+/);
+    expect(src).not.toContain("printHtmlInHiddenIframe");
     expect(src).toContain("/api/print-receipt");
-    expect(src).toContain("printHtmlInHiddenIframe");
+    expect(src).toContain("printHtmlViaWindowsHelper");
     expect(src).toContain("openReceiptForPrinting");
-    expect(src).toContain("fillReceiptPrintTab");
   });
 
-  test("openReceiptForPrinting uses the same saved HTML and does not iframe-print or auto-print", async () => {
+  test("openReceiptForPrinting uses the same saved HTML and does not auto-print", async () => {
     const tab = { document: { open: jest.fn(), write: jest.fn(), close: jest.fn() } };
     const printSpy = jest.spyOn(window, "print");
     const result = await openReceiptForPrinting({ transaction_id: 42 }, { tab });
@@ -167,7 +169,7 @@ describe("printReceipt (saved sale → browser iframe)", () => {
       expect.any(Object)
     );
     expect(mockFillTab).toHaveBeenCalledWith(tab, RECEIPT_HTML);
-    expect(mockIframePrint).not.toHaveBeenCalled();
+    expect(mockWindowsPrint).not.toHaveBeenCalled();
     expect(printSpy).not.toHaveBeenCalled();
     expect(window.open).not.toHaveBeenCalled();
     printSpy.mockRestore();

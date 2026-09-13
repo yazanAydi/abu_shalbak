@@ -2,10 +2,10 @@ import api from "../apiClient";
 import { getAuthHeaders } from "./auth";
 import {
   fillReceiptPrintTab,
-  printHtmlInHiddenIframe,
   RECEIPT_PRINT_REVISION,
   RECEIPT_PRINT_TAB_NAME,
 } from "./printDocument";
+import { printHtmlViaWindowsHelper } from "./windowsReceiptPrint";
 
 const inFlight = new Set();
 
@@ -70,10 +70,10 @@ async function loadSavedSaleHtml(transactionId, fallbackHtml) {
 }
 
 /**
- * Print a saved sale through the cashier browser.
- * Fetches the stored receipt HTML, then prints in a hidden iframe.
-     * Does not call the Windows print agent or its silent HTTP path.
-     * ok means the browser print() call was dispatched, not that paper printed.
+ * Print a saved sale through the cashier Windows helper.
+ * Fetches stored receipt HTML, then arms localhost:17892 for this request.
+ * Does not use Edge preview or /print-receipt/silent.
+ * ok means the helper accepted the job, not that paper came out.
  */
 export async function printReceipt(receiptOrPayload, options = {}) {
   const notify = options.alert !== false;
@@ -100,13 +100,16 @@ export async function printReceipt(receiptOrPayload, options = {}) {
       if (notify) window.alert(error);
       return { ok: false, error };
     }
-    const printed = await printHtmlInHiddenIframe(html);
+    const printed = await printHtmlViaWindowsHelper(html, {
+      transactionId,
+      fetchImpl: options.fetchImpl,
+    });
     if (!printed?.ok) {
       const error = printed?.error || STORE_PRINT_UNAVAILABLE_AR;
       if (notify) window.alert(error);
       return { ok: false, error };
     }
-    return { ok: true, dispatched: true };
+    return { ok: true, printed: true, printTarget: "windows-helper" };
   } finally {
     inFlight.delete(transactionId);
   }

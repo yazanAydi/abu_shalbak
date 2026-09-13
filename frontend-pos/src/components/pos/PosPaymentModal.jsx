@@ -340,6 +340,7 @@ export default function PosPaymentModal({
     function onKeyDown(ev) {
       if (!matchesShortcut(ev, POS_SHORTCUTS.submitPayment.key)) return;
       ev.preventDefault();
+      if (ev.repeat) return;
       handleTarhilRef.current();
     }
 

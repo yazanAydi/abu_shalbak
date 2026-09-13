@@ -29,6 +29,7 @@ import {
   mergePosShortcutsFromSettings,
 } from "../config/posShortcuts";
 import { matchesShortcut, shouldHandlePosShortcut } from "../utils/posKeyboard";
+import { onePressCashPayload, resolveF9CheckoutAction } from "../utils/f9Checkout";
 import { focusBarcodeInput } from "../utils/focusBarcodeInput";
 import { readWaitingRequestId, writeWaitingRequestId } from "../utils/posWaitingRequests";
 import { playScanSuccess, warmPosSounds } from "../utils/posSounds";
@@ -542,6 +543,9 @@ export default function Checkout() {
   const handleCompleteClickRef = useRef(handleCompleteClick);
   handleCompleteClickRef.current = handleCompleteClick;
 
+  const completeSaleRef = useRef(completeSale);
+  completeSaleRef.current = completeSale;
+
   const undoLastScanRef = useRef(undoLastScan);
   undoLastScanRef.current = undoLastScan;
 
@@ -598,15 +602,27 @@ export default function Checkout() {
       }
 
       if (matchesShortcut(ev, shortcuts.completeSale.key)) {
-        if (!cartItems.length || !shiftReady || isLoading || isSubmittingRef.current) return;
+        const decision = resolveF9CheckoutAction({
+          repeat: ev.repeat,
+          cartCount: cartItems.length,
+          shiftReady,
+          isLoading,
+          isSubmitting: isSubmittingRef.current,
+          payModalOpen,
+        });
+        if (decision.action === "ignore-repeat") {
+          ev.preventDefault();
+          return;
+        }
+        if (decision.action !== "cash-checkout") return;
         ev.preventDefault();
-        handleCompleteClickRef.current();
+        completeSaleRef.current(onePressCashPayload());
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cartItems.length, shiftReady, isLoading, shortcutsBlocked, shortcuts]);
+  }, [cartItems.length, shiftReady, isLoading, payModalOpen, shortcutsBlocked, shortcuts]);
 
   useEffect(() => {
     function onKeyDown(ev) {

@@ -248,6 +248,25 @@ describe("checkout conflict codes", () => {
     expect(mockPrintReceipt.mock.calls[0][0]).toMatchObject({ transaction_id: 44 });
   });
 
+  test("checkout failure does not print", async () => {
+    mockPost.mockRejectedValueOnce(apiError("IDEMPOTENCY_KEY_REUSE"));
+    const args = ctx();
+    args.activeSuspendedSaleId = null;
+    await submitCompleteSale(args);
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(mockPrintReceipt).not.toHaveBeenCalled();
+  });
+
+  test("print starts only after a saved transaction id", async () => {
+    mockPost.mockResolvedValueOnce({
+      data: { receipt_html: "<p>x</p>", receipt_number: "NO-ID" },
+    });
+    const args = ctx();
+    args.activeSuspendedSaleId = null;
+    await submitCompleteSale(args);
+    expect(mockPrintReceipt).not.toHaveBeenCalled();
+  });
+
   test("print failure after saved sale does not checkout again", async () => {
     mockPost.mockResolvedValueOnce({
       data: {

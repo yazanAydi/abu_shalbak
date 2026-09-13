@@ -175,7 +175,8 @@ export async function submitCompleteSale({
     }
     dispatch({ type: "CHECKOUT_SUCCESS", data: payload });
     playCheckoutDone();
-    receiptToPrint = payload?.receipt_html || payload?.receipt_text ? payload : null;
+    const savedId = Number(payload?.transaction_id);
+    receiptToPrint = Number.isFinite(savedId) && savedId > 0 ? payload : null;
     idempotencyKeyRef.current = null;
     if (submittedPayloadRef) submittedPayloadRef.current = null;
     setSelectedPayment(null);
