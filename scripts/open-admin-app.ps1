@@ -1,15 +1,10 @@
-# Open office admin/accountant as a Microsoft Edge app window.
-# Admin and accountant use the same /admin app (role is decided after login).
+# Open office admin as a Chromium app window with DevTools disabled.
+# A normal Edge/Chrome "Install as app" shortcut still allows F12, so a
+# barcode scanner suffix opens the Console over the page.
 #
-# This is Edge --app with a dedicated profile, not Chrome and not an
-# Install-as-app PWA. Inspect an existing .lnk with:
-#   .\scripts\open-pos-app.ps1 -Inspect
-#
-# Barcode scanners that send F12 still open DevTools in Chromium. Do not rely on
-# --disable-dev-tools. Configure the scanner terminator to Enter (see docs/BARCODE_SCANNER.md).
-#
-# Store (shop server):  .\scripts\open-admin-app.ps1 -CreateShortcut
-# Office PC on LAN:     .\scripts\open-admin-app.ps1 -Url http://192.168.1.10:3000/admin -CreateShortcut
+# Store:  .\scripts\open-admin-app.ps1
+# Dev:    .\scripts\open-admin-app.ps1 -Url http://127.0.0.1:3001/admin
+# Pin:    .\scripts\open-admin-app.ps1 -CreateShortcut
 param(
   [string]$Url = "http://127.0.0.1:3000/admin",
   [switch]$CreateShortcut
@@ -17,19 +12,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Resolve-EdgeExe {
+function Resolve-ChromiumBrowser {
   $candidates = @(
     (Join-Path ${env:ProgramFiles} "Microsoft\Edge\Application\msedge.exe"),
-    (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe")
+    (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
+    (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe"),
+    (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
   )
   foreach ($path in $candidates) {
-    if ($path -and (Test-Path -LiteralPath $path)) { return $path }
+    if ($path -and (Test-Path -LiteralPath $path)) {
+      return $path
+    }
   }
   return $null
 }
 
 function Get-BrowserArgs([string]$AppUrl, [string]$ProfileDir) {
   return @(
+    "--disable-dev-tools",
     "--no-first-run",
     "--no-default-browser-check",
     "--user-data-dir=$ProfileDir",
@@ -38,13 +39,13 @@ function Get-BrowserArgs([string]$AppUrl, [string]$ProfileDir) {
 }
 
 if ($Url -notmatch '^https?://') {
-  Write-Host "Invalid -Url. Use an http(s) admin address, e.g. http://192.168.1.10:3000/admin" -ForegroundColor Red
+  Write-Host "Invalid -Url. Use an http(s) admin address, e.g. http://127.0.0.1:3000/admin" -ForegroundColor Red
   exit 1
 }
 
-$browser = Resolve-EdgeExe
+$browser = Resolve-ChromiumBrowser
 if (-not $browser) {
-  Write-Host "Microsoft Edge was not found. Install Edge and recreate the office shortcut. A Chrome or PWA shortcut is a different app and will not match this setup." -ForegroundColor Red
+  Write-Host "Edge or Chrome was not found. Install Microsoft Edge or Google Chrome, then run this script again." -ForegroundColor Red
   exit 1
 }
 
@@ -63,14 +64,13 @@ if ($CreateShortcut) {
   }) -join " "
   $shortcut.WorkingDirectory = Split-Path -Parent $browser
   $shortcut.WindowStyle = 1
-  $shortcut.Description = "Abu Shalbak office (admin and accountant). Edge app window for /admin."
+  $shortcut.Description = "Open admin as an app (DevTools disabled so barcode scan cannot open the Console)"
   $shortcut.Save()
   Write-Host "Shortcut created: $shortcutPath" -ForegroundColor Green
-  Write-Host "Use this shortcut for both admin and accountant. Uninstall any old Edge/Chrome installed app / PWA if it is still on the desktop." -ForegroundColor DarkGray
-  Write-Host "This does not disable DevTools. If a scan opens the Console, set the scanner suffix to Enter. See docs/BARCODE_SCANNER.md" -ForegroundColor DarkGray
+  Write-Host "Use this shortcut only. Uninstall the old Edge/Chrome 'installed app' if it still opens the Console." -ForegroundColor DarkGray
   exit 0
 }
 
-Write-Host "Opening office app in Microsoft Edge" -ForegroundColor Green
+Write-Host "Opening admin app in $browser" -ForegroundColor Green
 Write-Host $Url -ForegroundColor DarkGray
 Start-Process -FilePath $browser -ArgumentList $browserArgs

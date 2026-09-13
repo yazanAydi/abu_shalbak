@@ -52,16 +52,10 @@ export function getFocusableFields(root) {
   return [...root.querySelectorAll("input, select, textarea")].filter(isNavigableField);
 }
 
-function isBarcodeEntryField(el) {
-  if (!el?.closest) return false;
-  return Boolean(el.closest(".barcode-input-row, .barcode-wrap, .barcode-input"));
-}
-
 /** Whether Enter should move focus instead of its default action. */
 export function shouldHandleEnterOnField(el) {
   if (!isNavigableField(el)) return false;
   if (el.tagName === "TEXTAREA") return false;
-  if (isBarcodeEntryField(el)) return false;
   if (isComboboxOpen(el)) return false;
   if (isPickerDropdownOpen(el)) return false;
   return true;

@@ -11,8 +11,8 @@
 
 ## Manual verification still required
 
-- Physical barcode scanner terminator (Enter vs F12) on store Edge app shortcuts — `docs/BARCODE_SCANNER.md`
-- Physical receipt output on cashier PCs (Edge 144+ policies + Windows default thermal printer) — `docs/RECEIPT_BROWSER_PRINT.md`
+- Physical barcode scanner behavior (keyboard wedge)
+- Receipt printer drivers / Windows print agent on the shop PC
 - Multi-cashier concurrent load on real LAN (unit tests use single process)
 - Backup restore drill on production DB copy
 - Shift close with real cash count and variance workflow

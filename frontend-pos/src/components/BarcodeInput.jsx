@@ -7,7 +7,6 @@ import {
   unlockPosAudio,
   warmPosSounds,
 } from "../utils/posSounds";
-import { SCANNER_SUBMIT_EVENT } from "../utils/blockDevToolsShortcuts";
 import "./BarcodeInput.css";
 
 const notFoundCache = new Set();
@@ -113,16 +112,6 @@ export default function BarcodeInput({ onProductFound, onError }) {
     },
     [onError, clearErrLater]
   );
-
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return undefined;
-    function onScannerSubmit() {
-      search(el.value);
-    }
-    el.addEventListener(SCANNER_SUBMIT_EVENT, onScannerSubmit);
-    return () => el.removeEventListener(SCANNER_SUBMIT_EVENT, onScannerSubmit);
-  }, [search]);
 
   function onKeyDown(ev) {
     if (ev.key === "Enter") {

@@ -48,17 +48,11 @@ export function assembleReceiptHeightMeasure(raw, env = process.env) {
   const rectHeight = Number(raw && raw.rectHeight) || 0;
   const receiptScrollHeight = Number(raw && raw.receiptScrollHeight) || 0;
   const bodyScrollHeight = Number(raw && raw.bodyScrollHeight) || 0;
-  const calculatedHeightPx = receiptSelectorFound
-    ? computeReceiptHeightFromBoxes({
-        rectHeight,
-        receiptScrollHeight,
-        bodyScrollHeight: 0,
-      })
-    : computeReceiptHeightFromBoxes({
-        rectHeight,
-        receiptScrollHeight,
-        bodyScrollHeight,
-      });
+  const calculatedHeightPx = computeReceiptHeightFromBoxes({
+    rectHeight,
+    receiptScrollHeight,
+    bodyScrollHeight,
+  });
   const calculatedHeightMm =
     calculatedHeightPx != null ? receiptPageHeightMmFromContentPx(calculatedHeightPx, env) : null;
   return {

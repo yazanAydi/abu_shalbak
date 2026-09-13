@@ -1,11 +1,7 @@
 /**
  * Hardware scanners often send a suffix (F12, Ctrl+Shift+J, F1) after the
- * digits. Chromium handles those as DevTools before the page. JavaScript
- * cannot reliably block browser-reserved shortcuts — configure the scanner
- * terminator to Enter (docs/BARCODE_SCANNER.md).
- *
- * After a scanner-like burst we still try preventDefault (best effort) and
- * ask the focused field to run its barcode lookup.
+ * digits. Chromium treats those as "open DevTools / Help", so the Console
+ * docks over the admin page on every scan.
  */
 
 const DEVTOOLS_KEYS = new Set(["f1", "f12"]);
@@ -14,11 +10,6 @@ const SCANNER_CTRL = new Set(["j", "p", "n", "t", "s"]);
 
 const SCANNER_WINDOW_MS = 400;
 const SCANNER_MIN_CHARS = 6;
-
-export const SCANNER_SUBMIT_EVENT = "abo-scanner-submit";
-export const SCANNER_RESERVED_KEY_EVENT = "abo-scanner-reserved-key";
-export const SCANNER_RESERVED_KEY_HINT_AR =
-  "الماسح أرسل اختصاراً محجوزاً للمتصفح (مثل F12). أبقَ هذه الصفحة مفتوحة واضبط لاحقة الماسح على Enter.";
 
 let burstCount = 0;
 let burstStarted = 0;
@@ -67,10 +58,9 @@ export function isScannerStolenBrowserShortcut(e) {
   return SCANNER_CTRL.has(keyName(e));
 }
 
-/** Best-effort only, and only right after a wedge-scanner digit burst. */
 export function shouldBlockBrowserShortcut(e) {
-  if (!isRecentScannerBurst()) return false;
-  return isScannerStolenBrowserShortcut(e);
+  if (isDevToolsShortcut(e)) return true;
+  return isRecentScannerBurst() && isScannerStolenBrowserShortcut(e);
 }
 
 function swallow(e) {
@@ -82,28 +72,19 @@ function swallow(e) {
   e.returnValue = false;
 }
 
-function notifyFocusedFieldToSubmit() {
-  const el = typeof document !== "undefined" ? document.activeElement : null;
-  if (!el) return;
-  const tag = el.tagName;
-  if (tag !== "INPUT" && tag !== "TEXTAREA") return;
-  el.dispatchEvent(new CustomEvent(SCANNER_SUBMIT_EVENT, { bubbles: true }));
-}
-
 function onKeyDown(e) {
   noteScannerKey(e);
-  if (!shouldBlockBrowserShortcut(e)) return;
-  swallow(e);
-  notifyFocusedFieldToSubmit();
-  if (isDevToolsShortcut(e) && typeof window !== "undefined") {
-    window.dispatchEvent(
-      new CustomEvent(SCANNER_RESERVED_KEY_EVENT, { detail: { key: keyName(e) } })
-    );
-  }
+  if (shouldBlockBrowserShortcut(e)) swallow(e);
 }
 
 function onKeyUp(e) {
   if (shouldBlockBrowserShortcut(e)) swallow(e);
+}
+
+function tryKeyboardLock() {
+  const lock = navigator.keyboard?.lock;
+  if (typeof lock !== "function") return;
+  lock.call(navigator.keyboard, ["F12", "F1"]).catch(() => {});
 }
 
 /** Install once at app boot. Returns a disposer for tests. */
@@ -114,6 +95,7 @@ export function installBlockDevToolsShortcuts() {
   const opts = { capture: true };
   window.addEventListener("keydown", onKeyDown, opts);
   window.addEventListener("keyup", onKeyUp, opts);
+  document.addEventListener("pointerdown", tryKeyboardLock, { once: true });
   return () => {
     window.removeEventListener("keydown", onKeyDown, opts);
     window.removeEventListener("keyup", onKeyUp, opts);

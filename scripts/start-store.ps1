@@ -1,6 +1,4 @@
-# Live shop - Docker on port 3000
-# Receipts print from each cashier's Edge window. Do not start the Windows print agent.
-# Do not apply Edge print policies here (that belongs on each cashier PC, never on a dev machine automatically).
+# Live shop - Docker on port 3000 + Windows receipt print agent
 param(
   [switch]$Build
 )
@@ -15,14 +13,9 @@ if (-not (Test-Path ".env.store")) {
 Write-Host "Starting STORE (Docker :3000)..." -ForegroundColor Green
 Write-Host "Config: .env.store - POS/Admin at http://YOUR_LAN_IP:3000" -ForegroundColor DarkGray
 
-$uninstallAgent = Join-Path (Get-Location) "scripts\uninstall-receipt-print-agent-startup.ps1"
-if (Test-Path $uninstallAgent) {
-  & $uninstallAgent
-}
-
-$stopAgent = Join-Path (Get-Location) "scripts\stop-receipt-print-agent.ps1"
-if (Test-Path $stopAgent) {
-  & $stopAgent
+$ensureToken = Join-Path (Get-Location) "scripts\ensure-receipt-print-agent-token.ps1"
+if (Test-Path $ensureToken) {
+  & $ensureToken
 }
 
 if ($Build) {
@@ -34,17 +27,31 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 docker compose ps
 
+$agentScript = Join-Path (Get-Location) "scripts\start-receipt-print-agent.ps1"
+if (Test-Path $agentScript) {
+  & $agentScript
+}
+
+$startupScript = Join-Path (Get-Location) "scripts\install-receipt-print-agent-startup.ps1"
+if (Test-Path $startupScript) {
+  & $startupScript
+}
+
 $adminApp = Join-Path (Get-Location) "scripts\open-admin-app.ps1"
 if (Test-Path $adminApp) {
   & $adminApp -CreateShortcut
 }
 
-$posApp = Join-Path (Get-Location) "scripts\open-pos-app.ps1"
-if (Test-Path $posApp) {
-  & $posApp -CreateShortcut
-}
-
 Write-Host ""
 Write-Host "Health: http://127.0.0.1:3000/api/v1/health" -ForegroundColor Yellow
-Write-Host "Cashier PCs: run scripts\setup-edge-silent-print.ps1 (elevated, once) and open POS from 'POS - Abu Shalbak'." -ForegroundColor Yellow
-Write-Host "Office PCs: open AboShalbak-Admin.lnk (admin and accountant). See docs/BARCODE_SCANNER.md if a scan opens DevTools." -ForegroundColor Yellow
+Write-Host "Print agent (Windows): Invoke-RestMethod http://127.0.0.1:17891/health" -ForegroundColor Yellow
+try {
+  $fromDocker = docker exec supermarket-pos node -e "fetch('http://host.docker.internal:17891/health').then(r=>r.text()).then(t=>console.log(t)).catch(()=>process.exit(1))"
+  if ($fromDocker) {
+    Write-Host "Print agent (Docker): $fromDocker" -ForegroundColor Green
+  } else {
+    Write-Host "Print agent (Docker): host.docker.internal:17891 not reachable yet. See data/receipt-print-agent.err.log" -ForegroundColor Yellow
+  }
+} catch {
+  Write-Host "Print agent (Docker): could not exec wget inside supermarket-pos" -ForegroundColor DarkGray
+}

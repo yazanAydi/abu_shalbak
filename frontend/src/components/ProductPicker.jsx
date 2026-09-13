@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { lookupProductByBarcode, looksLikeBarcodeQuery, normalizeBarcode } from "../utils/barcode";
+import { lookupProductByBarcode } from "../utils/barcode";
 import { searchProductsApi } from "../utils/productSearch";
 import { displayProductSku } from "../utils/entityCodeDisplay";
-import { SCANNER_SUBMIT_EVENT } from "../utils/blockDevToolsShortcuts";
 import CameraBarcodeButton from "./barcode/CameraBarcodeButton";
 import Icon from "./icons/Icon";
 import "./barcode/barcode-scanner.css";
@@ -21,16 +20,6 @@ export default function ProductPicker({
   const [loading, setLoading] = useState(false);
   const [scanErr, setScanErr] = useState("");
   const ref = useRef(null);
-  const inputRef = useRef(null);
-  const qRef = useRef("");
-  const resultsRef = useRef([]);
-  const loadingRef = useRef(false);
-  const inFlightRef = useRef(false);
-  const onPickRef = useRef(onPick);
-  onPickRef.current = onPick;
-  qRef.current = q;
-  resultsRef.current = results;
-  loadingRef.current = loading;
 
   useEffect(() => {
     const onDoc = (e) => {
@@ -63,12 +52,6 @@ export default function ProductPicker({
     return () => window.clearTimeout(timer);
   }, [q, scope]);
 
-  function clearQuery() {
-    setQ("");
-    setOpen(false);
-    setResults([]);
-  }
-
   async function handleCameraScan(code) {
     setScanErr("");
     try {
@@ -76,55 +59,29 @@ export default function ProductPicker({
       if (scope && String(product.inventory_scope || "retail") !== scope) {
         throw new Error(scope === "bakery" ? "هذا الصنف ليس من مواد المخبز" : "هذا الصنف ليس من منتجات المتجر");
       }
-      onPickRef.current(product);
-      clearQuery();
+      onPick(product);
+      setQ("");
+      setOpen(false);
+      setResults([]);
     } catch (e) {
       setScanErr(e.message || "تعذّر البحث");
     }
   }
 
   function pickProduct(product) {
-    onPickRef.current(product);
-    clearQuery();
-  }
-
-  async function submitScannedQuery() {
-    const code = normalizeBarcode(qRef.current);
-    if (!code || inFlightRef.current) return;
-    inFlightRef.current = true;
-    try {
-      if (looksLikeBarcodeQuery(code)) {
-        await handleCameraScan(code);
-        return;
-      }
-      if (!loadingRef.current && resultsRef.current.length > 0) {
-        pickProduct(resultsRef.current[0]);
-      }
-    } finally {
-      inFlightRef.current = false;
-    }
+    onPick(product);
+    setQ("");
+    setOpen(false);
+    setResults([]);
   }
 
   function onSearchKeyDown(e) {
-    if (e.key === "Tab" && looksLikeBarcodeQuery(qRef.current)) {
-      e.preventDefault();
-      void submitScannedQuery();
-      return;
-    }
     if (e.key !== "Enter" || e.defaultPrevented) return;
-    e.preventDefault();
-    void submitScannedQuery();
-  }
-
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return undefined;
-    function onScannerSubmit() {
-      void submitScannedQuery();
+    if (open && q.trim() && !loading && results.length > 0) {
+      e.preventDefault();
+      pickProduct(results[0]);
     }
-    el.addEventListener(SCANNER_SUBMIT_EVENT, onScannerSubmit);
-    return () => el.removeEventListener(SCANNER_SUBMIT_EVENT, onScannerSubmit);
-  }, []);
+  }
 
   return (
     <div ref={ref}>
@@ -132,11 +89,9 @@ export default function ProductPicker({
         <div className="ui-search" style={{ position: "relative", flex: 1 }}>
           <Icon name="search" />
           <input
-            ref={inputRef}
             className="ui-input"
             value={q}
             placeholder={placeholder}
-            autoComplete="off"
             onChange={(e) => {
               setQ(e.target.value);
               setOpen(true);

@@ -34,7 +34,7 @@ Run **only on the shop server PC**. Cashier PCs use a browser only.
 
 
 
-Setup: copy `.env.store.example` → `.env.store`, fill secrets, then `npm run store:up` (Docker). Cashier PCs print receipts from Edge; see `docs/RECEIPT_BROWSER_PRINT.md`. Do not apply Edge silent-print policies on the development PC.
+Setup: copy `.env.store.example` → `.env.store`, fill secrets, then `npm run store:up` (Docker + Windows receipt print agent). Requires Node.js LTS on the shop PC for silent thermal printing.
 
 
 

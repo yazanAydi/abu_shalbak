@@ -1,4 +1,3 @@
-# Legacy: no longer called from store startup. POS prints from the cashier Edge window.
 # Register the receipt print agent to start when the shop user signs in.
 # Printers are per-user, so this is ONLOGON (not a SYSTEM Windows service).
 Set-Location $PSScriptRoot\..

@@ -1,4 +1,4 @@
-# Stop leftover Windows receipt print agent if it is still running, then Docker store
+# Stop the Windows receipt print agent, then Docker store
 Set-Location $PSScriptRoot\..
 
 $agentScript = Join-Path (Get-Location) "scripts\stop-receipt-print-agent.ps1"
