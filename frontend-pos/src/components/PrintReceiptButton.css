@@ -19,3 +19,12 @@
 .print-rcpt-btn:not(:disabled):hover {
   background: #166534;
 }
+
+.print-rcpt-btn--diag {
+  background: #334155;
+  margin-top: 0.35rem;
+}
+
+.print-rcpt-btn--diag:not(:disabled):hover {
+  background: #1e293b;
+}

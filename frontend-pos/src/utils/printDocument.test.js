@@ -1,11 +1,15 @@
 import {
+  applyReceiptPrintPageAuto,
   applyReceiptPrintPageBox,
+  fillReceiptPrintTab,
   pageHeightMmFromContentPx,
   prepareReceiptIframeDocument,
   printHtmlInHiddenIframe,
   printDocumentWhenReady,
   readExistingPageHeightMm,
+  RECEIPT_PRINT_DIAG_BAR_ID,
   RECEIPT_PRINT_IFRAME_ID,
+  RECEIPT_PRINT_REVISION,
   resetReceiptPrintQueueForTests,
   waitForPrintableDocument,
 } from "./printDocument";
@@ -166,6 +170,7 @@ describe("printHtmlInHiddenIframe", () => {
     expect(created[0].iframe.style.width).toBe("80mm");
     expect(created[0].iframe.style.left).toBe("-10000px");
     expect(created[0].iframe.id).toBe(RECEIPT_PRINT_IFRAME_ID);
+    expect(created[0].iframe.setAttribute).toHaveBeenCalledWith("data-abo-print-rev", RECEIPT_PRINT_REVISION);
     expect(created[0].doc.title).toBe("");
     expect(created[0].style.textContent).toBe(
       `@page { size: 80mm ${pageHeightMmFromContentPx(454)}mm; margin: 0; }`
@@ -364,5 +369,51 @@ describe("waitForPrintableDocument", () => {
     release();
     await pending;
     expect(settled).toBe(true);
+  });
+});
+
+describe("receipt print revision and diagnostic tab", () => {
+  test("revision stamp is the store-build identifier", () => {
+    expect(RECEIPT_PRINT_REVISION).toBe("receipt-print-rev-20260913c-lifecycle-hold-tab-compare");
+    expect(window.__ABO_RECEIPT_PRINT_REV__).toBe(RECEIPT_PRINT_REVISION);
+    expect(document.documentElement.getAttribute("data-abo-receipt-print-rev")).toBe(RECEIPT_PRINT_REVISION);
+  });
+
+  test("applyReceiptPrintPageAuto changes only @page to auto", () => {
+    const style = { textContent: "@page { size: 80mm 125.12mm; margin: 0; }" };
+    const extra = { id: "abo-receipt-print-page", textContent: style.textContent };
+    const doc = {
+      querySelectorAll: (sel) => (sel === "style" ? [style] : []),
+      getElementById: (id) => (id === "abo-receipt-print-page" ? extra : null),
+    };
+    const page = applyReceiptPrintPageAuto(doc);
+    expect(page).toEqual({ widthMm: null, heightMm: null, size: "auto" });
+    expect(style.textContent).toBe("@page { size: auto; margin: 0; }");
+    expect(extra.textContent).toBe("@page { size: auto; margin: 0; }");
+  });
+
+  test("fillReceiptPrintTab writes HTML, applies measured size, and does not print or close", async () => {
+    const printSpy = jest.spyOn(window, "print").mockImplementation(() => {});
+    const doc = document.implementation.createHTMLDocument("");
+    const html =
+      "<!DOCTYPE html><html><head><style>@page { size: 80mm; margin: 0; }</style></head>" +
+      '<body><div class="receipt">إيصال</div></body></html>';
+    const tab = { document: doc, close: jest.fn() };
+    const result = await fillReceiptPrintTab(tab, html);
+    expect(result.ok).toBe(true);
+    expect(result.printTarget).toBe("tab");
+    expect(result.revision).toBe(RECEIPT_PRINT_REVISION);
+    expect(doc.querySelector(".receipt")?.textContent).toBe("إيصال");
+    expect(doc.getElementById(RECEIPT_PRINT_DIAG_BAR_ID)).toBeTruthy();
+    expect(doc.getElementById(RECEIPT_PRINT_DIAG_BAR_ID).getAttribute("data-abo-print-rev")).toBe(
+      RECEIPT_PRINT_REVISION
+    );
+    expect(doc.title).toBe("");
+    expect(printSpy).not.toHaveBeenCalled();
+    expect(tab.close).not.toHaveBeenCalled();
+    const autoBtn = doc.querySelector("[data-abo-diag='auto']");
+    autoBtn.click();
+    expect(doc.querySelector("style")?.textContent || "").toMatch(/size:\s*auto/);
+    printSpy.mockRestore();
   });
 });

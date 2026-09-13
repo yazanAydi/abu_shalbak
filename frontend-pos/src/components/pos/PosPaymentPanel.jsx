@@ -1,4 +1,5 @@
 import { POS_SHORTCUTS } from "../../config/posShortcuts";
+import { RECEIPT_PRINT_REVISION } from "../../utils/printDocument";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -14,6 +15,7 @@ export default function PosPaymentPanel({
   onComplete,
   receiptData,
   onPrintLocal,
+  onOpenReceiptTab,
 }) {
   return (
     <div className="pos-payment-panel">
@@ -59,6 +61,14 @@ export default function PosPaymentPanel({
             طباعة الإيصال
           </button>
         ) : null}
+        {receiptData?.transaction_id && onOpenReceiptTab ? (
+          <button type="button" className="pos-complete-btn secondary" onClick={onOpenReceiptTab}>
+            فتح الإيصال للطباعة
+          </button>
+        ) : null}
+        <p className="pos-complete-hint" data-abo-receipt-print-rev={RECEIPT_PRINT_REVISION} dir="ltr">
+          {RECEIPT_PRINT_REVISION}
+        </p>
       </div>
     </div>
   );

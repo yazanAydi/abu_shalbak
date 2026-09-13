@@ -19,7 +19,8 @@ import PosRefundNotifications from "../components/pos/PosRefundNotifications";
 import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
 import { requiresShiftForPos } from "../utils/roles";
 import ShiftStart from "../components/ShiftStart";
-import { printReceipt, saleSavedPrintFailedMessage } from "../utils/printReceipt";
+import { openReceiptForPrinting, printReceipt, saleSavedPrintFailedMessage } from "../utils/printReceipt";
+import { RECEIPT_PRINT_TAB_NAME } from "../utils/printDocument";
 import { submitCompleteSale } from "../utils/completeSaleSubmit";
 import { estimateCartTotals, buildCartLineDiscounts } from "../utils/posTotals";
 import { checkoutReducer, checkoutInitialState } from "../utils/checkoutCartReducer";
@@ -451,6 +452,12 @@ export default function Checkout() {
     }
   }
 
+  function doOpenReceiptTab() {
+    if (!receiptData?.transaction_id) return;
+    const tab = typeof window.open === "function" ? window.open("about:blank", RECEIPT_PRINT_TAB_NAME) : null;
+    openReceiptForPrinting(receiptData, { tab });
+  }
+
   function handleCompleteClick() {
     if (!cartItems.length || !shiftReady || isLoading) return;
     dispatch({ type: "CLEAR_SALE_ERR" });
@@ -741,6 +748,7 @@ export default function Checkout() {
           onComplete={handleCompleteClick}
           receiptData={receiptData}
           onPrintLocal={doPrintLocal}
+          onOpenReceiptTab={doOpenReceiptTab}
         />
       </footer>
 

@@ -13,6 +13,19 @@ export const PRINT_IFRAME_CLEANUP_MS = 750;
 export const RECEIPT_PRINT_MAX_MM = 400;
 export const RECEIPT_PRINT_MIN_MM = 20;
 export const RECEIPT_PRINT_BOTTOM_MM = 5;
+/** Store POS stamp. Confirm this exact string in Edge console or the served /pos JS. */
+export const RECEIPT_PRINT_REVISION = "receipt-print-rev-20260913c-lifecycle-hold-tab-compare";
+export const RECEIPT_PRINT_TAB_NAME = "abo-receipt-print-tab";
+export const RECEIPT_PRINT_DIAG_BAR_ID = "abo-receipt-print-diag-bar";
+
+if (typeof window !== "undefined") {
+  window.__ABO_RECEIPT_PRINT_REV__ = RECEIPT_PRINT_REVISION;
+  try {
+    window.document?.documentElement?.setAttribute("data-abo-receipt-print-rev", RECEIPT_PRINT_REVISION);
+  } catch {
+    /* ignore */
+  }
+}
 
 const IFRAME_PRINT_UNAVAILABLE_AR =
   "تعذر تجهيز طباعة الإيصال في المتصفح. استخدم إعادة الطباعة لهذه العملية.";
@@ -193,11 +206,104 @@ export function prepareReceiptIframeDocument(doc) {
   return applyReceiptPrintPageBox(doc);
 }
 
+/** Printer-configured paper. Content is unchanged. Not `80mm auto`. */
+export function applyReceiptPrintPageAuto(doc) {
+  const rule = "@page { size: auto; margin: 0; }";
+  replacePageRules(doc, rule);
+  return { widthMm: null, heightMm: null, size: "auto" };
+}
+
+function pageBoxLabel(page) {
+  if (page?.size === "auto") return "size: auto (ورق الطابعة)";
+  if (page?.widthMm != null && page?.heightMm != null) {
+    return `size: ${page.widthMm}mm ${page.heightMm}mm`;
+  }
+  if (page?.widthMm != null) return `size: ${page.widthMm}mm`;
+  return "size: (غير مطبّق)";
+}
+
+function updateDiagPageLabel(bar, page) {
+  const el = typeof bar.querySelector === "function" ? bar.querySelector("[data-abo-diag='page']") : null;
+  if (el) el.textContent = pageBoxLabel(page);
+}
+
+/**
+ * Screen-only chrome for the diagnostic receipt tab. Hidden when printing.
+ */
+export function injectReceiptPrintTabChrome(doc, { revision = RECEIPT_PRINT_REVISION, page } = {}) {
+  if (!doc?.body || typeof doc.createElement !== "function") return page || null;
+  let bar = typeof doc.getElementById === "function" ? doc.getElementById(RECEIPT_PRINT_DIAG_BAR_ID) : null;
+  if (!bar) {
+    const style = doc.createElement("style");
+    style.id = "abo-receipt-print-diag-style";
+    style.textContent = `
+      #${RECEIPT_PRINT_DIAG_BAR_ID} { position: sticky; top: 0; z-index: 9; background: #111; color: #fff; padding: 8px 10px; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 13px; direction: rtl; }
+      #${RECEIPT_PRINT_DIAG_BAR_ID} button { margin: 4px 0 4px 8px; padding: 6px 10px; cursor: pointer; }
+      #${RECEIPT_PRINT_DIAG_BAR_ID} .abo-diag-rev { opacity: 0.85; font-size: 12px; direction: ltr; unicode-bidi: isolate; }
+      @media print { #${RECEIPT_PRINT_DIAG_BAR_ID} { display: none !important; } }
+    `;
+    (doc.head || doc.body).appendChild(style);
+    bar = doc.createElement("div");
+    bar.id = RECEIPT_PRINT_DIAG_BAR_ID;
+    bar.setAttribute("data-abo-print-rev", revision);
+    bar.innerHTML = `
+      <div><strong>تشخيص طباعة الإيصال</strong> <span class="abo-diag-rev">${revision}</span></div>
+      <div>
+        <button type="button" data-abo-diag="print">طباعة</button>
+        <button type="button" data-abo-diag="measured">حجم الإيصال المقاس</button>
+        <button type="button" data-abo-diag="auto">ورق الطابعة (size: auto)</button>
+      </div>
+      <p data-abo-diag="page"></p>
+      <p>لا تُغلق هذه النافذة تلقائياً ولا تُطبع وحدها. أغلقها يدوياً بعد التجربة.</p>
+    `;
+    doc.body.insertBefore(bar, doc.body.firstChild);
+    const win = doc.defaultView;
+    const printBtn = bar.querySelector?.("[data-abo-diag='print']");
+    const measuredBtn = bar.querySelector?.("[data-abo-diag='measured']");
+    const autoBtn = bar.querySelector?.("[data-abo-diag='auto']");
+    printBtn?.addEventListener("click", () => {
+      if (win && typeof win.print === "function") win.print();
+    });
+    measuredBtn?.addEventListener("click", () => {
+      updateDiagPageLabel(bar, applyReceiptPrintPageBox(doc));
+    });
+    autoBtn?.addEventListener("click", () => {
+      updateDiagPageLabel(bar, applyReceiptPrintPageAuto(doc));
+    });
+  }
+  updateDiagPageLabel(bar, page);
+  return page || null;
+}
+
+/**
+ * Load saved-sale HTML into an already-opened top-level tab.
+ * Applies measured thermal @page. Does not print or close the tab.
+ */
+export async function fillReceiptPrintTab(tab, html) {
+  const doc = tab?.document;
+  if (!doc || typeof doc.write !== "function") {
+    return { ok: false, error: IFRAME_PRINT_UNAVAILABLE_AR };
+  }
+  const source = html == null ? "" : String(html);
+  if (!source.trim()) {
+    return { ok: false, error: IFRAME_PRINT_UNAVAILABLE_AR };
+  }
+  if (typeof doc.open === "function") doc.open();
+  doc.write(source);
+  if (typeof doc.close === "function") doc.close();
+  const live = tab.document;
+  await waitForPrintableDocument(live);
+  const page = prepareReceiptIframeDocument(live);
+  injectReceiptPrintTabChrome(live, { revision: RECEIPT_PRINT_REVISION, page });
+  return { ok: true, opened: true, printTarget: "tab", page, revision: RECEIPT_PRINT_REVISION };
+}
+
 function createReceiptIframe(widthMm) {
   const iframe = document.createElement("iframe");
   iframe.id = RECEIPT_PRINT_IFRAME_ID;
   iframe.setAttribute("aria-hidden", "true");
   iframe.setAttribute("title", "");
+  iframe.setAttribute("data-abo-print-rev", RECEIPT_PRINT_REVISION);
   iframe.style.position = "fixed";
   iframe.style.left = "-10000px";
   iframe.style.top = "0";

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { printReceipt } from "../utils/printReceipt";
+import { openReceiptForPrinting, printReceipt } from "../utils/printReceipt";
+import { RECEIPT_PRINT_TAB_NAME } from "../utils/printDocument";
 import "./PrintReceiptButton.css";
 
 export default function PrintReceiptButton({ transactionId }) {
@@ -15,16 +16,37 @@ export default function PrintReceiptButton({ transactionId }) {
     }
   }
 
+  async function handleOpenTab() {
+    if (!transactionId) return;
+    const tab = typeof window.open === "function" ? window.open("about:blank", RECEIPT_PRINT_TAB_NAME) : null;
+    setLoading(true);
+    try {
+      await openReceiptForPrinting({ transaction_id: transactionId }, { tab });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   if (!transactionId) return null;
 
   return (
-    <button
-      type="button"
-      className="print-rcpt-btn"
-      onClick={handlePrint}
-      disabled={loading}
-    >
-      {loading ? "…" : "طباعة الإيصال"}
-    </button>
+    <div className="print-rcpt-actions">
+      <button
+        type="button"
+        className="print-rcpt-btn"
+        onClick={handlePrint}
+        disabled={loading}
+      >
+        {loading ? "…" : "طباعة الإيصال"}
+      </button>
+      <button
+        type="button"
+        className="print-rcpt-btn print-rcpt-btn--diag"
+        onClick={handleOpenTab}
+        disabled={loading}
+      >
+        فتح الإيصال للطباعة
+      </button>
+    </div>
   );
 }

@@ -1,13 +1,16 @@
 import fs from "fs";
 import path from "path";
 import {
+  openReceiptForPrinting,
   printReceipt,
+  RECEIPT_POPUP_BLOCKED_AR,
   saleSavedPrintFailedMessage,
   STORE_PRINT_UNAVAILABLE_AR,
 } from "./printReceipt";
 
 const mockPost = jest.fn();
 const mockIframePrint = jest.fn();
+const mockFillTab = jest.fn();
 
 jest.mock("../apiClient", () => ({
   __esModule: true,
@@ -22,6 +25,9 @@ jest.mock("./auth", () => ({
 
 jest.mock("./printDocument", () => ({
   printHtmlInHiddenIframe: (...args) => mockIframePrint(...args),
+  fillReceiptPrintTab: (...args) => mockFillTab(...args),
+  RECEIPT_PRINT_REVISION: "receipt-print-rev-20260913c-lifecycle-hold-tab-compare",
+  RECEIPT_PRINT_TAB_NAME: "abo-receipt-print-tab",
 }));
 
 const RECEIPT_HTML =
@@ -31,7 +37,9 @@ describe("printReceipt (saved sale → browser iframe)", () => {
   beforeEach(() => {
     mockPost.mockReset();
     mockIframePrint.mockReset();
+    mockFillTab.mockReset();
     mockIframePrint.mockResolvedValue({ ok: true, dispatched: true });
+    mockFillTab.mockResolvedValue({ ok: true, opened: true, printTarget: "tab" });
     mockPost.mockResolvedValue({ data: { receipt_html: RECEIPT_HTML } });
     jest.spyOn(window, "alert").mockImplementation(() => {});
     jest.spyOn(window, "open");
@@ -144,5 +152,37 @@ describe("printReceipt (saved sale → browser iframe)", () => {
     expect(src).not.toMatch(/127\.0\.0\.1:\d+/);
     expect(src).toContain("/api/print-receipt");
     expect(src).toContain("printHtmlInHiddenIframe");
+    expect(src).toContain("openReceiptForPrinting");
+    expect(src).toContain("fillReceiptPrintTab");
+  });
+
+  test("openReceiptForPrinting uses the same saved HTML and does not iframe-print or auto-print", async () => {
+    const tab = { document: { open: jest.fn(), write: jest.fn(), close: jest.fn() } };
+    const printSpy = jest.spyOn(window, "print");
+    const result = await openReceiptForPrinting({ transaction_id: 42 }, { tab });
+    expect(result).toMatchObject({ ok: true, opened: true, printTarget: "tab" });
+    expect(mockPost).toHaveBeenCalledWith(
+      "/api/print-receipt",
+      { transaction_id: 42 },
+      expect.any(Object)
+    );
+    expect(mockFillTab).toHaveBeenCalledWith(tab, RECEIPT_HTML);
+    expect(mockIframePrint).not.toHaveBeenCalled();
+    expect(printSpy).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
+    printSpy.mockRestore();
+  });
+
+  test("openReceiptForPrinting reports a blocked popup", async () => {
+    window.open.mockReturnValue(null);
+    const result = await openReceiptForPrinting({ transaction_id: 5 });
+    expect(result).toEqual({
+      ok: false,
+      error: RECEIPT_POPUP_BLOCKED_AR,
+      blocked: true,
+    });
+    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockFillTab).not.toHaveBeenCalled();
+    expect(window.alert).toHaveBeenCalledWith(RECEIPT_POPUP_BLOCKED_AR);
   });
 });
