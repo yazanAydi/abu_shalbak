@@ -8,6 +8,7 @@
  */
 
 export const RECEIPT_PRINT_IFRAME_ID = "abo-pos-receipt-print";
+/** Retained export. Not a success timer — elapsed time must not remove the iframe. */
 export const PRINT_IFRAME_CLEANUP_MS = 750;
 export const RECEIPT_PRINT_MAX_MM = 400;
 export const RECEIPT_PRINT_MIN_MM = 20;
@@ -193,9 +194,6 @@ export function prepareReceiptIframeDocument(doc) {
 }
 
 function createReceiptIframe(widthMm) {
-  const prev = typeof document.getElementById === "function" ? document.getElementById(RECEIPT_PRINT_IFRAME_ID) : null;
-  if (prev && typeof prev.remove === "function") prev.remove();
-
   const iframe = document.createElement("iframe");
   iframe.id = RECEIPT_PRINT_IFRAME_ID;
   iframe.setAttribute("aria-hidden", "true");
@@ -214,74 +212,115 @@ function createReceiptIframe(widthMm) {
   return iframe;
 }
 
-function waitIframeDocument(iframe) {
-  const doc = iframe.contentDocument;
-  if (doc && doc.readyState === "complete") return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const onLoad = () => resolve();
-    const onError = () => reject(new Error(IFRAME_PRINT_UNAVAILABLE_AR));
-    if (typeof iframe.addEventListener === "function") {
-      iframe.addEventListener("load", onLoad, { once: true });
-      iframe.addEventListener("error", onError, { once: true });
-    } else {
-      resolve();
+function isBlankIframeDocument(doc) {
+  if (!doc) return true;
+  const uri = String(doc.URL || doc.documentURI || "");
+  if (uri === "about:srcdoc") return false;
+  if (uri && uri !== "about:blank") return false;
+  try {
+    if (typeof doc.querySelector === "function" && doc.querySelector(".receipt")) {
+      return false;
     }
+  } catch {
+    /* ignore */
+  }
+  return String(doc.body?.innerHTML || "").trim().length === 0;
+}
+
+function waitForReceiptDocument(iframe) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const succeed = (doc) => {
+      if (settled) return;
+      settled = true;
+      resolve(doc);
+    };
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(IFRAME_PRINT_UNAVAILABLE_AR));
+    };
+    const consider = () => {
+      const doc = iframe.contentDocument;
+      if (!isBlankIframeDocument(doc)) succeed(doc);
+    };
+    if (typeof iframe.addEventListener === "function") {
+      iframe.addEventListener("load", consider);
+      iframe.addEventListener("error", fail, { once: true });
+    }
+    consider();
   });
 }
 
-async function loadHtmlIntoIframe(iframe, html) {
-  const doc = iframe.contentDocument;
-  if (doc && typeof doc.write === "function") {
-    if (typeof doc.open === "function") doc.open();
-    doc.write(html);
-    if (typeof doc.close === "function") doc.close();
-    return;
-  }
-  iframe.srcdoc = html;
-  await waitIframeDocument(iframe);
-}
-
-function scheduleIframeCleanup(iframe, win, cleanupMs) {
-  let done = false;
-  const finish = () => {
-    if (done) return;
-    done = true;
-    try {
-      iframe.remove?.();
-    } catch {
-      /* ignore */
-    }
-  };
-  if (win && typeof win.addEventListener === "function") {
+function bindPrintLifecycle(win, finish) {
+  if (!win) return;
+  if (typeof win.addEventListener === "function") {
     win.addEventListener("afterprint", finish, { once: true });
   }
-  const ms = Number(cleanupMs);
-  const delay = Number.isFinite(ms) ? Math.max(0, ms) : PRINT_IFRAME_CLEANUP_MS;
-  if (win && typeof win.setTimeout === "function") {
-    win.setTimeout(finish, delay);
-  } else {
-    setTimeout(finish, delay);
+  win.onafterprint = finish;
+  try {
+    const mq = typeof win.matchMedia === "function" ? win.matchMedia("print") : null;
+    if (mq && typeof mq.addEventListener === "function") {
+      const onChange = (e) => {
+        if (!e.matches) {
+          mq.removeEventListener("change", onChange);
+          finish();
+        }
+      };
+      mq.addEventListener("change", onChange);
+    } else if (mq && typeof mq.addListener === "function") {
+      const onChange = (e) => {
+        if (!e.matches) {
+          mq.removeListener(onChange);
+          finish();
+        }
+      };
+      mq.addListener(onChange);
+    }
+  } catch {
+    /* ignore unsupported print-media listeners */
   }
 }
 
-async function printHtmlInHiddenIframeNow(html, { cleanupMs = PRINT_IFRAME_CLEANUP_MS } = {}) {
+function detachReceiptIframe(iframe) {
+  try {
+    iframe?.remove?.();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function printHtmlInHiddenIframeNow(html, { releaseQueue } = {}) {
   const source = html == null ? "" : String(html);
   if (!source.trim()) {
+    releaseQueue?.();
     return { ok: false, error: IFRAME_PRINT_UNAVAILABLE_AR };
   }
 
   let iframe;
+  let cleaned = false;
+  let printCalled = false;
+  const finish = () => {
+    if (cleaned) return;
+    cleaned = true;
+    detachReceiptIframe(iframe);
+    releaseQueue?.();
+  };
+
   try {
     iframe = createReceiptIframe(80);
-    if (document.body && typeof document.body.appendChild === "function") {
-      document.body.appendChild(iframe);
+    const loaded = waitForReceiptDocument(iframe);
+    iframe.srcdoc = source;
+    if (!document.body || typeof document.body.appendChild !== "function") {
+      finish();
+      return { ok: false, error: IFRAME_PRINT_UNAVAILABLE_AR };
     }
-    await loadHtmlIntoIframe(iframe, source);
+    document.body.appendChild(iframe);
 
-    const doc = iframe.contentDocument;
+    const doc = await loaded;
     const win = iframe.contentWindow || doc?.defaultView;
     if (!doc || !win || typeof win.print !== "function") {
-      iframe.remove?.();
+      finish();
       return { ok: false, error: IFRAME_PRINT_UNAVAILABLE_AR };
     }
 
@@ -297,16 +336,16 @@ async function printHtmlInHiddenIframeNow(html, { cleanupMs = PRINT_IFRAME_CLEAN
       }
     });
 
+    bindPrintLifecycle(win, finish);
     win.focus();
+    if (printCalled) {
+      return { ok: true, dispatched: true, printTarget: "iframe" };
+    }
+    printCalled = true;
     win.print();
-    scheduleIframeCleanup(iframe, win, cleanupMs);
     return { ok: true, dispatched: true, printTarget: "iframe" };
   } catch (err) {
-    try {
-      iframe?.remove?.();
-    } catch {
-      /* ignore */
-    }
+    finish();
     return { ok: false, error: err?.message || IFRAME_PRINT_UNAVAILABLE_AR };
   }
 }
@@ -314,16 +353,36 @@ async function printHtmlInHiddenIframeNow(html, { cleanupMs = PRINT_IFRAME_CLEAN
 /**
  * Print saved-sale HTML in a hidden iframe (Edge silent-print when policies are on).
  * ok means print() was dispatched, not that paper came out.
+ * The iframe stays until afterprint / print-media change (including cancel)
+ * or a prepare/print failure. Elapsed time is not treated as success. If the
+ * browser never emits a close signal, the iframe remains and later receipt
+ * jobs wait — refresh the POS tab to recover.
  * @param {string} html
  * @param {{ cleanupMs?: number }} [opts]
  * @returns {Promise<{ ok: boolean, dispatched?: boolean, printTarget?: string, error?: string }>}
  */
 export function printHtmlInHiddenIframe(html, opts = {}) {
+  let resolveGate;
+  const gate = new Promise((resolve) => {
+    resolveGate = resolve;
+  });
+  const releaseQueue = () => resolveGate();
   const job = iframePrintTail.then(
-    () => printHtmlInHiddenIframeNow(html, opts),
-    () => printHtmlInHiddenIframeNow(html, opts)
+    () => printHtmlInHiddenIframeNow(html, { ...opts, releaseQueue }),
+    () => printHtmlInHiddenIframeNow(html, { ...opts, releaseQueue })
   );
   iframePrintTail = job.then(
+    (result) => {
+      if (!result?.ok) {
+        releaseQueue();
+        return undefined;
+      }
+      return gate;
+    },
+    () => {
+      releaseQueue();
+    }
+  ).then(
     () => undefined,
     () => undefined
   );
