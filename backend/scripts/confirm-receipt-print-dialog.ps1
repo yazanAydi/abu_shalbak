@@ -1,4 +1,4 @@
-# One-shot UI Automation confirm for an armed POS receipt Print dialog.
+﻿# One-shot UI Automation confirm for an armed POS receipt Print dialog.
 # No coordinates, no Enter, no timer-click. Invoke the enabled Print button
 # only when the owner process and exact printer name match.
 param(

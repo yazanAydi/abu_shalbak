@@ -43,26 +43,20 @@ If sales were already recorded with a wrong clock, stop the store (`npm run stor
 - [ ] Recreate Edge `--app` shortcuts if cashiers still use a Chrome/PWA/.url shortcut (`.\scripts\open-pos-app.ps1 -Inspect`)
 - [ ] One-time if DevTools is already open: close the console, then fully quit Edge (not just the tab) so it does not restore the docked tools on the next launch
 
-## Receipt printer (browser print)
+## Receipt printer (cashier-PC helper)
 
-After ترحيل the sale is saved first. POS then loads `POST /api/v1/print-receipt` and prints in a hidden iframe in the cashier’s Edge window. A print problem never rolls back the sale. Reprint with **طباعة الإيصال**. `afterprint` is not proof that paper printed.
+After ترحيل / F9 the sale is saved first. POS loads `POST /api/v1/print-receipt` then sends HTML to **`http://127.0.0.1:17892`** on that cashier PC. A print problem never rolls back the sale. Reprint with **طباعة الإيصال**. Helper `ok` is not proof that paper printed.
 
-Full steps: `docs/RECEIPT_BROWSER_PRINT.md`. Do **not** run the Edge policy script on the development PC.
+Full steps: `docs/CASHIER_RECEIPT_PRINT_HELPER.md`. `store:up` on the server does **not** start the till helper.
 
-- [ ] Each cashier PC: Microsoft Edge 144+ (silent print). Chrome will still show a print dialog.
-- [ ] Each cashier PC (elevated, once): `.\scripts\setup-edge-silent-print.ps1`
-- [ ] Confirm `edge://policy` in the **POS shortcut profile** (`.\scripts\open-pos-app.ps1 -OpenPolicy`)
-- [ ] Desktop shortcut is Edge `--app` from `open-pos-app.ps1`, not a plain URL and not Chrome
-- [ ] Thermal printer installed on **that** PC (USB or Windows shared printer) and set as **Windows default**
-- [ ] “Let Windows manage my default printer” is off; default is **not** Print to PDF / XPS / OneNote / Fax
-- [ ] Printer paper size matches the roll (usually 80 mm). Replacing a printer is Windows install + default + paper — no code/Docker change
-- [ ] Edge print dialog: **Headers and footers** off (receipts use an empty title; the date line is this checkbox)
-- [ ] Do not judge thermal layout from **Microsoft Print to PDF** (Letter/A4 virtual printer)
-- [ ] Complete a test sale from the **actual POS shortcut** — paper should come out without choosing a printer. A brief preview flash can still occur.
+- [ ] Each cashier PC: copy `dist/cashier-print/AboShalbak-ReceiptPrint` and double-click **Install.bat** (see `docs/CASHIER_RECEIPT_PRINT_HELPER.md`)
+- [ ] Installer: pick the RONGTA, enter `http://STORE_LAN_IP:3000/pos`
+- [ ] Health: `Invoke-RestMethod http://127.0.0.1:17892/health`
+- [ ] Desktop shortcut is Edge `--app` to `http://STORE_LAN_IP:3000/pos`
+- [ ] Thermal USB printer installed on **that** PC under the name in `.env.cashier-print`
 - [ ] If printing fails, reprint with **طباعة الإيصال** — do not create a second sale
-- [ ] Office-only PCs should skip `SilentPrintingEnabled` if they need a normal print dialog for A4 reports
 
-`RECEIPT_WIDTH_MM` (default 80, or 58) still controls receipt HTML width on the server. It is not a per-printer setting.
+`RECEIPT_WIDTH_MM` (default 80, or 58) still controls receipt HTML width. It is not a per-printer setting.
 
 ## Barcode scanners (office)
 

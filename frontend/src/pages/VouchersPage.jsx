@@ -6,6 +6,7 @@ import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { voucherPartyName } from "../utils/partySearch";
 import { printVoucherDoc } from "../utils/voucherDocPrint";
+import { partyFromVoucherDraftParams, stripVoucherDraftParams } from "../utils/voucherDraft";
 import PartyPicker from "../components/PartyPicker";
 import {
   PageHeader,
@@ -113,13 +114,22 @@ export default function VouchersPage() {
 
   useEffect(() => {
     const id = searchParams.get("id");
-    if (!id) return;
-    loadDetail({ id });
-    const next = new URLSearchParams(searchParams);
+    const { wantsNew, party: prefillParty } = partyFromVoucherDraftParams(searchParams);
+    if (!id && !wantsNew) return;
+
+    if (id) {
+      loadDetail({ id });
+    } else {
+      openNewForm(prefillParty);
+    }
+
+    const next = stripVoucherDraftParams(searchParams);
     next.delete("id");
-    setSearchParams(next, { replace: true });
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [searchParams]);
 
   function addLine() {
     setLines((p) => [...p, makeLine()]);
@@ -286,11 +296,12 @@ export default function VouchersPage() {
     setShowForm(true);
   }
 
-  function openNewForm() {
+  function openNewForm(prefillParty = null) {
     setEditId(null);
     resetForm(setLines, setNotes, setParty);
     setVoucherType(lockedType || "receipt");
     setVoucherDate(todayISO());
+    if (prefillParty) setParty(prefillParty);
     setShowForm(true);
   }
 

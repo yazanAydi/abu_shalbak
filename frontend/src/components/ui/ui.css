@@ -292,6 +292,30 @@ a,
   gap: 0.35rem;
   flex-wrap: wrap;
 }
+.ui-table__actions-cell {
+  min-width: 0;
+  white-space: normal;
+}
+.ui-table__actions--split {
+  width: 100%;
+  align-items: center;
+  row-gap: 0.5rem;
+}
+.ui-table__actions-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  max-width: 100%;
+}
+.ui-table__actions-cluster--end {
+  margin-inline-start: auto;
+  flex: 0 1 auto;
+}
+.ui-table__actions--split .ui-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 
 /* ── Field ── */
 .ui-field {
@@ -891,10 +915,26 @@ a,
     justify-content: flex-end;
   }
 
+  .ui-table tbody td.ui-table__actions-cell {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+  .ui-table tbody td.ui-table__actions-cell::before {
+    max-width: none;
+  }
+
   .ui-table__actions {
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.5rem;
+  }
+  .ui-table__actions--split {
+    justify-content: flex-start;
+    width: 100%;
+  }
+  .ui-table__actions-cluster--end {
+    margin-inline-start: auto;
   }
 
   .ui-btn {

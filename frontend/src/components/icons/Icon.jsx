@@ -109,6 +109,20 @@ const PATHS = {
       <line x1="16" y1="17" x2="8" y2="17" />
     </>
   ),
+  voucherPayment: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m16 12-4-4-4 4" />
+      <path d="M12 16V8" />
+    </>
+  ),
+  voucherReceipt: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m8 12 4 4 4-4" />
+      <path d="M12 8v8" />
+    </>
+  ),
   deliveries: (
     <>
       <path d="M5 18H3V6a1 1 0 0 1 1-1h10v13h-3" />

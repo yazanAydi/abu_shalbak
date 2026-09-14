@@ -26,7 +26,8 @@ export function isReceiptPrintTestSave(env = process.env) {
 }
 
 export function receiptTestOutputDir() {
-  return path.join(REPO_ROOT, "tmp", "receipt-test");
+  const root = String(process.env.CASHIER_PRINT_ROOT || "").trim() || REPO_ROOT;
+  return path.join(root, "tmp", "receipt-test");
 }
 
 /**

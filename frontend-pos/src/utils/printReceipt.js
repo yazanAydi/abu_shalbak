@@ -73,8 +73,8 @@ async function loadSavedSaleHtml(transactionId, fallbackHtml) {
 
 /**
  * Print a saved sale through the cashier Windows helper.
- * Fetches stored receipt HTML, then arms localhost:17892 for this request.
- * Does not use Edge preview or /print-receipt/silent.
+ * Fetches stored receipt HTML, then POSTs it to localhost:17892/print.
+ * Does not use Edge preview, window titles, or /print-receipt/silent.
  * ok means the helper accepted the job, not that paper came out.
  */
 export async function printReceipt(receiptOrPayload, options = {}) {

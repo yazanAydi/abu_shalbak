@@ -37,16 +37,6 @@ if (Test-Path $startupScript) {
   & $startupScript
 }
 
-$dialogHelper = Join-Path (Get-Location) "scripts\start-receipt-print-dialog-helper.ps1"
-if (Test-Path $dialogHelper) {
-  & $dialogHelper
-}
-
-$dialogStartup = Join-Path (Get-Location) "scripts\install-receipt-print-dialog-helper-startup.ps1"
-if (Test-Path $dialogStartup) {
-  & $dialogStartup
-}
-
 $adminApp = Join-Path (Get-Location) "scripts\open-admin-app.ps1"
 if (Test-Path $adminApp) {
   & $adminApp -CreateShortcut
@@ -54,8 +44,8 @@ if (Test-Path $adminApp) {
 
 Write-Host ""
 Write-Host "Health: http://127.0.0.1:3000/api/v1/health" -ForegroundColor Yellow
-Write-Host "Print agent (Windows): Invoke-RestMethod http://127.0.0.1:17891/health" -ForegroundColor Yellow
-Write-Host "Print dialog helper: Invoke-RestMethod http://127.0.0.1:17892/health" -ForegroundColor Yellow
+Write-Host "Print agent (Windows, unused by POS checkout): Invoke-RestMethod http://127.0.0.1:17891/health" -ForegroundColor Yellow
+Write-Host "Cashier receipt helper (17892) runs on the till, not this server. See docs/CASHIER_RECEIPT_PRINT_HELPER.md" -ForegroundColor Yellow
 try {
   $fromDocker = docker exec supermarket-pos node -e "fetch('http://host.docker.internal:17891/health').then(r=>r.text()).then(t=>console.log(t)).catch(()=>process.exit(1))"
   if ($fromDocker) {

@@ -159,6 +159,8 @@ describe("printReceipt (saved sale → Windows helper)", () => {
     expect(src).toContain("/api/print-receipt");
     expect(src).toContain("printHtmlViaWindowsHelper");
     expect(src).toContain("openReceiptForPrinting");
+    const checkoutSrc = fs.readFileSync(path.join(__dirname, "../pages/Checkout.jsx"), "utf8");
+    expect(checkoutSrc).toContain("saleSavedPrintFailedMessage(checkout.receipt_number, printed?.error)");
   });
 
   test("openReceiptForPrinting uses the same saved HTML and does not auto-print", async () => {

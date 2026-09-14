@@ -1,6 +1,6 @@
-import { isHeldKeyRepeat, onePressCashPayload, resolveF9CheckoutAction } from "./f9Checkout";
+import { isHeldKeyRepeat, resolveF9CheckoutAction } from "./f9Checkout";
 
-describe("F9 one-press checkout", () => {
+describe("F9 payment-modal checkout", () => {
   test("held/repeat F9 is ignored", () => {
     expect(isHeldKeyRepeat({ repeat: true })).toBe(true);
     expect(
@@ -15,7 +15,7 @@ describe("F9 one-press checkout", () => {
     ).toEqual({ action: "ignore-repeat" });
   });
 
-  test("ready cart on F9 posts cash without opening the modal", () => {
+  test("ready cart on F9 opens the payment modal", () => {
     expect(
       resolveF9CheckoutAction({
         repeat: false,
@@ -25,8 +25,7 @@ describe("F9 one-press checkout", () => {
         isSubmitting: false,
         payModalOpen: false,
       })
-    ).toEqual({ action: "cash-checkout" });
-    expect(onePressCashPayload()).toEqual({ payment_method: "cash" });
+    ).toEqual({ action: "open-modal" });
   });
 
   test("in-flight submit or empty cart does not start another sale", () => {

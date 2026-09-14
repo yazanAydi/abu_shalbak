@@ -43,6 +43,7 @@ async function writeFixturePdf(widthMm, heightMm) {
 const prevTestMode = process.env.RECEIPT_PRINT_TEST_MODE;
 const prevWidth = process.env.RECEIPT_WIDTH_MM;
 const prevPrinter = process.env.RECEIPT_PRINTER;
+const prevCashierRoot = process.env.CASHIER_PRINT_ROOT;
 const savedPaths = [];
 
 async function cleanupSaved() {
@@ -59,6 +60,8 @@ describe("RECEIPT_PRINT_TEST_MODE", () => {
     else process.env.RECEIPT_WIDTH_MM = prevWidth;
     if (prevPrinter == null) delete process.env.RECEIPT_PRINTER;
     else process.env.RECEIPT_PRINTER = prevPrinter;
+    if (prevCashierRoot == null) delete process.env.CASHIER_PRINT_ROOT;
+    else process.env.CASHIER_PRINT_ROOT = prevCashierRoot;
     setPrintPipelineForTests(null);
     await cleanupSaved();
   });
@@ -68,6 +71,11 @@ describe("RECEIPT_PRINT_TEST_MODE", () => {
     process.env.RECEIPT_PRINTER = "Microsoft Print to PDF";
     await expect(resolveReceiptPrinterName()).rejects.toMatchObject({ code: "VIRTUAL_PRINTER" });
     await expect(assertReceiptPrinterReady()).rejects.toMatchObject({ code: "VIRTUAL_PRINTER" });
+  });
+
+  test("receiptTestOutputDir uses CASHIER_PRINT_ROOT when set", () => {
+    process.env.CASHIER_PRINT_ROOT = "D:\\till";
+    expect(receiptTestOutputDir().replace(/\\/g, "/")).toBe("D:/till/tmp/receipt-test");
   });
 
   test("defaults off", () => {

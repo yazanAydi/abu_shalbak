@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { ils, dateOnly } from "../utils/format";
+import { ils } from "../utils/format";
 import {
-  PageHeader, Card, CardBody, Button, DataTable, Modal, Tabs, StatusPill,
+  PageHeader, Card, CardBody, Button, DataTable, Modal, Tabs,
   FormField, FormGrid, Input, Textarea, Icon, SearchInput, ReportToolbar, useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
@@ -14,6 +14,8 @@ import HesabatiStatementModal from "../components/HesabatiStatementModal";
 import StatementHistoryImportModal from "../components/StatementHistoryImportModal";
 import useAuthUser from "../hooks/useAuthUser";
 import { isAdminRole } from "../utils/roles";
+import { userHasOfficePermission } from "../utils/accountantPermissions";
+import { supplierAsVoucherParty, voucherDraftPath } from "../utils/voucherDraft";
 import SupplierPurchaseItemsView from "../components/SupplierPurchaseItemsView";
 
 function renderSupplierBalance(systemBalance) {
@@ -41,8 +43,10 @@ const emptyForm = {
 export default function SupplierManagement() {
   const toast = useToast();
   const navigate = useNavigate();
+  const user = useAuthUser();
   // Statement-history imports write history and stay admin-only.
-  const canImport = isAdminRole(useAuthUser()?.role);
+  const canImport = isAdminRole(user?.role);
+  const canVouchers = userHasOfficePermission(user, "vouchers");
   const [tab, setTab] = useState("list");
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -51,8 +55,6 @@ export default function SupplierManagement() {
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [ledger, setLedger] = useState(null);
-  const [ledgerSupplier, setLedgerSupplier] = useState(null);
   const [statementSupplier, setStatementSupplier] = useState(null);
   const [purchasesSupplier, setPurchasesSupplier] = useState(null);
   const [historyImportSupplier, setHistoryImportSupplier] = useState(null);
@@ -128,20 +130,11 @@ export default function SupplierManagement() {
     } catch (e) { toast.error(e.response?.data?.error || "فشل الحذف"); }
   }
 
-  async function openLedger(s) {
-    setLedgerSupplier(s);
-    try {
-      const { data } = await api.get(`/api/suppliers/${s.id}/ledger`, { headers: getAuthHeaders() });
-      setLedger(data);
-    } catch (e) { toast.error(e.response?.data?.error || "تعذّر تحميل حركات النظام"); setLedgerSupplier(null); }
-  }
-
   function openStatementReport(s) {
     setStatementSupplier(s);
   }
 
   const f = (key) => (e) => setForm((p) => ({ ...p, [key]: e.target.value }));
-  const evLabel = { opening: "رصيد افتتاحي", purchase: "فاتورة شراء", purchase_return: "مرتجع شراء", payment: "دفعة" };
 
   const columns = [
     { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => supplierExportCode(s), render: (s, i) => displayListRowNumber(0, 0, i) },
@@ -150,18 +143,38 @@ export default function SupplierManagement() {
     { key: "payment_terms", header: "شروط الدفع", hideOnMobile: true, value: (s) => s.payment_terms || "", render: (s) => s.payment_terms || "—" },
     { key: "balance", header: "الرصيد (مستحق)", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
     {
-      key: "actions", header: "إجراءات",
+      key: "actions", header: "إجراءات", className: "ui-table__actions-cell",
       render: (s) => (
-        <div className="ui-table__actions">
-          <Button variant="ghost" size="sm" icon="finance" onClick={() => navigate(`/suppliers/${s.id}/statement`)}>كشف الحساب</Button>
-          <Button variant="ghost" size="sm" icon="finance" onClick={() => openStatementReport(s)}>عرض التقرير</Button>
-          <Button variant="ghost" size="sm" icon="products" onClick={() => setPurchasesSupplier(s)}>المنتجات المشتراة</Button>
-          {canImport ? (
-            <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportSupplier(s)}>استيراد كشف قديم</Button>
+        <div className="ui-table__actions ui-table__actions--split">
+          <div className="ui-table__actions-cluster">
+            <Button variant="ghost" size="sm" icon="finance" onClick={() => openStatementReport(s)}>عرض التقرير</Button>
+            <Button variant="ghost" size="sm" icon="products" onClick={() => setPurchasesSupplier(s)}>المنتجات المشتراة</Button>
+            {canImport ? (
+              <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportSupplier(s)}>استيراد كشف قديم</Button>
+            ) : null}
+            <Button variant="ghost" size="sm" icon="edit" onClick={() => startEdit(s)}>تعديل</Button>
+            <Button variant="ghost" size="sm" icon="trash" onClick={() => remove(s)} />
+          </div>
+          {canVouchers ? (
+            <div className="ui-table__actions-cluster ui-table__actions-cluster--end">
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="voucherPayment"
+                onClick={() => navigate(voucherDraftPath("payment", supplierAsVoucherParty(s)))}
+              >
+                سند صرف
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="voucherReceipt"
+                onClick={() => navigate(voucherDraftPath("receipt", supplierAsVoucherParty(s)))}
+              >
+                سند قبض
+              </Button>
+            </div>
           ) : null}
-          <Button variant="ghost" size="sm" icon="vouchers" onClick={() => openLedger(s)}>حركات النظام</Button>
-          <Button variant="ghost" size="sm" icon="edit" onClick={() => startEdit(s)}>تعديل</Button>
-          <Button variant="ghost" size="sm" icon="trash" onClick={() => remove(s)} />
         </div>
       ),
     },
@@ -303,41 +316,6 @@ export default function SupplierManagement() {
             <FormField label="ملاحظات" className="ui-field--full"><Textarea value={form.notes} onChange={f("notes")} /></FormField>
           </FormGrid>
         </form>
-      </Modal>
-
-      <Modal
-        open={!!ledgerSupplier}
-        title={ledgerSupplier ? `حركات النظام: ${ledgerSupplier.name}` : ""}
-        onClose={() => { setLedgerSupplier(null); setLedger(null); }}
-        size="lg"
-      >
-        {ledger && (
-          <>
-            <div className="detail-header">
-              <div>الرصيد الحالي: <strong className={supplierBalanceView(ledger.closing_balance).className}>{ils(supplierBalanceView(ledger.closing_balance).displayAmount)}</strong></div>
-              <div>الرصيد الافتتاحي: <strong>{ils(supplierBalanceView(ledger.supplier.opening_balance).displayAmount)}</strong></div>
-            </div>
-            <DataTable
-              columns={[
-                { key: "ev_date", header: "التاريخ", render: (e) => (e.ev_date ? dateOnly(e.ev_date) : "—") },
-                { key: "ev_type", header: "النوع", render: (e) => evLabel[e.ev_type] || e.ev_type },
-                { key: "ref_id", header: "المرجع", render: (e) => (e.ref_id ? `#${e.ref_id}` : "—") },
-                { key: "credit", header: "دائن (له)", align: "left", className: "num", render: (e) => (e.credit > 0 ? ils(e.credit) : "—") },
-                { key: "debit", header: "مدين (دفع)", align: "left", className: "num", render: (e) => (e.debit > 0 ? ils(e.debit) : "—") },
-                { key: "running_balance", header: "الرصيد", align: "left", className: "num", render: (e) => renderSupplierBalance(e.running_balance) },
-              ]}
-              rows={[ledger.opening, ...ledger.events]}
-              rowKey={(e, i) => i}
-              empty="لا توجد حركات"
-            />
-            {ledger.truncated ? (
-              <p className="muted" style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
-                يُعرض آخر {ledger.events.length} حركة من {ledger.total_events}. الرصيد
-                محسوب على كامل الحركات — لعرض فترة أقدم استخدم كشف الحساب.
-              </p>
-            ) : null}
-          </>
-        )}
       </Modal>
 
       <HesabatiStatementModal

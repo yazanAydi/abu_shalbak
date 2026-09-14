@@ -1,5 +1,6 @@
 /**
- * One-press F9: post a default cash sale. Other methods still use the payment modal.
+ * Cart F9 opens the payment modal (same as إتمام البيع).
+ * Modal F9 / ترحيل validates and submits. Do not post cash here.
  */
 
 export function isHeldKeyRepeat(ev) {
@@ -17,9 +18,5 @@ export function resolveF9CheckoutAction({
   if (repeat) return { action: "ignore-repeat" };
   if (payModalOpen) return { action: "defer-to-modal" };
   if (!cartCount || !shiftReady || isLoading || isSubmitting) return { action: "ignore" };
-  return { action: "cash-checkout" };
-}
-
-export function onePressCashPayload() {
-  return { payment_method: "cash" };
+  return { action: "open-modal" };
 }

@@ -8,6 +8,7 @@ node_modules/
 !.env.example
 !.env.store.example
 !.env.development.example
+!.env.cashier-print.example
 !frontend/.env.example
 !frontend/.env.development.example
 !frontend-pos/.env.example
@@ -36,6 +37,7 @@ node_modules/
 # ── Load-test artifacts (generated, disposable) ─────────
 /docs/perf/load/
 /tmp/
+/dist/
 
 # ── Logs ────────────────────────────────────────────────
 *.log

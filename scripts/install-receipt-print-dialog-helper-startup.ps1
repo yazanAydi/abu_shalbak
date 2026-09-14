@@ -1,10 +1,15 @@
-# Start the cashier print-dialog helper at Windows sign-in (same user as the POS).
+# Start the cashier receipt print helper at Windows sign-in (same user as the POS).
+# Does not start Docker or the API. Requires .env.cashier-print on this PC.
 Set-Location $PSScriptRoot\..
 
 $taskName = "AboShalbakReceiptPrintDialogHelper"
 $startScript = Join-Path (Get-Location) "scripts\start-receipt-print-dialog-helper.ps1"
 if (-not (Test-Path $startScript)) {
   Write-Host "Missing $startScript" -ForegroundColor Red
+  exit 1
+}
+if (-not (Test-Path (Join-Path (Get-Location) ".env.cashier-print"))) {
+  Write-Host "Missing .env.cashier-print — copy .env.cashier-print.example on this cashier PC first." -ForegroundColor Red
   exit 1
 }
 
@@ -28,7 +33,7 @@ Register-ScheduledTask `
   -Trigger $trigger `
   -Settings $settings `
   -Principal $principal `
-  -Description "Arm-and-confirm Windows Print dialog for Abo Shalbak POS receipts" `
+  -Description "Print Abo Shalbak POS receipts on this cashier PC (127.0.0.1:17892)" `
   -Force | Out-Null
 
-Write-Host "Windows will start the receipt print dialog helper at sign-in (task $taskName)." -ForegroundColor Green
+Write-Host "Windows will start the receipt print helper at sign-in (task $taskName)." -ForegroundColor Green

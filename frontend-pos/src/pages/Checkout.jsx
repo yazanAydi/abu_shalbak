@@ -29,7 +29,7 @@ import {
   mergePosShortcutsFromSettings,
 } from "../config/posShortcuts";
 import { matchesShortcut, shouldHandlePosShortcut } from "../utils/posKeyboard";
-import { onePressCashPayload, resolveF9CheckoutAction } from "../utils/f9Checkout";
+import { resolveF9CheckoutAction } from "../utils/f9Checkout";
 import { focusBarcodeInput } from "../utils/focusBarcodeInput";
 import { readWaitingRequestId, writeWaitingRequestId } from "../utils/posWaitingRequests";
 import { playScanSuccess, warmPosSounds } from "../utils/posSounds";
@@ -391,7 +391,7 @@ export default function Checkout() {
           if (!printed?.ok) {
             dispatch({
               type: "CHECKOUT_PRINT_WARNING",
-              message: saleSavedPrintFailedMessage(checkout.receipt_number),
+                message: saleSavedPrintFailedMessage(checkout.receipt_number, printed?.error),
             });
           }
         });
@@ -614,9 +614,9 @@ export default function Checkout() {
           ev.preventDefault();
           return;
         }
-        if (decision.action !== "cash-checkout") return;
+        if (decision.action !== "open-modal") return;
         ev.preventDefault();
-        completeSaleRef.current(onePressCashPayload());
+        handleCompleteClickRef.current();
       }
     }
 

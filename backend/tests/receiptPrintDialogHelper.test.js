@@ -79,6 +79,70 @@ describe("createReceiptPrintDialogHelper", () => {
     expect(helper.getArmed()).toBeNull();
   });
 
+  test("printDirect prints without window lookup or arm", async () => {
+    const calls = { find: 0, confirm: 0, print: 0 };
+    const helper = makeHelper({
+      findOwnerPids: async () => {
+        calls.find += 1;
+        return [];
+      },
+      confirmDialog: async () => {
+        calls.confirm += 1;
+        return { confirm: true };
+      },
+      printHtml: async () => {
+        calls.print += 1;
+        return { printed: true, printer: "RONGTA 80mm Series Printer" };
+      },
+    });
+    const printed = await helper.printDirect({ html: "<p>إيصال</p>", transactionId: 37 });
+    expect(printed).toEqual({
+      ok: true,
+      printed: true,
+      printer: "RONGTA 80mm Series Printer",
+      transactionId: 37,
+    });
+    expect(calls).toEqual({ find: 0, confirm: 0, print: 1 });
+  });
+
+  test("printDirect requires printer and HTML", async () => {
+    const noPrinter = createReceiptPrintDialogHelper({
+      printerName: "",
+      printHtml: async () => ({ printed: true }),
+    });
+    expect(await noPrinter.printDirect({ html: "<p>x</p>" })).toMatchObject({
+      ok: false,
+      code: "NO_PRINTER",
+    });
+    const helper = makeHelper();
+    expect(await helper.printDirect({ html: "  " })).toMatchObject({ ok: false, code: "NO_HTML" });
+  });
+
+  test("printDirect allows a missing printer only in explicit testSave", async () => {
+    const helper = createReceiptPrintDialogHelper({
+      printerName: "",
+      testSave: true,
+      printHtml: async () => ({ printed: true, testMode: true, pdfPath: "tmp/receipt-test/x.pdf" }),
+    });
+    expect(await helper.printDirect({ html: "<p>x</p>", transactionId: 9 })).toMatchObject({
+      ok: true,
+      printed: true,
+      testMode: true,
+      pdfPath: "tmp/receipt-test/x.pdf",
+      transactionId: 9,
+    });
+  });
+
+  test("printDirect testMode is not treated as hardware proof", async () => {
+    const helper = makeHelper({
+      printHtml: async () => ({ printed: true, testMode: true, pdfPath: "tmp/receipt-test/x.pdf" }),
+    });
+    const printed = await helper.printDirect({ html: "<p>x</p>", transactionId: 1 });
+    expect(printed.ok).toBe(true);
+    expect(printed.testMode).toBe(true);
+    expect(printed.pdfPath).toBe("tmp/receipt-test/x.pdf");
+  });
+
   test("print failure clears the arm so the sale is not retried here", async () => {
     const helper = makeHelper({
       printHtml: async () => {

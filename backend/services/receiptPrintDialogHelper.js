@@ -52,9 +52,11 @@ export function createReceiptPrintDialogHelper({
   findOwnerPids,
   confirmDialog,
   printerName,
+  testSave = false,
   now = () => Date.now(),
 } = {}) {
   const configuredPrinter = printerName || defaultPrinterName();
+  const allowMissingPrinter = Boolean(testSave);
   let armed = null;
 
   function clearArmed() {
@@ -146,12 +148,54 @@ export function createReceiptPrintDialogHelper({
     }
   }
 
+  /**
+   * Print saved-sale HTML on this PC. No window title, no arm, no dialog click.
+   * printed:true means the Windows print API accepted the job, not that paper exited.
+   */
+  async function printDirect(body) {
+    const html = body?.html;
+    const transactionId = Number(body?.transactionId);
+    if (!configuredPrinter && !allowMissingPrinter) {
+      return { ok: false, error: "RECEIPT_PRINTER غير معيّن", code: "NO_PRINTER" };
+    }
+    if (!html || typeof html !== "string" || !html.trim()) {
+      return { ok: false, error: "لا يوجد إيصال للطباعة", code: "NO_HTML" };
+    }
+    if (typeof printHtml !== "function") {
+      return { ok: false, error: "فشلت طباعة الإيصال", code: "PRINT_FAILED" };
+    }
+    try {
+      const printed = await printHtml(html);
+      if (printed?.printed) {
+        const result = {
+          ok: true,
+          printed: true,
+          printer: printed.printer || configuredPrinter,
+          transactionId: Number.isFinite(transactionId) && transactionId > 0 ? transactionId : null,
+        };
+        if (printed.testMode) {
+          result.testMode = true;
+          if (printed.pdfPath) result.pdfPath = printed.pdfPath;
+        }
+        return result;
+      }
+      return { ok: false, error: "فشلت طباعة الإيصال", code: "PRINT_FAILED" };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err?.message || "فشلت طباعة الإيصال",
+        code: err?.code || "PRINT_FAILED",
+      };
+    }
+  }
+
   return {
     configuredPrinter,
     getArmed,
     arm,
     disarm,
     printArmed,
+    printDirect,
   };
 }
 

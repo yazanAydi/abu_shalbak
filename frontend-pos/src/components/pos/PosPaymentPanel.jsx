@@ -54,7 +54,7 @@ export default function PosPaymentPanel({
         >
           {isLoading ? "جاري المعالجة…" : "إتمام البيع"}
         </button>
-        <p className="pos-complete-hint">{POS_SHORTCUTS.completeSale.key} — ترحيل وطباعة</p>
+        <p className="pos-complete-hint">{POS_SHORTCUTS.completeSale.key} — إتمام البيع</p>
 
         {receiptData?.transaction_id ? (
           <button type="button" className="pos-complete-btn secondary" onClick={onPrintLocal}>
