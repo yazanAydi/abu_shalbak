@@ -27,6 +27,12 @@ import {
   CASHIER_PRINT_HELPER_SERVICE,
   CASHIER_PRINT_HELPER_VERSION,
 } from "../utils/cashierPrintHelperVersion.js";
+import {
+  configureHelperStdio,
+  createReceiptPrintAttempt,
+} from "../utils/receiptPrintTiming.js";
+
+configureHelperStdio();
 
 const REPO_ROOT =
   process.env.CASHIER_PRINT_ROOT ||
@@ -39,6 +45,8 @@ if (!fs.existsSync(CASHIER_ENV)) {
 }
 dotenv.config({ path: CASHIER_ENV });
 
+const TIMING_LOG = path.join(REPO_ROOT, "data", "receipt-print-dialog-helper.out.log");
+const TIMING_ERR = path.join(REPO_ROOT, "data", "receipt-print-dialog-helper.err.log");
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.RECEIPT_PRINT_DIALOG_HELPER_PORT) || 17892;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -51,7 +59,7 @@ if (process.platform !== "win32") {
 
 const helper = createReceiptPrintDialogHelper({
   printerName: String(process.env.RECEIPT_PRINTER || "").trim(),
-  printHtml: (html) => printReceiptHtmlLocally(html),
+  printHtml: (html, attempt) => printReceiptHtmlLocally(html, attempt),
   testSave: isReceiptPrintTestSave(),
 });
 
@@ -147,30 +155,40 @@ const server = http.createServer(async (req, res) => {
         allowedOrigins,
         testMode: isReceiptPrintTestSave(),
         pdfDir: isReceiptPrintTestSave() ? receiptTestOutputDir() : null,
+        timingLog: TIMING_LOG,
       },
       cors
     );
     return;
   }
 
-  try {
-    if (req.method === "POST" && url === "/print") {
+  if (req.method === "POST" && url === "/print") {
+    const attempt = createReceiptPrintAttempt();
+    let finishedByPrint = false;
+    try {
       const body = await readJsonBody(req);
-      const result = await helper.printDirect(body);
+      const result = await helper.printDirect(body, attempt);
+      finishedByPrint = true;
+      await attempt.flush();
       sendJson(res, result.ok ? 200 : 409, result, cors);
       return;
-    }
-  } catch (e) {
-    if (e instanceof SilentPrintError) {
-      sendJson(res, 409, { ok: false, error: e.message, code: e.code }, cors);
+    } catch (e) {
+      if (!finishedByPrint) {
+        attempt.fail("print_request", e);
+        attempt.finish({ ok: false, errorCode: e.code || "PRINT_FAILED" });
+      }
+      await attempt.flush();
+      if (e instanceof SilentPrintError) {
+        sendJson(res, 409, { ok: false, error: e.message, code: e.code }, cors);
+        return;
+      }
+      if (e.code === "BAD_JSON" || e.code === "BODY_TOO_LARGE") {
+        sendJson(res, 400, { ok: false, error: "طلب الطباعة غير صالح", code: "NO_HTML" }, cors);
+        return;
+      }
+      sendJson(res, 500, { ok: false, error: e.message || "فشلت طباعة الإيصال", code: "PRINT_FAILED" }, cors);
       return;
     }
-    if (e.code === "BAD_JSON" || e.code === "BODY_TOO_LARGE") {
-      sendJson(res, 400, { ok: false, error: "طلب الطباعة غير صالح", code: "NO_HTML" }, cors);
-      return;
-    }
-    sendJson(res, 500, { ok: false, error: e.message || "فشلت طباعة الإيصال", code: "PRINT_FAILED" }, cors);
-    return;
   }
 
   sendJson(res, 404, { error: "not found", code: "NOT_FOUND" }, cors);
@@ -191,6 +209,7 @@ server.listen(PORT, HOST, () => {
   console.log(
     `[receipt-print-dialog-helper] http://${HOST}:${PORT} version=${CASHIER_PRINT_HELPER_VERSION} printer=${helper.configuredPrinter || (testSave ? "test-save" : "?")} origins=${allowedOrigins.join(",") || "?"} testMode=${testSave}${extra}`
   );
+  console.log(`[receipt-print-dialog-helper] timing stdout=${TIMING_LOG} stderr=${TIMING_ERR}`);
 });
 
 function shutdown() {

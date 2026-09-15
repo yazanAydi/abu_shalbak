@@ -10,7 +10,7 @@ function escapeHtml(text) {
 function injectFrontendLogo(html, logoUrl) {
   const logoSrc = resolveStoreLogoUrl(logoUrl);
   if (!logoSrc || !html) return html;
-  const logoBlock = `<div class="logo-wrap" style="text-align:center;margin-bottom:3px"><img src="${escapeHtml(logoSrc)}" alt="" style="max-width:96px;max-height:48px;object-fit:contain" /></div>`;
+  const logoBlock = `<div class="logo-wrap" style="text-align:center;margin-bottom:3px"><img src="${escapeHtml(logoSrc)}" alt="" style="max-width:128px;max-height:64px;object-fit:contain" /></div>`;
   if (html.includes('class="logo-wrap"')) {
     return html.replace(/<div class="logo-wrap">[\s\S]*?<\/div>/, logoBlock);
   }
@@ -56,7 +56,7 @@ export function printReceipt(receiptOrPayload, options = {}) {
   } else {
     const logoSrc = resolveStoreLogoUrl(options.logoUrl);
     const logoHtml = logoSrc
-      ? `<div style="text-align:center;margin-bottom:3px"><img src="${escapeHtml(logoSrc)}" alt="" style="display:inline-block;max-width:96px;max-height:48px;object-fit:contain" /></div>`
+      ? `<div style="text-align:center;margin-bottom:3px"><img src="${escapeHtml(logoSrc)}" alt="" style="display:inline-block;max-width:128px;max-height:64px;object-fit:contain" /></div>`
       : "";
     w.document.write(
       `<!DOCTYPE html><html lang="ar-u-nu-latn" dir="rtl"><head><title>إيصال</title><style>html{-webkit-locale:"en";font-language-override:"eng";font-feature-settings:"locl" 0}</style></head><body style="margin:0;padding:12px;background:#fff;color:#000;display:flex;justify-content:center"><div style="max-width:384px;width:100%">${logoHtml}<pre style="font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre;margin:0">${escapeHtml(text)}</pre></div></body></html>`

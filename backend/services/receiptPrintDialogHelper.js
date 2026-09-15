@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { shouldConfirmPrintDialog } from "../utils/receiptPrintDialogMatch.js";
+import { createReceiptPrintAttempt } from "../utils/receiptPrintTiming.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIRM_SCRIPT = path.join(__dirname, "..", "scripts", "confirm-receipt-print-dialog.ps1");
@@ -152,40 +153,65 @@ export function createReceiptPrintDialogHelper({
    * Print saved-sale HTML on this PC. No window title, no arm, no dialog click.
    * printed:true means the Windows print API accepted the job, not that paper exited.
    */
-  async function printDirect(body) {
+  async function printDirect(body, attempt) {
     const html = body?.html;
     const transactionId = Number(body?.transactionId);
+    const tx = Number.isFinite(transactionId) && transactionId > 0 ? transactionId : null;
+    const htmlBytes = typeof html === "string" ? Buffer.byteLength(html, "utf8") : 0;
+    const t = attempt || createReceiptPrintAttempt();
+
+    const finishResult = (result) => {
+      t.finish({
+        ok: Boolean(result?.ok),
+        errorCode: result?.ok ? undefined : result?.code || null,
+        testMode: Boolean(result?.testMode),
+      });
+      return result;
+    };
+
     if (!configuredPrinter && !allowMissingPrinter) {
-      return { ok: false, error: "RECEIPT_PRINTER غير معيّن", code: "NO_PRINTER" };
+      t.markSinceStart("receipt_received", {
+        ok: false,
+        errorCode: "NO_PRINTER",
+        htmlBytes,
+        transactionId: tx,
+      });
+      return finishResult({ ok: false, error: "RECEIPT_PRINTER غير معيّن", code: "NO_PRINTER" });
     }
     if (!html || typeof html !== "string" || !html.trim()) {
-      return { ok: false, error: "لا يوجد إيصال للطباعة", code: "NO_HTML" };
+      t.markSinceStart("receipt_received", { ok: false, errorCode: "NO_HTML", htmlBytes: 0, transactionId: tx });
+      return finishResult({ ok: false, error: "لا يوجد إيصال للطباعة", code: "NO_HTML" });
     }
     if (typeof printHtml !== "function") {
-      return { ok: false, error: "فشلت طباعة الإيصال", code: "PRINT_FAILED" };
+      t.markSinceStart("receipt_received", { ok: false, errorCode: "PRINT_FAILED", htmlBytes, transactionId: tx });
+      return finishResult({ ok: false, error: "فشلت طباعة الإيصال", code: "PRINT_FAILED" });
     }
+
+    t.markSinceStart("receipt_received", { ok: true, htmlBytes, transactionId: tx });
     try {
-      const printed = await printHtml(html);
+      const printed = await printHtml(html, t);
       if (printed?.printed) {
         const result = {
           ok: true,
           printed: true,
           printer: printed.printer || configuredPrinter,
-          transactionId: Number.isFinite(transactionId) && transactionId > 0 ? transactionId : null,
+          transactionId: tx,
         };
         if (printed.testMode) {
           result.testMode = true;
           if (printed.pdfPath) result.pdfPath = printed.pdfPath;
         }
-        return result;
+        return finishResult(result);
       }
-      return { ok: false, error: "فشلت طباعة الإيصال", code: "PRINT_FAILED" };
+      t.fail("print_failed", { code: "PRINT_FAILED", message: "فشلت طباعة الإيصال" });
+      return finishResult({ ok: false, error: "فشلت طباعة الإيصال", code: "PRINT_FAILED" });
     } catch (err) {
-      return {
+      t.fail("print_failed", err);
+      return finishResult({
         ok: false,
         error: err?.message || "فشلت طباعة الإيصال",
         code: err?.code || "PRINT_FAILED",
-      };
+      });
     }
   }
 

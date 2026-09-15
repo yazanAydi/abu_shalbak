@@ -4,6 +4,7 @@ import http from "http";
 import net from "net";
 import path from "path";
 import { spawn } from "child_process";
+import { attemptOrNoop } from "../utils/receiptPrintTiming.js";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -210,7 +211,9 @@ async function waitForDevToolsPort(profileDir, timeoutMs = 15000) {
     }
     await sleep(50);
   }
-  throw new Error("devtools port timeout");
+  const err = new Error("devtools port timeout");
+  err.code = "DEVTOOLS_PORT_TIMEOUT";
+  throw err;
 }
 
 async function waitForPageWs(port) {
@@ -222,7 +225,9 @@ async function waitForPageWs(port) {
     if (page) return page.webSocketDebuggerUrl;
     await sleep(100);
   }
-  throw new Error("no page target");
+  const err = new Error("no page target");
+  err.code = "NO_PAGE_TARGET";
+  throw err;
 }
 
 function connectCdp(WebSocketCtor, wsUrl) {
@@ -280,19 +285,139 @@ function connectCdp(WebSocketCtor, wsUrl) {
     });
 
     ws.addEventListener("error", () => {
-      reject(new Error("cdp websocket error"));
+      const err = new Error("cdp websocket error");
+      err.code = "CDP_WEBSOCKET_ERROR";
+      reject(err);
     });
   });
 }
 
+function killProcessTree(child) {
+  if (!child?.pid || child.exitCode != null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    const timer = setTimeout(done, 2000);
+    if (typeof timer.unref === "function") timer.unref();
+    child.once("exit", () => {
+      clearTimeout(timer);
+      done();
+    });
+    if (process.platform === "win32") {
+      const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      killer.unref?.();
+      killer.once("close", () => {
+        try {
+          child.kill();
+        } catch {
+          /* ignore */
+        }
+      });
+    } else {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+}
+
+async function navigateAndWait(cdp, url, extra = {}) {
+  const loaded = cdp.waitFor("Page.loadEventFired");
+  await cdp.send("Page.navigate", { url });
+  const loadResult = await Promise.race([
+    loaded.then(() => "loaded"),
+    sleep(8000).then(() => "timeout"),
+  ]);
+  extra.loadTimedOut = loadResult === "timeout";
+  extra.timeout = extra.loadTimedOut;
+  for (let i = 0; i < 40; i += 1) {
+    const ready = await cdp.send("Runtime.evaluate", {
+      expression: "document.readyState",
+      returnByValue: true,
+    });
+    extra.readyState = ready?.result?.value || null;
+    if (extra.readyState === "complete") break;
+    await sleep(50);
+  }
+}
+
+async function evaluateExpression(cdp, expression) {
+  const result = await cdp.send("Runtime.evaluate", {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (result?.exceptionDetails) {
+    const err = new Error(result.exceptionDetails.text || "evaluate failed");
+    err.code = "MEASURE_EVAL_FAILED";
+    throw err;
+  }
+  return result?.result?.value;
+}
+
+/** CDP Page.printToPDF params matching CLI --no-pdf-header-footer and CSS @page size. */
+export function receiptPdfPrintParams(widthMm, heightMm) {
+  const w = Number(widthMm);
+  const h = Number(heightMm);
+  return {
+    landscape: false,
+    displayHeaderFooter: false,
+    printBackground: true,
+    preferCSSPageSize: true,
+    paperWidth: Math.round((w / 25.4) * 10000) / 10000,
+    paperHeight: Math.round((h / 25.4) * 10000) / 10000,
+    marginTop: 0,
+    marginBottom: 0,
+    marginLeft: 0,
+    marginRight: 0,
+    scale: 1,
+  };
+}
+
+function createCdpSession(cdp) {
+  return {
+    async goto(url, extra = {}) {
+      await navigateAndWait(cdp, url, extra);
+    },
+    async evaluate(expression) {
+      return evaluateExpression(cdp, expression);
+    },
+    async printToPdf({ widthMm, heightMm }) {
+      await cdp.send("Emulation.setEmulatedMedia", { media: "print" }).catch(() => {});
+      const result = await cdp.send("Page.printToPDF", receiptPdfPrintParams(widthMm, heightMm));
+      if (!result?.data) {
+        const err = new Error("printToPDF returned no data");
+        err.code = "PDF_FAILED";
+        throw err;
+      }
+      return Buffer.from(result.data, "base64");
+    },
+    async capturePng() {
+      const result = await cdp.send("Page.captureScreenshot", {
+        format: "png",
+        captureBeyondViewport: true,
+        fromSurface: true,
+      });
+      if (!result?.data) {
+        const err = new Error("captureScreenshot returned no data");
+        err.code = "PDF_FAILED";
+        throw err;
+      }
+      return Buffer.from(result.data, "base64");
+    },
+  };
+}
+
 /**
- * Open headless Chromium, navigate to url, evaluate an expression (may return a Promise).
- * @param {string} browserExe
- * @param {string} profileDir
- * @param {string} url
- * @param {string} expression
+ * One headless Edge/Chrome process for this job. Caller must finish before return;
+ * the process is always killed (success or failure). Not a persistent pool.
  */
-export async function cdpEvaluateOnUrl(browserExe, profileDir, url, expression) {
+export async function withHeadlessCdpPage(browserExe, profileDir, { attempt, startUrl } = {}, fn) {
+  const t = attemptOrNoop(attempt);
   const WebSocketCtor = await resolveWebSocket();
   if (!WebSocketCtor) {
     const err = new Error("NO_WEBSOCKET");
@@ -316,39 +441,45 @@ export async function cdpEvaluateOnUrl(browserExe, profileDir, url, expression) 
     { windowsHide: true }
   );
 
+  let cdp = null;
   try {
-    const port = await waitForDevToolsPort(profileDir);
-    const wsUrl = await waitForPageWs(port);
-    const cdp = await connectCdp(WebSocketCtor, wsUrl);
-    try {
-      await cdp.send("Page.enable");
-      await cdp.send("Runtime.enable");
-      const loaded = cdp.waitFor("Page.loadEventFired");
-      await cdp.send("Page.navigate", { url });
-      await Promise.race([loaded, sleep(8000)]);
-      for (let i = 0; i < 40; i += 1) {
-        const ready = await cdp.send("Runtime.evaluate", {
-          expression: "document.readyState",
-          returnByValue: true,
-        });
-        if (ready?.result?.value === "complete") break;
-        await sleep(50);
-      }
-      const result = await cdp.send("Runtime.evaluate", {
-        expression,
-        awaitPromise: true,
-        returnByValue: true,
-      });
-      if (result?.exceptionDetails) {
-        throw new Error(result.exceptionDetails.text || "evaluate failed");
-      }
-      return result?.result?.value;
-    } finally {
-      cdp.close();
-    }
+    const launchExtra = { loadTimedOut: false };
+    await t.time(
+      "measure_browser_ready",
+      async () => {
+        const port = await waitForDevToolsPort(profileDir);
+        const wsUrl = await waitForPageWs(port);
+        cdp = await connectCdp(WebSocketCtor, wsUrl);
+        await cdp.send("Page.enable");
+        await cdp.send("Runtime.enable");
+        if (startUrl) await navigateAndWait(cdp, startUrl, launchExtra);
+      },
+      launchExtra
+    );
+    return await fn(createCdpSession(cdp));
   } finally {
-    child.kill();
+    try {
+      cdp?.close();
+    } catch {
+      /* ignore */
+    }
+    await killProcessTree(child);
   }
+}
+
+/**
+ * Open headless Chromium, navigate to url, evaluate an expression (may return a Promise).
+ * @param {string} browserExe
+ * @param {string} profileDir
+ * @param {string} url
+ * @param {string} expression
+ * @param {object|null} [attempt]
+ */
+export async function cdpEvaluateOnUrl(browserExe, profileDir, url, expression, attempt) {
+  const t = attemptOrNoop(attempt);
+  return withHeadlessCdpPage(browserExe, profileDir, { attempt: t, startUrl: url }, async (session) =>
+    t.time("measure_fonts_height", () => session.evaluate(expression))
+  );
 }
 
 export { resolveWebSocket, NetWebSocket };

@@ -302,7 +302,7 @@ function receiptHtmlCss() {
   html, body { direction: ltr; box-sizing: border-box; width: ${pageWidthMm}mm; height: auto !important; min-height: 0 !important; margin: 0; padding: 0; background: #fff; color: #000; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; }
   .receipt { direction: rtl; box-sizing: border-box; width: ${contentWidthMm}mm; max-width: ${contentWidthMm}mm; height: auto !important; min-height: 0 !important; margin-left: auto; margin-right: auto; padding: 2mm 0 0; ${offsetCss} }
   .logo-wrap { text-align: center; margin-bottom: 3px; }
-  .logo-wrap img { max-width: 96px; max-height: 48px; object-fit: contain; }
+  .logo-wrap img { max-width: 128px; max-height: 64px; object-fit: contain; }
   .center { text-align: center; }
   .header-box { display: grid; grid-template-columns: 1fr 1fr 1fr; border: 1px solid #000; border-radius: 4px; margin: 4px 0 3px; overflow: hidden; }
   .header-box > div { padding: 3px 4px; border-inline-start: 1px solid #000; }

@@ -1,4 +1,7 @@
+import { round2 } from "./money.js";
+
 const API_BASE = "https://api.telegram.org/bot";
+const TELEGRAM_MAX_TEXT = 4096;
 
 function env(key) {
   return String(process.env[key] || "").trim();
@@ -132,6 +135,63 @@ function ils(n) {
   return `\u20AA${Number(n).toFixed(2)}`;
 }
 
+function formatRefundTelegramQty(qty) {
+  const n = Number(qty);
+  if (!Number.isFinite(n)) return String(qty ?? "");
+  if (Number.isInteger(n)) return String(n);
+  return String(n);
+}
+
+function formatRefundTelegramItemLine(item) {
+  const name = String(item?.name || item?.product_name || "").trim() || "صنف";
+  const qty = Number(item?.quantity);
+  const qtyLabel = Number.isFinite(qty) ? formatRefundTelegramQty(qty) : String(item?.quantity ?? "");
+  const unit = String(item?.unit_name || "").trim();
+  const qtyPart = unit ? `${qtyLabel} ${unit}` : qtyLabel;
+  const price = Number(item?.price) || 0;
+  const lineTotal =
+    item?.lineTotal != null && Number.isFinite(Number(item.lineTotal))
+      ? Number(item.lineTotal)
+      : round2((Number.isFinite(qty) ? qty : 0) * price);
+  return `• ${name} × ${qtyPart} — ${ils(lineTotal)}`;
+}
+
+/** Plain-text refund item block for Telegram. Empty when there are no lines. */
+export function formatRefundTelegramItemLines(items, options = {}) {
+  const list = Array.isArray(items)
+    ? items.filter((it) => it && (String(it.name || it.product_name || "").trim() || it.product_id))
+    : [];
+  if (!list.length) return [];
+
+  const header = "الأصناف:";
+  const formatted = list.map(formatRefundTelegramItemLine);
+  const maxChars = options.maxChars;
+  const all = [header, ...formatted];
+  if (maxChars == null || all.join("\n").length <= maxChars) return all;
+
+  const picked = [];
+  for (let i = 0; i < formatted.length; i++) {
+    const withLine = [header, ...picked, formatted[i]];
+    const restCount = formatted.length - i - 1;
+    const candidate = restCount > 0 ? [...withLine, `… و ${restCount} أصناف أخرى`] : withLine;
+    if (candidate.join("\n").length <= maxChars) {
+      picked.push(formatted[i]);
+      continue;
+    }
+    const leftover = formatted.length - picked.length;
+    const stop = [header, ...picked, `… و ${leftover} أصناف أخرى`];
+    if (stop.join("\n").length <= maxChars) return stop;
+    return picked.length ? [header, ...picked] : [`… و ${formatted.length} أصناف أخرى`];
+  }
+  return [header, ...picked];
+}
+
+function refundItemLinesForBudget(items, reservedChars) {
+  return formatRefundTelegramItemLines(items, {
+    maxChars: Math.max(0, TELEGRAM_MAX_TEXT - Math.max(0, reservedChars)),
+  });
+}
+
 async function telegramRequest(method, body, token) {
   if (!token) throw new Error("Telegram bot token not configured");
   const res = await fetch(`${API_BASE}${token}/${method}`, {
@@ -176,20 +236,20 @@ export async function sendRefundApprovalMessage({
   transactionId,
   total,
   reason,
+  items,
 }) {
   const { token, chatId } = refundBotConfig();
   const withButtons = isRefundWebhookConfigured();
-  const text = [
+  const head = [
     `طلب استرجاع #${requestId}`,
     `الكاشير: ${cashierName}`,
     `الفاتورة: #${transactionId}`,
     `المبلغ: ${ils(total)}`,
     reason ? `السبب: ${reason}` : null,
-    "",
-    withButtons ? "اختر موافقة أو رفض:" : "للموافقة أو الرفض: لوحة الإدارة → موافقات الاسترجاع",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].filter((line) => line != null && line !== "");
+  const footer = withButtons ? "اختر موافقة أو رفض:" : "للموافقة أو الرفض: لوحة الإدارة → موافقات الاسترجاع";
+  const reserved = [...head, footer].join("\n").length + 1;
+  const text = [...head, ...refundItemLinesForBudget(items, reserved), footer].join("\n");
 
   const body = { chat_id: chatId, text };
   if (withButtons) {
@@ -207,7 +267,6 @@ export async function sendRefundApprovalMessage({
   return String(result.message_id);
 }
 
-const TELEGRAM_MAX_TEXT = 4096;
 const EXPIRY_CONTINUATION_HEADER = "تتمة — تنبيه صلاحية";
 
 function escapeHtml(value) {
@@ -409,6 +468,7 @@ export async function editRefundRequestMessage({
   total,
   approverName = null,
   decisionSource = null,
+  items,
 }) {
   const { token, chatId } = refundBotConfig();
   const statusAr =
@@ -419,15 +479,16 @@ export async function editRefundRequestMessage({
       : decisionSource === "admin"
         ? "لوحة الإدارة"
         : null;
-  const lines = [
+  const head = [
     `طلب استرجاع #${requestId}`,
     `الفاتورة: #${transactionId}`,
     `المبلغ: ${ils(total)}`,
-    "",
-    statusAr,
   ];
-  if (approverName) lines.push(`بواسطة: ${approverName}`);
-  if (sourceAr) lines.push(`المصدر: ${sourceAr}`);
+  const tail = [statusAr];
+  if (approverName) tail.push(`بواسطة: ${approverName}`);
+  if (sourceAr) tail.push(`المصدر: ${sourceAr}`);
+  const reserved = [...head, "", ...tail].join("\n").length + 1;
+  const lines = [...head, ...refundItemLinesForBudget(items, reserved), "", ...tail];
 
   await telegramRequest(
     "editMessageText",

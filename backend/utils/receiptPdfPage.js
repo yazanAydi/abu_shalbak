@@ -35,6 +35,26 @@ export function receiptMeasurePageSource() {
   })()`;
 }
 
+/** Wait for images and fonts after navigating to the sized print HTML (same CDP session). */
+export function receiptPrintReadySource() {
+  return `(() => {
+    function waitImages() {
+      return Promise.all(Array.from(document.images).map(function (img) {
+        if (img.complete) return Promise.resolve();
+        return new Promise(function (resolve) {
+          img.onload = resolve;
+          img.onerror = resolve;
+        });
+      }));
+    }
+    return waitImages()
+      .then(function () {
+        return document.fonts && document.fonts.ready ? document.fonts.ready : null;
+      })
+      .then(function () { return true; });
+  })()`;
+}
+
 export function computeReceiptHeightFromBoxes({ rectHeight, receiptScrollHeight, bodyScrollHeight }) {
   const values = [rectHeight, receiptScrollHeight, bodyScrollHeight]
     .map((n) => Number(n))

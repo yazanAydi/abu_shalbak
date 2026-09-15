@@ -7,6 +7,7 @@ import {
   parseReceiptHeightPxFromDom,
   parseReceiptMeasureFromDom,
   receiptMeasurePageSource,
+  receiptPrintReadySource,
   receiptPageHeightMmFromContentPx,
 } from "../utils/receiptPdfPage.js";
 import {
@@ -142,6 +143,13 @@ describe("receipt PDF page sizing", () => {
     const diag = parseReceiptMeasureFromDom(dom);
     expect(diag.calculatedHeightPx).toBe(480);
     expect(diag.calculatedHeightMm).toBeCloseTo((480 * 25.4) / 96 + 5, 2);
+  });
+
+  test("print-ready source waits for fonts and images without re-measuring", () => {
+    const src = receiptPrintReadySource();
+    expect(src).toContain("document.images");
+    expect(src).toContain("document.fonts.ready");
+    expect(src).not.toContain("getBoundingClientRect");
   });
 
   test("in-page measure source waits for fonts/images and uses fallback selectors", () => {

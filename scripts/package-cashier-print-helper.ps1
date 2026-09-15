@@ -54,6 +54,7 @@ $files = @(
   "backend\utils\entityCodes.js",
   "backend\utils\money.js",
   "backend\utils\dbTx.js",
+  "backend\utils\receiptPrintTiming.js",
   "backend\utils\receiptPrintDialogMatch.js"
 )
 foreach ($rel in $files) {

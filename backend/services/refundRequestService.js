@@ -400,6 +400,7 @@ export async function createRefundRequest(db, params) {
         transactionId: created.transactionId,
         total: created.total,
         reason: created.reason || "",
+        items: parseItemsJson(created.request.items_json),
       });
       await db.run("UPDATE refund_requests SET telegram_message_id = ? WHERE id = ?", [
         telegramMessageId,
@@ -521,6 +522,7 @@ async function notifyTelegramAfterDecision(request, managerUser, status, decisio
     total: request.total_amount,
     approverName: managerUser?.username || null,
     decisionSource,
+    items: parseItemsJson(request.items_json),
   };
   if (request.telegram_message_id) {
     try {

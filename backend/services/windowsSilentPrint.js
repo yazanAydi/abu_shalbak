@@ -10,9 +10,11 @@ import {
   injectReceiptMeasureHook,
   parseReceiptMeasureFromDom,
   receiptMeasurePageSource,
+  receiptPrintReadySource,
   receiptPrintWidthMm,
 } from "../utils/receiptPdfPage.js";
-import { cdpEvaluateOnUrl } from "./chromeCdp.js";
+import { withHeadlessCdpPage } from "./chromeCdp.js";
+import { attemptOrNoop } from "../utils/receiptPrintTiming.js";
 
 const require = createRequire(import.meta.url);
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -258,6 +260,19 @@ function throwMeasureFailed(diag) {
   throw new SilentPrintError("PDF_FAILED", `تعذّر قياس ارتفاع محتوى الإيصال${suffix}`, details);
 }
 
+function fallbackReason(err) {
+  if (err?.code) return String(err.code);
+  const msg = String(err?.message || "cdp_failed").replace(/\s+/g, " ").trim();
+  return msg.length > 80 ? `${msg.slice(0, 80)}…` : msg || "cdp_failed";
+}
+
+function browserLabel(browserPath) {
+  const base = path.basename(String(browserPath || ""));
+  if (/msedge/i.test(base)) return "msedge";
+  if (/chrome/i.test(base)) return "chrome";
+  return base || "unknown";
+}
+
 async function measureReceiptViaDumpDom(browser, measureHtmlPath, profileDir) {
   const measureHtml = injectReceiptMeasureHook(await fs.promises.readFile(measureHtmlPath, "utf8"));
   await fs.promises.writeFile(measureHtmlPath, measureHtml, "utf8");
@@ -279,61 +294,17 @@ async function measureReceiptViaDumpDom(browser, measureHtmlPath, profileDir) {
   return parseReceiptMeasureFromDom(dom);
 }
 
-async function measureReceiptContent(browser, measureHtmlPath, profileDir) {
-  const url = pathToFileURL(measureHtmlPath).href;
+function pdfFileOk(pdfPath) {
   try {
-    const raw = await cdpEvaluateOnUrl(browser, profileDir, url, receiptMeasurePageSource());
-    return assembleReceiptHeightMeasure(raw);
-  } catch (err) {
-    const dumpProfile = path.join(path.dirname(profileDir), "profile-dump");
-    await fs.promises.mkdir(dumpProfile, { recursive: true });
-    try {
-      return await measureReceiptViaDumpDom(browser, measureHtmlPath, dumpProfile);
-    } catch {
-      if (err instanceof SilentPrintError) throw err;
-      throwMeasureFailed(assembleReceiptHeightMeasure({}));
-    }
+    const stat = fs.statSync(pdfPath);
+    return Boolean(stat && stat.size >= 100);
+  } catch {
+    return false;
   }
 }
 
-async function htmlToPdf(html) {
-  const browser = findChromium();
-  if (!browser) {
-    throw new SilentPrintError(
-      "NO_BROWSER",
-      "لم يُعثر على Edge أو Chrome لتحويل الإيصال. ثبّت Microsoft Edge."
-    );
-  }
-  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abo-receipt-"));
-  const measurePath = path.join(tmp, "measure.html");
-  const printPath = path.join(tmp, "receipt.html");
-  const pdfPath = path.join(tmp, "receipt.pdf");
-  const measureProfile = path.join(tmp, "profile-measure");
-  const printProfile = path.join(tmp, "profile-print");
-  await fs.promises.mkdir(measureProfile);
-  await fs.promises.mkdir(printProfile);
-
-  await fs.promises.writeFile(measurePath, html, "utf8");
-
-  const diag = await measureReceiptContent(browser, measurePath, measureProfile);
-  if (isReceiptPrintTestSave()) {
-    console.log({
-      receiptSelectorFound: diag.receiptSelectorFound,
-      rectHeight: diag.rectHeight,
-      receiptScrollHeight: diag.receiptScrollHeight,
-      bodyScrollHeight: diag.bodyScrollHeight,
-      calculatedHeightPx: diag.calculatedHeightPx,
-      calculatedHeightMm: diag.calculatedHeightMm,
-    });
-  }
-  if (diag.calculatedHeightPx == null || diag.calculatedHeightMm == null) {
-    throwMeasureFailed(diag);
-  }
-  const widthMm = receiptPrintWidthMm();
-  const heightMm = diag.calculatedHeightMm;
-  const printHtml = applyReceiptPageSize(html, widthMm, heightMm);
-  await fs.promises.writeFile(printPath, printHtml, "utf8");
-
+async function printPdfViaChromiumCli(browser, printHtmlPath, pdfPath, profileDir) {
+  await fs.promises.mkdir(profileDir, { recursive: true });
   await run(browser, [
     "--headless=new",
     "--disable-gpu",
@@ -342,14 +313,123 @@ async function htmlToPdf(html) {
     "--no-default-browser-check",
     "--no-pdf-header-footer",
     "--virtual-time-budget=3000",
-    `--user-data-dir=${printProfile}`,
+    `--user-data-dir=${profileDir}`,
     `--print-to-pdf=${pdfPath}`,
-    pathToFileURL(printPath).href,
+    pathToFileURL(printHtmlPath).href,
   ]);
-  const stat = await fs.promises.stat(pdfPath).catch(() => null);
-  if (!stat || stat.size < 100) {
+  if (!pdfFileOk(pdfPath)) {
     throw new SilentPrintError("PDF_FAILED", "فشل تحويل الإيصال إلى PDF");
   }
+}
+
+async function htmlToPdf(html, attempt) {
+  const t = attemptOrNoop(attempt);
+  const browser = findChromium();
+  if (!browser) {
+    const err = new SilentPrintError(
+      "NO_BROWSER",
+      "لم يُعثر على Edge أو Chrome لتحويل الإيصال. ثبّت Microsoft Edge."
+    );
+    t.fail("measure_browser_ready", err);
+    throw err;
+  }
+  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abo-receipt-"));
+  const measurePath = path.join(tmp, "measure.html");
+  const printPath = path.join(tmp, "receipt.html");
+  const pdfPath = path.join(tmp, "receipt.pdf");
+  const measureProfile = path.join(tmp, "profile-measure");
+  const printProfile = path.join(tmp, "profile-print");
+  await fs.promises.mkdir(measureProfile);
+  await fs.promises.writeFile(measurePath, html, "utf8");
+
+  let diag = null;
+  const widthMm = receiptPrintWidthMm();
+  let heightMm = null;
+
+  const pdfExtra = (pdfMode, extra = {}) => ({
+    browser: browserLabel(browser),
+    pdfMode,
+    pageWidthMm: widthMm,
+    pageHeightMm: heightMm,
+    calculatedHeightPx: diag?.calculatedHeightPx ?? null,
+    receiptSelectorFound: Boolean(diag?.receiptSelectorFound),
+    ...extra,
+  });
+
+  try {
+    await withHeadlessCdpPage(
+      browser,
+      measureProfile,
+      { attempt: t, startUrl: pathToFileURL(measurePath).href },
+      async (session) => {
+        const raw = await t.time("measure_fonts_height", () =>
+          session.evaluate(receiptMeasurePageSource())
+        );
+        diag = assembleReceiptHeightMeasure(raw);
+        if (isReceiptPrintTestSave()) {
+          console.log({
+            receiptSelectorFound: diag.receiptSelectorFound,
+            rectHeight: diag.rectHeight,
+            receiptScrollHeight: diag.receiptScrollHeight,
+            bodyScrollHeight: diag.bodyScrollHeight,
+            calculatedHeightPx: diag.calculatedHeightPx,
+            calculatedHeightMm: diag.calculatedHeightMm,
+          });
+        }
+        if (diag.calculatedHeightPx == null || diag.calculatedHeightMm == null) {
+          throwMeasureFailed(diag);
+        }
+        heightMm = diag.calculatedHeightMm;
+        await fs.promises.writeFile(printPath, applyReceiptPageSize(html, widthMm, heightMm), "utf8");
+        await t.time(
+          "pdf_generation",
+          async () => {
+            const navExtra = { loadTimedOut: false };
+            await session.goto(pathToFileURL(printPath).href, navExtra);
+            await session.evaluate(receiptPrintReadySource());
+            const pdfBuf = await session.printToPdf({ widthMm, heightMm });
+            await fs.promises.writeFile(pdfPath, pdfBuf);
+            if (!pdfFileOk(pdfPath)) {
+              throw new SilentPrintError("PDF_FAILED", "فشل تحويل الإيصال إلى PDF");
+            }
+          },
+          pdfExtra("cdp")
+        );
+      }
+    );
+  } catch (err) {
+    if (pdfFileOk(pdfPath) && heightMm != null) {
+      return { pdfPath, tmp, widthMm, heightMm };
+    }
+    const reason = fallbackReason(err);
+    if (!diag || diag.calculatedHeightMm == null) {
+      const dumpProfile = path.join(tmp, "profile-dump");
+      await fs.promises.mkdir(dumpProfile, { recursive: true });
+      diag = await t.time(
+        "measure_fallback_dumpdom",
+        () => measureReceiptViaDumpDom(browser, measurePath, dumpProfile),
+        {
+          reason,
+          timeout:
+            Boolean(err?.code && /timeout/i.test(String(err.code))) ||
+            /timeout/i.test(String(err?.message || "")),
+          virtualTimeBudgetMs: 8000,
+        }
+      );
+    }
+    if (diag.calculatedHeightPx == null || diag.calculatedHeightMm == null) {
+      if (err instanceof SilentPrintError) throw err;
+      throwMeasureFailed(diag);
+    }
+    heightMm = diag.calculatedHeightMm;
+    await fs.promises.writeFile(printPath, applyReceiptPageSize(html, widthMm, heightMm), "utf8");
+    await t.time(
+      "pdf_generation",
+      () => printPdfViaChromiumCli(browser, printPath, pdfPath, printProfile),
+      pdfExtra("cli", { virtualTimeBudgetMs: 3000 })
+    );
+  }
+
   return { pdfPath, tmp, widthMm, heightMm };
 }
 
@@ -478,7 +558,8 @@ export async function forwardToPrintAgent(html, fetchImpl = globalThis.fetch) {
  * RECEIPT_PRINT_TEST_MODE=save writes that same PDF to tmp/receipt-test/ and skips the printer.
  * @param {string} html
  */
-export async function printReceiptHtmlLocally(html) {
+export async function printReceiptHtmlLocally(html, attempt) {
+  const t = attemptOrNoop(attempt);
   if (!html || typeof html !== "string") {
     throw new SilentPrintError("NO_HTML", "لا يوجد إيصال للطباعة");
   }
@@ -496,9 +577,10 @@ export async function printReceiptHtmlLocally(html) {
 
   let tmpDir = null;
   try {
-    const { pdfPath, tmp } = await printPipeline.htmlToPdf(html);
+    const { pdfPath, tmp } = await printPipeline.htmlToPdf(html, t);
     tmpDir = tmp;
     if (saveOnly) {
+      t.mark("pdf_to_printer", { skipped: true, reason: "test_save" });
       const saved = await persistReceiptTestPdf(pdfPath);
       return {
         printed: true,
@@ -508,8 +590,11 @@ export async function printReceiptHtmlLocally(html) {
         heightMm: saved.heightMm,
       };
     }
-    const printerName = await printPipeline.resolvePrinter();
-    await printPipeline.printPdfFile(pdfPath, printerName);
+    let printerName = null;
+    await t.time("pdf_to_printer", async () => {
+      printerName = await printPipeline.resolvePrinter();
+      await printPipeline.printPdfFile(pdfPath, printerName);
+    });
     return { printed: true, printer: printerName };
   } finally {
     if (tmpDir) {
@@ -550,3 +635,5 @@ export async function silentPrintReceiptHtml(html) {
   }
   return forwardToPrintAgent(html);
 }
+
+export { htmlToPdf as renderReceiptHtmlToPdf, printPdfViaChromiumCli, findChromium as findReceiptChromium };
