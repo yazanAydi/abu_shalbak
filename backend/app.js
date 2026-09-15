@@ -45,6 +45,7 @@ import { requireAuth, enforceMustChangePassword } from "./middleware/auth.js";
 import { HttpError } from "./utils/httpError.js";
 import { queryCountMiddleware } from "./utils/queryStats.js";
 import { isOriginAllowed, parseAllowedOrigins } from "./utils/corsOrigins.js";
+import { isPosPublicPath, withPosPrintHelperConnectSrc } from "./utils/posContentSecurityPolicy.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -126,6 +127,20 @@ export function createApp(db, dbPath, options = {}) {
       },
     })
   );
+  // POS fetch() to the cashier helper is blocked by default-src 'self' unless
+  // connect-src lists the loopback origin. Patch /pos documents only; do not
+  // add a second CSP header (browsers AND multiple policies).
+  app.use((req, res, next) => {
+    if (!isPosPublicPath(req.path)) return next();
+    const current = res.getHeader("Content-Security-Policy");
+    if (!current) return next();
+    if (Array.isArray(current)) {
+      res.setHeader("Content-Security-Policy", current.map((h) => withPosPrintHelperConnectSrc(h)));
+    } else {
+      res.setHeader("Content-Security-Policy", withPosPrintHelperConnectSrc(current));
+    }
+    next();
+  });
   app.use(compression());
   app.use(requestIdMiddleware);
   app.use(queryCountMiddleware);
