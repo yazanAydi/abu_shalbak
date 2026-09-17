@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
@@ -10,6 +11,23 @@ import UnitNameSelect from "../../components/UnitNameSelect";
 import "./productBarcodes.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
+
+function unitsAllowPosSale(units) {
+  return (units || []).some((u) => u.sale_enabled !== false);
+}
+
+function emptyNewUnit(saleEnabled = true) {
+  return {
+    unit_name: "",
+    barcode: "",
+    price: "",
+    cost: "",
+    conversion_to_base: "1",
+    purchase_enabled: true,
+    is_default_purchase: false,
+    sale_enabled: saleEnabled,
+  };
+}
 
 function findBaseUnit(units, excludeId) {
   const list = excludeId ? units.filter((u) => u.id !== excludeId) : units;
@@ -213,16 +231,7 @@ function ProductUnitsSection({ productId, onChanged }) {
   const [units, setUnits] = useState([]);
   const [productSku, setProductSku] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [newUnit, setNewUnit] = useState({
-    unit_name: "",
-    barcode: "",
-    price: "",
-    cost: "",
-    conversion_to_base: "1",
-    purchase_enabled: true,
-    is_default_purchase: false,
-    sale_enabled: true,
-  });
+  const [newUnit, setNewUnit] = useState(() => emptyNewUnit(true));
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [err, setErr] = useState(null);
@@ -248,11 +257,13 @@ function ProductUnitsSection({ productId, onChanged }) {
       const { data } = await api.get(`/api/products/${productId}/units`, {
         headers: getAuthHeaders(),
       });
-      setUnits(Array.isArray(data.units) ? data.units : []);
+      const list = Array.isArray(data.units) ? data.units : [];
+      setUnits(list);
       setProductSku(data.sku ?? null);
+      setNewUnit((prev) => ({ ...prev, sale_enabled: unitsAllowPosSale(list) }));
       setErr(null);
     } catch (e) {
-      setErr(e.response?.data?.error || e.message);
+      setErr(apiErrorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -286,20 +297,11 @@ function ProductUnitsSection({ productId, onChanged }) {
         },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
-      setNewUnit({
-        unit_name: "",
-        barcode: "",
-        price: "",
-        cost: "",
-        conversion_to_base: "1",
-        purchase_enabled: true,
-        is_default_purchase: false,
-        sale_enabled: true,
-      });
+      setNewUnit(emptyNewUnit(Boolean(newUnit.sale_enabled)));
       await load();
       onChanged?.();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر إضافة الوحدة");
+      setErr(apiErrorMessage(e, "تعذّر إضافة الوحدة"));
     } finally {
       setBusy(false);
     }
@@ -345,7 +347,7 @@ function ProductUnitsSection({ productId, onChanged }) {
       await load();
       onChanged?.();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message);
+      setErr(apiErrorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -362,7 +364,7 @@ function ProductUnitsSection({ productId, onChanged }) {
       await load();
       onChanged?.();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message);
+      setErr(apiErrorMessage(e));
     } finally {
       setBusy(false);
     }

@@ -19,6 +19,7 @@ export default function ProtectedRoute({
   adminOnly = false,
   requireReports = false,
   requirePermission = null,
+  requireAnyPermission = null,
   requireOffice = false,
 }) {
   const [ready, setReady] = useState(false);
@@ -93,11 +94,20 @@ export default function ProtectedRoute({
     return <Navigate to={homePathForRole(role, permissions)} replace />;
   }
 
+  if (requireAnyPermission?.length) {
+    const allowed = requireAnyPermission.some((key) =>
+      hasAccountantPermission(role, permissions, key)
+    );
+    if (!allowed) {
+      return <Navigate to={homePathForPermissions(role, permissions)} replace />;
+    }
+  }
+
   if (requirePermission) {
     if (!hasAccountantPermission(role, permissions, requirePermission)) {
       return <Navigate to={homePathForPermissions(role, permissions)} replace />;
     }
-  } else if (requireReports && !canViewReports(role)) {
+  } else if (!requireAnyPermission?.length && requireReports && !canViewReports(role)) {
     return <Navigate to={homePathForRole(role, permissions)} replace />;
   }
 

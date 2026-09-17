@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -18,7 +19,7 @@ export default function PrintReceiptButton({ transactionId }) {
       );
       if (data.receipt_html || data.receipt_text) printReceipt(data);
     } catch (e) {
-      window.alert(e.response?.data?.error || e.message || "فشلت الطباعة");
+      window.alert(apiErrorMessage(e, "فشلت الطباعة"));
     } finally {
       setLoading(false);
     }

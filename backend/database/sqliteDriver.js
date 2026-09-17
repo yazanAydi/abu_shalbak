@@ -181,7 +181,7 @@ export function wrapBetterSqlite(writeRaw, readRaw) {
     // while a writer transaction is open. Only the writer-side async work
     // (no readonly preference) must stay on writeRaw so it sees its own
     // uncommitted changes and never a cached readonly statement.
-    if (writerTxDepth > 0 && !preferReadonlyReads()) {
+    if (writerTxDepth > 0) {
       return writeRaw;
     }
     if (readRaw && preferReadonlyReads() && isSelect(sql)) {

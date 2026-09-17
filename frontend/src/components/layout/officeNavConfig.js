@@ -1,5 +1,9 @@
 import { canViewReports, isAdminRole } from "../../utils/roles";
-import { hasAccountantPermission } from "../../utils/accountantPermissions";
+import { ACCOUNTANT_PERMISSION_DEFS, hasAccountantPermission } from "../../utils/accountantPermissions";
+
+const PERMISSION_LABEL_AR = Object.fromEntries(
+  ACCOUNTANT_PERMISSION_DEFS.map((def) => [def.key, def.labelAr])
+);
 
 /** @typedef {{ path: string, label: string, icon: string, section?: string, badgePath?: string, permissionKey?: string, visible: (role: string, permissions?: Record<string, boolean>|null) => boolean }} NavItem */
 
@@ -14,6 +18,15 @@ function navVisible(permissionKey) {
   return (role, permissions) => canSeeNavItem(role, permissions, permissionKey);
 }
 
+function canSeeBakeryWorkspace(role, permissions) {
+  return canSeeNavItem(role, permissions, "bakery") || canSeeNavItem(role, permissions, "bakery_supplies");
+}
+
+function bakeryChildVisible(...keys) {
+  return (role, permissions) =>
+    canSeeBakeryWorkspace(role, permissions) && keys.some((key) => canSeeNavItem(role, permissions, key));
+}
+
 /** @type {NavItem[]} */
 export const OFFICE_NAV = [
   {
@@ -23,6 +36,77 @@ export const OFFICE_NAV = [
     section: "overview",
     permissionKey: "dashboard",
     visible: navVisible("dashboard"),
+  },
+  {
+    path: "/bakery",
+    label: "نظرة عامة",
+    icon: "inventory",
+    section: "bakery",
+    permissionKey: "bakery",
+    visible: navVisible("bakery"),
+  },
+  {
+    path: "/bakery/products",
+    label: "الأصناف والمخزون",
+    icon: "products",
+    section: "bakery",
+    badgePath: "/bakery/products",
+    permissionKey: "bakery_supplies",
+    visible: bakeryChildVisible("bakery", "bakery_supplies"),
+  },
+  {
+    path: "/bakery/purchases",
+    label: "المشتريات",
+    icon: "purchases",
+    section: "bakery",
+    permissionKey: "purchases",
+    omitFromPermissionTopics: true,
+    visible: bakeryChildVisible("purchases", "bakery_supplies"),
+  },
+  {
+    path: "/bakery/returns",
+    label: "مرتجعات الموردين",
+    icon: "refunds",
+    section: "bakery",
+    permissionKey: "purchases",
+    omitFromPermissionTopics: true,
+    visible: bakeryChildVisible("purchases"),
+  },
+  {
+    path: "/bakery/warehouses",
+    label: "المستودعات",
+    icon: "warehouses",
+    section: "bakery",
+    permissionKey: "warehouses",
+    omitFromPermissionTopics: true,
+    visible: bakeryChildVisible("warehouses", "bakery_supplies"),
+  },
+  {
+    path: "/bakery/expiry",
+    label: "الصلاحيات والتشغيلات",
+    icon: "expiry",
+    section: "bakery",
+    permissionKey: "expiry",
+    omitFromPermissionTopics: true,
+    visible: bakeryChildVisible("expiry"),
+  },
+  {
+    path: "/bakery/sales",
+    label: "المبيعات",
+    icon: "finance",
+    section: "bakery",
+    permissionKey: "bakery",
+    omitFromPermissionTopics: true,
+    visible: navVisible("bakery"),
+  },
+  {
+    path: "/bakery/movements",
+    label: "حركة المخزون",
+    icon: "inventory",
+    section: "bakery",
+    permissionKey: "stock_count",
+    omitFromPermissionTopics: true,
+    visible: bakeryChildVisible("stock_count", "bakery_supplies"),
   },
   {
     path: "/manage-products",
@@ -82,15 +166,6 @@ export const OFFICE_NAV = [
     visible: navVisible("stock_count"),
   },
   {
-    path: "/bakery-supplies",
-    label: "مواد المخبز",
-    icon: "inventory",
-    section: "catalog",
-    badgePath: "/bakery-supplies",
-    permissionKey: "bakery_supplies",
-    visible: navVisible("bakery_supplies"),
-  },
-  {
     path: "/warehouses",
     label: "المستودعات",
     icon: "warehouses",
@@ -109,7 +184,7 @@ export const OFFICE_NAV = [
   },
   {
     path: "/finance",
-    label: "المالية",
+    label: "المراقبة المالية",
     icon: "finance",
     section: "finance",
     permissionKey: "finance",
@@ -122,6 +197,22 @@ export const OFFICE_NAV = [
     section: "finance",
     permissionKey: "expenses",
     visible: navVisible("expenses"),
+  },
+  {
+    path: "/employee-statements",
+    label: "كشف حساب الموظفين",
+    icon: "vouchers",
+    section: "finance",
+    permissionKey: "employee_payroll",
+    visible: navVisible("employee_payroll"),
+  },
+  {
+    path: "/employee-salaries",
+    label: "رواتب الموظفين",
+    icon: "shifts",
+    section: "finance",
+    permissionKey: "employee_payroll",
+    visible: navVisible("employee_payroll"),
   },
   {
     path: "/sales-reports",
@@ -279,14 +370,6 @@ export const OFFICE_NAV = [
     visible: navVisible("user_accounts"),
   },
   {
-    path: "/cashier-payroll",
-    label: "الموظفون",
-    icon: "shifts",
-    section: "admin",
-    permissionKey: "employee_payroll",
-    visible: navVisible("employee_payroll"),
-  },
-  {
     path: "/settings",
     label: "الإعدادات",
     icon: "settings",
@@ -314,6 +397,7 @@ export const OFFICE_NAV = [
 
 export const NAV_SECTION_LABELS = {
   overview: "نظرة عامة",
+  bakery: "المخبز",
   catalog: "المخزون والمنتجات",
   invoices: "فواتير",
   finance: "المالية والتقارير",
@@ -321,7 +405,7 @@ export const NAV_SECTION_LABELS = {
   admin: "الإدارة",
 };
 
-export const SECTION_ORDER = ["overview", "catalog", "invoices", "finance", "operations", "admin"];
+export const SECTION_ORDER = ["overview", "bakery", "catalog", "invoices", "finance", "operations", "admin"];
 
 export function filterOfficeNav(role, permissions) {
   return OFFICE_NAV.filter((item) => item.visible(role, permissions));
@@ -362,6 +446,7 @@ export function permissionTopicsFromNav() {
   const bySection = {};
 
   for (const item of OFFICE_NAV) {
+    if (item.omitFromPermissionTopics) continue;
     if (!item.permissionKey || seen.has(item.permissionKey)) continue;
     seen.add(item.permissionKey);
     const section = item.section || "other";
@@ -374,7 +459,7 @@ export function permissionTopicsFromNav() {
     }
     bySection[section].features.push({
       key: item.permissionKey,
-      labelAr: item.label,
+      labelAr: PERMISSION_LABEL_AR[item.permissionKey] || item.label,
     });
   }
 
@@ -386,10 +471,12 @@ export const ROUTE_TITLES = {
   "/manage-products": "إدارة المنتجات",
   "/product-organization": "تنظيم المنتجات",
   "/manage-users": "إدارة الحسابات",
-  "/finance": "المالية ودفعات الموردين",
+  "/finance": "المراقبة المالية",
   "/sales-reports": "تقارير المبيعات",
   "/shift-audit": "تدقيق الورديات",
-  "/cashier-payroll": "الموظفون",
+  "/cashier-payroll": "أجور الساعة والدوام",
+  "/employee-statements": "كشف حساب الموظفين",
+  "/employee-salaries": "رواتب الموظفين",
   "/refunds": "الاسترجاعات",
   "/refund-approvals": "موافقات الاسترجاع",
   "/on-account-approvals": "موافقات الذمة",
@@ -399,6 +486,14 @@ export const ROUTE_TITLES = {
   "/permissions": "الصلاحيات",
   "/inventory": "جرد المخزون",
   "/bakery-supplies": "مواد المخبز",
+  "/bakery": "نظرة عامة — المخبز",
+  "/bakery/products": "أصناف المخبز",
+  "/bakery/purchases": "مشتريات المخبز",
+  "/bakery/returns": "مرتجعات موردين المخبز",
+  "/bakery/warehouses": "مستودعات المخبز",
+  "/bakery/expiry": "صلاحيات وتشغيلات المخبز",
+  "/bakery/sales": "مبيعات المخبز",
+  "/bakery/movements": "حركة مخزون المخبز",
   "/expiry": "تقارير الصلاحية",
   "/sales-by-price": "المبيعات حسب سعر البيع",
   "/customers": "إدارة العملاء",
@@ -434,11 +529,21 @@ export const ROUTE_PERMISSION_KEYS = {
   "/categories": "categories",
   "/inventory": "stock_count",
   "/bakery-supplies": "bakery_supplies",
+  "/bakery": "bakery",
+  "/bakery/products": "bakery_supplies",
+  "/bakery/purchases": "purchases",
+  "/bakery/returns": "purchases",
+  "/bakery/warehouses": "warehouses",
+  "/bakery/expiry": "expiry",
+  "/bakery/sales": "bakery",
+  "/bakery/movements": "stock_count",
   "/warehouses": "warehouses",
   "/finance": "finance",
   "/sales-reports": "sales_reports",
   "/shift-audit": "shift_audit",
   "/cashier-payroll": "employee_payroll",
+  "/employee-statements": "employee_payroll",
+  "/employee-salaries": "employee_payroll",
   "/refunds": "refunds",
   "/refund-approvals": "refund_approvals",
   "/on-account-approvals": "on_account_approvals",

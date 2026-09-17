@@ -26,14 +26,16 @@ export async function fetchCustomerLedgerEvents(db, customerId, from, to) {
   const saleInv = dateClause("si.invoice_date");
   const refs = dateClause("r.created_at");
   const pays = dateClause("v.voucher_date");
+  const settles = dateClause("s.occurred_on");
+  const revs = dateClause("COALESCE(s.reversed_on, s.occurred_on)");
 
   return db.all(
-    `SELECT 'sale' AS ev_type, t.created_at AS ev_date, t.total AS debit, 0 AS credit, t.id AS ref_id, NULL AS notes, t.id AS sort_id
+    `SELECT 'sale' AS ev_type, t.created_at AS ev_date, t.total AS debit, 0 AS credit, t.id AS ref_id, t.notes AS notes, t.id AS sort_id
        FROM transactions t
        WHERE t.customer_id = ? AND t.payment_method = 'on_account'
          AND NOT EXISTS (SELECT 1 FROM sales_invoices si WHERE si.transaction_id = t.id) ${sales.c}
      UNION ALL
-     SELECT 'sale_invoice', si.invoice_date, si.on_account_amount, 0, si.id, NULL, si.id
+     SELECT 'sale_invoice', si.invoice_date, si.on_account_amount, 0, si.id, si.notes, si.id
        FROM sales_invoices si
        WHERE si.customer_id = ? AND si.status = 'posted' AND si.on_account_amount > 0 ${saleInv.c}
      UNION ALL
@@ -45,8 +47,23 @@ export async function fetchCustomerLedgerEvents(db, customerId, from, to) {
        FROM voucher_lines vl
        JOIN vouchers v ON v.id = vl.voucher_id
        WHERE vl.customer_id = ? AND v.voucher_type = 'receipt' AND v.status = 'posted' ${pays.c}
+     UNION ALL
+     SELECT 'payroll_settlement', s.occurred_on, 0, s.amount, s.id, 'تسوية ذمة راتب غير نقدية', s.id
+       FROM employee_settlements s
+       WHERE s.customer_id = ? AND s.kind = 'debt' ${settles.c}
+     UNION ALL
+     SELECT 'payroll_settlement_reversal', COALESCE(s.reversed_on, s.occurred_on), s.amount, 0, s.id, 'عكس تسوية ذمة راتب', s.id
+       FROM employee_settlements s
+       WHERE s.customer_id = ? AND s.kind = 'debt' AND s.status = 'reversed' ${revs.c}
      ORDER BY ev_date ASC, sort_id ASC`,
-    [customerId, ...sales.p, customerId, ...saleInv.p, customerId, ...refs.p, customerId, ...pays.p]
+    [
+      customerId, ...sales.p,
+      customerId, ...saleInv.p,
+      customerId, ...refs.p,
+      customerId, ...pays.p,
+      customerId, ...settles.p,
+      customerId, ...revs.p,
+    ]
   );
 }
 

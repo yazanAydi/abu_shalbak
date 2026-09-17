@@ -1043,6 +1043,68 @@ async function migrateProductBatchesTable(db) {
   `);
 }
 
+/**
+ * Operational lots: expiry belongs to a stock batch, not a single product field.
+ * Unknown-expiry remainder is derived (products.stock − dated lots) and is never
+ * given an invented date. Safe / idempotent; does not wipe existing stock.
+ */
+async function migrateStockBatchesOperational(db) {
+  for (const t of ["purchase_invoice_items", "purchase_return_items"]) {
+    if (!(await tableHasColumn(db, t, "expiry_date"))) {
+      await db.run(`ALTER TABLE ${t} ADD COLUMN expiry_date TEXT`);
+    }
+  }
+  if (!(await tableHasColumn(db, "sales_invoice_items", "preferred_expiry_date"))) {
+    await db.run("ALTER TABLE sales_invoice_items ADD COLUMN preferred_expiry_date TEXT");
+  }
+  if (!(await tableHasColumn(db, "sales_invoice_items", "batch_allocations_json"))) {
+    await db.run("ALTER TABLE sales_invoice_items ADD COLUMN batch_allocations_json TEXT");
+  }
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS stock_batch_allocations (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id          INTEGER NOT NULL REFERENCES products(id),
+      expiry_date         TEXT,
+      quantity            REAL NOT NULL,
+      direction           TEXT NOT NULL CHECK (direction IN ('in','out')),
+      reference_type      TEXT NOT NULL,
+      reference_id        INTEGER,
+      transaction_item_id INTEGER,
+      invoice_item_id     INTEGER,
+      created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_sba_ref ON stock_batch_allocations(reference_type, reference_id);
+    CREATE INDEX IF NOT EXISTS idx_sba_product ON stock_batch_allocations(product_id);
+  `);
+
+  const dupes = await db.all(
+    `SELECT product_id, expiry_date, MIN(id) AS keep_id, SUM(quantity) AS qty_sum
+       FROM product_batches
+      WHERE expiry_date IS NOT NULL AND TRIM(expiry_date) != ''
+      GROUP BY product_id, expiry_date
+     HAVING COUNT(*) > 1`
+  );
+  for (const d of dupes) {
+    await db.run("UPDATE product_batches SET quantity = ? WHERE id = ?", [d.qty_sum, d.keep_id]);
+    await db.run(
+      `DELETE FROM product_batches
+        WHERE product_id = ? AND expiry_date = ? AND id != ?`,
+      [d.product_id, d.expiry_date, d.keep_id]
+    );
+  }
+
+  try {
+    await db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_product_expiry_dated
+        ON product_batches(product_id, expiry_date)
+        WHERE expiry_date IS NOT NULL AND TRIM(expiry_date) != ''
+    `);
+  } catch {
+    /* leftover duplicate dated lots; upsert still uses the oldest row */
+  }
+}
+
 async function migrateProductCategoriesTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS product_categories (
@@ -1647,19 +1709,21 @@ async function migrateCashierShiftsPendingStatus(db) {
       manager_approved_at TEXT,
       variance_threshold REAL,
       requires_approval INTEGER NOT NULL DEFAULT 0,
-      store_id INTEGER NOT NULL DEFAULT 1
+      store_id INTEGER NOT NULL DEFAULT 1,
+      hourly_rate_snapshot REAL,
+      counted_cash_json TEXT
     );
     INSERT INTO cashier_shifts__mig (
       id, cashier_id, start_time, end_time, opening_cash, closing_cash, expected_cash,
       variance, notes, status, created_at, actual_cash, card_total, refund_total,
       closing_notes, manager_approved_by, manager_approved_at, variance_threshold,
-      requires_approval, store_id
+      requires_approval, store_id, hourly_rate_snapshot, counted_cash_json
     )
     SELECT
       id, cashier_id, start_time, end_time, opening_cash, closing_cash, expected_cash,
       variance, notes, status, created_at, actual_cash, card_total, refund_total,
       closing_notes, manager_approved_by, manager_approved_at, variance_threshold,
-      requires_approval, COALESCE(store_id, 1)
+      requires_approval, COALESCE(store_id, 1), hourly_rate_snapshot, counted_cash_json
     FROM cashier_shifts;
     DROP TABLE cashier_shifts;
     ALTER TABLE cashier_shifts__mig RENAME TO cashier_shifts;
@@ -1669,6 +1733,9 @@ async function migrateCashierShiftsPendingStatus(db) {
   `);
   // Unique one-open-shift index is recreated by migrateOneOpenShiftPerCashier
   // after this rebuild (DROP TABLE would drop it).
+  // hourly_rate_snapshot / counted_cash_json must be copied: this rebuild used
+  // to omit them after migrateShiftReconciliationExtended had already added
+  // the columns, which dropped historical snapshots to NULL.
 }
 
 /**
@@ -1852,6 +1919,27 @@ async function migrateAdvanceRequestsTable(db) {
   `);
 }
 
+async function migrateAdvanceRequestEmployeeLink(db) {
+  if (!(await tableHasColumn(db, "advance_requests", "employee_id"))) {
+    await db.run("ALTER TABLE advance_requests ADD COLUMN employee_id INTEGER REFERENCES employees(id)");
+  }
+  if (!(await tableHasColumn(db, "advance_requests", "ledger_entry_id"))) {
+    await db.run("ALTER TABLE advance_requests ADD COLUMN ledger_entry_id INTEGER");
+  }
+  if (!(await tableHasColumn(db, "advance_requests", "operating_expense_id"))) {
+    await db.run("ALTER TABLE advance_requests ADD COLUMN operating_expense_id INTEGER");
+  }
+}
+
+async function migrateOperatingExpenseSource(db) {
+  if (!(await tableHasColumn(db, "operating_expenses", "source"))) {
+    await db.run("ALTER TABLE operating_expenses ADD COLUMN source TEXT");
+  }
+  if (!(await tableHasColumn(db, "operating_expenses", "source_id"))) {
+    await db.run("ALTER TABLE operating_expenses ADD COLUMN source_id INTEGER");
+  }
+}
+
 async function migrateOnAccountRequestsTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS on_account_requests (
@@ -1859,7 +1947,7 @@ async function migrateOnAccountRequestsTable(db) {
       cashier_id INTEGER NOT NULL REFERENCES users(id),
       manager_id INTEGER REFERENCES users(id),
       shift_id INTEGER REFERENCES cashier_shifts(id),
-      customer_id INTEGER NOT NULL REFERENCES customers(id),
+      customer_id INTEGER REFERENCES customers(id),
       sale_snapshot_json TEXT NOT NULL,
       subtotal REAL NOT NULL,
       tax REAL NOT NULL,
@@ -1869,6 +1957,7 @@ async function migrateOnAccountRequestsTable(db) {
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
       telegram_message_id TEXT,
       transaction_id INTEGER REFERENCES transactions(id),
+      notes TEXT,
       review_notes TEXT,
       decision_source TEXT,
       cashier_notified_at TEXT,
@@ -1882,6 +1971,82 @@ async function migrateOnAccountRequestsTable(db) {
     CREATE INDEX IF NOT EXISTS idx_on_account_requests_cashier ON on_account_requests(cashier_id);
     CREATE INDEX IF NOT EXISTS idx_on_account_requests_customer ON on_account_requests(customer_id);
   `);
+}
+
+async function migrateOnAccountEmployeeAttribution(db) {
+  if (!(await tableHasColumn(db, "transactions", "employee_id"))) {
+    await db.run("ALTER TABLE transactions ADD COLUMN employee_id INTEGER REFERENCES employees(id)");
+  }
+  if (!(await tableHasColumn(db, "on_account_requests", "employee_id"))) {
+    await db.run("ALTER TABLE on_account_requests ADD COLUMN employee_id INTEGER REFERENCES employees(id)");
+  }
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_transactions_employee_id ON transactions(employee_id);
+    CREATE INDEX IF NOT EXISTS idx_on_account_requests_employee_id ON on_account_requests(employee_id);
+  `);
+}
+
+async function migrateOnAccountRequestCustomerNullable(db) {
+  const col = await db.get(
+    `SELECT "notnull" AS nn FROM pragma_table_info('on_account_requests') WHERE name = 'customer_id'`
+  );
+  if (!col || Number(col.nn) !== 1) return;
+
+  const existing = await db.all("PRAGMA table_info(on_account_requests)");
+  const existingNames = new Set(existing.map((c) => c.name));
+  await db.exec("PRAGMA foreign_keys = OFF");
+  await db.exec(`
+    CREATE TABLE on_account_requests_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      manager_id INTEGER REFERENCES users(id),
+      shift_id INTEGER REFERENCES cashier_shifts(id),
+      customer_id INTEGER REFERENCES customers(id),
+      employee_id INTEGER REFERENCES employees(id),
+      sale_snapshot_json TEXT NOT NULL,
+      subtotal REAL NOT NULL,
+      tax REAL NOT NULL,
+      total_amount REAL NOT NULL,
+      on_account_amount REAL NOT NULL,
+      payment_method TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+      telegram_message_id TEXT,
+      transaction_id INTEGER REFERENCES transactions(id),
+      notes TEXT,
+      review_notes TEXT,
+      decision_source TEXT,
+      cashier_notified_at TEXT,
+      cashier_acknowledged_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      approved_at TEXT,
+      rejected_at TEXT,
+      idempotency_key TEXT,
+      payload_fingerprint TEXT
+    )
+  `);
+  const newCols = await db.all("PRAGMA table_info(on_account_requests_new)");
+  const shared = newCols.map((c) => c.name).filter((n) => existingNames.has(n));
+  await db.exec(`
+    INSERT INTO on_account_requests_new (${shared.join(",")}) SELECT ${shared.join(",")} FROM on_account_requests;
+    DROP TABLE on_account_requests;
+    ALTER TABLE on_account_requests_new RENAME TO on_account_requests;
+    CREATE INDEX IF NOT EXISTS idx_on_account_requests_status_created ON on_account_requests(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_on_account_requests_cashier ON on_account_requests(cashier_id);
+    CREATE INDEX IF NOT EXISTS idx_on_account_requests_customer ON on_account_requests(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_on_account_requests_employee_id ON on_account_requests(employee_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_on_account_requests_idempotency_key
+      ON on_account_requests(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+async function migrateOnAccountCheckoutNotes(db) {
+  if (!(await tableHasColumn(db, "on_account_requests", "notes"))) {
+    await db.run("ALTER TABLE on_account_requests ADD COLUMN notes TEXT");
+  }
+  if (!(await tableHasColumn(db, "transactions", "notes"))) {
+    await db.run("ALTER TABLE transactions ADD COLUMN notes TEXT");
+  }
 }
 
 async function migrateCheckoutIdempotencyFingerprint(db) {
@@ -2062,6 +2227,303 @@ async function migrateHourlyRateColumn(db) {
   if (!(await tableHasColumn(db, "users", "hourly_rate"))) {
     await db.run("ALTER TABLE users ADD COLUMN hourly_rate REAL");
   }
+}
+
+async function migrateEmployeeHrTables(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS employees (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      phone TEXT,
+      start_on TEXT,
+      end_on TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_employees_active ON employees(active);
+    CREATE INDEX IF NOT EXISTS idx_employees_name ON employees(name COLLATE NOCASE);
+
+    CREATE TABLE IF NOT EXISTS employee_compensation (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      effective_from TEXT NOT NULL,
+      compensation_type TEXT NOT NULL CHECK (compensation_type IN ('monthly', 'daily', 'hourly')),
+      amount REAL NOT NULL,
+      expected_days REAL,
+      expected_hours REAL,
+      notes TEXT,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (employee_id, effective_from)
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_compensation_emp
+      ON employee_compensation(employee_id, effective_from);
+
+    CREATE TABLE IF NOT EXISTS employee_opening_balances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      kind TEXT NOT NULL CHECK (kind IN ('unpaid_salary', 'prepaid_salary')),
+      amount REAL NOT NULL,
+      as_of TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      operating_expense_id INTEGER UNIQUE REFERENCES operating_expenses(id),
+      event_seq INTEGER NOT NULL,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_openings_emp
+      ON employee_opening_balances(employee_id, as_of);
+
+    CREATE TABLE IF NOT EXISTS employee_event_clock (
+      employee_id INTEGER PRIMARY KEY REFERENCES employees(id),
+      next_seq INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS employee_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      event_seq INTEGER NOT NULL,
+      event_date TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      kind_rank INTEGER NOT NULL,
+      source_table TEXT,
+      source_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (employee_id, event_seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_events_emp_date
+      ON employee_events(employee_id, event_date, event_seq);
+
+    CREATE TABLE IF NOT EXISTS employee_ledger_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      entry_type TEXT NOT NULL CHECK (entry_type IN ('salary_payment', 'salary_payment_reversal')),
+      purpose TEXT NOT NULL DEFAULT 'salary_advance'
+        CHECK (purpose IN ('salary_advance', 'salary_payment')),
+      occurred_on TEXT NOT NULL,
+      amount REAL NOT NULL,
+      operating_expense_id INTEGER UNIQUE REFERENCES operating_expenses(id),
+      advance_request_id INTEGER UNIQUE REFERENCES advance_requests(id),
+      shift_cash_movement_id INTEGER UNIQUE,
+      idempotency_key TEXT UNIQUE,
+      event_seq INTEGER NOT NULL,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'reversed')),
+      reverses_id INTEGER UNIQUE REFERENCES employee_ledger_entries(id),
+      intended_employee_id INTEGER REFERENCES employees(id),
+      correction_reason TEXT,
+      correction_date TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_ledger_emp_date
+      ON employee_ledger_entries(employee_id, occurred_on, event_seq);
+  `);
+}
+
+async function migrateEmployeeSalaryEntitlements(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS employee_salary_entitlements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      period_from TEXT NOT NULL,
+      period_to TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      amount REAL NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('entitlement', 'reversal')),
+      source TEXT NOT NULL CHECK (source IN ('configured', 'manual', 'cashier_shifts', 'reversal')),
+      status TEXT NOT NULL CHECK (status IN ('active', 'reversed')),
+      incomplete INTEGER NOT NULL DEFAULT 0,
+      hours_json TEXT,
+      reason TEXT,
+      reverses_id INTEGER REFERENCES employee_salary_entitlements(id),
+      event_seq INTEGER NOT NULL,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      reversed_at TEXT,
+      reversed_by INTEGER REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_entitlements_emp_period
+      ON employee_salary_entitlements(employee_id, period_from, period_to, status);
+    CREATE INDEX IF NOT EXISTS idx_employee_entitlements_emp_event
+      ON employee_salary_entitlements(employee_id, event_date, event_seq);
+
+    CREATE TABLE IF NOT EXISTS employee_entitlement_shifts (
+      entitlement_id INTEGER NOT NULL REFERENCES employee_salary_entitlements(id),
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      shop_start_on TEXT NOT NULL,
+      hours REAL NOT NULL,
+      hourly_rate REAL,
+      pay REAL NOT NULL,
+      shift_status TEXT NOT NULL,
+      included_in_final INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (entitlement_id, shift_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_entitlement_shifts_shift
+      ON employee_entitlement_shifts(shift_id);
+  `);
+}
+
+async function migrateEmployeePayrollScreens(db) {
+  if (!(await tableHasColumn(db, "employees", "customer_id"))) {
+    await db.run("ALTER TABLE employees ADD COLUMN customer_id INTEGER REFERENCES customers(id)");
+  }
+  await db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_customer_id
+      ON employees(customer_id) WHERE customer_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS employee_salary_periods (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      period_from TEXT NOT NULL,
+      period_to TEXT NOT NULL,
+      salary_before_deductions REAL,
+      source TEXT NOT NULL CHECK (source IN ('cashier_shifts', 'manual', 'unspecified')),
+      incomplete INTEGER NOT NULL DEFAULT 0,
+      hours_json TEXT,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'reversed')),
+      payload_hash TEXT,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_salary_periods_emp
+      ON employee_salary_periods(employee_id, period_from, period_to, status);
+
+    CREATE TABLE IF NOT EXISTS employee_period_shifts (
+      period_id INTEGER NOT NULL REFERENCES employee_salary_periods(id),
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      shop_start_on TEXT NOT NULL,
+      hours REAL NOT NULL,
+      hourly_rate REAL,
+      pay REAL NOT NULL,
+      shift_status TEXT NOT NULL,
+      included_in_final INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (period_id, shift_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_period_shifts_shift
+      ON employee_period_shifts(shift_id);
+
+    CREATE TABLE IF NOT EXISTS employee_payroll_payouts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      period_id INTEGER NOT NULL REFERENCES employee_salary_periods(id),
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      occurred_on TEXT NOT NULL,
+      cash_paid REAL NOT NULL,
+      payment_method TEXT,
+      reference_note TEXT,
+      ledger_entry_id INTEGER UNIQUE REFERENCES employee_ledger_entries(id),
+      in_kind_expense_id INTEGER UNIQUE REFERENCES operating_expenses(id),
+      breakdown_json TEXT NOT NULL,
+      idempotency_key TEXT UNIQUE,
+      payload_hash TEXT,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_payroll_payouts_emp
+      ON employee_payroll_payouts(employee_id, occurred_on, id);
+
+    CREATE TABLE IF NOT EXISTS employee_settlements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      period_id INTEGER NOT NULL REFERENCES employee_salary_periods(id),
+      payout_id INTEGER NOT NULL REFERENCES employee_payroll_payouts(id),
+      kind TEXT NOT NULL CHECK (kind IN ('advance', 'debt')),
+      source_type TEXT NOT NULL CHECK (source_type IN ('ledger_entry', 'pos_sale', 'sales_invoice')),
+      source_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      occurred_on TEXT NOT NULL,
+      customer_id INTEGER REFERENCES customers(id),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'reversed')),
+      reversed_on TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_settlements_source
+      ON employee_settlements(kind, source_type, source_id, status);
+    CREATE INDEX IF NOT EXISTS idx_employee_settlements_emp
+      ON employee_settlements(employee_id, occurred_on, id);
+  `);
+  if (!(await tableHasColumn(db, "employee_settlements", "reversed_on"))) {
+    await db.run("ALTER TABLE employee_settlements ADD COLUMN reversed_on TEXT");
+  }
+}
+
+async function migrateSalaryAdvanceExpenseCategory(db) {
+  const row = await db.get("SELECT id FROM expense_categories WHERE name = 'salary_advance'");
+  if (!row) {
+    await db.run(
+      "INSERT INTO expense_categories (name, name_ar, active) VALUES ('salary_advance', 'سلفة على الراتب', 1)"
+    );
+  }
+}
+
+async function migrateEmployeePaymentCorrections(db) {
+  const sqlRow = await db.get(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='employee_ledger_entries'"
+  );
+  if (!sqlRow?.sql) return;
+  const hasReversalCheck = String(sqlRow.sql).includes("salary_payment_reversal");
+  const cols = await db.all("PRAGMA table_info(employee_ledger_entries)");
+  const names = new Set(cols.map((c) => c.name));
+  if (
+    !(
+      hasReversalCheck &&
+      names.has("status") &&
+      names.has("reverses_id") &&
+      names.has("intended_employee_id") &&
+      names.has("correction_reason") &&
+      names.has("correction_date")
+    )
+  ) {
+    await db.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE employee_ledger_entries_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL REFERENCES employees(id),
+        entry_type TEXT NOT NULL CHECK (entry_type IN ('salary_payment', 'salary_payment_reversal')),
+        purpose TEXT NOT NULL DEFAULT 'salary_advance'
+          CHECK (purpose IN ('salary_advance', 'salary_payment')),
+        occurred_on TEXT NOT NULL,
+        amount REAL NOT NULL,
+        operating_expense_id INTEGER UNIQUE REFERENCES operating_expenses(id),
+        advance_request_id INTEGER UNIQUE REFERENCES advance_requests(id),
+        shift_cash_movement_id INTEGER UNIQUE,
+        idempotency_key TEXT UNIQUE,
+        event_seq INTEGER NOT NULL,
+        created_by INTEGER REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'reversed')),
+        reverses_id INTEGER UNIQUE,
+        intended_employee_id INTEGER,
+        correction_reason TEXT,
+        correction_date TEXT
+      );
+      INSERT INTO employee_ledger_entries_new (
+        id, employee_id, entry_type, purpose, occurred_on, amount,
+        operating_expense_id, advance_request_id, shift_cash_movement_id,
+        idempotency_key, event_seq, created_by, created_at,
+        status, reverses_id, intended_employee_id, correction_reason, correction_date
+      )
+      SELECT
+        id, employee_id, entry_type, purpose, occurred_on, amount,
+        operating_expense_id, advance_request_id, shift_cash_movement_id,
+        idempotency_key, event_seq, created_by, created_at,
+        'active', NULL, NULL, NULL, NULL
+      FROM employee_ledger_entries;
+      DROP TABLE employee_ledger_entries;
+      ALTER TABLE employee_ledger_entries_new RENAME TO employee_ledger_entries;
+      CREATE INDEX IF NOT EXISTS idx_employee_ledger_emp_date
+        ON employee_ledger_entries(employee_id, occurred_on, event_seq);
+      PRAGMA foreign_keys = ON;
+    `);
+  }
+
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_employee_ledger_intended
+      ON employee_ledger_entries(intended_employee_id);
+  `);
 }
 
 async function migrateAttendanceTables(db) {
@@ -2366,6 +2828,13 @@ export async function initDatabase(dbPath) {
   await migrateMustChangePasswordColumn(db);
   await migrateUserPermissionsColumn(db);
   await migrateHourlyRateColumn(db);
+  await migrateEmployeeHrTables(db);
+  await migrateEmployeeSalaryEntitlements(db);
+  await migrateSalaryAdvanceExpenseCategory(db);
+  await migrateEmployeePaymentCorrections(db);
+  await migrateEmployeePayrollScreens(db);
+  await migrateAdvanceRequestEmployeeLink(db);
+  await migrateOperatingExpenseSource(db);
   await migrateAttendanceTables(db);
   await migrateStoresTable(db);
   await migrateStoreIdColumns(db);
@@ -2398,7 +2867,11 @@ export async function initDatabase(dbPath) {
   await migrateFractionalInventoryQuantityTypes(db);
   await migrateRefundPaymentMethodOnAccount(db);
   await migrateCheckoutIdempotencyFingerprint(db);
+  await migrateOnAccountEmployeeAttribution(db);
+  await migrateOnAccountRequestCustomerNullable(db);
+  await migrateOnAccountCheckoutNotes(db);
   await migrateTelegramPollRecoveryTables(db);
+  await migrateStockBatchesOperational(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);
@@ -2424,7 +2897,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.09-refund-on-account";
+const SCHEMA_VERSION = "2026.09-on-account-checkout-notes";
 
 async function migratePerfIndexes(db) {
   await db.exec(`

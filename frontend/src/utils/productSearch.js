@@ -5,7 +5,7 @@ import { lookupProductByBarcode, normalizeBarcode } from "./barcode";
 /**
  * Search products by name or any barcode (including unit barcodes in product_barcodes).
  * @param {string} query
- * @param {{ limit?: number, excludeIds?: number[], scope?: 'retail' | 'bakery' }} [opts]
+ * @param {{ limit?: number, excludeIds?: number[], scope?: 'retail' | 'bakery', membership?: string, kind?: string }} [opts]
  */
 export async function searchProductsApi(query, opts = {}) {
   const q = String(query ?? "").trim();
@@ -15,6 +15,8 @@ export async function searchProductsApi(query, opts = {}) {
   const exclude = new Set((opts.excludeIds ?? []).map(Number));
   const params = { search: q, limit };
   if (opts.scope) params.scope = opts.scope;
+  if (opts.membership) params.membership = opts.membership;
+  if (opts.kind) params.kind = opts.kind;
 
   const { data } = await api.get("/api/products", {
     params,
@@ -54,4 +56,33 @@ export async function fetchLastPurchaseCost(productId) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Posted purchase unit price for a supplier/product/unit as of a return date.
+ */
+export async function fetchSupplierPurchaseUnitPrice({
+  supplierId,
+  productId,
+  unitId,
+  asOf,
+  invoiceId,
+  signal,
+} = {}) {
+  const params = { supplier_id: supplierId, product_id: productId };
+  if (unitId) params.unit_id = unitId;
+  if (asOf) params.as_of = asOf;
+  if (invoiceId) params.invoice_id = invoiceId;
+  const { data } = await api.get("/api/purchases/supplier-unit-price", {
+    params,
+    headers: getAuthHeaders(),
+    signal,
+  });
+  return data ?? null;
+}
+
+export function supplierPurchasePriceHint(source) {
+  if (!source?.invoice_date) return "";
+  const inv = source.invoice_no != null && source.invoice_no !== "" ? ` — #${source.invoice_no}` : "";
+  return `آخر شراء: ${source.invoice_date}${inv}`;
 }

@@ -1,11 +1,11 @@
 import { round2 } from "../utils/tax.js";
-import { recordMovement } from "../utils/inventory.js";
 import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { insertSalePayments, netDrawerCashNis } from "../utils/salePayments.js";
 import { markSuspendedSaleCompleted } from "../services/suspendedSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { invalidatePromotionsCache } from "../utils/promotions.js";
 import { HttpError } from "../utils/httpError.js";
+import { applySaleStock } from "./stockBatchService.js";
 
 /**
  * Execute a validated checkout sale (inventory, payments, customer balance, cash movement).
@@ -40,6 +40,8 @@ async function executeCheckoutSaleCore(db, params) {
     payloadFingerprint,
     suspendedSaleId,
     promoBreakdown,
+    employeeId = null,
+    notes = null,
   } = params;
 
   if (idempotencyKey) {
@@ -86,8 +88,8 @@ async function executeCheckoutSaleCore(db, params) {
   const receiptNumber = await nextReceiptNumber(db, 1);
 
     const ins = await db.run(
-      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id, idempotency_key, payload_fingerprint)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?, ?)`,
+      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, employee_id, receipt_number, status, store_id, idempotency_key, payload_fingerprint, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?, ?, ?)`,
       [
         cashierId,
         JSON.stringify(itemsForJson),
@@ -101,9 +103,11 @@ async function executeCheckoutSaleCore(db, params) {
         summaryMethod,
         shiftId,
         custId,
+        employeeId || null,
         receiptNumber,
         idempotencyKey,
         payloadFingerprint || null,
+        notes || null,
       ]
     );
     const transactionId = ins.lastID;
@@ -128,7 +132,7 @@ async function executeCheckoutSaleCore(db, params) {
       }
       const lineNetAfterDiscount = round2(d.lineNet - lineDiscount);
       const grossProfit = round2(lineNetAfterDiscount - L.cost * L.quantity);
-      await db.run(
+      const itemIns = await db.run(
         `INSERT INTO transaction_items
            (transaction_id, product_id, barcode, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,
             unit_cost_at_sale, gross_profit, discount_at_sale, scanned_barcode, product_barcode_id,
@@ -155,6 +159,15 @@ async function executeCheckoutSaleCore(db, params) {
           L.conversion_to_base,
         ]
       );
+      await applySaleStock(db, {
+        productId: L.product_id,
+        quantity: L.stock_delta,
+        userId: cashierId,
+        notes: `بيع ${receiptNumber} (${L.unit_name} x${L.quantity})`,
+        referenceType: "transaction",
+        referenceId: transactionId,
+        transactionItemId: itemIns.lastID,
+      });
     }
 
     await insertSalePayments(db, transactionId, paymentLines);
@@ -166,19 +179,6 @@ async function executeCheckoutSaleCore(db, params) {
          VALUES (?, 'payment', ?, ?, ?)`,
         [shiftId, netCashNis, `بيع نقدي #${transactionId}`, transactionId]
       );
-    }
-
-    for (const L of normalized) {
-      await recordMovement(db, {
-        productId: L.product_id,
-        movementType: "sale",
-        quantity: -L.stock_delta,
-        refType: "transaction",
-        refId: transactionId,
-        notes: `بيع ${receiptNumber} (${L.unit_name} x${L.quantity})`,
-        userId: cashierId,
-        applyStock: true,
-      });
     }
 
     if (custId && onAccountTotal > 0) {

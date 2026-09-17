@@ -1,4 +1,4 @@
-import { buildPrintBrandingHtml, buildPrintedByHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
+import { buildPrintBrandingHtml, buildPrintedByHtml, A4_PRINT_SHEET_CSS, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { dateOnly, formatDateTimeShopAr, qty as fmtQty } from "./format";
 
@@ -13,24 +13,17 @@ function formatTimestamp(value) {
 }
 
 /**
- * Browser print window for a goods-in / goods-out inventory document.
+ * HTML for a goods-in / goods-out inventory document print window.
  * @param {object} doc
  * @param {object} [store]
  */
-export function printInventoryDocument(doc, store = {}) {
-  if (!doc) return;
+export function buildInventoryDocumentPrintHtml(doc, store = {}) {
   const isIssue = doc.document_type === "issue";
   const title = isIssue ? "سند إخراج بضاعة" : "سند إدخال بضاعة";
   const docNo = doc.document_number ?? doc.id;
   const storeName = store.store_name_ar || store.store_name || STORE_NAME_AR;
   const items = doc.items || [];
   const reason = doc.reason_label || doc.reason || "—";
-
-  const w = window.open("", "_blank", "width=900,height=840");
-  if (!w) {
-    window.alert("اسمح بفتح النافذة المنبثقة للطباعة.");
-    return;
-  }
 
   const bodyRows = items
     .map(
@@ -46,25 +39,16 @@ export function printInventoryDocument(doc, store = {}) {
     )
     .join("");
 
-  const html = `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(title)} #${escapeHtml(docNo)}</title>
   <style>
-    @page { size: A4; margin: 12mm; }
-    body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; color: #111; margin: 0; padding: 12px; }
-    h1 { text-align: center; margin: 6px 0 10px; font-size: 18px; }
-    .meta { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 8px 0 12px; }
-    .meta div { font-size: 12px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { border: 1px solid #999; padding: 6px 8px; text-align: right; vertical-align: top; }
-    th { background: #1f3a5f; color: #fff; }
-    td.num, th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .notes { margin-top: 12px; font-size: 12px; }
-    .footer { margin-top: 16px; font-size: 10px; color: #666; text-align: center; }
+    @page { size: A4; }
+    ${A4_PRINT_SHEET_CSS}
     ${PRINT_BRANDING_CSS}
-    @media print { thead { display: table-header-group; } tr { page-break-inside: avoid; } }
+    th { background: #1f3a5f; color: #fff; }
   </style>
 </head>
 <body>
@@ -75,7 +59,7 @@ export function printInventoryDocument(doc, store = {}) {
     <div><strong>السبب:</strong> ${escapeHtml(reason)}</div>
     <div><strong>أنشأه:</strong> ${escapeHtml(doc.created_by_name || "—")}</div>
     <div><strong>الحالة:</strong> مكتمل</div>
-    <div><strong>تاريخ الطباعة:</strong> ${escapeHtml(formatTimestamp())}</div>
+    <div><strong>تاريخ الطباعة:</strong> <span class="when">${escapeHtml(formatTimestamp())}</span></div>
   </div>
   <table>
     <thead>
@@ -96,8 +80,21 @@ export function printInventoryDocument(doc, store = {}) {
   <p class="footer">${escapeHtml(storeName)} — ${escapeHtml(title)}</p>
 </body>
 </html>`;
+}
 
-  w.document.write(html);
+/**
+ * Browser print window for a goods-in / goods-out inventory document.
+ * @param {object} doc
+ * @param {object} [store]
+ */
+export function printInventoryDocument(doc, store = {}) {
+  if (!doc) return;
+  const w = window.open("", "_blank", "width=900,height=840");
+  if (!w) {
+    window.alert("اسمح بفتح النافذة المنبثقة للطباعة.");
+    return;
+  }
+  w.document.write(buildInventoryDocumentPrintHtml(doc, store));
   w.document.close();
   printDocumentWhenReady(w.document);
 }

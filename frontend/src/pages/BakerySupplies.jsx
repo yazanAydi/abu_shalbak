@@ -1,20 +1,28 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { todayISO } from "../utils/format";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
 import { userHasOfficePermission } from "../utils/accountantPermissions";
+import { isAdminRole } from "../utils/roles";
 import { searchProductsApi } from "../utils/productSearch";
-import { ils, dateOnly, qty as fmtQty } from "../utils/format";
+import { todayISO, ils, dateOnly } from "../utils/format";
+import { getDatePresets, todayYmd, firstOfCurrentMonthYmd } from "../utils/reportDates";
+import {
+  BAKERY_MATERIAL_SALES_EMPTY,
+  bakeryExportColumns,
+  bakeryPrintMeta,
+  bakeryRevenueKindLabel,
+  bakerySummaryItems,
+  formatQtyByUnit,
+  formatQtyWithUnit,
+} from "./bakeryReportView";
 import ProductPicker from "../components/ProductPicker";
 import QtyStepper from "../components/QtyStepper";
 import { invalidateProductCache } from "../components/ProductPicker";
 import ProductUnitsModal from "./productDashboard/ProductUnitsModal";
 import EditProductModal from "./productDashboard/EditProductModal";
-import { fetchProductUnits, pickDefaultPurchaseUnit, ItemEditor } from "./Purchases";
 import UnitNameSelect from "../components/UnitNameSelect";
-import { deriveUnitCost } from "../utils/purchaseTotals";
-import { printPurchaseDoc } from "../utils/purchaseDocPrint";
 import {
   PageHeader,
   Tabs,
@@ -25,15 +33,21 @@ import {
   FormField,
   FormGrid,
   Input,
-  Select,
   Textarea,
   ReportToolbar,
   FilterBar,
   useToast,
   Card,
+  CardHeader,
   CardBody,
   PrimaryButton,
+  SecondaryButton,
+  DangerButton,
   SearchInput,
+  DateField,
+  StatCard,
+  EmptyState,
+  Skeleton,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import { handleEnterNavKeyDown } from "../utils/focusNavigation";
@@ -41,12 +55,11 @@ import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import { normalizeBarcode } from "../utils/barcode";
 
 const BAKERY_SCOPE = "bakery";
-const STATUS_TONE = { draft: "neutral", posted: "green" };
-const STATUS_LABEL = { draft: "مسودة", posted: "مرحّلة" };
 
 const emptyForm = {
   barcode: "",
   name: "",
+  price: "",
   cost: "",
   unit: "",
   stock: "",
@@ -69,7 +82,57 @@ function unwrapPage(data) {
   return { items: rows, total: rows.length };
 }
 
-function SuppliesCatalog() {
+function isPosAvailable(value) {
+  return value === true || value === 1 || value === "1" || Number(value) === 1;
+}
+
+function withPosFlag(product, enabled) {
+  return { ...product, pos_available: enabled ? 1 : 0 };
+}
+
+function productUnitsFromResponse(data) {
+  if (Array.isArray(data?.units)) return data.units;
+  if (Array.isArray(data?.data?.units)) return data.data.units;
+  if (Array.isArray(data)) return data;
+  return [];
+}
+
+function PosAvailableToggle({ product, disabled, onToggle }) {
+  const [on, setOn] = useState(() => isPosAvailable(product.pos_available));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setOn(isPosAvailable(product.pos_available));
+  }, [product.id, product.pos_available]);
+
+  async function change(next) {
+    if (busy || disabled) return;
+    setOn(next);
+    setBusy(true);
+    try {
+      await onToggle(product, next);
+    } catch {
+      setOn(!next);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <label className="ui-checkbox-label">
+      <input
+        className="ui-check"
+        type="checkbox"
+        checked={on}
+        disabled={disabled || busy}
+        onChange={(e) => change(e.target.checked)}
+      />
+      <span>{on ? "نعم" : "لا"}</span>
+    </label>
+  );
+}
+
+function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProducts }) {
   const toast = useToast();
   const navigate = useNavigate();
   const [products, setProducts] = useState([]);
@@ -81,23 +144,34 @@ function SuppliesCatalog() {
   const [formErr, setFormErr] = useState(null);
   const [unitsProduct, setUnitsProduct] = useState(null);
   const [editProduct, setEditProduct] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [deletePw, setDeletePw] = useState("");
+  const [deletePwError, setDeletePwError] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const canAdminProducts = isAdminRole(getUser()?.role);
+
+  const listParams = useMemo(() => {
+    if (kind === "materials") return { membership: "bakery", kind: "materials", limit: 50, offset: 0 };
+    if (kind === "finished") return { membership: "bakery", kind: "finished", limit: 50, offset: 0 };
+    return { membership: "bakery", kind: "workspace", limit: 50, offset: 0 };
+  }, [kind]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get("/api/products", {
-        params: { scope: BAKERY_SCOPE, limit: 50, offset: 0 },
+        params: listParams,
         headers: getAuthHeaders(),
       });
       const page = unwrapPage(data);
       setProducts(page.items);
       setSearchResults(null);
     } catch (e) {
-      toast.error(e.response?.data?.error || "تعذّر التحميل");
+      toast.error(apiErrorMessage(e, "تعذّر التحميل"));
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, listParams]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -111,7 +185,7 @@ function SuppliesCatalog() {
     setSearchLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchProductsApi(q, { limit: 50, scope: BAKERY_SCOPE });
+        const rows = await searchProductsApi(q, { limit: 50, membership: "bakery", kind });
         setSearchResults(rows);
       } catch {
         setSearchResults([]);
@@ -120,7 +194,7 @@ function SuppliesCatalog() {
       }
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [search]);
+  }, [search, kind]);
 
   const list = search.trim() ? (searchResults ?? []) : products;
   const listLoading = search.trim() ? searchLoading || searchResults === null : loading;
@@ -134,18 +208,23 @@ function SuppliesCatalog() {
       setFormErr("أدخل مخزوناً صالحاً");
       return;
     }
+    const price = form.price === "" ? 0 : Number(form.price);
+    if (!Number.isFinite(price) || price < 0) {
+      setFormErr("أدخل سعر بيع صالحاً");
+      return;
+    }
     try {
       const { data } = await api.post(
         "/api/products",
         {
           barcode: form.barcode.trim(),
           name: form.name.trim(),
-          price: 0,
+          price,
           cost: form.cost === "" ? 0 : Number(form.cost),
           stock: Number(form.stock),
           unit: form.unit.trim() || null,
           min_stock: form.min_stock === "" ? null : Number(form.min_stock),
-          inventory_scope: BAKERY_SCOPE,
+          inventory_scope: kind === "finished" ? "retail" : BAKERY_SCOPE,
         },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
@@ -156,7 +235,84 @@ function SuppliesCatalog() {
       await load();
       if (created?.id) setUnitsProduct(created);
     } catch (e) {
-      setFormErr(e.response?.data?.error || e.message);
+      setFormErr(apiErrorMessage(e));
+    }
+  }
+
+  function patchPosFlag(productId, enabled) {
+    const apply = (rows) =>
+      (rows || []).map((row) => (Number(row.id) === Number(productId) ? withPosFlag(row, enabled) : row));
+    setProducts((rows) => apply(rows));
+    setSearchResults((rows) => (rows ? apply(rows) : rows));
+  }
+
+  async function togglePos(product, enabled) {
+    const { data } = await api.get(`/api/products/${product.id}/units`, { headers: getAuthHeaders() });
+    const units = productUnitsFromResponse(data);
+    const targets = enabled
+      ? [units.find((u) => u.is_default) || units[0]].filter(Boolean)
+      : units.filter((u) => u?.id);
+    if (!targets.length) {
+      toast.error("لا توجد وحدة لتحديث إتاحة الكاشير");
+      throw new Error("no unit");
+    }
+    try {
+      for (const unit of targets) {
+        await api.put(
+          `/api/products/${product.id}/units/${unit.id}`,
+          { sale_enabled: enabled },
+          { headers: getAuthHeaders() }
+        );
+      }
+      patchPosFlag(product.id, enabled);
+      toast.success(enabled ? "متاح للبيع في الكاشير" : "أُخفي عن الكاشير");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "تعذّر تحديث إتاحة الكاشير"));
+      throw e;
+    }
+  }
+
+  const rowCanWrite = (p) =>
+    String(p.inventory_scope || "retail") === "bakery" ? canWriteMaterials : canWriteProducts;
+
+  function requestDelete(product) {
+    if (!product?.id || !canAdminProducts) return;
+    setDeletePw("");
+    setDeletePwError(null);
+    setPendingDelete(product);
+  }
+
+  function cancelDelete() {
+    setPendingDelete(null);
+    setDeletePw("");
+    setDeletePwError(null);
+  }
+
+  function removeLocal(productId) {
+    setProducts((rows) => (rows || []).filter((row) => Number(row.id) !== Number(productId)));
+    setSearchResults((rows) => (rows ? rows.filter((row) => Number(row.id) !== Number(productId)) : rows));
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete?.id) return;
+    if (!deletePw) {
+      setDeletePwError("كلمة المرور مطلوبة");
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.delete(`/api/admin/products/${pendingDelete.id}`, {
+        headers: { ...getAuthHeaders(), "X-Confirm-Password": deletePw },
+      });
+      removeLocal(pendingDelete.id);
+      invalidateProductCache();
+      toast.success("تم الحذف");
+      cancelDelete();
+      await load();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "تعذّر الحذف"));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -180,22 +336,50 @@ function SuppliesCatalog() {
     },
     { key: "unit", header: "الوحدة", render: (p) => p.unit || "—" },
     { key: "stock", header: "المخزون", className: "num" },
+    { key: "price", header: "سعر البيع", className: "num", render: (p) => ils(p.price) },
     { key: "cost", header: "الكلفة", className: "num", render: (p) => ils(p.cost) },
+    {
+      key: "kind",
+      header: "النوع",
+      render: (p) => (String(p.inventory_scope || "retail") === "bakery" ? "مادة" : "صنف بيع"),
+    },
+    {
+      key: "pos_available",
+      header: "متاح للكاشير",
+      render: (p) => {
+        const material = String(p.inventory_scope || "retail") === "bakery";
+        if (!material) return "نعم";
+        if (!rowCanWrite(p)) return isPosAvailable(p.pos_available) ? "نعم" : "لا";
+        return <PosAvailableToggle product={p} onToggle={togglePos} />;
+      },
+    },
     { key: "min_stock", header: "حد التنبيه", className: "num", render: (p) => p.min_stock ?? "—" },
     {
       key: "actions",
       header: "إجراءات",
-      render: (p) => (
-        <div className="ui-table__actions">
-          <Button variant="ghost" size="sm" onClick={() => setEditProduct(p)}>تعديل</Button>
-          <Button variant="ghost" size="sm" onClick={() => setUnitsProduct(p)}>الوحدات</Button>
-        </div>
-      ),
+      render: (p) => {
+        const canEdit = rowCanWrite(p);
+        if (!canEdit && !canAdminProducts) return "—";
+        return (
+          <div className="ui-table__actions">
+            {canEdit ? (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => setEditProduct(p)}>تعديل</Button>
+                <Button variant="ghost" size="sm" onClick={() => setUnitsProduct(p)}>الوحدات</Button>
+              </>
+            ) : null}
+            {canAdminProducts ? (
+              <DangerButton size="sm" type="button" onClick={() => requestDelete(p)}>حذف</DangerButton>
+            ) : null}
+          </div>
+        );
+      },
     },
   ];
 
   return (
     <>
+      {canWriteMaterials && kind !== "finished" ? (
       <Card>
         <CardBody>
           <form onSubmit={addSupply}>
@@ -220,6 +404,15 @@ function SuppliesCatalog() {
                   onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))}
                 />
               </FormField>
+              <FormField label="سعر البيع" hint="سعر الكاشير لهذه المادة — يمكن إبقاؤه صفراً إذا لم تُباع">
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={form.price}
+                  onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
+                />
+              </FormField>
               <FormField label="الكلفة">
                 <Input type="number" step="0.01" min="0" value={form.cost} onChange={(e) => setForm((f) => ({ ...f, cost: e.target.value }))} />
               </FormField>
@@ -235,14 +428,15 @@ function SuppliesCatalog() {
           </form>
         </CardBody>
       </Card>
+      ) : null}
 
       <div className="ui-toolbar" style={{ marginTop: "1rem", display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث في مواد المخبز…" />
+        <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث في أصناف المخبز…" />
         <ReportToolbar
-          title="مواد المخبز"
+          title="أصناف المخبز"
           columns={pickExportColumns(columns)}
           rows={list}
-          filename="bakery-supplies"
+          filename="bakery-catalog"
           disabled={listLoading}
         />
       </div>
@@ -252,274 +446,63 @@ function SuppliesCatalog() {
         columns={columns}
         rows={list}
         emptyIcon="inventory"
-        empty="لا توجد مواد مخبز بعد"
+        empty="لا توجد أصناف مخبز مطابقة"
         emptyHint="أضف مادة من النموذج أعلاه"
         rowClassName={(p) => (Number(p.stock) <= Number(p.min_stock || 0) && p.min_stock != null ? "out-of-stock" : "")}
       />
 
-      {unitsProduct ? (
-        <ProductUnitsModal product={unitsProduct} onClose={() => { setUnitsProduct(null); load(); }} />
-      ) : null}
-      {editProduct ? (
-        <EditProductModal
-          product={editProduct}
-          onClose={() => setEditProduct(null)}
-          onSaved={() => { setEditProduct(null); load(); }}
-        />
-      ) : null}
-    </>
-  );
-}
-
-function BakeryPurchases() {
-  const toast = useToast();
-  const [list, setList] = useState([]);
-  const [suppliers, setSuppliers] = useState([]);
-  const [store, setStore] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [supplierId, setSupplierId] = useState("");
-  const [docDate, setDocDate] = useState(todayISO());
-  const [refText, setRefText] = useState("");
-  const [notes, setNotes] = useState("");
-  const [items, setItems] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const [detail, setDetail] = useState(null);
-
-  const loadFilteredInvoices = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [{ data: invData }, { data: prodData }] = await Promise.all([
-        api.get("/api/purchases/invoices", {
-          params: { include_items: 1 },
-          headers: getAuthHeaders(),
-        }),
-        api.get("/api/products", { params: { scope: BAKERY_SCOPE, fields: "id" }, headers: getAuthHeaders() }),
-      ]);
-      const invoices = unwrapList(invData);
-      const bakeryIds = new Set(unwrapList(prodData).map((p) => p.id));
-      const filtered = [];
-      for (const inv of invoices) {
-        const invItems = inv.items || [];
-        if (invItems.length > 0 && invItems.every((it) => bakeryIds.has(it.product_id))) {
-          filtered.push(inv);
-        }
-      }
-      setList(filtered);
-    } catch {
-      toast.error("تعذّر التحميل");
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
-  useEffect(() => {
-    api.get("/api/suppliers", { headers: getAuthHeaders() })
-      .then(({ data }) => setSuppliers(unwrapList(data)))
-      .catch(() => {});
-    api.get("/api/settings", { headers: getAuthHeaders() })
-      .then(({ data }) => setStore(data || {}))
-      .catch(() => {});
-    loadFilteredInvoices();
-  }, [loadFilteredInvoices]);
-
-  async function persist() {
-    if (!supplierId) { toast.error("اختر المورد"); return null; }
-    if (items.length === 0) { toast.error("أضف أصنافاً"); return null; }
-    setSaving(true);
-    const payload = {
-      supplier_id: Number(supplierId),
-      invoice_date: docDate,
-      ref_text: refText,
-      notes,
-      items: items.map((it) => ({
-        product_id: it.product_id,
-        quantity: Number(it.quantity),
-        unit_id: it.unit_id != null ? Number(it.unit_id) : undefined,
-        total_cost: Number(it.total_cost),
-        discount_pct: it.discount_pct === "" ? undefined : Number(it.discount_pct),
-        bonus_quantity: it.bonus_quantity === "" ? undefined : Number(it.bonus_quantity),
-      })),
-    };
-    try {
-      if (editId) {
-        await api.put(`/api/purchases/invoices/${editId}`, payload, { headers: getAuthHeaders() });
-        toast.success("تم تعديل المسودة");
-        return editId;
-      }
-      const { data } = await api.post("/api/purchases/invoices", payload, { headers: getAuthHeaders() });
-      toast.success("تم الحفظ كمسودة");
-      return (data?.data ?? data)?.id ?? null;
-    } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الحفظ");
-      return null;
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function save(post) {
-    const id = await persist();
-    if (id == null) return;
-    if (post) {
-      try {
-        await api.post(`/api/purchases/invoices/${id}/post`, {}, { headers: getAuthHeaders() });
-        toast.success("تم الترحيل");
-      } catch (e) {
-        toast.error(e.response?.data?.error || "فشل الترحيل");
-        return;
-      }
-    }
-    setShowForm(false);
-    setEditId(null);
-    loadFilteredInvoices();
-  }
-
-  async function printDoc(id) {
-    try {
-      const { data } = await api.get(`/api/purchases/invoices/${id}`, { headers: getAuthHeaders() });
-      const doc = data?.data ?? data;
-      printPurchaseDoc(doc, "invoices", store);
-    } catch {
-      toast.error("تعذّر التحميل");
-    }
-  }
-
-  async function openDetail(id) {
-    try {
-      const { data } = await api.get(`/api/purchases/invoices/${id}`, { headers: getAuthHeaders() });
-      const doc = data?.data ?? data;
-      if (doc.status === "draft") {
-        setSupplierId(String(doc.supplier_id));
-        setDocDate(doc.invoice_date?.slice(0, 10) || docDate);
-        setRefText(doc.ref_text || "");
-        setNotes(doc.notes || "");
-        const mapped = await Promise.all(
-          (doc.items || []).map(async (it) => {
-            const units = await fetchProductUnits(it.product_id);
-            const qty = Number(it.quantity) || 0;
-            return {
-              product_id: it.product_id,
-              name: it.name,
-              barcode: it.barcode,
-              quantity: it.quantity,
-              unit_id: it.product_unit_id ?? pickDefaultPurchaseUnit(units),
-              units,
-              total_cost: it.total_cost,
-              unit_cost: it.unit_cost != null ? it.unit_cost : deriveUnitCost(it.total_cost, qty),
-              cost_mode: "total",
-              discount_pct: it.discount_pct != null && it.discount_pct !== 0 ? it.discount_pct : "",
-              bonus_quantity: it.bonus_quantity != null && it.bonus_quantity !== 0 ? it.bonus_quantity : "",
-            };
-          })
-        );
-        setItems(mapped);
-        setEditId(id);
-        setShowForm(true);
-      } else {
-        setDetail(doc);
-      }
-    } catch {
-      toast.error("تعذّر التحميل");
-    }
-  }
-
-  const columns = [
-    { key: "invoice_no", header: "رقم", render: (r) => `#${r.invoice_no ?? r.id}` },
-    { key: "supplier_name", header: "المورد" },
-    { key: "invoice_date", header: "التاريخ", render: (r) => dateOnly(r.invoice_date) },
-    { key: "total", header: "الإجمالي", className: "num", render: (r) => ils(r.total) },
-    {
-      key: "status",
-      header: "الحالة",
-      render: (r) => <StatusPill tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status] || r.status}</StatusPill>,
-    },
-    {
-      key: "actions",
-      header: "إجراءات",
-      render: (r) => (
-        <div className="ui-table__actions">
-          <Button variant="ghost" size="sm" onClick={() => openDetail(r.id)}>عرض</Button>
-          <Button variant="ghost" size="sm" icon="print" onClick={() => printDoc(r.id)}>طباعة</Button>
-          {r.status === "draft" && (
-            <Button variant="outline" size="sm" icon="check" onClick={async () => {
-              if (!window.confirm("ترحيل الفاتورة سيحدّث مخزون مواد المخبز. متابعة؟")) return;
-              try {
-                await api.post(`/api/purchases/invoices/${r.id}/post`, {}, { headers: getAuthHeaders() });
-                toast.success("تم الترحيل");
-                loadFilteredInvoices();
-              } catch (e) {
-                toast.error(e.response?.data?.error || "فشل");
-              }
-            }}>ترحيل</Button>
-          )}
-        </div>
-      ),
-    },
-  ];
-
-  return (
-    <>
-      <div className="ui-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <ReportToolbar title="مشتريات المخبز" columns={pickExportColumns(columns)} rows={list} filename="bakery-purchases" disabled={loading} />
-        <Button icon="plus" onClick={() => {
-          setEditId(null);
-          setSupplierId("");
-          setDocDate(todayISO());
-          setRefText("");
-          setNotes("");
-          setItems([]);
-          setShowForm(true);
-        }}>فاتورة شراء جديدة</Button>
-      </div>
-      <DataTable columns={columns} rows={list} loading={loading} emptyIcon="purchases" empty="لا توجد فواتير مشتريات للمخبز" />
-
-      <Modal open={showForm} title={editId ? "تعديل فاتورة المخبز" : "فاتورة شراء — مواد المخبز"} onClose={() => { setShowForm(false); setEditId(null); }} size="xl"
-        footer={<>
-          <Button onClick={() => save(true)} disabled={saving}>ترحيل</Button>
-          <Button variant="secondary" onClick={() => save(false)} disabled={saving}>حفظ كمسودة</Button>
-          <Button variant="ghost" onClick={() => { setShowForm(false); setEditId(null); }}>إلغاء</Button>
-        </>}>
-        <FormGrid>
-          <FormField label="المورد" required>
-            <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
-              <option value="">— اختر —</option>
-              {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </Select>
-          </FormField>
-          <FormField label="التاريخ"><Input type="date" value={docDate} onChange={(e) => setDocDate(e.target.value)} /></FormField>
-          <FormField label="مرجع الفاتورة"><Input value={refText} onChange={(e) => setRefText(e.target.value)} /></FormField>
-        </FormGrid>
-        <div style={{ margin: "1rem 0 0.5rem", fontWeight: 700 }}>الأصناف</div>
-        <ItemEditor items={items} setItems={setItems} withVat defaultTaxRate={store.default_tax_rate} scope={BAKERY_SCOPE} />
-        <FormField label="ملاحظات"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></FormField>
-      </Modal>
-
+      <ProductUnitsModal
+        open={!!unitsProduct}
+        product={unitsProduct}
+        onClose={() => { setUnitsProduct(null); load(); }}
+        onChanged={load}
+      />
+      <EditProductModal
+        open={!!editProduct}
+        product={editProduct}
+        onClose={() => setEditProduct(null)}
+        onSaved={() => { setEditProduct(null); load(); }}
+      />
       <Modal
-        open={!!detail}
-        title={detail ? `فاتورة #${detail.invoice_no ?? detail.id}` : ""}
-        onClose={() => setDetail(null)}
-        size="lg"
-        footer={detail ? <Button icon="print" onClick={() => printPurchaseDoc(detail, "invoices", store)}>طباعة</Button> : null}
-      >
-        {detail ? (
+        open={!!pendingDelete}
+        onClose={cancelDelete}
+        title="تأكيد الحذف"
+        footer={
           <>
-            <div className="detail-header">
-              <div>المورد: <strong>{detail.supplier_name}</strong></div>
-              <StatusPill tone={STATUS_TONE[detail.status]}>{STATUS_LABEL[detail.status]}</StatusPill>
-            </div>
-            <DataTable
-              columns={[
-                { key: "name", header: "الصنف" },
-                { key: "quantity", header: "الكمية", render: (it) => fmtQty(it.quantity) },
-                { key: "total_cost", header: "الكلفة", className: "num", render: (it) => ils(it.total_cost) },
-              ]}
-              rows={detail.items || []}
-              empty="لا توجد أصناف"
-            />
+            <SecondaryButton type="button" onClick={cancelDelete} disabled={deleting}>
+              إلغاء
+            </SecondaryButton>
+            <DangerButton type="button" onClick={confirmDelete} disabled={deleting}>
+              {deleting ? "جارٍ الحذف…" : "تأكيد الحذف"}
+            </DangerButton>
           </>
-        ) : null}
+        }
+      >
+        <p>
+          {pendingDelete
+            ? `سيتم حذف «${pendingDelete.name}» نهائياً.`
+            : "سيتم حذف هذا المنتج نهائياً."}
+        </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            confirmDelete();
+          }}
+        >
+          <FormField label="كلمة مرور الحذف" required error={deletePwError}>
+            <Input
+              type="password"
+              value={deletePw}
+              autoFocus
+              invalid={Boolean(deletePwError)}
+              onChange={(e) => {
+                setDeletePw(e.target.value);
+                if (deletePwError) setDeletePwError(null);
+              }}
+              placeholder="أدخل كلمة المرور للمتابعة"
+            />
+          </FormField>
+        </form>
       </Modal>
     </>
   );
@@ -534,6 +517,8 @@ function BakeryConsumption() {
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [detailLoadingId, setDetailLoadingId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -555,6 +540,18 @@ function BakeryConsumption() {
   }
   const upd = (i, k, v) => setItems((prev) => prev.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
 
+  async function openDetail(id) {
+    setDetailLoadingId(id);
+    try {
+      const { data } = await api.get(`/api/inventory/adjustments/${id}`, { headers: getAuthHeaders() });
+      setDetail(data);
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "تعذّر تحميل التفاصيل"));
+    } finally {
+      setDetailLoadingId(null);
+    }
+  }
+
   async function save(post) {
     if (items.length === 0) { toast.error("أضف أصنافاً"); return; }
     setSaving(true);
@@ -572,7 +569,7 @@ function BakeryConsumption() {
       setNotes("");
       load();
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الحفظ");
+      toast.error(apiErrorMessage(e, "فشل الحفظ"));
     } finally {
       setSaving(false);
     }
@@ -586,6 +583,22 @@ function BakeryConsumption() {
       key: "status",
       header: "الحالة",
       render: (r) => <StatusPill tone={r.status === "posted" ? "green" : "neutral"}>{r.status === "posted" ? "مرحّلة" : "مسودة"}</StatusPill>,
+    },
+    {
+      key: "actions",
+      header: "إجراءات",
+      render: (r) => (
+        <div className="ui-table__actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={detailLoadingId === r.id}
+            onClick={() => openDetail(r.id)}
+          >
+            {detailLoadingId === r.id ? "جاري التحميل…" : "تفاصيل"}
+          </Button>
+        </div>
+      ),
     },
   ];
 
@@ -616,7 +629,7 @@ function BakeryConsumption() {
                   <tr key={it.product_id}>
                     <td>{it.name}</td>
                     <td><QtyStepper className="ui-input" style={{ width: 140 }} min={0} value={it.quantity} onChange={(e) => upd(i, "quantity", e.target.value)} /></td>
-                    <td><Button variant="ghost" size="sm" icon="trash" onClick={() => setItems((p) => p.filter((_, idx) => idx !== i))} /></td>
+                    <td><Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => setItems((p) => p.filter((_, idx) => idx !== i))} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -624,6 +637,54 @@ function BakeryConsumption() {
           </div>
         </div>
         <FormField label="ملاحظات"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></FormField>
+      </Modal>
+
+      <Modal
+        open={!!detail}
+        title={detail ? `استهلاك #${detail.adjustment_no ?? detail.id}` : ""}
+        onClose={() => setDetail(null)}
+        footer={<Button variant="ghost" onClick={() => setDetail(null)}>إغلاق</Button>}
+      >
+        {detail ? (
+          <>
+            <dl
+              className="pd-kv"
+              style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "0.35rem 1.5rem", marginBottom: "1.25rem" }}
+            >
+              <dt>بواسطة</dt>
+              <dd>{detail.created_by_name || "—"}</dd>
+              <dt>التاريخ</dt>
+              <dd>{dateOnly(detail.adjustment_date)}</dd>
+              <dt>الحالة</dt>
+              <dd>
+                <StatusPill tone={detail.status === "posted" ? "green" : "neutral"}>
+                  {detail.status === "posted" ? "مرحّلة" : "مسودة"}
+                </StatusPill>
+              </dd>
+              {detail.notes ? (
+                <>
+                  <dt>الملاحظات</dt>
+                  <dd>{detail.notes}</dd>
+                </>
+              ) : null}
+            </dl>
+            <h3 className="ui-section">الأصناف والكميات</h3>
+            <DataTable
+              columns={[
+                { key: "name", header: "الصنف", nameColumn: true, wrap: true },
+                { key: "barcode", header: "الباركود", render: (it) => it.barcode || "—" },
+                {
+                  key: "quantity",
+                  header: "الكمية",
+                  align: "left",
+                  render: (it) => formatQtyWithUnit(it.quantity, it.unit),
+                },
+              ]}
+              rows={detail.items || []}
+              empty="لا توجد أصناف"
+            />
+          </>
+        ) : null}
       </Modal>
     </>
   );
@@ -638,7 +699,7 @@ function BakeryLowStock() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get(`/api/inventory/low-stock?scope=${BAKERY_SCOPE}&threshold=${threshold}`, {
+      const { data } = await api.get(`/api/inventory/low-stock?membership=bakery&threshold=${threshold}`, {
         headers: getAuthHeaders(),
       });
       setRows(unwrapList(data));
@@ -686,26 +747,247 @@ function BakeryLowStock() {
   );
 }
 
+function BakeryMaterialSales() {
+  const presets = useMemo(() => getDatePresets(), []);
+  const [from, setFrom] = useState(firstOfCurrentMonthYmd());
+  const [to, setTo] = useState(todayYmd());
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+
+  const loadReport = useCallback(async () => {
+    if (!from || !to) {
+      setErr("حدد تاريخ البداية والنهاية");
+      setLoading(false);
+      return;
+    }
+    if (from > to) {
+      setErr("تاريخ البداية يجب أن يسبق النهاية");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setErr("");
+    try {
+      const { data } = await api.get("/api/reports/bakery", {
+        params: { from, to, revenue_kind: "material" },
+        headers: getAuthHeaders(),
+      });
+      setReport(data);
+    } catch (e) {
+      setErr(apiErrorMessage(e, "تعذّر تحميل مبيعات المواد"));
+      setReport(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [from, to]);
+
+  useEffect(() => {
+    loadReport();
+  }, [loadReport]);
+
+  function applyPreset(preset) {
+    if (preset.mode === "day") {
+      const date = preset.date || todayYmd();
+      setFrom(date);
+      setTo(date);
+      return;
+    }
+    setFrom(preset.from || firstOfCurrentMonthYmd());
+    setTo(preset.to || todayYmd());
+  }
+
+  const kpis = report?.kpis;
+  const rows = report?.products || [];
+  const columns = useMemo(
+    () => [
+      { key: "name", header: "المنتج" },
+      {
+        key: "revenue_kind",
+        header: "النوع",
+        render: (r) => (
+          <StatusPill tone="orange" noDot>
+            {bakeryRevenueKindLabel(r.revenue_kind)}
+          </StatusPill>
+        ),
+      },
+      { key: "barcode", header: "الباركود", render: (r) => r.barcode || "—" },
+      { key: "unit", header: "الوحدة" },
+      {
+        key: "sold_quantity",
+        header: "الكمية المباعة",
+        className: "num",
+        render: (r) => formatQtyWithUnit(r.sold_quantity, r.unit),
+      },
+      {
+        key: "refunded_quantity",
+        header: "الكمية المرتجعة",
+        className: "num",
+        render: (r) => formatQtyWithUnit(r.refunded_quantity, r.unit),
+      },
+      {
+        key: "net_quantity",
+        header: "صافي الكمية المباعة",
+        className: "num",
+        render: (r) => formatQtyWithUnit(r.net_quantity, r.unit),
+      },
+      {
+        key: "net_revenue",
+        header: "صافي المبيعات",
+        className: "num",
+        render: (r) => ils(r.net_revenue),
+      },
+      { key: "invoice_count", header: "عدد الفواتير", className: "num" },
+    ],
+    []
+  );
+
+  return (
+    <>
+      <FilterBar
+        className="ui-mt-md"
+        actions={
+          <>
+            {presets.map((p) => (
+              <SecondaryButton key={p.id} type="button" onClick={() => applyPreset(p)}>
+                {p.label}
+              </SecondaryButton>
+            ))}
+            <PrimaryButton type="button" onClick={loadReport} disabled={loading}>
+              {loading ? "جاري التحميل…" : "تحديث"}
+            </PrimaryButton>
+          </>
+        }
+      >
+        <FormField label="من تاريخ">
+          <DateField value={from} onChange={(e) => setFrom(e.target.value)} />
+        </FormField>
+        <FormField label="إلى تاريخ">
+          <DateField value={to} onChange={(e) => setTo(e.target.value)} />
+        </FormField>
+      </FilterBar>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <ReportToolbar
+          title="مبيعات المواد"
+          subtitle="إيراد بيع مواد المخبز المتاحة للكاشير — بدون مشتريات أو استهلاك"
+          columns={bakeryExportColumns()}
+          rows={rows}
+          filename="bakery-material-sales"
+          summary={bakerySummaryItems(kpis, { slice: "material" })}
+          meta={bakeryPrintMeta({ from, to, report })}
+          disabled={loading}
+        />
+      </div>
+
+      {err ? <EmptyState title={err} className="ui-mt-md" /> : null}
+
+      {loading ? (
+        <div className="ui-mt-md">
+          <Skeleton style={{ height: 120, marginBottom: 16 }} />
+          <Skeleton style={{ height: 240 }} />
+        </div>
+      ) : null}
+
+      {!loading && !err && report ? (
+        <>
+          <div className="ui-stat-grid ui-mt-md">
+            <StatCard
+              label="إيراد بيع المواد"
+              value={ils(kpis?.material_net_revenue ?? kpis?.net_revenue)}
+              icon="finance"
+              tone="green"
+            />
+            <StatCard
+              label="الكمية المباعة"
+              value={formatQtyByUnit(kpis?.sold_quantity_by_unit)}
+              icon="inventory"
+            />
+            <StatCard
+              label="عدد الفواتير"
+              value={String(kpis?.invoice_count ?? 0)}
+              icon="finance"
+            />
+          </div>
+          <Card className="ui-mt-md">
+            <CardHeader title="مبيعات المواد" />
+            <CardBody>
+              <DataTable
+                columns={columns}
+                rows={rows}
+                rowKey={(r) => r.product_id}
+                empty={BAKERY_MATERIAL_SALES_EMPTY}
+                emptyIcon="inventory"
+              />
+            </CardBody>
+          </Card>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 export default function BakerySupplies() {
-  const [tab, setTab] = useState("catalog");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const user = getUser();
+  const canWriteMaterials = userHasOfficePermission(user, "bakery_supplies");
+  const canWriteProducts = userHasOfficePermission(user, "products");
+  const kindParam = searchParams.get("kind");
+  const initialKind = ["materials", "finished", "workspace", "material_sales"].includes(kindParam)
+    ? kindParam
+    : "workspace";
+  const [tab, setTab] = useState(
+    initialKind === "materials"
+      ? "materials"
+      : initialKind === "finished"
+        ? "finished"
+        : initialKind === "material_sales"
+          ? "material_sales"
+          : "catalog"
+  );
+
+  useEffect(() => {
+    if (kindParam === "materials") setTab("materials");
+    if (kindParam === "finished") setTab("finished");
+    if (kindParam === "material_sales") setTab("material_sales");
+  }, [kindParam]);
 
   const tabs = useMemo(() => [
-    { id: "catalog", label: "المواد", icon: "products" },
-    { id: "purchases", label: "مشتريات", icon: "purchases" },
-    { id: "consumption", label: "استهلاك", icon: "inventory" },
+    { id: "catalog", label: "الكل", icon: "products" },
+    { id: "finished", label: "أصناف البيع", icon: "finance" },
+    { id: "materials", label: "المواد", icon: "inventory" },
+    { id: "material_sales", label: "مبيعات المواد", icon: "finance" },
+    ...(canWriteMaterials ? [{ id: "consumption", label: "استهلاك", icon: "inventory" }] : []),
     { id: "alerts", label: "تنبيهات", icon: "expiry" },
-  ], []);
+  ], [canWriteMaterials]);
+
+  function changeTab(next) {
+    setTab(next);
+    if (next === "materials" || next === "finished" || next === "material_sales") {
+      setSearchParams({ kind: next }, { replace: true });
+    } else {
+      setSearchParams({}, { replace: true });
+    }
+  }
+
+  const catalogKind = tab === "materials" ? "materials" : tab === "finished" ? "finished" : "workspace";
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
         icon="inventory"
-        title="مواد المخبز"
-        subtitle="مخزون منفصل لمواد الإنتاج — شراء، استهلاك، وتنبيهات"
+        title="الأصناف والمخزون"
+        subtitle="مواد المخبز وأصناف البيع — نفس السجل والأسعار والوحدات"
       />
-      <Tabs active={tab} onChange={setTab} tabs={tabs} />
-      {tab === "catalog" && <SuppliesCatalog />}
-      {tab === "purchases" && <BakeryPurchases />}
+      <Tabs active={tab} onChange={changeTab} tabs={tabs} />
+      {(tab === "catalog" || tab === "materials" || tab === "finished") && (
+        <SuppliesCatalog
+          kind={catalogKind}
+          canWriteMaterials={canWriteMaterials}
+          canWriteProducts={canWriteProducts}
+        />
+      )}
+      {tab === "material_sales" && <BakeryMaterialSales />}
       {tab === "consumption" && <BakeryConsumption />}
       {tab === "alerts" && <BakeryLowStock />}
     </div>

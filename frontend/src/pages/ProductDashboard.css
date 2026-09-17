@@ -117,22 +117,23 @@
 }
 
 /* ── Sticky summary cards ────────────────────────────── */
+.pd-summary,
+.pd-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-4, 1rem);
+  margin-bottom: var(--space-4, 1rem);
+}
 .pd-summary {
   position: sticky;
   top: 0;
   z-index: 10;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 12px;
   padding: 4px 0;
   background: var(--office-bg, #f8fafc);
 }
-
-.pd-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 12px;
-  margin-bottom: 18px;
+.pd-summary .ui-stat,
+.pd-cards .ui-stat {
+  margin: 0;
 }
 
 /* ── Tabs ────────────────────────────────────────────── */

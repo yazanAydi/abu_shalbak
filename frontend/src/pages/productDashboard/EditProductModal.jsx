@@ -17,6 +17,7 @@ import { normalizeBarcode } from "../../utils/barcode";
 import { productSkuInputValue } from "../../utils/entityCodeDisplay";
 import "./productBarcodes.css";
 import "../../components/barcode/barcode-scanner.css";
+import { apiErrorMessage } from "../../utils/apiError";
 
 const emptyForm = {
   barcode: "",
@@ -179,7 +180,7 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
       onSaved?.(data);
       close();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر حفظ التعديلات");
+      setErr(apiErrorMessage(e, "تعذّر حفظ التعديلات"));
     } finally {
       setSaving(false);
     }

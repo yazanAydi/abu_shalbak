@@ -1,17 +1,19 @@
 import { Router } from "express";
 import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
-import {
-  snapshotSalesCogsForRange,
-  snapshotRefundCogsForRange,
-} from "../utils/cogs.js";
 import { round2 } from "../utils/money.js";
 import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
 import {
   fetchRefundsForShopDate,
   fetchTransactionsForShopDate,
 } from "../utils/businessDay.js";
-import { nextCalendarYmd, shopDateRange } from "../utils/shopTime.js";
+import { nextCalendarYmd } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
+import { buildFinanceOverview, parseOverviewRange } from "../utils/financeOverview.js";
+import {
+  assertExpenseNotLinked,
+  isSalaryExpenseCategory,
+  postSalaryExpenseFromOffice,
+} from "../services/employeePaymentService.js";
 
 function parseDateParam(s) {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return null;
@@ -45,92 +47,13 @@ export function createFinanceRouter(db) {
 
   router.use(requireAuth, requireReportsPermission(db, "finance"));
 
-  /** Sales total + supplier payments in date range (financial overview) */
+  /** Period financial dashboard (sales / profit) plus current snapshots. */
   router.get("/overview", async (req, res) => {
-    const from = parseDateParam(req.query.from);
-    const to = parseDateParam(req.query.to);
-    if (!from || !to) {
-      return res.status(400).json({ error: "مطلوب from و to بصيغة YYYY-MM-DD" });
+    const range = parseOverviewRange(req.query);
+    if (range.error) {
+      return res.status(range.status).json({ error: range.error });
     }
-    if (from > to) {
-      return res.status(400).json({ error: "from يجب أن يكون قبل to أو يساويه" });
-    }
-
-    const dates = shopDateRange(from, to);
-    let posGross = 0;
-    let posCount = 0;
-    let refundTotal = 0;
-    let refundCount = 0;
-    for (const day of dates) {
-      const txRows = await fetchTransactionsForShopDate(db, day);
-      posCount += txRows.length;
-      for (const row of txRows) {
-        posGross = round2(posGross + Number(row.total));
-      }
-      const refRows = await fetchRefundsForShopDate(db, day);
-      refundCount += refRows.length;
-      for (const row of refRows) {
-        refundTotal = round2(refundTotal + Number(row.total));
-      }
-    }
-    const payRow = await db.get(
-      `SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as n
-       FROM supplier_payments
-       WHERE paid_on >= ? AND paid_on <= ?`,
-      [from, to]
-    );
-    const expRow = await db.get(
-      `SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as n
-       FROM operating_expenses
-       WHERE paid_on >= ? AND paid_on <= ?`,
-      [from, to]
-    );
-
-    posGross = round2(posGross);
-    refundTotal = round2(refundTotal);
-    const netPos = round2(posGross - refundTotal);
-
-    // Historical COGS from sale-item snapshots (immune to later cost changes).
-    const cogsSales = await snapshotSalesCogsForRange(db, from, to);
-    const cogsRefunds = await snapshotRefundCogsForRange(db, from, to);
-    const cogsUnknown = !!(cogsSales.unknown || cogsRefunds.unknown);
-    const netCogs = cogsUnknown ? null : round2((cogsSales.cogs || 0) - (cogsRefunds.cogs || 0));
-    const estGrossProfit = cogsUnknown ? null : round2(netPos - netCogs);
-
-    const inv = await db.get(
-      `SELECT
-         COALESCE(SUM(stock * cost), 0) AS at_cost,
-         COALESCE(SUM(stock * price), 0) AS at_retail
-       FROM products`
-    );
-    const apRow = await db.get(
-      `SELECT COALESCE(SUM(amount_total - amount_paid), 0) as outstanding, COUNT(*) as n
-       FROM supplier_invoices
-       WHERE status = 'open' AND (amount_total - amount_paid) > 0.009`
-    );
-
-    res.json({
-      from,
-      to,
-      pos_sales_total: posGross,
-      pos_transaction_count: posCount,
-      refunds_total: refundTotal,
-      refund_count: refundCount,
-      net_pos_sales: netPos,
-      operating_expenses_total: round2(Number(expRow?.total) || 0),
-      operating_expense_count: Number(expRow?.n) || 0,
-      supplier_payments_total: round2(Number(payRow?.total) || 0),
-      supplier_payment_count: Number(payRow?.n) || 0,
-      estimated_cogs_on_sales: cogsUnknown ? null : cogsSales.cogs,
-      estimated_cogs_on_refunds: cogsUnknown ? null : cogsRefunds.cogs,
-      net_estimated_cogs: netCogs,
-      estimated_gross_profit: estGrossProfit,
-      cogs_unknown: cogsUnknown,
-      inventory_value_at_cost: round2(Number(inv?.at_cost) || 0),
-      inventory_value_at_retail: round2(Number(inv?.at_retail) || 0),
-      open_payables_total: round2(Number(apRow?.outstanding) || 0),
-      open_invoices_count: Number(apRow?.n) || 0,
-    });
+    res.json(await buildFinanceOverview(db, range.from, range.to));
   });
 
   router.get("/suppliers", async (_req, res) => {
@@ -357,34 +280,73 @@ export function createFinanceRouter(db) {
     res.json(rows);
   });
 
-  router.post("/operating-expenses", async (req, res) => {
-    const { category, amount, paid_on, payment_method, reference_note } = req.body || {};
-    const cat = OPEX_CATS.includes(String(category)) ? String(category) : "other";
-    const amt = round2(Number(amount));
-    const day = parseDateParam(paid_on) || (typeof paid_on === "string" ? String(paid_on).slice(0, 10) : null);
-    if (!day) return res.status(400).json({ error: "مطلوب paid_on (YYYY-MM-DD)" });
-    if (Number.isNaN(amt) || amt <= 0) return res.status(400).json({ error: "مبلغ غير صالح" });
-    const methods = ["cash", "transfer", "check", "other"];
-    const pm = methods.includes(payment_method) ? payment_method : "transfer";
-    const info = await db.run(
-      `INSERT INTO operating_expenses (category, amount, paid_on, payment_method, reference_note, recorded_by_id)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [cat, amt, day, pm, reference_note != null ? String(reference_note) : null, req.user.id]
-    );
-    const row = await db.get(
-      `SELECT o.*, u.username AS recorded_by_username
-       FROM operating_expenses o LEFT JOIN users u ON u.id = o.recorded_by_id
-       WHERE o.id = ?`,
-      [info.lastID]
-    );
-    res.status(201).json(row);
+  router.post("/operating-expenses", async (req, res, next) => {
+    try {
+      const { category, amount, paid_on, payment_method, reference_note, employee_id, purpose } = req.body || {};
+      const cat = OPEX_CATS.includes(String(category)) ? String(category) : "other";
+      const amt = round2(Number(amount));
+      const day = parseDateParam(paid_on) || (typeof paid_on === "string" ? String(paid_on).slice(0, 10) : null);
+      if (!day) return res.status(400).json({ error: "مطلوب paid_on (YYYY-MM-DD)" });
+      if (Number.isNaN(amt) || amt <= 0) return res.status(400).json({ error: "مبلغ غير صالح" });
+      const methods = ["cash", "transfer", "check", "other"];
+      const pm = methods.includes(payment_method) ? payment_method : "transfer";
+
+      if (isSalaryExpenseCategory(cat)) {
+        const ledger = await postSalaryExpenseFromOffice(
+          db,
+          {
+            employee_id,
+            purpose,
+            amount: amt,
+            paid_on: day,
+            payment_method: pm,
+            reference_note,
+            category,
+          },
+          req,
+          { name: cat, category: cat }
+        );
+        const row = await db.get(
+          `SELECT o.*, u.username AS recorded_by_username, e.id AS employee_id, e.name AS employee_name
+           FROM operating_expenses o
+           LEFT JOIN users u ON u.id = o.recorded_by_id
+           LEFT JOIN employee_ledger_entries l ON l.operating_expense_id = o.id
+           LEFT JOIN employees e ON e.id = l.employee_id
+           WHERE o.id = ?`,
+          [ledger.operating_expense_id]
+        );
+        return res.status(201).json(row);
+      }
+
+      const info = await db.run(
+        `INSERT INTO operating_expenses (category, amount, paid_on, payment_method, reference_note, recorded_by_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [cat, amt, day, pm, reference_note != null ? String(reference_note) : null, req.user.id]
+      );
+      const row = await db.get(
+        `SELECT o.*, u.username AS recorded_by_username
+         FROM operating_expenses o LEFT JOIN users u ON u.id = o.recorded_by_id
+         WHERE o.id = ?`,
+        [info.lastID]
+      );
+      res.status(201).json(row);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
   });
 
-  router.delete("/operating-expenses/:id", async (req, res) => {
-    const id = Number(req.params.id);
-    const info = await db.run("DELETE FROM operating_expenses WHERE id = ?", [id]);
-    if (info.changes === 0) return res.status(404).json({ error: "غير موجود" });
-    res.status(204).send();
+  router.delete("/operating-expenses/:id", async (req, res, next) => {
+    try {
+      await assertExpenseNotLinked(db, req.params.id);
+      const id = Number(req.params.id);
+      const info = await db.run("DELETE FROM operating_expenses WHERE id = ?", [id]);
+      if (info.changes === 0) return res.status(404).json({ error: "غير موجود" });
+      res.status(204).send();
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
   });
 
   router.get("/cash/expected", async (req, res) => {

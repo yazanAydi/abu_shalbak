@@ -6,7 +6,7 @@ import { withTransaction } from "../utils/dbTx.js";
 import { partyBalanceForVoucher } from "../utils/partyBalanceAroundMove.js";
 
 /** Apply party/bank balance effects and mark the voucher posted. Caller must be in a transaction. */
-async function applyVoucherPostEffects(db, voucher, lines) {
+export async function applyVoucherPostEffects(db, voucher, lines) {
   for (const L of lines) {
     if (L.customer_id) {
       const delta = voucher.voucher_type === "receipt" ? -L.amount_nis : L.amount_nis;

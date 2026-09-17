@@ -91,6 +91,37 @@ describe("office nav filtering", () => {
     const order = sectionsOf(groups);
     expect(order).toEqual(SECTION_ORDER.filter((s) => order.includes(s)));
   });
+
+  test("المخبز sits after overview and hides finance actions without their keys", () => {
+    const bakeryOnly = navFor("accountant", { ...NONE, bakery: true });
+    expect(sectionsOf(bakeryOnly)).toEqual(["bakery"]);
+    expect(pathsIn(bakeryOnly, "bakery")).toEqual(["/bakery", "/bakery/products", "/bakery/sales"]);
+
+    const suppliesOnly = navFor("accountant", { ...NONE, bakery_supplies: true });
+    expect(pathsIn(suppliesOnly, "bakery")).toEqual([
+      "/bakery/products",
+      "/bakery/purchases",
+      "/bakery/warehouses",
+      "/bakery/movements",
+    ]);
+    expect(pathsIn(suppliesOnly, "bakery")).not.toContain("/bakery/returns");
+    expect(pathsIn(suppliesOnly, "bakery")).not.toContain("/bakery/expiry");
+
+    const withPurchases = navFor("accountant", { ...NONE, bakery: true, purchases: true });
+    expect(pathsIn(withPurchases, "bakery")).toEqual(expect.arrayContaining([
+      "/bakery/purchases",
+      "/bakery/returns",
+    ]));
+    expect(filterOfficeNav("admin", ALL).map((i) => i.path)).not.toContain("/bakery-supplies");
+  });
+
+  test("bakery filtered views are omitted from permission topics", () => {
+    const topics = permissionTopicsFromNav();
+    const bakery = topics.find((t) => t.id === "bakery");
+    expect(bakery.labelAr).toBe("المخبز");
+    expect(bakery.features.map((f) => f.key)).toEqual(["bakery", "bakery_supplies"]);
+    expect(topics.find((t) => t.id === "catalog").features.map((f) => f.key)).not.toContain("bakery");
+  });
 });
 
 describe("permission settings topics", () => {
@@ -112,22 +143,30 @@ describe("permission settings topics", () => {
     expect([...leafKeys].sort()).toEqual([...allAccountantPermissionKeys()].sort());
   });
 
-  test("the الإدارة group offers the five admin leaves", () => {
+  test("the الإدارة group offers the four remaining admin leaves", () => {
     const admin = topics.find((t) => t.id === "admin");
     expect(admin.features.map((f) => f.key)).toEqual([
       "user_accounts",
-      "employee_payroll",
       "store_settings",
       "currencies",
       "permissions",
     ]);
     expect(admin.features.map((f) => f.labelAr)).toEqual([
       "الحسابات",
-      "الموظفون",
       "الإعدادات",
       "العملات",
       "الصلاحيات",
     ]);
+  });
+
+  test("كشف حساب ورواتب الموظفين sits in المالية after المصروفات", () => {
+    const finance = topics.find((t) => t.id === "finance");
+    const keys = finance.features.map((f) => f.key);
+    expect(keys).toContain("employee_payroll");
+    expect(keys.indexOf("employee_payroll")).toBe(keys.indexOf("expenses") + 1);
+    expect(finance.features.find((f) => f.key === "employee_payroll").labelAr).toBe(
+      "كشف حساب ورواتب الموظفين"
+    );
   });
 
   test("group select-all / clear-all toggles exactly that group's leaves", () => {

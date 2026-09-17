@@ -1,5 +1,6 @@
 import SearchableSelect from "./SearchableSelect";
 import DateField from "./DateField";
+import { handleEnterNavKeyDown } from "../../utils/focusNavigation";
 
 export function FormField({ label, required, hint, children, className = "" }) {
   return (
@@ -16,11 +17,28 @@ export function FormField({ label, required, hint, children, className = "" }) {
   );
 }
 
-export function Input({ className = "", type, ...rest }) {
-  if (type === "date") {
-    return <DateField className={`ui-input ${className}`} {...rest} />;
+export function Input({ className = "", onKeyDown, type, ...rest }) {
+  function handleKeyDown(e) {
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
+    handleEnterNavKeyDown(e);
   }
-  return <input className={`ui-input ${className}`} type={type} {...rest} />;
+
+  if (type === "date") {
+    return (
+      <DateField className={`ui-input ${className}`} onKeyDown={handleKeyDown} {...rest} />
+    );
+  }
+
+  if (type === "checkbox") {
+    return (
+      <input className={`ui-check ${className}`.trim()} type="checkbox" {...rest} />
+    );
+  }
+
+  return (
+    <input className={`ui-input ${className}`} type={type} {...rest} onKeyDown={handleKeyDown} />
+  );
 }
 
 export function Select(props) {
@@ -32,5 +50,13 @@ export function Textarea({ className = "", ...rest }) {
 }
 
 export function FormGrid({ children, className = "" }) {
-  return <div className={`ui-form-grid ${className}`}>{children}</div>;
+  return (
+    <div
+      className={`ui-form-grid ${className}`}
+      data-enter-nav=""
+      onKeyDown={handleEnterNavKeyDown}
+    >
+      {children}
+    </div>
+  );
 }

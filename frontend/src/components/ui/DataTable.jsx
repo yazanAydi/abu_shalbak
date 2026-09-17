@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from "react";
 import { SkeletonRows } from "./Skeleton";
 import EmptyState from "./EmptyState";
+import Button from "./Button";
 
 const VIRTUALIZE_AFTER = 80;
 const ROW_HEIGHT = 48;
@@ -27,8 +28,18 @@ function hideOnMobile(column, mobileColumns) {
 function columnClassName(column, mobileColumns) {
   const parts = [];
   if (column.className) parts.push(column.className);
+  if (column.nameColumn) parts.push("ui-table__col--name");
+  if (column.wrap) parts.push("ui-table__col--wrap");
   if (hideOnMobile(column, mobileColumns)) parts.push("ui-table__col--hide-mobile");
   return parts.length ? parts.join(" ") : undefined;
+}
+
+function columnStyle(column) {
+  const style = {};
+  if (column.align) style.textAlign = column.align;
+  if (column.width) style.width = column.width;
+  if (column.minWidth) style.minWidth = column.minWidth;
+  return Object.keys(style).length ? style : undefined;
 }
 
 const TableRow = memo(function TableRow({
@@ -51,7 +62,7 @@ const TableRow = memo(function TableRow({
           key={c.key}
           className={columnClassName(c, mobileColumns)}
           data-label={columnLabel(c)}
-          style={c.align ? { textAlign: c.align } : undefined}
+          style={columnStyle(c)}
         >
           {c.render ? c.render(row, index) : row[c.key]}
         </td>
@@ -60,11 +71,10 @@ const TableRow = memo(function TableRow({
   );
 });
 
-/**
- * Lightweight declarative table.
- * columns: [{ key, header, label?, render?(row), className?, align?, hideOnMobile? }]
- * mobileColumns: optional list of keys to keep on phones (overrides hideOnMobile).
- */
+function wrapClassName(className) {
+  return ["ui-table-wrap", className].filter(Boolean).join(" ");
+}
+
 export default function DataTable({
   columns,
   rows,
@@ -76,6 +86,11 @@ export default function DataTable({
   rowClassName,
   onRowClick,
   mobileColumns,
+  className,
+  error,
+  onRetry,
+  footer,
+  dense,
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const virtualize = Boolean(rows && rows.length > VIRTUALIZE_AFTER);
@@ -95,36 +110,55 @@ export default function DataTable({
 
   if (loading) {
     return (
-      <div className="ui-table-wrap">
+      <div className={wrapClassName(className)}>
         <SkeletonRows rows={6} cols={columns.length} />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className={wrapClassName(className)}>
+        <EmptyState
+          icon="alert"
+          title={error}
+          action={
+            onRetry ? (
+              <Button variant="secondary" onClick={onRetry}>
+                إعادة المحاولة
+              </Button>
+            ) : null
+          }
+        />
       </div>
     );
   }
 
   if (!rows || rows.length === 0) {
     return (
-      <div className="ui-table-wrap">
+      <div className={wrapClassName(className)}>
         <EmptyState icon={emptyIcon} title={empty || "لا توجد بيانات"} hint={emptyHint} />
       </div>
     );
   }
 
   const slice = virtualize ? rows.slice(windowed.start, windowed.end) : rows;
+  const footerRows = Array.isArray(footer) ? footer : footer ? [footer] : [];
 
   return (
     <div
-      className="ui-table-wrap"
+      className={wrapClassName(className)}
       style={virtualize ? { maxHeight: VIEWPORT_HEIGHT, overflow: "auto" } : undefined}
       onScroll={virtualize ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}
     >
-      <table className="ui-table">
+      <table className={`ui-table${dense ? " ui-table--dense" : ""}`}>
         <thead>
           <tr>
             {columns.map((c) => (
               <th
                 key={c.key}
                 className={columnClassName(c, mobileColumns)}
-                style={c.align ? { textAlign: c.align } : undefined}
+                style={columnStyle(c)}
               >
                 {c.header}
               </th>
@@ -158,6 +192,19 @@ export default function DataTable({
             </tr>
           ) : null}
         </tbody>
+        {footerRows.length ? (
+          <tfoot>
+            {footerRows.map((row, i) => (
+              <tr key={row.key || `footer-${i}`} className="ui-table__total">
+                {columns.map((c) => (
+                  <td key={c.key} className={columnClassName(c, mobileColumns)} style={columnStyle(c)}>
+                    {c.render ? c.render(row, i) : row[c.key]}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tfoot>
+        ) : null}
       </table>
     </div>
   );

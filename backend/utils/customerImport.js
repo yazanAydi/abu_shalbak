@@ -1,11 +1,7 @@
 import { round2 } from "./tax.js";
 import { readXlsxMatrix, findHeaderRowIndex } from "./xlsxHelpers.js";
 import { detectImportType } from "./importDetect.js";
-import {
-  customerHasLedgerActivity,
-  normalizeAccountName,
-  parseBalanceSheetMatrix,
-} from "./balanceSheetImport.js";
+import { customerHasLedgerActivity, parseBalanceSheetMatrix } from "./balanceSheetImport.js";
 import {
   getBalanceGroupIdForImportType,
   getDefaultBalanceGroupId,
@@ -13,6 +9,7 @@ import {
 } from "./balanceGroups.js";
 import { assignEntityCodeIfMissing, ensureEntityCode } from "./entityCodes.js";
 import { withTransaction } from "./dbTx.js";
+import { getEmployeeLinkedToCustomer } from "./employeeCustomer.js";
 
 const CUSTOMER_CATEGORIES = ["retail", "wholesale", "vip", "credit", "corporate"];
 
@@ -114,10 +111,14 @@ export async function applyCustomerBalanceImport(db, rows, options = {}) {
       if (row.code) {
         existing = await db.get(`SELECT * FROM customers WHERE customer_code = ?`, [row.code]);
       }
-      if (!existing) {
-        existing = await db.get(`SELECT * FROM customers WHERE LOWER(TRIM(name)) = ?`, [
-          normalizeAccountName(row.name),
-        ]);
+      if (existing && (await getEmployeeLinkedToCustomer(db, existing.id))) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          reason: "حساب ذمة موظف — لا يُستورد كعميل عادي",
+        });
+        skipped++;
+        continue;
       }
 
       const notes =

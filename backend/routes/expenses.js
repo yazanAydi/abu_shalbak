@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
+import {
+  assertExpenseNotLinked,
+  isSalaryExpenseCategory,
+  postSalaryExpenseFromOffice,
+} from "../services/employeePaymentService.js";
 
 const PAY_METHODS = ["cash", "transfer", "check", "other"];
 
@@ -53,10 +58,15 @@ export function createExpensesRouter(db) {
   router.get("/", requireAuth, requireReports, async (req, res) => {
     const from = parseDate(req.query.from);
     const to = parseDate(req.query.to);
-    let sql = `SELECT o.*, c.name_ar AS category_name_ar, c.name AS category_name, u.username AS recorded_by_username
+    let sql = `SELECT o.*, c.name_ar AS category_name_ar, c.name AS category_name, u.username AS recorded_by_username,
+                      e.id AS employee_id, e.name AS employee_name,
+                      l.id AS employee_ledger_id, l.purpose AS employee_payment_purpose,
+                      l.entry_type AS employee_ledger_entry_type, l.status AS employee_ledger_status
                FROM operating_expenses o
                LEFT JOIN expense_categories c ON c.id = o.category_id
                LEFT JOIN users u ON u.id = o.recorded_by_id
+               LEFT JOIN employee_ledger_entries l ON l.operating_expense_id = o.id
+               LEFT JOIN employees e ON e.id = l.employee_id
                WHERE 1=1`;
     const params = [];
     if (from) { sql += " AND o.paid_on >= ?"; params.push(from); }
@@ -65,33 +75,74 @@ export function createExpensesRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.post("/", requireAuth, requireReports, async (req, res) => {
-    const { category_id, amount, paid_on, payment_method, reference_note } = req.body || {};
-    const cid = Number(category_id);
-    const cat = await db.get("SELECT * FROM expense_categories WHERE id = ?", [cid]);
-    if (!cat) return res.status(400).json({ error: "فئة غير صالحة", code: "VALIDATION_ERROR" });
-    const amt = round2(Number(amount));
-    if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "مبلغ غير صالح", code: "VALIDATION_ERROR" });
-    const day = parseDate(paid_on);
-    if (!day) return res.status(400).json({ error: "تاريخ غير صالح", code: "VALIDATION_ERROR" });
-    const pm = PAY_METHODS.includes(payment_method) ? payment_method : "cash";
-    const ins = await db.run(
-      `INSERT INTO operating_expenses (category, category_id, amount, paid_on, payment_method, reference_note, recorded_by_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [cat.name, cid, amt, day, pm, reference_note || null, req.user.id]
-    );
-    const row = await db.get(
-      `SELECT o.*, c.name_ar AS category_name_ar, c.name AS category_name
-       FROM operating_expenses o LEFT JOIN expense_categories c ON c.id = o.category_id WHERE o.id = ?`,
-      [ins.lastID]
-    );
-    res.status(201).json(row);
+  router.post("/", requireAuth, requireReports, async (req, res, next) => {
+    try {
+      const { category_id, amount, paid_on, payment_method, reference_note, employee_id, purpose } = req.body || {};
+      const cid = Number(category_id);
+      const cat = await db.get("SELECT * FROM expense_categories WHERE id = ?", [cid]);
+      if (!cat) return res.status(400).json({ error: "فئة غير صالحة", code: "VALIDATION_ERROR" });
+      const amt = round2(Number(amount));
+      if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "مبلغ غير صالح", code: "VALIDATION_ERROR" });
+      const day = parseDate(paid_on);
+      if (!day) return res.status(400).json({ error: "تاريخ غير صالح", code: "VALIDATION_ERROR" });
+      const pm = PAY_METHODS.includes(payment_method) ? payment_method : "cash";
+
+      if (isSalaryExpenseCategory(cat)) {
+        const ledger = await postSalaryExpenseFromOffice(
+          db,
+          {
+            employee_id,
+            purpose,
+            amount: amt,
+            paid_on: day,
+            payment_method: pm,
+            reference_note,
+            category_id: cid,
+          },
+          req,
+          cat
+        );
+        const row = await db.get(
+          `SELECT o.*, c.name_ar AS category_name_ar, c.name AS category_name,
+                  e.id AS employee_id, e.name AS employee_name,
+                  l.id AS employee_ledger_id, l.purpose AS employee_payment_purpose
+           FROM operating_expenses o
+           LEFT JOIN expense_categories c ON c.id = o.category_id
+           LEFT JOIN employee_ledger_entries l ON l.operating_expense_id = o.id
+           LEFT JOIN employees e ON e.id = l.employee_id
+           WHERE o.id = ?`,
+          [ledger.operating_expense_id]
+        );
+        return res.status(201).json(row);
+      }
+
+      const ins = await db.run(
+        `INSERT INTO operating_expenses (category, category_id, amount, paid_on, payment_method, reference_note, recorded_by_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [cat.name, cid, amt, day, pm, reference_note || null, req.user.id]
+      );
+      const row = await db.get(
+        `SELECT o.*, c.name_ar AS category_name_ar, c.name AS category_name
+         FROM operating_expenses o LEFT JOIN expense_categories c ON c.id = o.category_id WHERE o.id = ?`,
+        [ins.lastID]
+      );
+      res.status(201).json(row);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
   });
 
-  router.delete("/:id", requireAuth, requireReports, async (req, res) => {
-    const info = await db.run("DELETE FROM operating_expenses WHERE id = ?", [req.params.id]);
-    if (info.changes === 0) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
-    res.json({ success: true });
+  router.delete("/:id", requireAuth, requireReports, async (req, res, next) => {
+    try {
+      await assertExpenseNotLinked(db, req.params.id);
+      const info = await db.run("DELETE FROM operating_expenses WHERE id = ?", [req.params.id]);
+      if (info.changes === 0) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
+      res.json({ success: true });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
   });
 
   // ───── Reports ─────

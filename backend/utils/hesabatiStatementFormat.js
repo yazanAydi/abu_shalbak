@@ -13,6 +13,8 @@ const EV_LABELS = {
     sale_invoice: "فتورة مبيعات",
     refund: "مرتجع",
     payment: "قبض سند",
+    payroll_settlement: "تسوية ذمة راتب غير نقدية",
+    payroll_settlement_reversal: "عكس تسوية ذمة راتب",
   },
 };
 

@@ -37,6 +37,7 @@ import { createCurrenciesRouter } from "./routes/currencies.js";
 import { createDebugRouter } from "./routes/debug.js";
 import { createOfficeRouter } from "./routes/office.js";
 import { createPayrollRouter } from "./routes/payroll.js";
+import { createEmployeesRouter } from "./routes/employees.js";
 import { createAttendanceRouter } from "./routes/attendance.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { responseEnvelope } from "./middleware/responseEnvelope.js";
@@ -95,6 +96,7 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/currencies", createCurrenciesRouter(db));
   router.use("/office", createOfficeRouter(db));
   router.use("/payroll", createPayrollRouter(db));
+  router.use("/employees", createEmployeesRouter(db));
   router.use("/attendance", createAttendanceRouter(db));
   router.use("/debug", createDebugRouter(db));
   router.use("/", createPrintRouter(db));

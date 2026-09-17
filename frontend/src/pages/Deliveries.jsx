@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -49,6 +50,7 @@ export default function Deliveries() {
     setForm(tab === "sales"
       ? { customer_id: "", driver: "", vehicle: "", address: "", delivery_date: todayISO(), notes: "" }
       : { supplier_id: "", purchase_invoice_id: "", driver: "", vehicle: "", received_date: todayISO(), notes: "" });
+    loadRefs();
     setShow(true);
   }
 
@@ -57,7 +59,7 @@ export default function Deliveries() {
       const path = tab === "sales" ? "/api/deliveries/sales" : "/api/deliveries/receivings";
       await api.post(path, form, { headers: getAuthHeaders() });
       toast.success("تم الحفظ"); setShow(false); load(tab);
-    } catch (e) { toast.error(e.response?.data?.error || "فشل الحفظ"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل الحفظ")); }
   }
 
   async function setStatus(which, id, status) {
@@ -65,7 +67,7 @@ export default function Deliveries() {
       const path = which === "sales" ? `/api/deliveries/sales/${id}/status` : `/api/deliveries/receivings/${id}/status`;
       await api.patch(path, { status }, { headers: getAuthHeaders() });
       toast.success("تم تحديث الحالة"); load(tab);
-    } catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
 
   async function remove(which, id) {
@@ -92,7 +94,7 @@ export default function Deliveries() {
           {r.status === "pending" && <Button variant="ghost" size="sm" onClick={() => setStatus("sales", r.id, "out")}>خرجت</Button>}
           {r.status === "out" && <Button variant="outline" size="sm" icon="check" onClick={() => setStatus("sales", r.id, "delivered")}>تسليم</Button>}
           {r.status !== "delivered" && r.status !== "cancelled" && <Button variant="ghost" size="sm" onClick={() => setStatus("sales", r.id, "cancelled")}>إلغاء</Button>}
-          <Button variant="ghost" size="sm" icon="trash" onClick={() => remove("sales", r.id)} />
+          <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => remove("sales", r.id)} />
         </div>
       ),
     },
@@ -110,7 +112,7 @@ export default function Deliveries() {
         <div className="ui-table__actions">
           {r.status === "pending" && <Button variant="outline" size="sm" icon="check" onClick={() => setStatus("recv", r.id, "received")}>استلام</Button>}
           {r.status !== "received" && r.status !== "cancelled" && <Button variant="ghost" size="sm" onClick={() => setStatus("recv", r.id, "cancelled")}>إلغاء</Button>}
-          <Button variant="ghost" size="sm" icon="trash" onClick={() => remove("recv", r.id)} />
+          <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => remove("recv", r.id)} />
         </div>
       ),
     },

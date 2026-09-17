@@ -13,6 +13,7 @@ import {
 } from "../utils/telegram.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { computeExpectedBaseCash, loadSalePayments } from "../utils/salePayments.js";
+import { restoreSaleBatches } from "./stockBatchService.js";
 
 export function assertRefundPaymentMethod(salePayments, paymentMethod) {
   const hasOnAccount = (salePayments || []).some((l) => l.method === "on_account");
@@ -123,6 +124,12 @@ export async function applyApprovedRefundEffects(db, refund) {
         notes: `استرجاع #${refund.id}`,
         userId: refund.approved_by_id || null,
         applyStock: true,
+      });
+      await restoreSaleBatches(db, {
+        transactionId: refund.original_transaction_id,
+        productId: pid,
+        quantity: q * conversion,
+        refundId: refund.id,
       });
     }
   }

@@ -87,7 +87,7 @@ describe("office nav badges", () => {
     expect(data.pending_refunds).toBeGreaterThanOrEqual(1);
     expect(data.pending_shift_count).toBeGreaterThanOrEqual(1);
 
-    expect(data.by_path["/bakery-supplies"]).toBe(data.bakery_low_stock);
+    expect(data.by_path["/bakery/products"]).toBe(data.bakery_low_stock);
     expect(data.by_path["/inventory"]).toBe(data.negative_stock);
     expect(data.by_path["/refund-approvals"]).toBe(data.pending_refunds);
     expect(data.by_path["/shift-audit"]).toBe(data.pending_shift_count);
@@ -99,7 +99,7 @@ describe("office nav badges", () => {
 
     const expectedTotal =
       data.by_path["/expiry"] +
-      data.by_path["/bakery-supplies"] +
+      data.by_path["/bakery/products"] +
       data.by_path["/inventory"] +
       data.by_path["/refund-approvals"] +
       data.by_path["/shift-audit"];

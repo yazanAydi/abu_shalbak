@@ -1,7 +1,7 @@
 /**
  * Quantity number field. Values change by typing only.
  */
-import { focusNextField, shouldHandleEnterOnField } from "../utils/focusNavigation";
+import { handleEnterNavKeyDown } from "../utils/focusNavigation";
 
 export default function QtyStepper({
   value,
@@ -15,12 +15,13 @@ export default function QtyStepper({
   disabled = false,
   placeholder,
   "aria-label": ariaLabel,
+  onKeyDown,
+  ...rest
 }) {
   const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !e.defaultPrevented && shouldHandleEnterOnField(e.target)) {
-      e.preventDefault();
-      focusNextField(e.target);
-    }
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
+    handleEnterNavKeyDown(e);
   };
 
   return (
@@ -38,6 +39,7 @@ export default function QtyStepper({
       onChange={onChange}
       onFocus={onFocus}
       onKeyDown={handleKeyDown}
+      {...rest}
     />
   );
 }

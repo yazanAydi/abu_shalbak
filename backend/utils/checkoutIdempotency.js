@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { HttpError } from "./httpError.js";
+import { checkoutPayloadHasOnAccount, normalizeCheckoutNotes } from "./checkoutNotes.js";
 
 function numOrNull(v) {
   if (v == null || v === "") return null;
@@ -38,13 +39,20 @@ export function fingerprintCheckoutPayload(body = {}) {
     }))
     .sort((a, b) => String(a.method).localeCompare(String(b.method)));
 
-  const canonical = JSON.stringify({
+  const canonicalObj = {
     items,
     payments,
     payment_method: body.payment_method || null,
     customer_id: numOrNull(body.customer_id),
     suspended_sale_id: numOrNull(body.suspended_sale_id),
-  });
+  };
+  const employeeId = numOrNull(body.employee_id);
+  if (employeeId != null) canonicalObj.employee_id = employeeId;
+  if (checkoutPayloadHasOnAccount(body)) {
+    const notes = normalizeCheckoutNotes(body.notes);
+    if (notes) canonicalObj.notes = notes;
+  }
+  const canonical = JSON.stringify(canonicalObj);
   return createHash("sha256").update(canonical).digest("hex");
 }
 

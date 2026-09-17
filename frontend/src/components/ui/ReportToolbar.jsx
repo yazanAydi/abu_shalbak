@@ -1,5 +1,4 @@
-import Icon from "../icons/Icon";
-import { SecondaryButton } from "./ActionButtons";
+import Button from "./Button";
 import { exportToCsv } from "../../utils/reportExport";
 import { printReport, printSummaryReport } from "../../utils/printReport";
 import { loadStoreSettings } from "../../utils/loadStoreSettings";
@@ -12,10 +11,6 @@ function sanitizeFilename(name) {
     .slice(0, 80);
 }
 
-/**
- * Shared Print + Export toolbar for report pages.
- * @param {{ title: string, subtitle?: string, columns: object[], rows: object[], summary?: { label: string, value: string }[], filename?: string, meta?: string[], disabled?: boolean }} props
- */
 export default function ReportToolbar({
   title,
   subtitle,
@@ -71,15 +66,13 @@ export default function ReportToolbar({
   }
 
   return (
-    <div className="report-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      <SecondaryButton type="button" onClick={onPrint} disabled={isDisabled}>
-        <Icon name="print" size={16} style={{ marginInlineEnd: 6 }} />
+    <div className="report-toolbar ui-btn-group">
+      <Button type="button" variant="secondary" size="sm" icon="print" onClick={onPrint} disabled={isDisabled}>
         طباعة
-      </SecondaryButton>
-      <SecondaryButton type="button" onClick={onExport} disabled={isDisabled}>
-        <Icon name="download" size={16} style={{ marginInlineEnd: 6 }} />
+      </Button>
+      <Button type="button" variant="secondary" size="sm" icon="download" onClick={onExport} disabled={isDisabled}>
         تصدير CSV
-      </SecondaryButton>
+      </Button>
     </div>
   );
 }

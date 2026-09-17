@@ -32,7 +32,7 @@ export function createAdvanceRequestsRouter(db) {
     try {
       const result = await createAdvanceRequest(db, {
         cashierId: req.user.id,
-        employeeName: req.body.employee_name,
+        employeeId: req.body.employee_id,
         amount: req.body.amount,
         notes: req.body.notes,
         req,
@@ -91,6 +91,7 @@ export function createAdvanceRequestsRouter(db) {
       request_id: row.id,
       status: row.status,
       amount: row.amount,
+      employee_id: row.employee_id ?? null,
       employee_name: row.employee_name,
       notes: row.notes,
       created_at: row.created_at,

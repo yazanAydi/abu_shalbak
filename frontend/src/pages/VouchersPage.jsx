@@ -1,10 +1,11 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSubmitGuard } from "../hooks/useSubmitGuard";
 import { ils, todayISO } from "../utils/format";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { voucherPartyName } from "../utils/partySearch";
+import { isPartyValue, voucherPartyName } from "../utils/partySearch";
 import { printVoucherDoc } from "../utils/voucherDocPrint";
 import { partyFromVoucherDraftParams, stripVoucherDraftParams } from "../utils/voucherDraft";
 import PartyPicker from "../components/PartyPicker";
@@ -61,6 +62,7 @@ function resetForm(setLines, setNotes, setParty) {
 export default function VouchersPage() {
   const guardSubmit = useSubmitGuard();
   const toast = useToast();
+  const navigate = useNavigate();
   const { type: typeParam } = useParams();
   const lockedType = VALID_VOUCHER_TYPES.has(typeParam) ? typeParam : null;
   const pageTitle = lockedType ? TYPE_AR[lockedType] : "سندات القبض والصرف";
@@ -117,19 +119,46 @@ export default function VouchersPage() {
     const { wantsNew, party: prefillParty } = partyFromVoucherDraftParams(searchParams);
     if (!id && !wantsNew) return;
 
-    if (id) {
-      loadDetail({ id });
-    } else {
-      openNewForm(prefillParty);
+    let cancelled = false;
+
+    async function openFromQuery() {
+      if (id) {
+        try {
+          const { data } = await api.get(`/api/vouchers/${id}`, { headers: getAuthHeaders() });
+          if (cancelled) return;
+          if (
+            lockedType &&
+            VALID_VOUCHER_TYPES.has(data.voucher_type) &&
+            data.voucher_type !== lockedType
+          ) {
+            navigate(`/vouchers/${data.voucher_type}?${searchParams.toString()}`, { replace: true });
+            return;
+          }
+          if (data.status === "draft") {
+            fillFormFromDoc(data);
+          } else {
+            setDetail(data);
+          }
+        } catch {
+          if (!cancelled) toast.error("تعذّر تحميل السند");
+        }
+      } else {
+        openNewForm(prefillParty);
+      }
+
+      const next = stripVoucherDraftParams(searchParams);
+      next.delete("id");
+      if (next.toString() !== searchParams.toString()) {
+        setSearchParams(next, { replace: true });
+      }
     }
 
-    const next = stripVoucherDraftParams(searchParams);
-    next.delete("id");
-    if (next.toString() !== searchParams.toString()) {
-      setSearchParams(next, { replace: true });
-    }
+    openFromQuery();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, [searchParams, lockedType]);
 
   function addLine() {
     setLines((p) => [...p, makeLine()]);
@@ -178,7 +207,7 @@ export default function VouchersPage() {
       resetForm(setLines, setNotes, setParty);
       load();
     } catch (e) {
-      toast.error(e.response?.data?.error || (editId ? "فشل التعديل" : "فشل الإنشاء"));
+      toast.error(apiErrorMessage(e, editId ? "فشل التعديل" : "فشل الإنشاء"));
     } finally {
       setSaving(false);
     }
@@ -192,7 +221,7 @@ export default function VouchersPage() {
       toast.success("تم الترحيل");
       load();
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الترحيل");
+      toast.error(apiErrorMessage(e, "فشل الترحيل"));
     }
     });
   }
@@ -221,7 +250,7 @@ export default function VouchersPage() {
         }
         load();
       } catch (e) {
-        toast.error(e.response?.data?.error || "فشل الترحيل");
+        toast.error(apiErrorMessage(e, "فشل الترحيل"));
       } finally {
         setPostingAll(false);
       }
@@ -236,7 +265,7 @@ export default function VouchersPage() {
       toast.success("تم الحذف");
       load();
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الحذف");
+      toast.error(apiErrorMessage(e, "فشل الحذف"));
     }
     });
   }
@@ -301,7 +330,7 @@ export default function VouchersPage() {
     resetForm(setLines, setNotes, setParty);
     setVoucherType(lockedType || "receipt");
     setVoucherDate(todayISO());
-    if (prefillParty) setParty(prefillParty);
+    setParty(isPartyValue(prefillParty) ? prefillParty : null);
     setShowForm(true);
   }
 
@@ -432,7 +461,7 @@ export default function VouchersPage() {
                 <Button variant="outline" onClick={postAllVouchers} disabled={postingAll}>
                   {postingAll ? "جاري الترحيل…" : "ترحيل الكل"}
                 </Button>
-                <Button onClick={openNewForm}>+ سند جديد</Button>
+                <Button onClick={() => openNewForm()}>+ سند جديد</Button>
               </>
             }
           >

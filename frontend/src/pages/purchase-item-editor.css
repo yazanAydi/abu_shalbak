@@ -1,5 +1,5 @@
 .purchase-item-editor .ui-table-wrap {
-  overflow-x: hidden;
+  overflow: visible;
   margin-bottom: 0.75rem;
 }
 
@@ -28,18 +28,18 @@
 }
 
 .purchase-item-editor .purchase-item-editor__name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .purchase-item-editor .ui-input,
 .purchase-item-editor select.ui-input {
   width: 100%;
   min-width: 0;
+  min-height: var(--control-h-sm, 2rem);
   box-sizing: border-box;
-  padding: 0.4rem 0.35rem;
-  font-size: 0.85rem;
+  padding: 0.35rem 0.4rem;
+  font-size: var(--fs-sm, 0.86rem);
 }
 
 .purchase-item-editor .purchase-item-editor__meta {
@@ -80,3 +80,46 @@
 .purchase-item-editor .purchase-item-editor__total-final {
   font-weight: 600;
 }
+
+.purchase-item-editor__toolbar {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 0.65rem;
+}
+
+.purchase-item-editor__error {
+  color: var(--office-danger-text, #991b1b);
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.invoice-product-cell {
+  position: relative;
+  z-index: 2;
+}
+
+.invoice-product-cell__list.search-dropdown,
+.invoice-product-cell__list {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+.invoice-product-cell__list li.is-active,
+.invoice-product-cell__list li:hover {
+  background: var(--office-panel-muted-bg, #eef2f7);
+}
+
+.invoice-product-cell__hint {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--office-panel-muted);
+}
+
+.invoice-product-cell__list span {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--office-panel-muted);
+}
+

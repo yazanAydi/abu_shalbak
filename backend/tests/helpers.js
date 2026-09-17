@@ -92,6 +92,14 @@ export async function createAccountantUser(
   return { id: ins.lastID, username, password };
 }
 
+export async function createTestEmployee(db, { name = "موظف اختبار", active = 1 } = {}) {
+  const ins = await db.run("INSERT INTO employees (name, active) VALUES (?, ?)", [
+    name,
+    active ? 1 : 0,
+  ]);
+  return { id: ins.lastID, name };
+}
+
 export async function destroyTestContext(ctx) {
   if (!ctx) return;
   try {

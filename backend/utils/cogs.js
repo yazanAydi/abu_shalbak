@@ -204,12 +204,16 @@ export async function snapshotRefundCogsByDay(db, from, to) {
 
   const byDay = new Map();
   for (const r of matched) {
-    const items = parseItemsJson(r.items_json);
-    if (!Array.isArray(items)) continue;
     const ymd = shopBusinessDayYmd(r);
     if (!ymd) continue;
+    const items = parseItemsJson(r.items_json);
+    if (!Array.isArray(items) || items.length === 0) {
+      addCogsDay(byDay, ymd, { known: false, cogs: null });
+      continue;
+    }
     let known = true;
     let dayCogs = 0;
+    let costedLines = 0;
     for (const it of items) {
       const pid = Number(it.product_id);
       const qty = Number(it.quantity) || 0;
@@ -222,7 +226,9 @@ export async function snapshotRefundCogsByDay(db, from, to) {
         break;
       }
       dayCogs += snap.unitCost * qty;
+      costedLines += 1;
     }
+    if (known && costedLines === 0) known = false;
     addCogsDay(byDay, ymd, known ? { known: true, cogs: dayCogs } : { known: false, cogs: null });
   }
   return byDay;

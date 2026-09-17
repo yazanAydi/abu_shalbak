@@ -12,6 +12,8 @@ export default function ProductPicker({
   placeholder = "ابحث عن منتج بالاسم أو الباركود…",
   enableCamera = true,
   scope = "retail",
+  membership = null,
+  kind = null,
   showIdentity = false,
 }) {
   const [q, setQ] = useState("");
@@ -40,7 +42,11 @@ export default function ProductPicker({
     setLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchProductsApi(term, { limit: 20, scope });
+        const rows = await searchProductsApi(term, {
+          limit: 20,
+          ...(scope ? { scope } : {}),
+          ...(membership ? { membership, ...(kind ? { kind } : {}) } : {}),
+        });
         setResults(rows);
       } catch {
         setResults([]);
@@ -50,7 +56,7 @@ export default function ProductPicker({
     }, 300);
 
     return () => window.clearTimeout(timer);
-  }, [q, scope]);
+  }, [q, scope, membership, kind]);
 
   async function handleCameraScan(code) {
     setScanErr("");

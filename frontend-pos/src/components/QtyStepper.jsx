@@ -1,6 +1,8 @@
 /**
  * Quantity / amount number field. Values change by typing only.
  */
+import { handleEnterNavKeyDown } from "../utils/focusNavigation";
+
 export default function QtyStepper({
   value,
   onChange,
@@ -15,7 +17,15 @@ export default function QtyStepper({
   title,
   autoFocus = false,
   "aria-label": ariaLabel,
+  onKeyDown,
+  ...rest
 }) {
+  const handleKeyDown = (e) => {
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
+    handleEnterNavKeyDown(e);
+  };
+
   return (
     <input
       type="number"
@@ -33,6 +43,8 @@ export default function QtyStepper({
       style={style}
       onChange={onChange}
       onFocus={onFocus}
+      onKeyDown={handleKeyDown}
+      {...rest}
     />
   );
 }

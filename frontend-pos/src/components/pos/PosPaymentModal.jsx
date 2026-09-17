@@ -3,6 +3,9 @@ import api from "../../apiClient";
 import { POS_SHORTCUTS } from "../../config/posShortcuts";
 import { matchesShortcut } from "../../utils/posKeyboard";
 import QtyStepper from "../QtyStepper";
+import { handleEnterNavKeyDown } from "../../utils/focusNavigation";
+import SearchableSelect from "../ui/SearchableSelect";
+import { getAuthHeaders } from "../../utils/auth";
 import "../ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -62,6 +65,8 @@ export default function PosPaymentModal({
   onSelectPayment,
   customerId,
   onSelectCustomer,
+  employeeId,
+  onSelectEmployee,
   error,
   isLoading,
   onTarhil,
@@ -77,6 +82,12 @@ export default function PosPaymentModal({
   const [customerQuery, setCustomerQuery] = useState("");
   const [customerResults, setCustomerResults] = useState([]);
   const [selectedCustomerName, setSelectedCustomerName] = useState("");
+  const [partyType, setPartyType] = useState("customer");
+  const [employees, setEmployees] = useState([]);
+  const [employeesLoading, setEmployeesLoading] = useState(false);
+  const [employeesError, setEmployeesError] = useState("");
+  const [onAccountNotes, setOnAccountNotes] = useState("");
+  const [notesErr, setNotesErr] = useState("");
 
   const baseCurrency = useMemo(
     () => currencies.find((c) => c.is_base) || currencies[0] || null,
@@ -126,6 +137,13 @@ export default function PosPaymentModal({
   }, []);
 
   useEffect(() => {
+    if (!open) {
+      setOnAccountNotes("");
+      setNotesErr("");
+    }
+  }, [open]);
+
+  useEffect(() => {
     if (!open) return;
     setAmountTendered("0");
     setCashErr("");
@@ -136,19 +154,52 @@ export default function PosPaymentModal({
   }, [open, total]);
 
   useEffect(() => {
+    if (!open) return;
+    setPartyType("customer");
+    setEmployeesError("");
+  }, [open]);
+
+  useEffect(() => {
     if (selectedPayment !== "on_account") {
       setCustomerQuery("");
       setCustomerResults([]);
       onSelectCustomer(null);
       setSelectedCustomerName("");
+      if (typeof onSelectEmployee === "function") onSelectEmployee(null);
+      setPartyType("customer");
     }
-  }, [selectedPayment, onSelectCustomer]);
+  }, [selectedPayment, onSelectCustomer, onSelectEmployee]);
 
   useEffect(() => {
-    if (selectedPayment !== "on_account") return;
+    if (selectedPayment !== "on_account" || partyType !== "customer") return;
     const t = setTimeout(() => searchCustomers(customerQuery), 300);
     return () => clearTimeout(t);
-  }, [customerQuery, selectedPayment, searchCustomers]);
+  }, [customerQuery, selectedPayment, partyType, searchCustomers]);
+
+  useEffect(() => {
+    if (!open || selectedPayment !== "on_account" || partyType !== "employee") return;
+    let cancelled = false;
+    setEmployeesLoading(true);
+    setEmployeesError("");
+    api
+      .get("/api/pos/employees", { headers: getAuthHeaders() })
+      .then(({ data }) => {
+        if (cancelled) return;
+        setEmployees(Array.isArray(data) ? data : []);
+        if (!Array.isArray(data) || data.length === 0) {
+          setEmployeesError("لا يوجد موظفون مسجلون. أضف الموظفين من الموظفون والرواتب.");
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setEmployeesError(err.response?.data?.error || err.message || "فشل تحميل الموظفين");
+      })
+      .finally(() => {
+        if (!cancelled) setEmployeesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, selectedPayment, partyType]);
 
   // ----- Cash (single, currency-aware) -----
   const cashCurrency = getCurrency(cashCurrencyId);
@@ -239,13 +290,27 @@ export default function PosPaymentModal({
     !isLoading &&
     cashValid &&
     mixedValid &&
-    (selectedPayment !== "on_account" || !!customerId);
+    (selectedPayment !== "on_account" ||
+      (partyType === "employee" ? !!employeeId : !!customerId));
 
   function pickCustomer(c) {
     onSelectCustomer(c.id);
+    if (typeof onSelectEmployee === "function") onSelectEmployee(null);
     setSelectedCustomerName(c.name);
     setCustomerQuery(c.name);
     setCustomerResults([]);
+  }
+
+  function chooseParty(next) {
+    setPartyType(next);
+    if (next === "customer") {
+      if (typeof onSelectEmployee === "function") onSelectEmployee(null);
+    } else {
+      onSelectCustomer(null);
+      setSelectedCustomerName("");
+      setCustomerQuery("");
+      setCustomerResults([]);
+    }
   }
 
   const submittingRef = useRef(false);
@@ -260,8 +325,14 @@ export default function PosPaymentModal({
       }
       return;
     }
+    const zimmaNotes = selectedPayment === "on_account" ? onAccountNotes.trim() : "";
+    if (zimmaNotes.length > 500) {
+      setNotesErr("الملاحظات يجب ألا تتجاوز 500 حرف");
+      return;
+    }
     setCashErr("");
     setMixedErr("");
+    setNotesErr("");
     submittingRef.current = true;
 
     if (selectedPayment === "mixed") {
@@ -299,6 +370,13 @@ export default function PosPaymentModal({
     }
 
     // visa / on_account settle exactly in the base (accounting) currency.
+    if (selectedPayment === "on_account") {
+      onTarhil({
+        payment_method: "on_account",
+        ...(zimmaNotes ? { notes: zimmaNotes } : {}),
+      });
+      return;
+    }
     onTarhil({ payment_method: selectedPayment });
   }, [
     canTarhil,
@@ -311,6 +389,7 @@ export default function PosPaymentModal({
     mixedComputed.change,
     mixedLines,
     mixedValid,
+    onAccountNotes,
     onTarhil,
     selectedPayment,
     total,
@@ -359,7 +438,7 @@ export default function PosPaymentModal({
   return (
     <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
       <div className="shift-modal-backdrop" onClick={onClose} aria-hidden />
-      <div className="shift-modal-panel pos-payment-modal">
+      <div className="shift-modal-panel pos-payment-modal" data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
         <div className="pos-payment-modal-head">
           <h2 className="shift-modal-title">إتمام البيع</h2>
           <div className="pos-payment-modal-total">
@@ -544,38 +623,108 @@ export default function PosPaymentModal({
 
         {selectedPayment === "on_account" ? (
           <div className="pos-customer-pick">
-            <input
-              type="text"
-              placeholder="ابحث عن عميل…"
-              value={customerQuery}
-              onChange={(e) => {
-                setCustomerQuery(e.target.value);
-                if (!e.target.value) {
-                  onSelectCustomer(null);
-                  setSelectedCustomerName("");
-                }
-              }}
-            />
-            {selectedCustomerName ? (
-              <span className="pos-pill">العميل: {selectedCustomerName}</span>
-            ) : null}
-            {customerResults.length > 0 && (
-              <ul className="pos-customer-results">
-                {customerResults.map((c) => (
-                  <li key={c.id}>
-                    <button type="button" onClick={() => pickCustomer(c)}>
-                      {c.name}
-                      {c.phone ? ` — ${c.phone}` : ""}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+            <div className="pos-zimma-party" role="tablist" aria-label="طرف الذمة">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={partyType === "customer"}
+                className={partyType === "customer" ? "pos-zimma-party-btn active" : "pos-zimma-party-btn"}
+                onClick={() => chooseParty("customer")}
+              >
+                عميل
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={partyType === "employee"}
+                className={partyType === "employee" ? "pos-zimma-party-btn active" : "pos-zimma-party-btn"}
+                onClick={() => chooseParty("employee")}
+              >
+                موظف
+              </button>
+            </div>
+            {partyType === "customer" ? (
+              <>
+                <input
+                  type="text"
+                  placeholder="ابحث عن عميل…"
+                  value={customerQuery}
+                  onChange={(e) => {
+                    setCustomerQuery(e.target.value);
+                    if (!e.target.value) {
+                      onSelectCustomer(null);
+                      setSelectedCustomerName("");
+                    }
+                  }}
+                />
+                {selectedCustomerName ? (
+                  <span className="pos-pill">العميل: {selectedCustomerName}</span>
+                ) : null}
+                {customerResults.length > 0 && (
+                  <ul className="pos-customer-results">
+                    {customerResults.map((c) => (
+                      <li key={c.id}>
+                        <button type="button" onClick={() => pickCustomer(c)}>
+                          {c.name}
+                          {c.phone ? ` — ${c.phone}` : ""}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ) : (
+              <label className="shift-modal-label">
+                الموظف
+                <SearchableSelect
+                  className="shift-modal-input"
+                  value={employeeId || ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (typeof onSelectEmployee === "function") {
+                      onSelectEmployee(v ? Number(v) : null);
+                    }
+                    onSelectCustomer(null);
+                  }}
+                  placeholder="ابحث عن موظف…"
+                  disabled={employeesLoading || employees.length === 0}
+                >
+                  <option value="">اختر الموظف</option>
+                  {employees.map((emp) => (
+                    <option key={emp.id} value={emp.id}>
+                      {emp.display_name || emp.name}
+                    </option>
+                  ))}
+                </SearchableSelect>
+              </label>
             )}
+            {partyType === "employee" && employeesError ? (
+              <div className="shift-modal-err">{employeesError}</div>
+            ) : null}
+            <label className="shift-modal-label pos-zimma-notes">
+              ملاحظات (اختياري)
+              <textarea
+                className="shift-modal-textarea"
+                value={onAccountNotes}
+                maxLength={500}
+                rows={2}
+                placeholder="اكتب ملاحظة عن عملية الذمة…"
+                aria-label="ملاحظات عملية الذمة"
+                onChange={(e) => {
+                  setOnAccountNotes(e.target.value);
+                  setNotesErr("");
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.stopPropagation();
+                }}
+              />
+            </label>
           </div>
         ) : null}
 
         {cashErr ? <div className="shift-modal-err">{cashErr}</div> : null}
         {mixedErr ? <div className="shift-modal-err">{mixedErr}</div> : null}
+        {notesErr ? <div className="shift-modal-err">{notesErr}</div> : null}
         {error ? <p className="pos-err">{error}</p> : null}
 
         <div className="shift-modal-actions">

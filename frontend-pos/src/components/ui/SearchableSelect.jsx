@@ -1,4 +1,5 @@
 import { Children, useEffect, useMemo, useRef, useState } from "react";
+import { focusNextField } from "../../utils/focusNavigation";
 
 function optionText(node) {
   if (node == null || node === false) return "";
@@ -91,10 +92,11 @@ export default function SearchableSelect({
 
   function onKeyDown(e) {
     if (disabled) return;
-    if (!open && (e.key === "ArrowDown" || e.key === "Enter")) {
+    if (!open && e.key === "ArrowDown") {
       openList();
       return;
     }
+    if (!open) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlight((h) => Math.min((h < 0 ? -1 : h) + 1, filtered.length - 1));
@@ -103,7 +105,11 @@ export default function SearchableSelect({
       setHighlight((h) => Math.max((h < 0 ? filtered.length : h) - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (highlight >= 0 && highlight < filtered.length) commit(filtered[highlight]);
+      e.stopPropagation();
+      if (highlight >= 0 && highlight < filtered.length) {
+        commit(filtered[highlight]);
+        requestAnimationFrame(() => focusNextField(e.target));
+      }
     } else if (e.key === "Escape") {
       setOpen(false);
       setQuery("");

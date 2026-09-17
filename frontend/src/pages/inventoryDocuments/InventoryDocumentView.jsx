@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../../utils/apiError";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../../apiClient";
@@ -35,7 +36,7 @@ export default function InventoryDocumentView({ docType }) {
         if (!cancelled) setDoc(data);
       } catch (e) {
         if (!cancelled) {
-          toast.error(e.response?.data?.error || "السند غير موجود");
+          toast.error(apiErrorMessage(e, "السند غير موجود"));
           setDoc(null);
         }
       } finally {

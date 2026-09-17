@@ -1,7 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
+import SearchableSelect from "../ui/SearchableSelect";
+import { handleEnterNavKeyDown } from "../../utils/focusNavigation";
 import "../ShiftModal.css";
+
+const EMPTY_EMPLOYEES_MSG = "لا يوجد موظفون مسجلون. أضف الموظفين من الموظفون والرواتب.";
 
 /**
  * @param {object} props
@@ -10,14 +14,39 @@ import "../ShiftModal.css";
  * @param {(requestId: number) => void} [props.onWaiting]
  */
 export default function PosAdvanceRequestModal({ open, onClose, onWaiting }) {
-  const [employeeName, setEmployeeName] = useState("");
+  const [employeeId, setEmployeeId] = useState("");
+  const [employees, setEmployees] = useState([]);
+  const [listLoading, setListLoading] = useState(false);
   const [amount, setAmount] = useState("");
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setListLoading(true);
+    api
+      .get("/api/pos/employees", { headers: getAuthHeaders() })
+      .then(({ data }) => {
+        if (cancelled) return;
+        const rows = Array.isArray(data) ? data : [];
+        setEmployees(rows);
+        if (rows.length === 0) setError(EMPTY_EMPLOYEES_MSG);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.response?.data?.error || err.message || "فشل تحميل الموظفين");
+      })
+      .finally(() => {
+        if (!cancelled) setListLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   function resetForm() {
-    setEmployeeName("");
+    setEmployeeId("");
     setAmount("");
     setNotes("");
     setError("");
@@ -31,11 +60,16 @@ export default function PosAdvanceRequestModal({ open, onClose, onWaiting }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-    const amt = Number(amount);
-    if (!employeeName.trim()) {
-      setError("اسم الموظف مطلوب");
+    if (employees.length === 0) {
+      setError(EMPTY_EMPLOYEES_MSG);
       return;
     }
+    const empId = Number(employeeId);
+    if (!empId) {
+      setError("اختر الموظف");
+      return;
+    }
+    const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) {
       setError("أدخل مبلغاً صالحاً");
       return;
@@ -45,7 +79,7 @@ export default function PosAdvanceRequestModal({ open, onClose, onWaiting }) {
       const { data } = await api.post(
         "/api/advance-requests",
         {
-          employee_name: employeeName.trim(),
+          employee_id: empId,
           amount: amt,
           notes: notes.trim() || null,
         },
@@ -65,24 +99,32 @@ export default function PosAdvanceRequestModal({ open, onClose, onWaiting }) {
 
   if (!open) return null;
 
+  const noEmployees = !listLoading && employees.length === 0;
+
   return (
     <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
       <div className="shift-modal-backdrop" onClick={handleClose} aria-hidden />
-      <form className="shift-modal-panel shift-modal-panel--form" onSubmit={handleSubmit}>
+      <form className="shift-modal-panel shift-modal-panel--form" data-enter-nav="" onKeyDown={handleEnterNavKeyDown} onSubmit={handleSubmit}>
         <h2 className="shift-modal-title">طلب سلف</h2>
-        <p className="shift-modal-lead">أدخل اسم الموظف والمبلغ — يُرسل للمدير للموافقة عبر تيليجرام أو لوحة الإدارة.</p>
+        <p className="shift-modal-lead">اختر الموظف وأدخل المبلغ — يُرسل للمدير للموافقة عبر تيليجرام أو لوحة الإدارة. الطلب يبقى معلّقاً حتى الموافقة.</p>
 
         <label className="shift-modal-label">
-          اسم الموظف
-          <input
+          الموظف
+          <SearchableSelect
             className="shift-modal-input"
-            type="text"
-            value={employeeName}
-            onChange={(e) => setEmployeeName(e.target.value)}
-            maxLength={100}
-            placeholder="مثال: أحمد"
-            autoFocus
-          />
+            value={employeeId}
+            onChange={(e) => setEmployeeId(e.target.value)}
+            placeholder="اختر الموظف"
+            disabled={listLoading || noEmployees}
+            required
+          >
+            <option value="">اختر الموظف</option>
+            {employees.map((emp) => (
+              <option key={emp.id} value={emp.id}>
+                {emp.display_name || emp.name}
+              </option>
+            ))}
+          </SearchableSelect>
         </label>
 
         <label className="shift-modal-label">
@@ -111,13 +153,14 @@ export default function PosAdvanceRequestModal({ open, onClose, onWaiting }) {
           />
         </label>
 
-        {error ? <div className="shift-modal-err">{error}</div> : null}
+        {noEmployees ? <div className="shift-modal-err">{EMPTY_EMPLOYEES_MSG}</div> : null}
+        {error && error !== EMPTY_EMPLOYEES_MSG ? <div className="shift-modal-err">{error}</div> : null}
 
         <div className="shift-modal-actions">
           <button type="button" className="shift-modal-secondary" onClick={handleClose} disabled={loading}>
             إلغاء
           </button>
-          <button type="submit" className="shift-modal-primary" disabled={loading}>
+          <button type="submit" className="shift-modal-primary" disabled={loading || noEmployees || listLoading}>
             {loading ? "جاري الإرسال…" : "إرسال للموافقة"}
           </button>
         </div>

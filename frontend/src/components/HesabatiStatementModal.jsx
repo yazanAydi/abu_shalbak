@@ -1,4 +1,6 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../apiClient";
 import AccountStatementView from "./AccountStatementView";
 import SupplierPurchaseItemsView from "./SupplierPurchaseItemsView";
@@ -17,6 +19,7 @@ import { Button, Modal, SecondaryButton, Tabs } from "./ui";
  * }} props
  */
 export default function HesabatiStatementModal({ open, partyType, party, onClose }) {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [report, setReport] = useState(null);
@@ -33,7 +36,7 @@ export default function HesabatiStatementModal({ open, partyType, party, onClose
       const { data } = await api.get(`${base}/${party.id}/statement`);
       setReport(data);
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "تعذّر تحميل التقرير");
+      setError(apiErrorMessage(e, "تعذّر تحميل التقرير"));
     } finally {
       setLoading(false);
     }
@@ -87,6 +90,19 @@ export default function HesabatiStatementModal({ open, partyType, party, onClose
         size="lg"
         footer={
           <>
+            {partyType === "supplier" && party?.id ? (
+              <Button
+                type="button"
+                variant="outline"
+                icon="finance"
+                onClick={() => {
+                  onClose();
+                  navigate(`/suppliers/${party.id}/statement`);
+                }}
+              >
+                كشف حساب المورد
+              </Button>
+            ) : null}
             <SecondaryButton type="button" onClick={() => setHistoryImportOpen(true)}>
               استيراد كشف حساب قديم
             </SecondaryButton>

@@ -57,6 +57,7 @@ describe("accountant permission catalog", () => {
       "categories",
       "stock_count",
       "bakery_supplies",
+      "bakery",
       "warehouses",
       "purchases",
       "sales_invoices",
@@ -176,7 +177,14 @@ describe("office path guards", () => {
   const noneAllowed = allAccountantPermissionsDisabled();
 
   test("permissionKeyForPath maps exact and nested routes", () => {
-    expect(permissionKeyForPath("/manage-products")).toBe("products");
+    expect(permissionKeyForPath("/bakery")).toBe("bakery");
+    expect(permissionKeyForPath("/bakery-supplies")).toBe("bakery_supplies");
+    expect(permissionKeyForPath("/bakery/products")).toBe("bakery_supplies");
+    expect(permissionKeyForPath("/bakery/purchases")).toBe("purchases");
+    expect(permissionKeyForPath("/bakery/returns")).toBe("purchases");
+    expect(permissionKeyForPath("/bakery/expiry")).toBe("expiry");
+    expect(permissionKeyForPath("/bakery/sales")).toBe("bakery");
+    expect(permissionKeyForPath("/bakery/movements")).toBe("stock_count");
     expect(permissionKeyForPath("/products/42")).toBe("products");
     expect(permissionKeyForPath("/vouchers/payment")).toBe("vouchers");
     expect(permissionKeyForPath("/inventory-receipts/new")).toBe("inventory_receipts");
@@ -191,6 +199,10 @@ describe("office path guards", () => {
     expect(canAccessOfficePath("accountant", perms, "/suppliers")).toBe(false);
     expect(canAccessOfficePath("accountant", perms, "/manage-users")).toBe(false);
     expect(canAccessOfficePath("accountant", perms, "/products/9")).toBe(false);
+    expect(canAccessOfficePath("accountant", { ...noneAllowed, bakery: true }, "/bakery/products")).toBe(true);
+    expect(canAccessOfficePath("accountant", { ...noneAllowed, bakery: true }, "/bakery/purchases")).toBe(false);
+    expect(canAccessOfficePath("accountant", { ...noneAllowed, bakery_supplies: true }, "/bakery/purchases")).toBe(true);
+    expect(canAccessOfficePath("accountant", { ...noneAllowed, bakery: true }, "/bakery/returns")).toBe(false);
   });
 
   test("admin-only pages are closed to accountants and open to admins", () => {
@@ -202,6 +214,10 @@ describe("office path guards", () => {
   test("home path is the first page the accountant may open", () => {
     expect(homePathForPermissions("accountant", { ...noneAllowed, dashboard: true })).toBe("/reports");
     expect(homePathForPermissions("accountant", { ...noneAllowed, suppliers: true })).toBe("/suppliers");
+    expect(homePathForPermissions("accountant", { ...noneAllowed, bakery: true })).toBe("/bakery");
+    expect(homePathForPermissions("accountant", { ...noneAllowed, bakery_supplies: true })).toBe(
+      "/bakery/products"
+    );
     expect(homePathForPermissions("accountant", noneAllowed)).toBe("/reports");
     expect(homePathForPermissions("admin", noneAllowed)).toBe("/reports");
   });

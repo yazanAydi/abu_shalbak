@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -182,7 +183,7 @@ export default function Marketing() {
       await api.post("/api/marketing/campaigns", campaignForm, { headers: getAuthHeaders() });
       toast.success("تمت إضافة الحملة"); setShowCampaign(false);
       setCampaignForm({ name: "", description: "", start_date: "", end_date: "", active: true }); load();
-    } catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function removeCampaign(id) {
     if (!window.confirm("حذف الحملة؟")) return;
@@ -259,7 +260,7 @@ export default function Marketing() {
       setEditingPromoId(null);
       setPromoForm(emptyPromo);
       load();
-    } catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function removePromo(id) {
     if (!window.confirm("حذف العرض؟")) return;
@@ -301,7 +302,7 @@ export default function Marketing() {
       <div className="ui-table__actions">
         <Button variant="ghost" size="sm" onClick={() => openEditPromo(p)}>تعديل</Button>
         <Button variant="ghost" size="sm" onClick={() => togglePromo(p)}>{p.active ? "إيقاف" : "تفعيل"}</Button>
-        <Button variant="ghost" size="sm" icon="trash" onClick={() => removePromo(p.id)} />
+        <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => removePromo(p.id)} />
       </div>
     ) },
   ];
@@ -315,7 +316,7 @@ export default function Marketing() {
     { key: "actions", header: "إجراءات", render: (c) => (
       <div className="ui-table__actions">
         <Button variant="ghost" size="sm" onClick={() => toggleCampaign(c)}>{c.active ? "إيقاف" : "تفعيل"}</Button>
-        <Button variant="ghost" size="sm" icon="trash" onClick={() => removeCampaign(c.id)} />
+        <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => removeCampaign(c.id)} />
       </div>
     ) },
   ];

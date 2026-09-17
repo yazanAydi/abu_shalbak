@@ -19,4 +19,7 @@ export { ToastProvider, useToast } from "./Toast";
 export { default as ReportToolbar } from "./ReportToolbar";
 export { default as FilterBar } from "./FilterBar";
 export { default as SectionTitle } from "./SectionTitle";
+export { default as HelpTip } from "./HelpTip";
+export { default as HelpPanel } from "./HelpPanel";
+export { default as Notice } from "./Notice";
 export { default as Icon } from "../icons/Icon";

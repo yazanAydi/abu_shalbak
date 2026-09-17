@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
-import { round2 } from "../utils/tax.js";
+import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { recordMovement } from "../utils/inventory.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { getWarehouseValuation, listWarehouseStock } from "../utils/warehouseInventory.js";
 
 const WH_TYPES = ["main", "store", "returns", "damaged"];
 
@@ -23,9 +23,27 @@ async function upsertWarehouseStock(db, warehouseId, productId, delta) {
   }
 }
 
+function isBakeryMembership(req) {
+  const raw = String(req.query?.membership || req.query?.workspace || "").trim().toLowerCase();
+  return raw === "bakery";
+}
+
+function catalogQuery(req) {
+  return {
+    warehouseId: req.query.warehouse_id ? Number(req.query.warehouse_id) : null,
+    membership: isBakeryMembership(req) ? "bakery" : null,
+    q: req.query.q,
+  };
+}
+
 export function createWarehousesRouter(db) {
   const router = Router();
   const requireWarehouses = requireReportsPermission(db, "warehouses");
+  const requireBakeryWarehouseRead = requireAnyReportsPermission(db, "warehouses", "bakery", "bakery_supplies");
+  const requireWarehouseReport = (req, res, next) => {
+    if (isBakeryMembership(req)) return requireBakeryWarehouseRead(req, res, next);
+    return requireWarehouses(req, res, next);
+  };
 
   // ════════════ Warehouses ════════════
 
@@ -69,39 +87,22 @@ export function createWarehousesRouter(db) {
 
   // ════════════ Stock report ════════════
 
-  router.get("/stock", requireAuth, requireWarehouses, async (req, res, next) => {
-    const { warehouse_id } = req.query;
-    let sql = `SELECT ws.warehouse_id, w.name AS warehouse_name, ws.product_id,
-                      p.name AS product_name, p.barcode, ws.quantity, p.cost,
-                      round(ws.quantity * COALESCE(p.cost,0), 2) AS value
-               FROM warehouse_stock ws
-               JOIN warehouses w ON w.id = ws.warehouse_id
-               JOIN products p ON p.id = ws.product_id
-               WHERE ABS(ws.quantity) > 0.0001`;
-    const params = [];
-    if (warehouse_id) { sql += " AND ws.warehouse_id = ?"; params.push(Number(warehouse_id)); }
-    sql += " ORDER BY w.name, p.name LIMIT 1000";
-    res.json(await db.all(sql, params));
+  router.get("/stock", requireAuth, requireWarehouseReport, async (req, res, next) => {
+    try {
+      res.json(await listWarehouseStock(db, catalogQuery(req)));
+    } catch (e) {
+      next(e);
+    }
   });
 
   // ════════════ Stock valuation report ════════════
 
-  router.get("/valuation", requireAuth, requireWarehouses, async (_req, res) => {
-    const rows = await db.all(
-      `SELECT w.id AS warehouse_id, w.name AS warehouse_name,
-              COALESCE(SUM(ws.quantity), 0) AS total_qty,
-              COALESCE(SUM(ws.quantity * COALESCE(p.cost,0)), 0) AS total_value
-       FROM warehouses w
-       LEFT JOIN warehouse_stock ws ON ws.warehouse_id = w.id
-       LEFT JOIN products p ON p.id = ws.product_id
-       GROUP BY w.id, w.name
-       ORDER BY total_value DESC`
-    );
-    const grand = rows.reduce((s, r) => s + Number(r.total_value || 0), 0);
-    res.json({
-      warehouses: rows.map((r) => ({ ...r, total_value: round2(Number(r.total_value) || 0), total_qty: Number(r.total_qty) || 0 })),
-      grand_total: round2(grand),
-    });
+  router.get("/valuation", requireAuth, requireWarehouseReport, async (req, res, next) => {
+    try {
+      res.json(await getWarehouseValuation(db, catalogQuery(req)));
+    } catch (e) {
+      next(e);
+    }
   });
 
   // ════════════ Transfers ════════════

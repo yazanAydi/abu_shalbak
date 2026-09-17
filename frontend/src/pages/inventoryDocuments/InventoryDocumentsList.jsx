@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../../utils/apiError";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api, { createAbortController } from "../../apiClient";
@@ -68,7 +69,7 @@ export default function InventoryDocumentsList({ docType }) {
     } catch (e) {
       if (e.code === "ERR_CANCELED" || e.name === "CanceledError") return;
       if (reqId !== loadReqRef.current) return;
-      toast.error(e.response?.data?.error || "تعذّر تحميل السندات");
+      toast.error(apiErrorMessage(e, "تعذّر تحميل السندات"));
       setRows([]);
     } finally {
       if (reqId === loadReqRef.current) setLoading(false);

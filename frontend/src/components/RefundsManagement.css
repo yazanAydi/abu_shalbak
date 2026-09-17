@@ -42,8 +42,8 @@
 }
 
 .rf-metric-card--alert {
-  border-color: #fecaca;
-  background: #fef2f2;
+  border-color: var(--office-danger-soft);
+  background: var(--office-danger-soft);
 }
 
 .rf-metric-icon {
@@ -106,7 +106,7 @@
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.88rem;
-  color: #475569;
+  color: var(--office-text-secondary);
   font-weight: 600;
 }
 

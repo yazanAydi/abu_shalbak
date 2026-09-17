@@ -19,6 +19,7 @@ export const ACCOUNTANT_PERMISSION_DEFS = [
   { key: "categories", labelAr: "التصنيفات", defaultEnabled: false },
   { key: "stock_count", labelAr: "جرد المخزون", defaultEnabled: false },
   { key: "bakery_supplies", labelAr: "مواد المخبز", defaultEnabled: false },
+  { key: "bakery", labelAr: "المخبز", defaultEnabled: false },
   { key: "warehouses", labelAr: "المستودعات", defaultEnabled: false },
   { key: "expiry", labelAr: "الصلاحية", defaultEnabled: true },
   { key: "finance", labelAr: "المالية", defaultEnabled: true },
@@ -40,7 +41,7 @@ export const ACCOUNTANT_PERMISSION_DEFS = [
   { key: "marketing", labelAr: "التسويق", defaultEnabled: false },
   { key: "deliveries", labelAr: "التوصيل", defaultEnabled: true },
   { key: "user_accounts", labelAr: "الحسابات", defaultEnabled: false },
-  { key: "employee_payroll", labelAr: "الموظفون", defaultEnabled: true },
+  { key: "employee_payroll", labelAr: "كشف حساب ورواتب الموظفين", defaultEnabled: true },
   { key: "store_settings", labelAr: "الإعدادات", defaultEnabled: false },
   { key: "currencies", labelAr: "العملات", defaultEnabled: false },
   { key: "permissions", labelAr: "الصلاحيات", defaultEnabled: false },
@@ -228,6 +229,13 @@ export const NAV_PATH_PERMISSION_KEYS = {
   "/categories": "categories",
   "/inventory": "stock_count",
   "/bakery-supplies": "bakery_supplies",
+  "/bakery": "bakery",
+  "/bakery/products": "bakery_supplies",
+  "/bakery/sales": "bakery",
+  "/bakery/purchases": "purchases",
+  "/bakery/returns": "purchases",
+  "/bakery/expiry": "expiry",
+  "/bakery/movements": "stock_count",
   "/warehouses": "warehouses",
   "/expiry": "expiry",
   "/finance": "finance",
@@ -251,6 +259,8 @@ export const NAV_PATH_PERMISSION_KEYS = {
   "/marketing": "marketing",
   "/deliveries": "deliveries",
   "/manage-users": "user_accounts",
+  "/employee-statements": "employee_payroll",
+  "/employee-salaries": "employee_payroll",
   "/cashier-payroll": "employee_payroll",
   "/settings": "store_settings",
   "/settings/currency": "currencies",
@@ -266,6 +276,13 @@ export const ACCOUNTANT_PERMISSION_TOPICS = [
     features: ACCOUNTANT_PERMISSION_DEFS.filter((d) => d.key === "dashboard"),
   },
   {
+    id: "bakery",
+    labelAr: "المخبز",
+    features: ACCOUNTANT_PERMISSION_DEFS.filter((d) =>
+      ["bakery", "bakery_supplies"].includes(d.key)
+    ),
+  },
+  {
     id: "catalog",
     labelAr: "المخزون والمنتجات",
     features: ACCOUNTANT_PERMISSION_DEFS.filter((d) =>
@@ -277,7 +294,6 @@ export const ACCOUNTANT_PERMISSION_TOPICS = [
         "units",
         "categories",
         "stock_count",
-        "bakery_supplies",
         "warehouses",
         "expiry",
       ].includes(d.key)
@@ -297,6 +313,7 @@ export const ACCOUNTANT_PERMISSION_TOPICS = [
       [
         "finance",
         "expenses",
+        "employee_payroll",
         "sales_reports",
         "shift_audit",
         "sales_by_price",
@@ -318,7 +335,7 @@ export const ACCOUNTANT_PERMISSION_TOPICS = [
     id: "admin",
     labelAr: "الإدارة",
     features: ACCOUNTANT_PERMISSION_DEFS.filter((d) =>
-      ["user_accounts", "employee_payroll", "store_settings", "currencies", "permissions"].includes(d.key)
+      ["user_accounts", "store_settings", "currencies", "permissions"].includes(d.key)
     ),
   },
 ];

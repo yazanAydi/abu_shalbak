@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { focusBarcodeInput } from "../utils/focusBarcodeInput";
 import { lookupProductByBarcode, normalizeBarcode } from "../utils/barcode";
 import {
-  beginProductNotFound,
   playProductNotFound,
   unlockPosAudio,
   warmPosSounds,
@@ -19,12 +18,26 @@ function isNotFoundError(e) {
   );
 }
 
+export function resetBarcodeNotFoundCacheForTests() {
+  notFoundCache.clear();
+}
+
+export function seedBarcodeNotFoundCacheForTests(code) {
+  const normalized = normalizeBarcode(code);
+  if (normalized) notFoundCache.add(normalized);
+}
+
+export function barcodeNotFoundCacheHasForTests(code) {
+  return notFoundCache.has(normalizeBarcode(code));
+}
+
 export default function BarcodeInput({ onProductFound, onError }) {
   const [value, setValue] = useState("");
   const [err, setErr] = useState("");
   const inputRef = useRef(null);
   const errTimer = useRef(null);
   const inFlightRef = useRef(false);
+  const inFlightCodeRef = useRef(null);
   const queueRef = useRef([]);
   const onProductFoundRef = useRef(onProductFound);
   onProductFoundRef.current = onProductFound;
@@ -46,52 +59,30 @@ export default function BarcodeInput({ onProductFound, onError }) {
       const code = normalizeBarcode(raw);
       if (!code) return;
       if (inFlightRef.current) {
+        if (code === inFlightCodeRef.current || queueRef.current.includes(code)) {
+          return;
+        }
         queueRef.current.push(code);
         return;
       }
       inFlightRef.current = true;
+      inFlightCodeRef.current = code;
       unlockPosAudio();
       warmPosSounds();
 
       const notFoundMsg = `لم يُعثر على المنتج (${code}) — أضفه من «إدارة المنتجات» أو جرّب 1234567890`;
-      let cancelPendingError = null;
 
       try {
-        if (notFoundCache.has(code)) {
-          playProductNotFound();
-          setErr(notFoundMsg);
-          clearErrLater();
-          setTimeout(() => focusBarcodeInput(), 0);
-          try {
-            const data = await lookupProductByBarcode(code);
-            notFoundCache.delete(code);
-            setErr("");
-            onProductFoundRef.current?.(data);
-          } catch (e) {
-            if (!isNotFoundError(e)) {
-              const apiError = e.response?.data?.error || e.message || "تعذّر البحث";
-              setErr(apiError);
-              onError?.(apiError);
-              clearErrLater();
-            }
-          }
-          if (queueRef.current.length === 0) setValue("");
-          return;
-        }
-
-        cancelPendingError = beginProductNotFound();
-
         try {
           const data = await lookupProductByBarcode(code);
-          cancelPendingError?.();
+          notFoundCache.delete(code);
           onProductFoundRef.current?.(data);
           setErr("");
         } catch (e) {
           const notFound = isNotFoundError(e);
           if (notFound) {
             notFoundCache.add(code);
-          } else {
-            cancelPendingError?.();
+            playProductNotFound();
           }
           const msg = notFound
             ? notFoundMsg
@@ -106,6 +97,7 @@ export default function BarcodeInput({ onProductFound, onError }) {
         }
       } finally {
         inFlightRef.current = false;
+        inFlightCodeRef.current = null;
         const next = queueRef.current.shift();
         if (next) search(next);
       }
@@ -116,12 +108,12 @@ export default function BarcodeInput({ onProductFound, onError }) {
   function onKeyDown(ev) {
     if (ev.key === "Enter") {
       ev.preventDefault();
-      search(value);
+      search(ev.currentTarget?.value ?? value);
     }
   }
 
   return (
-    <div className="barcode-wrap">
+    <div className="barcode-wrap" data-enter-nav-skip="">
       <label className="barcode-label">مسح الباركود</label>
       <input
         ref={inputRef}

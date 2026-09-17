@@ -6,6 +6,11 @@ import { listUnreadRefundDecisions } from "../services/refundRequestService.js";
 import { listUnreadAdvanceDecisions } from "../services/advanceRequestService.js";
 import { listUnreadOnAccountDecisions } from "../services/onAccountRequestService.js";
 import { loadUnitsForProducts } from "../utils/productUnits.js";
+import { listActiveEmployeesForPos } from "../services/employeeService.js";
+import { isUnitSaleEnabled, posCatalogVisibleSql } from "../utils/bakeryMembership.js";
+import { normalizeBarcodeInput } from "../utils/barcode.js";
+import { buildBarcodeLookupResponse } from "../utils/productUnitLookup.js";
+import { projectProductForRole } from "../utils/roleProjection.js";
 
 export async function buildPosDecisionSnapshot(db, cashierId) {
   const [refunds, advances, on_account] = await Promise.all([
@@ -17,23 +22,20 @@ export async function buildPosDecisionSnapshot(db, cashierId) {
 }
 
 function saleUnitsFor(units) {
-  const list = Array.isArray(units) ? units : [];
-  const sale = list.filter((u) => u.sale_enabled !== false);
-  return sale.length ? sale : list;
+  return (Array.isArray(units) ? units : []).filter((u) => isUnitSaleEnabled(u));
 }
 
 function resolveButtonUnit(btn, units) {
-  const all = Array.isArray(units) ? units : [];
-  const posUnits = saleUnitsFor(all);
+  const sale = saleUnitsFor(units);
+  const posUnits = sale.length ? sale : (Array.isArray(units) ? units : []);
+  if (!posUnits.length) return null;
   if (btn.product_unit_id != null) {
-    const wanted =
-      posUnits.find((u) => Number(u.id) === Number(btn.product_unit_id)) ||
-      all.find((u) => Number(u.id) === Number(btn.product_unit_id));
-    if (wanted) return { unit: wanted, posUnits: posUnits.length ? posUnits : all };
+    const wanted = posUnits.find((u) => Number(u.id) === Number(btn.product_unit_id));
+    if (wanted) return { unit: wanted, posUnits };
+    return null;
   }
-  const fallback =
-    posUnits.find((u) => u.is_default) || posUnits[0] || all.find((u) => u.is_default) || all[0];
-  return fallback ? { unit: fallback, posUnits: posUnits.length ? posUnits : all } : null;
+  const fallback = posUnits.find((u) => u.is_default) || posUnits[0];
+  return fallback ? { unit: fallback, posUnits } : null;
 }
 
 async function loadQuickButtonProducts(db, settings) {
@@ -46,7 +48,7 @@ async function loadQuickButtonProducts(db, settings) {
       `SELECT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate
        FROM products p
        WHERE p.id IN (${placeholders}) AND COALESCE(p.is_active, 1) = 1
-         AND COALESCE(p.inventory_scope, 'retail') = 'retail'`,
+         AND ${posCatalogVisibleSql("p.id", "p.inventory_scope")}`,
       ids
     );
     for (const r of rows) {
@@ -83,6 +85,12 @@ async function loadQuickButtonProducts(db, settings) {
 export function createPosRouter(db) {
   const router = Router();
 
+  router.get("/employees", requireAuth, requirePosAccess, async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    const rows = await listActiveEmployeesForPos(db);
+    res.json(rows);
+  });
+
   router.get("/quick-buttons", requireAuth, requirePosAccess, async (_req, res) => {
     const settings = await getAppSettings(db);
     const payload = await loadQuickButtonProducts(db, settings);
@@ -105,6 +113,27 @@ export function createPosRouter(db) {
     res.json(ordered);
   });
 
+  router.get("/lookup", requireAuth, requirePosAccess, async (req, res) => {
+    const barcode = normalizeBarcodeInput(String(req.query.barcode || ""));
+    if (!barcode) {
+      return res.json({ found: false });
+    }
+    const payload = await buildBarcodeLookupResponse(db, barcode, { forPos: true });
+    if (!payload) {
+      return res.json({ found: false });
+    }
+    return res.json(
+      projectProductForRole(
+        {
+          found: true,
+          inactive: Boolean(payload.inactive),
+          ...payload,
+        },
+        req.user?.role
+      )
+    );
+  });
+
   router.get("/search", requireAuth, requirePosAccess, async (req, res) => {
     const q = String(req.query.q || "").trim();
     if (q.length < 2) {
@@ -124,7 +153,7 @@ export function createPosRouter(db) {
        LEFT JOIN product_barcodes pb ON pb.product_id = p.id
        LEFT JOIN product_units pu2 ON pu2.product_id = p.id
        WHERE COALESCE(p.is_active, 1) = 1
-         AND COALESCE(p.inventory_scope, 'retail') = 'retail'
+         AND ${posCatalogVisibleSql("p.id", "p.inventory_scope")}
          AND (p.name LIKE ? OR p.barcode LIKE ? OR pb.barcode LIKE ? OR pu2.barcode LIKE ?${skuClause})
        ORDER BY p.name
        LIMIT 20`,

@@ -5,7 +5,7 @@ import { playCheckoutDone, unlockPosAudio } from "./posSounds";
 import { writeWaitingRequestId } from "./posWaitingRequests";
 import { focusBarcodeInput } from "./focusBarcodeInput";
 
-export const MISSING_ON_ACCOUNT_CUSTOMER = "اختر عميلاً للبيع على الذمة";
+export const MISSING_ON_ACCOUNT_CUSTOMER = "اختر عميلاً أو موظفاً للبيع على الذمة";
 export const IDEMPOTENCY_REUSE_AR =
   "تعارض في مفتاح التكرار: محتوى السلة يختلف عن الطلب السابق. لا تُعد الإرسال تلقائياً.";
 export const SUSPENDED_ALREADY_COMPLETED_AR =
@@ -21,21 +21,25 @@ export function newIdempotencyKey() {
     .slice(2)}`;
 }
 
-export function isOnAccountMissingCustomer(pay, customerId) {
-  return pay?.payment_method === "on_account" && !customerId;
+export function isOnAccountMissingCustomer(pay, customerId, employeeId) {
+  return pay?.payment_method === "on_account" && !customerId && !employeeId;
 }
 
 export function checkoutAttemptSignature(body) {
+  const notes =
+    body?.notes != null && String(body.notes).trim() ? String(body.notes).trim() : null;
   return JSON.stringify({
     items: body?.items || [],
     payments: body?.payments || null,
     payment_method: body?.payment_method || null,
     customer_id: body?.customer_id || null,
+    employee_id: body?.employee_id || null,
     suspended_sale_id: body?.suspended_sale_id || null,
+    notes,
   });
 }
 
-export function buildCheckoutBody({ cartItems, pay, customerId, activeSuspendedSaleId, key }) {
+export function buildCheckoutBody({ cartItems, pay, customerId, employeeId, activeSuspendedSaleId, key }) {
   const items = cartItems.map((c) => ({
     product_id: c.id,
     unit_id: c.unitId,
@@ -48,7 +52,8 @@ export function buildCheckoutBody({ cartItems, pay, customerId, activeSuspendedS
     idempotency_key: key,
     ...pay,
   };
-  if (customerId) body.customer_id = customerId;
+  if (customerId) body.customer_id = Number(customerId);
+  if (employeeId) body.employee_id = Number(employeeId);
   if (activeSuspendedSaleId) body.suspended_sale_id = activeSuspendedSaleId;
   return body;
 }
@@ -88,6 +93,7 @@ export async function submitCompleteSale({
   selectedPayment,
   cartItems,
   customerId,
+  employeeId,
   isLoading,
   isSubmittingRef,
   idempotencyKeyRef,
@@ -99,6 +105,7 @@ export async function submitCompleteSale({
   setPayModalOpen,
   setSelectedPayment,
   setCustomerId,
+  setEmployeeId,
   setActiveSuspendedSaleId,
   loadShift,
   loadSuspendedList,
@@ -108,7 +115,7 @@ export async function submitCompleteSale({
   if (!cartItems.length || !pay.payment_method || isLoading || isSubmittingRef.current) {
     return { status: "skipped" };
   }
-  if (isOnAccountMissingCustomer(pay, customerId)) {
+  if (isOnAccountMissingCustomer(pay, customerId, employeeId)) {
     dispatch({
       type: "CHECKOUT_ERROR",
       fallback: MISSING_ON_ACCOUNT_CUSTOMER,
@@ -125,6 +132,7 @@ export async function submitCompleteSale({
     cartItems,
     pay,
     customerId,
+    employeeId,
     activeSuspendedSaleId,
     key: idempotencyKeyRef.current || "pending",
   });
@@ -146,6 +154,7 @@ export async function submitCompleteSale({
         cartItems,
         pay,
         customerId,
+        employeeId,
         activeSuspendedSaleId,
         key: idempotencyKeyRef.current,
       });
@@ -181,6 +190,7 @@ export async function submitCompleteSale({
     if (submittedPayloadRef) submittedPayloadRef.current = null;
     setSelectedPayment(null);
     setCustomerId(null);
+    if (typeof setEmployeeId === "function") setEmployeeId(null);
     setPayModalOpen(false);
     setActiveSuspendedSaleId(null);
     loadShift();

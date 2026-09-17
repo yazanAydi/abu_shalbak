@@ -1,5 +1,5 @@
 import { getDisplayRows } from "../components/AccountStatementView";
-import { buildPrintBrandingHtml, PRINT_BRANDING_CSS } from "./printBranding";
+import { buildPrintBrandingHtml, A4_PRINT_SHEET_CSS, PRINT_BRANDING_CSS } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { dateOnly, formatDateTimeShopAr } from "./format";
 
@@ -62,20 +62,12 @@ export function printAccountStatement(report, partyType) {
   <meta charset="utf-8" />
   <title>${escapeHtml(report.report_title || "كشف حساب")}</title>
   <style>
-    @page { size: A4 landscape; margin: 10mm; }
-    body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; color: #111; margin: 0; padding: 12px; }
-    h1 { text-align: center; margin: 0 0 4px; font-size: 18px; }
-    .store { text-align: center; font-weight: 700; margin-bottom: 8px; }
-    .meta { margin: 4px 0; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border: 1px solid #999; padding: 5px 6px; text-align: right; vertical-align: top; }
+    @page { size: A4 landscape; }
+    ${A4_PRINT_SHEET_CSS}
+    ${PRINT_BRANDING_CSS}
     th { background: #eee; }
-    td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
     .balance-neg { color: #c53030; font-weight: 600; }
     tfoot td { background: #f7fafc; font-weight: 600; }
-    .footer { margin-top: 12px; font-size: 10px; color: #666; text-align: center; }
-    ${PRINT_BRANDING_CSS}
-    @media print { thead { display: table-header-group; } tr { page-break-inside: avoid; } }
   </style>
 </head>
 <body>

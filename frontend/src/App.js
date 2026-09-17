@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useSearchParams } from "react-router-dom";
 
 import Login from "./components/Login";
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -25,6 +25,7 @@ const StoreSettings = lazy(() => import("./pages/StoreSettings"));
 const AccountantPermissions = lazy(() => import("./pages/AccountantPermissions"));
 const Inventory = lazy(() => import("./pages/Inventory"));
 const BakerySupplies = lazy(() => import("./pages/BakerySupplies"));
+const Bakery = lazy(() => import("./pages/Bakery"));
 const ExpiryReports = lazy(() => import("./pages/ExpiryReports"));
 const SalesByPrice = lazy(() => import("./pages/SalesByPrice"));
 const CustomerManagement = lazy(() => import("./pages/CustomerManagement"));
@@ -47,6 +48,8 @@ const AccountStatement = lazy(() => import("./pages/AccountStatement"));
 const SupplierBalanceImport = lazy(() => import("./pages/SupplierBalanceImport"));
 const SalesReports = lazy(() => import("./pages/SalesReports"));
 const CashierPayroll = lazy(() => import("./pages/CashierPayroll"));
+const EmployeeHistoryStatement = lazy(() => import("./pages/EmployeeHistoryStatement"));
+const EmployeeSalaries = lazy(() => import("./pages/EmployeeSalaries"));
 const AttendanceKiosk = lazy(() => import("./pages/AttendanceKiosk"));
 
 function PageFallback() {
@@ -55,6 +58,12 @@ function PageFallback() {
       <SkeletonRows rows={8} cols={3} />
     </div>
   );
+}
+
+function VouchersIndexRedirect() {
+  const [params] = useSearchParams();
+  const qs = params.toString();
+  return <Navigate to={qs ? `/vouchers/receipt?${qs}` : "/vouchers/receipt"} replace />;
 }
 
 function AuthenticatedHomeRedirect() {
@@ -70,9 +79,14 @@ function AuthenticatedHomeRedirect() {
   return <Navigate to={homePathForRole(u?.role, u?.permissions)} replace />;
 }
 
-function OfficeRoute({ children, adminOnly, requirePermission }) {
+function OfficeRoute({ children, adminOnly, requirePermission, requireAnyPermission }) {
   return (
-    <ProtectedRoute adminOnly={adminOnly} requirePermission={requirePermission} requireOffice>
+    <ProtectedRoute
+      adminOnly={adminOnly}
+      requirePermission={requirePermission}
+      requireAnyPermission={requireAnyPermission}
+      requireOffice
+    >
       <Suspense fallback={<PageFallback />}>{children}</Suspense>
     </ProtectedRoute>
   );
@@ -160,6 +174,22 @@ function App() {
             element={
               <OfficeRoute requirePermission="shift_audit">
                 <ShiftAudit />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/employee-statements"
+            element={
+              <OfficeRoute requirePermission="employee_payroll">
+                <EmployeeHistoryStatement />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/employee-salaries"
+            element={
+              <OfficeRoute requirePermission="employee_payroll">
+                <EmployeeSalaries />
               </OfficeRoute>
             }
           />
@@ -254,9 +284,69 @@ function App() {
           />
           <Route
             path="/bakery-supplies"
+            element={<Navigate to="/bakery/products?kind=materials" replace />}
+          />
+          <Route
+            path="/bakery"
             element={
-              <OfficeRoute requirePermission="bakery_supplies">
+              <OfficeRoute requirePermission="bakery">
+                <Bakery variant="overview" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/bakery/products"
+            element={
+              <OfficeRoute requireAnyPermission={["bakery", "bakery_supplies"]}>
                 <BakerySupplies />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/bakery/purchases"
+            element={
+              <OfficeRoute requireAnyPermission={["purchases", "bakery_supplies"]}>
+                <Purchases workspace="bakery" forcedTab="invoices" hideOrders />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/bakery/returns"
+            element={
+              <OfficeRoute requirePermission="purchases">
+                <Purchases workspace="bakery" forcedTab="returns" hideOrders />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/bakery/warehouses"
+            element={
+              <OfficeRoute requireAnyPermission={["warehouses", "bakery_supplies"]}>
+                <Warehouses workspace="bakery" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/bakery/expiry"
+            element={
+              <OfficeRoute requirePermission="expiry">
+                <ExpiryReports workspace="bakery" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/bakery/sales"
+            element={
+              <OfficeRoute requirePermission="bakery">
+                <Bakery variant="sales" />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/bakery/movements"
+            element={
+              <OfficeRoute requireAnyPermission={["stock_count", "bakery_supplies"]}>
+                <Inventory workspace="bakery" initialTab="movements" allowedTabs={["movements"]} />
               </OfficeRoute>
             }
           />
@@ -422,7 +512,7 @@ function App() {
           />
           <Route
             path="/vouchers"
-            element={<Navigate to="/vouchers/receipt" replace />}
+            element={<VouchersIndexRedirect />}
           />
           <Route
             path="/vouchers/:type"

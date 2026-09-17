@@ -20,9 +20,13 @@ import {
   DangerButton,
   ReportToolbar,
   Modal,
+  CardHeader,
+  FilterBar,
+  Notice,
   useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import { apiErrorMessage } from "../utils/apiError";
 import "./productDashboard/productBarcodes.css";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
 import { fetchBarcodeLookup, normalizeBarcode } from "../utils/barcode";
@@ -287,7 +291,7 @@ export default function ProductManagement() {
       setProducts(items);
       setProductsTotal(total);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message);
+      toast.error(apiErrorMessage(e, "تعذّر تحميل المنتجات"));
     } finally {
       if (!silent) setLoading(false);
     }
@@ -304,7 +308,7 @@ export default function ProductManagement() {
         return [...prev, ...items.filter((p) => !seen.has(p.id))];
       });
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message);
+      toast.error(apiErrorMessage(e, "تعذّر تحميل المزيد"));
     } finally {
       setLoadingMore(false);
     }
@@ -347,7 +351,7 @@ export default function ProductManagement() {
       } catch (e) {
         if (e.code === "ERR_CANCELED" || e.name === "CanceledError") return;
         if (reqId !== searchReqRef.current) return;
-        toast.error(e.response?.data?.error || e.message);
+        toast.error(apiErrorMessage(e, "تعذّر البحث"));
         setSearchResults([]);
       } finally {
         if (reqId === searchReqRef.current) setSearchLoading(false);
@@ -497,7 +501,7 @@ export default function ProductManagement() {
           return;
         }
       }
-      setFormErr(e.response?.data?.error || e.message);
+      setFormErr(apiErrorMessage(e, "تعذّر إضافة المنتج"));
     }
   }
 
@@ -523,7 +527,7 @@ export default function ProductManagement() {
       setConflictProduct(null);
       toast.success("تم استبدال المنتج");
     } catch (e) {
-      setFormErr(e.response?.data?.error || e.message);
+      setFormErr(apiErrorMessage(e, "تعذّر استبدال المنتج"));
     } finally {
       setConflictBusy(false);
     }
@@ -543,7 +547,7 @@ export default function ProductManagement() {
       setConflictProduct(null);
       toast.success("تم الحذف — يمكنك الآن إضافة المنتج");
     } catch (e) {
-      setFormErr(e.response?.data?.error || e.message);
+      setFormErr(apiErrorMessage(e, "تعذّر حذف المنتج"));
     } finally {
       setConflictBusy(false);
     }
@@ -609,7 +613,7 @@ export default function ProductManagement() {
       applyLocalRemove(ids);
       clearSelection();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message);
+      toast.error(apiErrorMessage(e, "تعذّر الحذف"));
     }
   }
 
@@ -639,7 +643,7 @@ export default function ProductManagement() {
       toast.success(next ? "تم تفعيل المنتج" : "تم إيقاف المنتج");
       applyLocalRow({ ...p, is_active: next });
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message);
+      toast.error(apiErrorMessage(e, "تعذّر تحديث الحالة"));
     }
   }, [applyLocalRow, toast]);
 
@@ -685,27 +689,18 @@ export default function ProductManagement() {
     {
       key: "name",
       header: "الاسم",
+      nameColumn: true,
+      wrap: true,
       render: (p) => (
         <button
           type="button"
+          className="ui-link-btn"
           onClick={() => navigate(`/products/${p.id}`)}
           title="عرض لوحة المنتج 360"
-          style={{
-            background: "none",
-            border: "none",
-            padding: 0,
-            color: "var(--office-accent, #0f766e)",
-            fontWeight: 600,
-            cursor: "pointer",
-            font: "inherit",
-            textAlign: "right",
-          }}
         >
           {p.name}
           {Number(p.needs_review) === 1 ? (
-            <span style={{ marginInlineStart: "0.35rem", color: "#b45309", fontSize: "0.85em" }}>
-              (يحتاج مراجعة)
-            </span>
+            <span className="ui-needs-review">(يحتاج مراجعة)</span>
           ) : null}
         </button>
       ),
@@ -756,56 +751,63 @@ export default function ProductManagement() {
         subtitle="المنتجات والباركود والمخزون"
         icon="products"
         actions={
-          <ReportToolbar
-            title="إدارة المنتجات"
-            subtitle={search.trim() ? `بحث: ${search.trim()}` : undefined}
-            columns={pickExportColumns(columns)}
-            rows={filtered}
-            filename="products"
-            disabled={listLoading}
-            getExportRows={async () => {
-              const params = { scope: "retail", limit: "all", offset: 0 };
-              if (showNeedsReviewOnly) params.needs_review = 1;
-              if (search.trim()) params.q = search.trim();
-              const { data } = await api.get("/api/products", {
-                params,
-                headers: getAuthHeaders(),
-              });
-              if (Array.isArray(data?.items)) return data.items;
-              return Array.isArray(data?.data ?? data) ? (data?.data ?? data) : filtered;
-            }}
-          />
+          <>
+            <PrimaryButton
+              type="button"
+              onClick={() => document.getElementById("add-product-form")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            >
+              إضافة منتج
+            </PrimaryButton>
+            <ReportToolbar
+              title="إدارة المنتجات"
+              subtitle={search.trim() ? `بحث: ${search.trim()}` : undefined}
+              columns={pickExportColumns(columns)}
+              rows={filtered}
+              filename="products"
+              disabled={listLoading}
+              getExportRows={async () => {
+                const params = { scope: "retail", limit: "all", offset: 0 };
+                if (showNeedsReviewOnly) params.needs_review = 1;
+                if (search.trim()) params.q = search.trim();
+                const { data } = await api.get("/api/products", {
+                  params,
+                  headers: getAuthHeaders(),
+                });
+                if (Array.isArray(data?.items)) return data.items;
+                return Array.isArray(data?.data ?? data) ? (data?.data ?? data) : filtered;
+              }}
+            />
+          </>
         }
       />
 
       {canAdminProducts ? (
       <Card>
+        <CardHeader title="رفع منتجات (CSV أو Excel)" />
         <CardBody>
-          <h2 className="dashboard-section-title">رفع منتجات (CSV أو Excel)</h2>
-          <p style={{ color: "var(--office-text-muted)", fontSize: "0.9rem" }}>
-            بطاقة الأصناف أو قائمة الأسعار من حساباتي (.xlsx)، أو CSV بعناوين عربية/إنجليزية.
-            يُكتشف نوع الملف تلقائياً.
-          </p>
+          <Notice tone="info">
+            بطاقة الأصناف أو قائمة الأسعار من حساباتي، أو CSV بعناوين عربية/إنجليزية. يُكتشف النوع تلقائياً.
+          </Notice>
           <input
+            className="ui-mt-md"
             type="file"
             accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             onChange={onUpload}
             disabled={uploading}
-            style={{ marginTop: "0.75rem" }}
           />
           {uploading ? <p>جاري الرفع…</p> : null}
           {uploadFeedback ? (
-            <p style={{ color: uploadFeedback.ok ? "var(--office-success)" : "var(--office-danger)" }}>
+            <Notice tone={uploadFeedback.ok ? "success" : "danger"} className="ui-mt-md">
               {uploadFeedback.text}
-            </p>
+            </Notice>
           ) : null}
         </CardBody>
       </Card>
       ) : null}
 
-      <Card>
+      <Card id="add-product-form">
+        <CardHeader title="إضافة منتج" />
         <CardBody>
-          <h2 className="dashboard-section-title">إضافة منتج</h2>
           <form
             onSubmit={addProduct}
             onKeyDown={(e) => {
@@ -969,7 +971,7 @@ export default function ProductManagement() {
             />
             </Suspense>
             {formErr ? (
-              <p style={{ color: "var(--office-danger)", marginTop: "0.5rem" }}>{formErr}</p>
+              <Notice tone="danger" className="ui-mt-md">{formErr}</Notice>
             ) : null}
             <PrimaryButton type="submit" className="ui-mt-md">
               إضافة المنتج
@@ -979,19 +981,33 @@ export default function ProductManagement() {
       </Card>
 
       <Card>
+        <CardHeader title="المنتجات" />
         <CardBody>
-          <h2 className="dashboard-section-title">المنتجات</h2>
-          <div className="ui-toolbar">
-            <div className="barcode-input-row ui-flex-1-max">
-              <SearchInput
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="بحث بالباركود أو الاسم أو الرقم"
-              />
-              <CameraBarcodeButton
-                onScan={(code) => setSearch(normalizeBarcode(code))}
-              />
-            </div>
+          <FilterBar
+            actions={
+              canAdminProducts ? (
+                <DangerButton
+                  type="button"
+                  disabled={selectedIds.size === 0}
+                  onClick={() => requestDelete("bulk", [...selectedIds])}
+                >
+                  حذف المحدد ({selectedIds.size})
+                </DangerButton>
+              ) : null
+            }
+          >
+            <FormField label="بحث" className="ui-field--full">
+              <div className="barcode-input-row">
+                <SearchInput
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="بحث بالباركود أو الاسم أو الرقم"
+                />
+                <CameraBarcodeButton
+                  onScan={(code) => setSearch(normalizeBarcode(code))}
+                />
+              </div>
+            </FormField>
             <label className="ui-checkbox-label">
               <input
                 type="checkbox"
@@ -1000,16 +1016,7 @@ export default function ProductManagement() {
               />
               يحتاج مراجعة فقط
             </label>
-            {canAdminProducts ? (
-              <DangerButton
-                type="button"
-                disabled={selectedIds.size === 0}
-                onClick={() => requestDelete("bulk", [...selectedIds])}
-              >
-                حذف المحدد ({selectedIds.size})
-              </DangerButton>
-            ) : null}
-          </div>
+          </FilterBar>
           <DataTable
             columns={columns}
             rows={filtered}
@@ -1093,7 +1100,7 @@ export default function ProductManagement() {
           </>
         }
       >
-        <p style={{ marginTop: 0 }}>
+        <p>
           {pendingDelete && pendingDelete.ids.length > 1
             ? `سيتم حذف ${pendingDelete.ids.length} منتجًا نهائياً.`
             : "سيتم حذف هذا المنتج نهائياً."}
@@ -1104,11 +1111,12 @@ export default function ProductManagement() {
             confirmDelete();
           }}
         >
-          <FormField label="كلمة مرور الحذف" required>
+          <FormField label="كلمة مرور الحذف" required error={pwError}>
             <Input
               type="password"
               value={pw}
               autoFocus
+              invalid={Boolean(pwError)}
               onChange={(e) => {
                 setPw(e.target.value);
                 if (pwError) setPwError(null);
@@ -1117,9 +1125,6 @@ export default function ProductManagement() {
             />
           </FormField>
         </form>
-        {pwError ? (
-          <p style={{ color: "var(--office-danger)", marginTop: "0.5rem" }}>{pwError}</p>
-        ) : null}
       </Modal>
     </div>
   );

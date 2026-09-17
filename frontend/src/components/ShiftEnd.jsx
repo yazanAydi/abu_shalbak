@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -44,7 +45,7 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
       setOpening(shiftData.shift?.opening_cash != null ? Number(shiftData.shift.opening_cash) : null);
       setCountCurrencies(Array.isArray(curData?.currencies) ? curData.currencies : []);
     } catch (e) {
-      setLoadErr(e.response?.data?.error || e.message || "تعذّر تحميل ملخص الوردية");
+      setLoadErr(apiErrorMessage(e, "تعذّر تحميل ملخص الوردية"));
     }
   }, [shiftId, open]);
 

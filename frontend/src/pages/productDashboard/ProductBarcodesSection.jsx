@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../../utils/apiError";
 import { useCallback, useEffect, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
@@ -35,7 +36,7 @@ export default function ProductBarcodesSection({ productId, onChanged }) {
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
       setErr(null);
     } catch (e) {
-      setErr(e.response?.data?.error || e.message);
+      setErr(apiErrorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -65,7 +66,7 @@ export default function ProductBarcodesSection({ productId, onChanged }) {
       await load();
       onChanged?.();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر إضافة الباركود");
+      setErr(apiErrorMessage(e, "تعذّر إضافة الباركود"));
     } finally {
       setBusy(false);
     }
@@ -82,7 +83,7 @@ export default function ProductBarcodesSection({ productId, onChanged }) {
       await load();
       onChanged?.();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message);
+      setErr(apiErrorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -101,7 +102,7 @@ export default function ProductBarcodesSection({ productId, onChanged }) {
       await load();
       onChanged?.();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message);
+      setErr(apiErrorMessage(e));
     } finally {
       setBusy(false);
     }

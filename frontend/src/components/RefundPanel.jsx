@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -44,7 +45,7 @@ export default function RefundPanel({ shiftReady = true, onRefundSuccess }) {
       setQtyByPid(q);
     } catch (e) {
       setLookup(null);
-      setErr(e.response?.data?.error || e.message || "لم يُعثر على الفاتورة");
+      setErr(apiErrorMessage(e, "لم يُعثر على الفاتورة"));
     } finally {
       setLoading(false);
     }
@@ -84,7 +85,7 @@ export default function RefundPanel({ shiftReady = true, onRefundSuccess }) {
       setReason("");
       onRefundSuccess?.();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل");
+      setErr(apiErrorMessage(e, "فشل"));
     } finally {
       setLoading(false);
     }

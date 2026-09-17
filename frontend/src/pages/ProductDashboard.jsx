@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "../apiClient";
@@ -70,7 +71,7 @@ export default function ProductDashboard() {
       setDash(data);
       setError(null);
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "تعذّر تحميل المنتج");
+      setError(apiErrorMessage(e, "تعذّر تحميل المنتج"));
     } finally {
       setLoading(false);
     }

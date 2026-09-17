@@ -117,7 +117,7 @@ export default function Login() {
         <span className="login-brand-tag">نقطة البيع</span>
       </section>
       <section className="login-panel">
-        <div className="login-card">
+        <div className="login-card" data-enter-nav="off">
           <h2 className="login-card-title">{mustChange ? "تغيير كلمة المرور" : "تسجيل الدخول"}</h2>
           <p className="login-sub">
             {mustChange ? "يجب تغيير كلمة المرور قبل استخدام الصندوق" : "أدخل بيانات الكاشير للمتابعة"}

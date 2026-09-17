@@ -16,31 +16,182 @@ export const PRINT_BRANDING_CSS = `
     -webkit-locale: "en";
     font-language-override: "eng";
     font-feature-settings: "locl" 0;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
   .print-branding {
     text-align: center;
-    margin: 0 0 12px;
-    padding-bottom: 8px;
+    margin: 0 0 4px;
+    padding-bottom: 4px;
     border-bottom: 1px solid #ddd;
   }
   .print-branding__logo {
     display: block;
-    margin: 0 auto 8px;
-    max-width: 140px;
-    max-height: 90px;
+    margin: 0 auto 2px;
+    max-width: 96px;
+    max-height: 58px;
     object-fit: contain;
   }
   .print-branding__name {
     font-weight: 700;
-    font-size: 16px;
-    margin: 0 0 2px;
+    font-size: 12pt;
+    margin: 0;
+    line-height: 1.2;
   }
   .print-branding__phone,
   .print-branding__address,
   .print-branding__license {
     margin: 0;
-    font-size: 12px;
+    font-size: 9pt;
+    line-height: 1.2;
     color: #444;
+  }
+  .printed-by {
+    margin: 8px 0 0;
+    font-size: 10.5pt;
+    text-align: start;
+  }
+  .party-balance {
+    margin: 6px 0 0;
+    font-size: 10.5pt;
+    text-align: start;
+  }
+  .party-balance p {
+    margin: 1px 0;
+  }
+`;
+
+/** Shared A4 sheet chrome. Templates still set `@page { size: A4 }` or landscape. */
+export const A4_PRINT_SHEET_CSS = `
+  @page { margin: 9mm; }
+  html, body { height: auto; min-height: 0; }
+  body {
+    font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.25;
+    color: #111;
+    margin: 0;
+    padding: 0;
+    background: #fff;
+  }
+  @media screen {
+    body { padding: 8px; }
+  }
+  p { margin: 0; }
+  h1 {
+    text-align: center;
+    margin: 4px 0 3px;
+    font-size: 13.5pt;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  h2, h2.section-title {
+    margin: 8px 0 4px;
+    font-size: 11.5pt;
+    font-weight: 700;
+    line-height: 1.2;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 2px;
+  }
+  .subtitle { margin: 0 0 4px; color: #444; font-size: 10.5pt; }
+  .generated { margin: 0 0 6px; color: #666; font-size: 10pt; }
+  .meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 16px;
+    margin: 0 0 6px;
+    padding: 4px 8px;
+    border: 1px solid #ddd;
+    background: #f7f8fa;
+    font-size: 10.5pt;
+    line-height: 1.3;
+  }
+  .meta div, p.meta { font-size: 10.5pt; min-width: 0; }
+  p.meta {
+    display: block;
+    border: none;
+    background: transparent;
+    padding: 0;
+    margin: 1px 0;
+  }
+  .meta strong { margin-inline-end: 4px; }
+  .meta .when { direction: ltr; unicode-bidi: isolate; white-space: nowrap; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 4px;
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+  th, td {
+    border: 1px solid #999;
+    padding: 2px 4px;
+    text-align: right;
+    vertical-align: top;
+    line-height: 1.25;
+    font-size: 10.5pt;
+  }
+  th {
+    font-weight: 600;
+    font-size: 9.5pt;
+    line-height: 1.2;
+    white-space: normal;
+  }
+  td.num, th.num { font-variant-numeric: tabular-nums; }
+  td.num { white-space: nowrap; padding-inline: 4px; }
+  .totals-wrap {
+    margin-top: 4px;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .totals {
+    width: 46%;
+    margin: 0;
+    margin-inline-start: auto;
+    border-collapse: collapse;
+  }
+  .totals td { border: 1px solid #999; padding: 2px 6px; font-size: 10.5pt; }
+  .totals .grand td { background: #eef2f7; font-weight: 700; font-size: 11pt; }
+  .notes { margin-top: 6px; font-size: 10.5pt; }
+  .signatures {
+    margin-top: 28px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .signatures div {
+    width: 30%;
+    border-top: 1px solid #333;
+    padding-top: 4px;
+    text-align: center;
+    font-size: 10pt;
+  }
+  .footer {
+    margin: 6px 0 0;
+    font-size: 8.5pt;
+    color: #666;
+    text-align: center;
+  }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 4px;
+    margin: 0 0 8px;
+  }
+  .summary-item {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 4px 6px;
+    background: #fafafa;
+  }
+  .summary-label { display: block; color: #666; font-size: 9.5pt; margin-bottom: 1px; }
+  .summary-value { display: block; font-weight: 600; font-size: 11pt; }
+  @media print {
+    thead { display: table-header-group; }
+    tbody { display: table-row-group; }
+    table { page-break-inside: auto; break-inside: auto; }
+    tbody tr { page-break-inside: avoid; break-inside: avoid; }
+    .totals-wrap, .totals { page-break-inside: avoid; break-inside: avoid; }
   }
 `;
 

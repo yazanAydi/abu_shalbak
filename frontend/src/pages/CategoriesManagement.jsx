@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -31,7 +32,7 @@ export default function CategoriesManagement() {
       });
       setCategories(Array.isArray(data) ? data : []);
     } catch (e) {
-      toast.error(e.response?.data?.error || "تعذّر تحميل التصنيفات");
+      toast.error(apiErrorMessage(e, "تعذّر تحميل التصنيفات"));
     } finally {
       setLoading(false);
     }
@@ -55,7 +56,7 @@ export default function CategoriesManagement() {
       setNewName("");
       load();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الحفظ");
+      toast.error(apiErrorMessage(e, "فشل الحفظ"));
     } finally {
       setSaving(false);
     }
@@ -80,7 +81,7 @@ export default function CategoriesManagement() {
       setEditName("");
       load();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الحفظ");
+      toast.error(apiErrorMessage(e, "فشل الحفظ"));
     } finally {
       setSaving(false);
     }
@@ -95,7 +96,7 @@ export default function CategoriesManagement() {
       toast.success("تم الحذف");
       load();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الحذف");
+      toast.error(apiErrorMessage(e, "فشل الحذف"));
     }
   }
 
@@ -108,7 +109,7 @@ export default function CategoriesManagement() {
       );
       load();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل التحديث");
+      toast.error(apiErrorMessage(e, "فشل التحديث"));
     }
   }
 
@@ -143,7 +144,7 @@ export default function CategoriesManagement() {
           <Button variant="ghost" size="sm" onClick={() => toggleActive(c)}>
             {c.active ? "تعطيل" : "تفعيل"}
           </Button>
-          <Button variant="ghost" size="sm" icon="trash" onClick={() => remove(c)} />
+          <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => remove(c)} />
         </span>
       ),
     },

@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -88,7 +89,7 @@ export default function StatementHistoryImportModal({
         toast.success("تمت المعاينة — راجع النتائج ثم أكّد الاستيراد");
       }
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشلت المعاينة");
+      toast.error(apiErrorMessage(e, "فشلت المعاينة"));
     } finally {
       setPreviewing(false);
     }
@@ -116,7 +117,7 @@ export default function StatementHistoryImportModal({
       onSuccess?.();
       onClose();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الاستيراد");
+      toast.error(apiErrorMessage(e, "فشل الاستيراد"));
     } finally {
       setConfirming(false);
     }

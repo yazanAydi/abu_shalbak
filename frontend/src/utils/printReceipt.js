@@ -7,7 +7,7 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function injectFrontendLogo(html, logoUrl) {
+export function injectFrontendLogo(html, logoUrl) {
   const logoSrc = resolveStoreLogoUrl(logoUrl);
   if (!logoSrc || !html) return html;
   const logoBlock = `<div class="logo-wrap" style="text-align:center;margin-bottom:3px"><img src="${escapeHtml(logoSrc)}" alt="" style="max-width:128px;max-height:64px;object-fit:contain" /></div>`;

@@ -1,12 +1,17 @@
 import { round2, applyPurchaseDiscount, computeSaleTotals, productTaxRate } from "../utils/tax.js";
 import { getAppSettings } from "../utils/settings.js";
 import { getDefaultUnit, derivedUnitCost } from "../utils/productUnits.js";
-import { recordMovement } from "../utils/inventory.js";
 import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { resolveInvoicePayments, insertSalePayments } from "../utils/salePayments.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { partyBalanceForSalesInvoice } from "../utils/partyBalanceAroundMove.js";
+import { parsePreferredExpiry, PREFERRED_AUTO } from "../utils/expiryDate.js";
+import { assertOrdinaryCustomerWritable } from "../utils/employeeCustomer.js";
+import {
+  applySaleStock,
+  allocationsToJson,
+} from "./stockBatchService.js";
 
 function round6(n) {
   return Math.round((Number(n) || 0) * 1e6) / 1e6;
@@ -106,6 +111,10 @@ export async function normalizeSaleItems(db, items) {
       // Sold-unit cost derived from base cost × conversion (never stale unit.cost).
       // This is what gets written to transaction_items.unit_cost_at_sale.
       cost: derivedUnitCost(Number(product.cost) || 0, unit.conversion),
+      preferred_expiry_date:
+        parsePreferredExpiry(it.preferred_expiry_date ?? it.preferred_expiry) === PREFERRED_AUTO
+          ? null
+          : parsePreferredExpiry(it.preferred_expiry_date ?? it.preferred_expiry),
     });
   }
   return out;
@@ -134,8 +143,8 @@ async function insertInvoiceItems(db, invoiceId, lines) {
     await db.run(
       `INSERT INTO sales_invoice_items
          (invoice_id, product_id, quantity, total_price, unit_price, vat_rate, line_net, line_tax, line_total,
-          product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, preferred_expiry_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         invoiceId,
         i.product_id,
@@ -152,6 +161,7 @@ async function insertInvoiceItems(db, invoiceId, lines) {
         i.base_quantity,
         i.discount_pct,
         i.bonus_quantity,
+        i.preferred_expiry_date,
       ]
     );
   }
@@ -181,6 +191,7 @@ export async function createSalesInvoiceDraft(db, body, userId) {
   const { customer_id, ref_text, invoice_date, notes, items } = body || {};
   const cid = Number(customer_id);
   if (!cid) return { error: "العميل مطلوب", status: 400 };
+  await assertOrdinaryCustomerWritable(db, cid);
   const norm = await normalizeSaleItems(db, items);
   if (!norm) return { error: "أصناف غير صالحة", status: 400 };
   const { subtotal, tax, total, lines } = await computeSalesInvoiceTotals(db, norm);
@@ -217,6 +228,7 @@ export async function updateSalesInvoiceDraft(db, invoiceId, body) {
   const { customer_id, ref_text, invoice_date, notes, items } = body || {};
   const cid = Number(customer_id);
   if (!cid) return { error: "العميل مطلوب", status: 400 };
+  await assertOrdinaryCustomerWritable(db, cid);
   const norm = await normalizeSaleItems(db, items);
   if (!norm) return { error: "أصناف غير صالحة", status: 400 };
   const { subtotal, tax, total, lines } = await computeSalesInvoiceTotals(db, norm);
@@ -239,6 +251,7 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
   const inv = await db.get("SELECT * FROM sales_invoices WHERE id = ?", [invoiceId]);
   if (!inv) return { error: "الفاتورة غير موجودة", status: 404 };
   if (inv.status === "posted") return { error: "الفاتورة مرحّلة بالفعل", status: 400 };
+  await assertOrdinaryCustomerWritable(db, inv.customer_id);
 
   const items = await db.all(
     `SELECT sii.*, p.name, p.barcode, p.cost, p.tax_rate
@@ -277,7 +290,13 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
     unit_name: it.unit_name,
   }));
 
+  let alreadyPosted = false;
   const row = await withTransaction(db, async () => {
+    const fresh = await db.get("SELECT status FROM sales_invoices WHERE id = ?", [inv.id]);
+    if (fresh?.status === "posted") {
+      alreadyPosted = true;
+      return null;
+    }
     const receiptNumber = await nextReceiptNumber(db, 1);
     const ins = await db.run(
       `INSERT INTO transactions
@@ -302,7 +321,7 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
       // it.cost = sold-unit cost (products.cost × conversion_to_base).
       // gross_profit = line revenue - (sold-unit cost × sold-unit quantity).
       const grossProfit = round2((Number(it.line_net) || 0) - (Number(it.cost) || 0) * Number(it.quantity));
-      await db.run(
+      const itemIns = await db.run(
         `INSERT INTO transaction_items
            (transaction_id, product_id, barcode, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,
             unit_cost_at_sale, gross_profit, discount_at_sale, product_unit_id, unit_name, conversion_to_base)
@@ -326,16 +345,21 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
           it.conversion_used,
         ]
       );
-      await recordMovement(db, {
+      const allocations = await applySaleStock(db, {
         productId: it.product_id,
-        movementType: "sale",
-        quantity: -stockDelta,
-        refType: "sales_invoice",
-        refId: inv.id,
-        notes: `فتورة مبيعات #${inv.invoice_no ?? inv.id}`,
+        quantity: stockDelta,
+        preferred: it.preferred_expiry_date,
         userId,
-        applyStock: true,
+        notes: `فاتورة مبيعات #${inv.invoice_no ?? inv.id}`,
+        referenceType: "transaction",
+        referenceId: transactionId,
+        transactionItemId: itemIns.lastID,
+        invoiceItemId: it.id,
       });
+      await db.run(
+        "UPDATE sales_invoice_items SET batch_allocations_json = ? WHERE id = ?",
+        [allocationsToJson(allocations), it.id]
+      );
     }
 
     await insertSalePayments(db, transactionId, paymentLines);
@@ -374,5 +398,6 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
 
     return db.get("SELECT * FROM sales_invoices WHERE id = ?", [inv.id]);
   });
+  if (alreadyPosted) return { error: "الفاتورة مرحّلة بالفعل", status: 400 };
   return { row };
 }

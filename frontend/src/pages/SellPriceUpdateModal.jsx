@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useEffect, useState } from "react";
 import api from "../apiClient";
 import {
@@ -59,7 +60,7 @@ export default function SellPriceUpdateModal({
       onSaved?.(data?.product?.price ?? Number(newPrice));
       close();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر تغيير السعر");
+      setErr(apiErrorMessage(e, "تعذّر تغيير السعر"));
     } finally {
       setSaving(false);
     }

@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useRef, useState } from "react";
 import { todayISO } from "../utils/format";
 import { Link } from "react-router-dom";
@@ -79,7 +80,7 @@ export default function SupplierBalanceImport() {
       setPreview(payload);
       toast.success("تمت المعاينة — راجع النتائج ثم أكّد الاستيراد");
     } catch (e) {
-      const msg = e.response?.data?.detail || e.response?.data?.error || e.message || "فشلت المعاينة";
+      const msg = e.response?.data?.detail || apiErrorMessage(e, "فشلت المعاينة");
       toast.error(msg);
     } finally {
       setPreviewing(false);
@@ -101,7 +102,7 @@ export default function SupplierBalanceImport() {
       setRecoveryPreview(data?.data ?? data);
       toast.success("تمت معاينة الاسترداد — راجع الصفوف ثم أكّد");
     } catch (e) {
-      const msg = e.response?.data?.detail || e.response?.data?.error || e.message || "فشلت المعاينة";
+      const msg = e.response?.data?.detail || apiErrorMessage(e, "فشلت المعاينة");
       toast.error(msg);
     } finally {
       setRecoveryPreviewing(false);
@@ -129,7 +130,7 @@ export default function SupplierBalanceImport() {
       if (recoveryFileRef.current) recoveryFileRef.current.value = "";
       toast.success(payload.message || "تم الاسترداد");
     } catch (e) {
-      const msg = e.response?.data?.detail || e.response?.data?.error || e.message || "فشل الاسترداد";
+      const msg = e.response?.data?.detail || apiErrorMessage(e, "فشل الاسترداد");
       toast.error(msg);
     } finally {
       setRecoveryConfirming(false);
@@ -163,7 +164,7 @@ export default function SupplierBalanceImport() {
       if (fileRef.current) fileRef.current.value = "";
       toast.success(payload.message || "تم الاستيراد بنجاح");
     } catch (e) {
-      const msg = e.response?.data?.detail || e.response?.data?.error || e.message || "فشل الاستيراد";
+      const msg = e.response?.data?.detail || apiErrorMessage(e, "فشل الاستيراد");
       toast.error(msg);
     } finally {
       setConfirming(false);

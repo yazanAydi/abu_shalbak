@@ -15,7 +15,7 @@ export async function lookupProductByBarcode(raw) {
   if (!code) throw new Error("باركود فارغ");
   let data;
   try {
-    ({ data } = await api.get("/api/products/lookup", {
+    ({ data } = await api.get("/api/pos/lookup", {
       params: { barcode: code },
       headers: getAuthHeaders(),
     }));

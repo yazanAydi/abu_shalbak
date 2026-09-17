@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { ils, dateOnly } from "../utils/format";
@@ -27,7 +28,7 @@ export default function SupplierPurchaseItemsView({ supplierId }) {
       const { data } = await api.get(`/api/suppliers/${supplierId}/purchase-items`);
       setInvoices(data.invoices || []);
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "تعذّر تحميل المشتريات");
+      setError(apiErrorMessage(e, "تعذّر تحميل المشتريات"));
     } finally {
       setLoading(false);
     }

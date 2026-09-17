@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useSearchParams } from "react-router-dom";
@@ -34,6 +35,8 @@ import {
 
   Textarea,
 
+  StatCard,
+  Notice,
   Icon,
 
   SearchInput,
@@ -449,7 +452,7 @@ export default function CustomerManagement() {
 
     } catch (e) {
 
-      toast.error(e.response?.data?.error || e.message || "فشل الحذف");
+      toast.error(apiErrorMessage(e, "فشل الحذف"));
 
     }
 
@@ -483,7 +486,7 @@ export default function CustomerManagement() {
 
     } catch (e) {
 
-      toast.error(e.response?.data?.error || "تعذّر تحميل كشف الحساب");
+      toast.error(apiErrorMessage(e, "تعذّر تحميل كشف الحساب"));
 
       setLedgerCustomer(null);
 
@@ -553,11 +556,11 @@ export default function CustomerManagement() {
           {canImport ? (
             <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportCustomer(c)}>استيراد كشف قديم</Button>
           ) : null}
-          <Button variant="ghost" size="sm" icon="vouchers" onClick={() => openLedger(c)}>حركات النظام</Button>
+          <Button variant="ghost" size="sm" icon="vouchers" onClick={() => openLedger(c)}>حركات الحساب</Button>
 
           <Button variant="ghost" size="sm" icon="edit" onClick={() => startEdit(c)}>تعديل</Button>
 
-          <Button variant="ghost" size="sm" icon="trash" onClick={() => deleteCustomer(c)} />
+          <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => deleteCustomer(c)} />
 
         </div>
 
@@ -756,7 +759,7 @@ export default function CustomerManagement() {
 
             title={`استيراد أرصدة — ${activeGroup?.label_ar || "العملاء"}`}
 
-            description="ارفع ملف Excel من حساباتي — يُربط بالفئة المحددة أعلاه."
+            description="ارفع ملف Excel من حساباتي — ضمن الفئة المحددة."
 
             uploadUrl="/api/admin/customers/upload"
 
@@ -813,54 +816,28 @@ export default function CustomerManagement() {
 
         <>
 
+          <p className="ui-text-muted">عملاء عاديون فقط — لا يشمل حسابات ذمة الموظفين. الذمم الشاملة للمتجر في الوضع المالي الحالي.</p>
+
           <div className="ui-stat-grid">
-
-            <div className="ui-stat">
-
-              <div className="ui-stat__icon ui-stat__icon--red"><Icon name="finance" /></div>
-
-              <div>
-
-                <div className="ui-stat__label">إجمالي المستحق — {activeGroup?.label_ar}</div>
-
-                <div className="ui-stat__value">{ils(balances.total_due)}</div>
-
-              </div>
-
-            </div>
-
-            <div className="ui-stat">
-
-              <div className="ui-stat__icon ui-stat__icon--green"><Icon name="finance" /></div>
-
-              <div>
-
-                <div className="ui-stat__label">إجمالي الرصيد الدائن</div>
-
-                <div className="ui-stat__value">{ils(balances.total_credit)}</div>
-
-              </div>
-
-            </div>
-
+            <StatCard
+              label={`إجمالي المستحق — ${activeGroup?.label_ar || ""}`}
+              value={ils(balances.total_due)}
+              icon="finance"
+              tone="red"
+            />
+            <StatCard
+              label="إجمالي الرصيد الدائن"
+              value={ils(balances.total_credit)}
+              icon="finance"
+              tone="green"
+            />
             {activeGroupTotals ? (
-
-              <div className="ui-stat">
-
-                <div className="ui-stat__icon ui-stat__icon--blue"><Icon name="customers" /></div>
-
-                <div>
-
-                  <div className="ui-stat__label">عدد العملاء</div>
-
-                  <div className="ui-stat__value">{activeGroupTotals.customer_count}</div>
-
-                </div>
-
-              </div>
-
+              <StatCard
+                label="عدد العملاء"
+                value={activeGroupTotals.customer_count}
+                icon="customers"
+              />
             ) : null}
-
           </div>
 
           <DataTable
@@ -1023,7 +1000,7 @@ export default function CustomerManagement() {
 
         open={!!ledgerCustomer}
 
-        title={ledgerCustomer ? `حركات النظام: ${ledgerCustomer.name}` : ""}
+        title={ledgerCustomer ? `حركات الحساب: ${ledgerCustomer.name}` : ""}
 
         onClose={() => { setLedgerCustomer(null); setLedger(null); }}
 
@@ -1070,16 +1047,11 @@ export default function CustomerManagement() {
             />
 
             {ledger.truncated ? (
-
-              <p className="muted" style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
-
+              <Notice tone="info">
                 يُعرض آخر {ledger.events.length} حركة من {ledger.total_events}. الرصيد محسوب على كامل الحركات.
-
-              </p>
-
+              </Notice>
             ) : null}
-
-            <h3 style={{ margin: "1.5rem 0 0.5rem", fontSize: "1rem" }}>سجل الدفعات</h3>
+            <h3 className="ui-section">سجل الدفعات</h3>
 
             <DataTable
 

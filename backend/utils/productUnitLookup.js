@@ -1,5 +1,6 @@
 import { barcodeLookupKeys, digitsOnly, normalizeBarcodeInput, parseWeightBarcode, findProductByBarcode } from "./barcode.js";
 import { formatProductUnit, findKgUnit, loadUnitsForProduct, resolveScaleCode } from "./productUnits.js";
+import { isBakeryMaterial, isUnitSaleEnabled } from "./bakeryMembership.js";
 
 /**
  * @param {object} db
@@ -73,8 +74,10 @@ export async function findProductUnitByBarcode(db, rawCode) {
  * Build API response for barcode lookup.
  * @param {object} db
  * @param {unknown} rawCode
+ * @param {{ forPos?: boolean }} [options] POS callers must not receive units that are not sale_enabled
  */
-export async function buildBarcodeLookupResponse(db, rawCode) {
+export async function buildBarcodeLookupResponse(db, rawCode, options = {}) {
+  const forPos = options.forPos === true;
   const scannedBarcode = normalizeBarcodeInput(rawCode);
   let found = await findProductUnitByBarcode(db, rawCode);
 
@@ -129,17 +132,21 @@ export async function buildBarcodeLookupResponse(db, rawCode) {
 
   const matchedUnitName = selectedUnit?.unit_name ?? null;
 
-  const saleUnits = availableUnits.filter((u) => u.sale_enabled !== false);
+  const bakery = isBakeryMaterial(product);
+  const saleUnits = availableUnits.filter((u) => isUnitSaleEnabled(u));
+  if (forPos && bakery && !saleUnits.length) return null;
   const posUnits = saleUnits.length ? saleUnits : availableUnits;
   let effectiveUnit = selectedUnit;
   if (weightInfo) {
     effectiveUnit = findKgUnit(posUnits) || findKgUnit(availableUnits) || selectedUnit;
-  } else if (selectedUnit.sale_enabled === false) {
+  } else if (!isUnitSaleEnabled(selectedUnit)) {
     effectiveUnit =
       posUnits.find((u) => u.is_default) ||
       posUnits[0] ||
       selectedUnit;
   }
+  if (!effectiveUnit) return null;
+  if (forPos && bakery && !isUnitSaleEnabled(effectiveUnit)) return null;
 
   const baseResponse = {
     product: {

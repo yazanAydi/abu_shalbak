@@ -55,6 +55,40 @@
 .shift-modal-panel--form {
   display: flex;
   flex-direction: column;
+  overflow: visible;
+}
+
+.shift-modal-label .ui-combobox {
+  width: 100%;
+}
+
+.shift-modal-label .ui-combobox__input.shift-modal-input,
+.shift-modal-label .ui-combobox__input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  min-height: 48px;
+  border-radius: 8px;
+  border: 1px solid var(--pos-border-strong, #c5cdd6);
+  background: var(--pos-bg, #f5f6f8);
+  color: var(--pos-text, #1f2937);
+  font-size: 1.05rem;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.shift-modal-label .ui-combobox__list {
+  z-index: 20;
+  background: var(--pos-surface, #ffffff);
+  border: 1px solid var(--pos-border, #d9dee5);
+  color: var(--pos-text, #1f2937);
+}
+
+.shift-modal-label .ui-combobox__option {
+  color: var(--pos-text, #1f2937);
+}
+
+.shift-modal-label .ui-combobox__option.is-active {
+  background: rgba(15, 23, 42, 0.08);
 }
 
 .shift-modal-panel--form .shift-modal-title {

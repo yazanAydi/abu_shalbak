@@ -1,0 +1,46 @@
+.receipt-preview-modal {
+  width: min(480px, calc(100vw - 2rem));
+  max-height: min(92dvh, 920px);
+}
+
+.receipt-preview-modal.ui-modal--lg {
+  width: min(880px, calc(100vw - 2rem));
+}
+
+.receipt-preview-modal .ui-modal__body {
+  display: flex;
+  flex-direction: column;
+  min-height: 28rem;
+  padding: 0.6rem;
+}
+
+.receipt-preview {
+  flex: 1 1 auto;
+  min-height: 28rem;
+  background: #e8e8e8;
+  border-radius: var(--office-radius-sm, 8px);
+  overflow: auto;
+}
+
+.receipt-preview iframe {
+  display: block;
+  width: 100%;
+  min-height: 28rem;
+  border: 0;
+  background: #fff;
+}
+
+.receipt-preview--thermal {
+  display: flex;
+  justify-content: center;
+}
+
+.receipt-preview--thermal iframe {
+  max-width: 420px;
+}
+
+.receipt-preview__status {
+  margin: 0;
+  padding: 1.25rem 0.75rem;
+  text-align: center;
+}

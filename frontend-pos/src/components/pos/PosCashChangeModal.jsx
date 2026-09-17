@@ -48,7 +48,7 @@ export default function PosCashChangeModal({ open, total, isLoading, onClose, on
   return (
     <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
       <div className="shift-modal-backdrop" onClick={onClose} aria-hidden />
-      <form className="shift-modal-panel" onSubmit={handleSubmit}>
+      <form className="shift-modal-panel" data-enter-nav="off" onSubmit={handleSubmit}>
         <h2 className="shift-modal-title">دفع نقدي</h2>
         <p className="shift-modal-meta">الإجمالي: {ils(total)}</p>
         <label className="shift-modal-label">

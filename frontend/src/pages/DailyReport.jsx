@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import api, { createAbortController } from "../apiClient";
 import { Link, useNavigate } from "react-router-dom";
@@ -25,8 +26,10 @@ import {
   PrimaryButton,
   StatCard,
   Card,
+  CardHeader,
   CardBody,
   EmptyState,
+  Notice,
   Skeleton,
   SecondaryButton,
 } from "../components/ui";
@@ -279,7 +282,7 @@ export default function DailyReport() {
         if (e.code === "ERR_CANCELED" || e.name === "CanceledError") return;
         if (reqId !== dashboardReqRef.current) return;
         if (initial) {
-          setErr(e.response?.data?.error || e.message || "تعذّر التحميل");
+          setErr(apiErrorMessage(e, "تعذّر التحميل"));
         }
       } finally {
         if (initial) setLoading(false);
@@ -438,15 +441,15 @@ export default function DailyReport() {
 
       {nearExpiryTotal > 0 ? (
         <Card className="dashboard-near-expiry-panel">
-          <CardBody>
-            <div className="dashboard-near-expiry-header">
-              <h2 className="dashboard-section-title" style={{ border: "none", padding: 0, margin: 0 }}>
-                أصناف قريبة من انتهاء الصلاحية
-              </h2>
+          <CardHeader
+            title="أصناف قريبة من انتهاء الصلاحية"
+            actions={
               <Link to="/expiry" className="dashboard-inline-link">
                 تقرير الصلاحية ({nearExpiryTotal})
               </Link>
-            </div>
+            }
+          />
+          <CardBody>
             <p className="dashboard-meta-line muted">
               حسب فترة التنبيه في الإعدادات: {nearExpiryDays} يوم
             </p>
@@ -495,10 +498,8 @@ export default function DailyReport() {
 
       <div className="dashboard-trend-row">
         <Card>
+          <CardHeader title="اتجاه الإيراد" />
           <CardBody>
-            <h2 className="dashboard-section-title" style={{ border: "none", padding: 0 }}>
-              اتجاه الإيراد
-            </h2>
             {chartLoading ? (
               chartLoadingMessage
             ) : (
@@ -516,8 +517,8 @@ export default function DailyReport() {
         </Card>
 
         <Card className="dashboard-top-products-panel">
+          <CardHeader title="أفضل المنتجات (اليوم)" />
           <CardBody>
-            <h2 className="dashboard-section-title">أفضل المنتجات (اليوم)</h2>
             {topProductsPreview.length === 0 ? (
               <p className="dashboard-meta-line muted">لا مبيعات مسجّلة اليوم</p>
             ) : (
@@ -546,15 +547,14 @@ export default function DailyReport() {
       </div>
 
       {!hasTodayActivity ? (
-        <div className="office-card dashboard-demo-banner">
-          <strong>ترحيباً:</strong> لا توجد مبيعات اليوم بعد. ستظهر البيانات هنا بعد
-          بدء وردية في نقطة البيع.
-        </div>
+        <Notice tone="info">
+          ترحيباً: لا توجد مبيعات اليوم بعد. ستظهر البيانات هنا بعد بدء وردية في نقطة البيع.
+        </Notice>
       ) : null}
 
       <Card>
+        <CardHeader title="حالة الورديات" />
         <CardBody>
-          <h2 className="dashboard-section-title">حالة الورديات</h2>
           {openShifts.length === 0 ? (
             <ShiftStatusEmpty />
           ) : (
@@ -568,8 +568,8 @@ export default function DailyReport() {
       </Card>
 
       <Card>
+        <CardHeader title="النقد والتنبيهات" />
         <CardBody>
-          <h2 className="dashboard-section-title">النقد والتنبيهات</h2>
           <CashAlerts alerts={alerts} />
           <div className="dashboard-cash-meta">
             <h3 className="dashboard-subtitle">تسوية النقد اليوم</h3>

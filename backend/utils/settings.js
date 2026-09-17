@@ -34,6 +34,7 @@ export const SETTING_KEYS = {
   expiry_alert_days: "expiry_alert_days",
   expiry_alert_days_dairy: "expiry_alert_days_dairy",
   expiry_dairy_categories: "expiry_dairy_categories",
+  bakery_report_category_ids: "bakery_report_category_ids",
   pos_shortcut_hold_cart: "pos_shortcut_hold_cart",
   pos_shortcut_suspended_carts: "pos_shortcut_suspended_carts",
   accountant_permissions: "accountant_permissions",
@@ -44,6 +45,7 @@ export const SETTING_KEYS = {
 const MAX_POS_FAVORITES = 24;
 const MAX_QUICK_CATEGORIES = 20;
 const MAX_DAIRY_CATEGORIES = 20;
+const MAX_BAKERY_REPORT_CATEGORIES = 20;
 const MAX_POS_QUICK_BUTTONS = 48;
 
 /**
@@ -149,6 +151,7 @@ const DEFAULTS = {
   [SETTING_KEYS.expiry_alert_days]: 7,
   [SETTING_KEYS.expiry_alert_days_dairy]: 3,
   [SETTING_KEYS.expiry_dairy_categories]: [...DEFAULT_DAIRY_CATEGORIES],
+  [SETTING_KEYS.bakery_report_category_ids]: [],
   [SETTING_KEYS.pos_shortcut_hold_cart]: "",
   [SETTING_KEYS.pos_shortcut_suspended_carts]: "",
   [SETTING_KEYS.accountant_permissions]: defaultAccountantPermissions(),
@@ -232,6 +235,34 @@ function parseDairyCategories(raw) {
 
 function serializeDairyCategories(categories) {
   return JSON.stringify(normalizeDairyCategories(categories));
+}
+
+function normalizeBakeryReportCategoryIds(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const clean = [];
+  for (const item of raw) {
+    const id = Math.floor(Number(item));
+    if (!Number.isInteger(id) || id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    clean.push(id);
+    if (clean.length >= MAX_BAKERY_REPORT_CATEGORIES) break;
+  }
+  return clean;
+}
+
+function parseBakeryReportCategoryIds(raw) {
+  if (raw === undefined || raw === null || raw === "") return [];
+  try {
+    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return normalizeBakeryReportCategoryIds(arr);
+  } catch {
+    return [];
+  }
+}
+
+function serializeBakeryReportCategoryIds(ids) {
+  return JSON.stringify(normalizeBakeryReportCategoryIds(ids));
 }
 
 function normalizeProductUnitId(raw) {
@@ -331,6 +362,8 @@ function parseValue(key, raw, context = {}) {
     }
     case SETTING_KEYS.expiry_dairy_categories:
       return parseDairyCategories(raw);
+    case SETTING_KEYS.bakery_report_category_ids:
+      return parseBakeryReportCategoryIds(raw);
     case SETTING_KEYS.accountant_permissions: {
       if (raw === undefined || raw === null || raw === "") {
         return defaultAccountantPermissions();
@@ -415,6 +448,10 @@ export async function getAppSettings(db) {
     expiry_dairy_categories: parseValue(
       SETTING_KEYS.expiry_dairy_categories,
       map[SETTING_KEYS.expiry_dairy_categories]
+    ),
+    bakery_report_category_ids: parseValue(
+      SETTING_KEYS.bakery_report_category_ids,
+      map[SETTING_KEYS.bakery_report_category_ids]
     ),
     pos_shortcut_hold_cart: parseValue(
       SETTING_KEYS.pos_shortcut_hold_cart,
@@ -587,6 +624,7 @@ export async function updateAppSettings(db, patch) {
       return String(n);
     },
     [SETTING_KEYS.expiry_dairy_categories]: (v) => serializeDairyCategories(v),
+    [SETTING_KEYS.bakery_report_category_ids]: (v) => serializeBakeryReportCategoryIds(v),
     [SETTING_KEYS.pos_shortcut_hold_cart]: (v) => sanitizePosShortcut(v),
     [SETTING_KEYS.pos_shortcut_suspended_carts]: (v) => sanitizePosShortcut(v),
     [SETTING_KEYS.accountant_permissions]: (v) => {
@@ -639,6 +677,7 @@ export async function seedDefaultSettings(db) {
     [SETTING_KEYS.expiry_alert_days, "7"],
     [SETTING_KEYS.expiry_alert_days_dairy, "3"],
     [SETTING_KEYS.expiry_dairy_categories, JSON.stringify(DEFAULT_DAIRY_CATEGORIES)],
+    [SETTING_KEYS.bakery_report_category_ids, "[]"],
     [SETTING_KEYS.pos_shortcut_hold_cart, ""],
     [SETTING_KEYS.pos_shortcut_suspended_carts, ""],
     [SETTING_KEYS.accountant_permissions, JSON.stringify(defaultAccountantPermissions())],

@@ -1,22 +1,31 @@
-import { useCallback, useEffect, useState } from "react";
+import { apiErrorMessage } from "../utils/apiError";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSubmitGuard } from "../hooks/useSubmitGuard";
 import { todayISO } from "../utils/format";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
-import ProductPicker from "../components/ProductPicker";
-import { fetchLastPurchaseCost } from "../utils/productSearch";
+import InvoiceLineProductCell from "../components/invoice/InvoiceLineProductCell";
+import { fetchLastPurchaseCost, fetchSupplierPurchaseUnitPrice, supplierPurchasePriceHint } from "../utils/productSearch";
+import {
+  completeInvoiceLines,
+  focusInvoiceField,
+  focusInvoiceProduct,
+  handleInvoiceTableEnterKeyDown,
+  invoiceLineQtyValid,
+  newInvoiceLineKey,
+} from "../utils/invoiceLineEntry";
 import SellPriceUpdateModal from "./SellPriceUpdateModal";
 import {
-  PageHeader, Button, DataTable, Modal, Tabs, StatusPill,
-  FormField, FormGrid, Input, Textarea, Select, Icon, ReportToolbar, useToast,
+  PageHeader, Button, DataTable, Modal, Tabs, StatusPill, FilterBar,
+  FormField, FormGrid, Input, Textarea, Select, ReportToolbar, useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import { printPurchaseDoc } from "../utils/purchaseDocPrint";
 import QtyStepper from "../components/QtyStepper";
-import { handleEnterNavKeyDown } from "../utils/focusNavigation";
 import { computePurchaseEditorTotals, computePurchaseLinePayable, computePurchaseLineVat, computePurchaseSimpleTotal, deriveEffectiveUnitCost, deriveTotalCost, deriveUnitCost, formatCostInput, formatDiscountPercent, formatTaxRatePercent, lineHasPurchaseDiscount, purchaseQtyStepForUnit } from "../utils/purchaseTotals";
+import PurchaseDocDetailItems from "./PurchaseDocDetailItems";
 import "./purchase-item-editor.css";
 
 const STATUS_TONE = { draft: "neutral", posted: "green", confirmed: "blue", received: "green", cancelled: "red" };
@@ -100,56 +109,211 @@ function PurchaseSummaryFooter({ withVat, vatTotals, simpleTotals }) {
   );
 }
 
-function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "retail" }) {
-  const [sellPricePrompt, setSellPricePrompt] = useState(null);
+function emptyPurchaseLine() {
+  return {
+    line_key: newInvoiceLineKey(),
+    product_id: null,
+    name: "",
+    barcode: "",
+    product_unit: null,
+    is_weighed: 0,
+    quantity: "",
+    unit_id: null,
+    units: [],
+    total_cost: "",
+    unit_cost: "",
+    cost_mode: "unit",
+    discount_pct: "",
+    bonus_quantity: "",
+    expiry_date: "",
+    last_purchase_cost: null,
+    sell_price: null,
+    min_price: null,
+    max_price: null,
+    sell_price_prompted_for: null,
+    priceManual: false,
+    manualKey: null,
+    suggestedKey: null,
+    priceHint: "",
+    priceMissing: false,
+  };
+}
 
-  async function addProduct(p) {
-    let exists = false;
+function returnPriceContextKey(pricing, productId, unitId) {
+  if (!pricing?.supplierId || !productId) return "";
+  return [pricing.supplierId, productId, unitId || "", pricing.asOf || "", pricing.invoiceId || ""].join("|");
+}
+
+function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "retail", membership = null, showExpiry = true, priceMode = "last-any", pricing = null }) {
+  const [sellPricePrompt, setSellPricePrompt] = useState(null);
+  const [lineError, setLineError] = useState(null);
+  const pendingFocusRef = useRef(null);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  useEffect(() => {
+    if (!pendingFocusRef.current) return;
+    const key = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+    focusInvoiceProduct(key);
+  }, [items]);
+
+  const lineLookupSig = items.map((it) => `${it.line_key}:${it.product_id || ""}:${it.unit_id || ""}`).join(",");
+
+  useEffect(() => {
+    if (priceMode !== "supplier") return;
+    if (!pricing?.supplierId) {
+      setItems((prev) => {
+        let changed = false;
+        const next = prev.map((x) => {
+          if (!x.suggestedKey && !x.priceHint && !x.priceMissing) return x;
+          changed = true;
+          return { ...x, suggestedKey: null, priceHint: "", priceMissing: false };
+        });
+        return changed ? next : prev;
+      });
+      return;
+    }
     setItems((prev) => {
-      exists = prev.some((x) => x.product_id === p.id);
-      return prev;
+      let changed = false;
+      const next = prev.map((x) => {
+        if (!x.product_id) return x;
+        const key = returnPriceContextKey(pricing, x.product_id, x.unit_id);
+        if (x.priceManual && x.manualKey === key) return x;
+        if (x.suggestedKey === key || !x.suggestedKey) return x;
+        changed = true;
+        return {
+          ...x,
+          unit_cost: "",
+          total_cost: "",
+          suggestedKey: null,
+          priceHint: "",
+          priceMissing: false,
+        };
+      });
+      return changed ? next : prev;
     });
-    if (exists) return;
-    const [units, pricing] = await Promise.all([
+    const controllers = [];
+    const snapshot = itemsRef.current;
+    for (const it of snapshot) {
+      if (!it.product_id || !it.unit_id) continue;
+      const key = returnPriceContextKey(pricing, it.product_id, it.unit_id);
+      if (!key) continue;
+      if (it.suggestedKey === key) continue;
+      if (it.priceManual && it.manualKey === key) continue;
+      const ac = new AbortController();
+      controllers.push(ac);
+      const lineKey = it.line_key;
+      fetchSupplierPurchaseUnitPrice({
+        supplierId: pricing.supplierId,
+        productId: it.product_id,
+        unitId: it.unit_id,
+        asOf: pricing.asOf,
+        invoiceId: pricing.invoiceId || undefined,
+        signal: ac.signal,
+      })
+        .then((result) => {
+          setItems((prev) =>
+            prev.map((x) => {
+              if (x.line_key !== lineKey) return x;
+              const currentKey = returnPriceContextKey(pricing, x.product_id, x.unit_id);
+              if (currentKey !== key) return x;
+              if (x.priceManual && x.manualKey === key) return x;
+              if (result?.found && result.unit_cost != null) {
+                const qty = Number(x.quantity) || 0;
+                const unitCostStr = formatCostInput(result.unit_cost);
+                return {
+                  ...x,
+                  unit_cost: unitCostStr,
+                  total_cost: deriveTotalCost(unitCostStr, qty),
+                  cost_mode: "unit",
+                  suggestedKey: key,
+                  priceHint: supplierPurchasePriceHint(result.source),
+                  priceMissing: false,
+                  last_purchase_cost: result.unit_cost,
+                };
+              }
+              return {
+                ...x,
+                suggestedKey: key,
+                priceHint: "",
+                priceMissing: true,
+                last_purchase_cost: null,
+              };
+            })
+          );
+        })
+        .catch((err) => {
+          if (err?.code === "ERR_CANCELED" || err?.name === "CanceledError" || err?.name === "AbortError") return;
+        });
+    }
+    return () => controllers.forEach((c) => c.abort());
+  }, [priceMode, pricing?.supplierId, pricing?.asOf, pricing?.invoiceId, lineLookupSig, setItems]);
+
+  async function applyProduct(i, p) {
+    const useSupplierPrice = priceMode === "supplier";
+    const [units, pricingInfo] = await Promise.all([
       fetchProductUnits(p.id),
-      fetchLastPurchaseCost(p.id),
+      useSupplierPrice ? Promise.resolve(null) : fetchLastPurchaseCost(p.id),
     ]);
-    const last = pricing?.last_purchase;
+    const last = pricingInfo?.last_purchase;
     const lastCost = last?.unit_cost ?? null;
     let unitId = pickDefaultPurchaseUnit(units);
     if (last?.product_unit_id && units.some((u) => u.id === Number(last.product_unit_id))) {
       unitId = Number(last.product_unit_id);
     }
-    const unitCostStr = lastCost != null ? formatCostInput(lastCost) : "";
-    const totalCostStr = unitCostStr !== "" ? deriveTotalCost(unitCostStr, 1) : "";
-    setItems((prev) => {
-      if (prev.some((x) => x.product_id === p.id)) return prev;
-      return [
-        ...prev,
-        {
-          product_id: p.id,
-          name: p.name,
-          barcode: p.barcode,
-          product_unit: p.unit || null,
-          is_weighed: Number(p.is_weighed) === 1 ? 1 : 0,
-          quantity: 1,
-          unit_id: unitId,
-          units,
-          total_cost: totalCostStr,
-          unit_cost: unitCostStr,
-          cost_mode: unitCostStr !== "" ? "unit" : "total",
-          discount_pct: "",
-          bonus_quantity: "",
-          last_purchase_cost: lastCost,
-          sell_price: pricing?.sell_price ?? p.price ?? null,
-          min_price: pricing?.min_price ?? p.min_price ?? null,
-          max_price: pricing?.max_price ?? p.max_price ?? null,
-          sell_price_prompted_for: null,
-        },
-      ];
-    });
+    const unitCostStr = !useSupplierPrice && lastCost != null ? formatCostInput(lastCost) : "";
+    setItems((prev) => prev.map((x, idx) => {
+      if (idx !== i) return x;
+      const nextQty = x.quantity === "" || x.quantity == null ? 1 : Number(x.quantity) || 1;
+      const totalCostStr = unitCostStr !== "" ? deriveTotalCost(unitCostStr, nextQty) : "";
+      return {
+        ...x,
+        product_id: p.id,
+        name: p.name,
+        barcode: p.barcode,
+        product_unit: p.unit || null,
+        is_weighed: Number(p.is_weighed) === 1 ? 1 : 0,
+        quantity: nextQty,
+        unit_id: unitId,
+        units,
+        total_cost: totalCostStr,
+        unit_cost: unitCostStr,
+        cost_mode: unitCostStr !== "" ? "unit" : "total",
+        last_purchase_cost: lastCost,
+        sell_price: pricingInfo?.sell_price ?? p.price ?? null,
+        min_price: pricingInfo?.min_price ?? p.min_price ?? null,
+        max_price: pricingInfo?.max_price ?? p.max_price ?? null,
+        sell_price_prompted_for: null,
+        priceManual: false,
+        manualKey: null,
+        suggestedKey: null,
+        priceHint: "",
+        priceMissing: false,
+      };
+    }));
+    setLineError(null);
+  }
+
+  function addEmptyRow() {
+    const last = items[items.length - 1];
+    if (last && !last.product_id) {
+      setLineError({ line_key: last.line_key, message: "اختر الصنف أولاً" });
+      focusInvoiceProduct(last.line_key);
+      return;
+    }
+    if (last && last.product_id && !invoiceLineQtyValid(last)) {
+      setLineError({ line_key: last.line_key, message: "أدخل كمية أكبر من صفر" });
+      focusInvoiceField(last.line_key, "qty");
+      return;
+    }
+    const row = emptyPurchaseLine();
+    pendingFocusRef.current = row.line_key;
+    setItems((prev) => [...prev, row]);
+    setLineError(null);
   }
   function handleUnitCostBlur(i) {
+    if (priceMode === "supplier") return;
     const it = items[i];
     if (!it) return;
     const entered = round2(Number(it.unit_cost));
@@ -181,31 +345,55 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
     )));
     setSellPricePrompt(null);
   }
+  function markManualPrice(row, extra) {
+    const key = returnPriceContextKey(pricing, row.product_id, extra?.unit_id ?? row.unit_id);
+    return {
+      ...row,
+      ...extra,
+      priceManual: true,
+      manualKey: key || row.manualKey,
+      priceMissing: false,
+    };
+  }
   function update(i, key, val) {
-    setItems((prev) => prev.map((x, idx) => (idx === i ? { ...x, [key]: val } : x)));
+    setItems((prev) => prev.map((x, idx) => {
+      if (idx !== i) return x;
+      if (key === "unit_id" && priceMode === "supplier") {
+        return {
+          ...x,
+          unit_id: val,
+          unit_cost: "",
+          total_cost: "",
+          priceManual: false,
+          manualKey: null,
+          suggestedKey: null,
+          priceHint: "",
+          priceMissing: false,
+        };
+      }
+      return { ...x, [key]: val };
+    }));
   }
   function updateTotalCost(i, val) {
     setItems((prev) => prev.map((x, idx) => {
       if (idx !== i) return x;
       const qty = Number(x.quantity) || 0;
-      return {
-        ...x,
+      return markManualPrice(x, {
         total_cost: val,
         unit_cost: deriveUnitCost(val, qty),
         cost_mode: "total",
-      };
+      });
     }));
   }
   function updateUnitCost(i, val) {
     setItems((prev) => prev.map((x, idx) => {
       if (idx !== i) return x;
       const qty = Number(x.quantity) || 0;
-      return {
-        ...x,
+      return markManualPrice(x, {
         unit_cost: val,
         total_cost: deriveTotalCost(val, qty),
         cost_mode: "unit",
-      };
+      });
     }));
   }
   function updateQuantity(i, val) {
@@ -226,9 +414,18 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
       if (idx !== i) return x;
       const qty = Number(quantity) || 0;
       const next = { ...x, unit_id: unitId, quantity };
-      if (x.cost_mode === "unit" && x.unit_cost !== "") {
+      if (priceMode === "supplier") {
+        next.unit_cost = "";
+        next.total_cost = "";
+        next.priceManual = false;
+        next.manualKey = null;
+        next.suggestedKey = null;
+        next.priceHint = "";
+        next.priceMissing = false;
+      }
+      if (x.cost_mode === "unit" && x.unit_cost !== "" && priceMode !== "supplier") {
         next.total_cost = deriveTotalCost(x.unit_cost, qty);
-      } else if (x.total_cost !== "") {
+      } else if (x.total_cost !== "" && priceMode !== "supplier") {
         next.unit_cost = deriveUnitCost(x.total_cost, qty);
       }
       return next;
@@ -238,35 +435,48 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
 
   const simpleTotals = !withVat ? computePurchaseSimpleTotal(items) : null;
   const vatTotals = withVat ? computePurchaseEditorTotals(items, defaultTaxRate) : null;
-  const colSpan = 9;
+  const colSpan = showExpiry ? 10 : 9;
 
   return (
-    <div className="purchase-item-editor" data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
-      <div style={{ marginBottom: "0.75rem" }}>
-        <ProductPicker onPick={addProduct} scope={scope} />
+    <div
+      className="purchase-item-editor"
+      data-enter-nav="invoice-lines"
+      onKeyDownCapture={(e) => handleInvoiceTableEnterKeyDown(e, {
+        items,
+        addEmptyRow,
+        onInvalid: (err, row) => setLineError({ line_key: row?.line_key, message: err.message }),
+      })}
+    >
+      <div className="purchase-item-editor__toolbar">
+        <Button type="button" variant="outline" icon="plus" onClick={addEmptyRow}>إضافة صنف</Button>
       </div>
       {withVat ? (
         <div className="purchase-item-editor__hint">الأسعار شامل ضريبة القيمة المضافة</div>
       ) : null}
+      {lineError?.message ? (
+        <div className="purchase-item-editor__error">{lineError.message}</div>
+      ) : null}
       <div className="ui-table-wrap">
         <table className="ui-table">
           <colgroup>
-            <col style={{ width: "20%" }} />
+            <col style={{ width: "18%" }} />
             <col style={{ width: "9%" }} />
-            <col style={{ width: "10%" }} />
-            <col style={{ width: "12%" }} />
-            <col style={{ width: "7%" }} />
-            <col style={{ width: "9%" }} />
-            <col style={{ width: "11%" }} />
             <col style={{ width: "8%" }} />
-            <col style={{ width: "14%" }} />
+            <col style={{ width: "10%" }} />
+            {showExpiry ? <col style={{ width: "11%" }} /> : null}
+            <col style={{ width: "7%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "11%" }} />
           </colgroup>
           <thead>
             <tr>
               <th>الصنف</th>
-              <th>الوحدة</th>
               <th title="كلفة الوحدة">سعر</th>
+              <th>الوحدة</th>
               <th>الكمية</th>
+              {showExpiry ? <th>تاريخ الصلاحية</th> : null}
               <th title="خصم %">خصم</th>
               <th title="بونص مجاني">بونص</th>
               <th title="إجمالي الكلفة قبل الخصم">إجمالي</th>
@@ -275,7 +485,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
             </tr>
           </thead>
           <tbody>
-            {items.length === 0 && <tr><td colSpan={colSpan} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً</td></tr>}
+            {items.length === 0 && <tr><td colSpan={colSpan} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً عبر «إضافة صنف»</td></tr>}
             {items.map((it, i) => {
               const qtyNum = Number(it.quantity) || 0;
               const bonusNum = Number(it.bonus_quantity) || 0;
@@ -308,21 +518,37 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                 }
               }
               return (
-              <tr key={it.product_id}>
-                <td className="purchase-item-editor__name" title={it.name}>{it.name}</td>
+              <tr key={it.line_key || `${it.product_id}-${i}`} data-invoice-line={it.line_key || `${i}`}>
+                <td className="purchase-item-editor__name">
+                  <InvoiceLineProductCell
+                    value={it.product_id}
+                    productName={it.name}
+                    onPick={(p) => applyProduct(i, p)}
+                    scope={scope}
+                    membership={membership}
+                    kind={membership ? "workspace" : null}
+                    lineKey={it.line_key}
+                  />
+                </td>
+                <td>
+                  <input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.unit_cost ?? ""} onFocus={selectInputOnFocus} onChange={(e) => updateUnitCost(i, e.target.value)} onBlur={() => handleUnitCostBlur(i)} />
+                  {showEffective ? <div className="purchase-item-editor__meta">الكلفة الفعلية {ils(effectiveUnitCost)}</div> : null}
+                  {priceMode === "supplier" && it.priceHint ? (
+                    <div className="purchase-item-editor__meta">{it.priceHint}</div>
+                  ) : null}
+                  {priceMode === "supplier" && it.priceMissing ? (
+                    <div className="purchase-item-editor__meta purchase-item-editor__meta--accent">لا يوجد سعر شراء سابق لهذا المورد</div>
+                  ) : null}
+                </td>
                 <td>
                   {selectable.length > 0 ? (
-                    <select className="ui-input" value={it.unit_id ?? ""} onChange={(e) => update(i, "unit_id", e.target.value ? Number(e.target.value) : null)}>
+                    <select className="ui-input" data-invoice-field="unit" value={it.unit_id ?? ""} onChange={(e) => update(i, "unit_id", e.target.value ? Number(e.target.value) : null)}>
                       {selectable.map((u) => <option key={u.id} value={u.id}>{u.unit_name}</option>)}
                     </select>
                   ) : <span style={{ color: "var(--office-panel-muted)" }}>—</span>}
                 </td>
                 <td>
-                  <input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.unit_cost ?? ""} onFocus={selectInputOnFocus} onChange={(e) => updateUnitCost(i, e.target.value)} onBlur={() => handleUnitCostBlur(i)} />
-                  {showEffective ? <div className="purchase-item-editor__meta">الكلفة الفعلية {ils(effectiveUnitCost)}</div> : null}
-                </td>
-                <td>
-                  <QtyStepper className="ui-input" min={0} step={purchaseQtyStepForUnit(selectedUnit)} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
+                  <QtyStepper className="ui-input" min={0} step={purchaseQtyStepForUnit(selectedUnit)} value={it.quantity} data-invoice-field="qty" onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
                   {conv > 1 && qtyNum > 0 ? <div className="purchase-item-editor__meta">= {fmtQty(baseQty)} {itemBaseUnitName(it)}</div> : null}
                   {suggestion ? (
                     <button
@@ -334,6 +560,17 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                     </button>
                   ) : null}
                 </td>
+                {showExpiry ? (
+                  <td>
+                    <Input
+                      type="date"
+                      data-invoice-field="expiry"
+                      value={it.expiry_date || ""}
+                      onChange={(e) => update(i, "expiry_date", e.target.value)}
+                    />
+                    <div className="purchase-item-editor__meta">اختياري — فارغ = غير محدد</div>
+                  </td>
+                ) : null}
                 <td><input className="ui-input" type="number" min="0" max="100" step="0.1" placeholder="0" value={it.discount_pct ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "discount_pct", e.target.value)} /></td>
                 <td>
                   <QtyStepper className="ui-input" min={0} step={purchaseQtyStepForUnit(selectedUnit)} value={it.bonus_quantity ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "bonus_quantity", e.target.value)} />
@@ -345,7 +582,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                 </td>
                 <td><input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.total_cost} onFocus={selectInputOnFocus} onChange={(e) => updateTotalCost(i, e.target.value)} /></td>
                 <td className="num purchase-item-editor__total-final">{ils(lineVat ? lineVat.lineTotal : linePayable ? linePayable.payable : totalNum)}</td>
-                <td className="purchase-item-editor__actions"><Button variant="ghost" size="sm" icon="trash" onClick={() => remove(i)} /></td>
+                <td className="purchase-item-editor__actions"><Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => remove(i)} /></td>
               </tr>
               );
             })}
@@ -368,10 +605,19 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
   );
 }
 
-export default function Purchases() {
+export default function Purchases({
+  workspace = null,
+  forcedTab = null,
+  hideOrders = false,
+  title,
+  subtitle,
+}) {
+  const isBakery = workspace === "bakery";
   const guardSubmit = useSubmitGuard();
   const toast = useToast();
-  const [tab, setTab] = useState("invoices");
+  const [tab, setTab] = useState(forcedTab || "invoices");
+  const [listFrom, setListFrom] = useState("");
+  const [listTo, setListTo] = useState("");
   const [suppliers, setSuppliers] = useState([]);
   const [store, setStore] = useState({});
   const [orders, setOrders] = useState([]);
@@ -384,6 +630,8 @@ export default function Purchases() {
   const [docDate, setDocDate] = useState(todayISO());
   const [refText, setRefText] = useState("");
   const [notes, setNotes] = useState("");
+  const [sourceInvoiceId, setSourceInvoiceId] = useState("");
+  const [supplierInvoices, setSupplierInvoices] = useState([]);
   const [items, setItems] = useState([]);
   const [saving, setSaving] = useState(false);
   const [editId, setEditId] = useState(null);
@@ -409,16 +657,39 @@ export default function Purchases() {
     setLoading(true);
     try {
       const path = which === "orders" ? "/api/purchases/orders" : which === "returns" ? "/api/purchases/returns" : "/api/purchases/invoices";
-      const { data } = await api.get(path, { headers: getAuthHeaders() });
+      const params = isBakery ? { membership: "bakery" } : undefined;
+      const { data } = await api.get(path, { headers: getAuthHeaders(), params });
       if (which === "orders") setOrders(data);
       else if (which === "returns") setReturns(data);
       else setInvoices(data);
     } catch { toast.error("تعذّر التحميل"); }
     finally { setLoading(false); }
-  }, [toast]);
+  }, [toast, isBakery]);
 
   useEffect(() => { loadSuppliers(); loadSettings(); }, [loadSuppliers, loadSettings]);
   useEffect(() => { loadList(tab); }, [tab, loadList]);
+  useEffect(() => {
+    if (forcedTab && forcedTab !== tab) setTab(forcedTab);
+  }, [forcedTab, tab]);
+
+  useEffect(() => {
+    if (tab !== "returns" || !supplierId) {
+      setSupplierInvoices([]);
+      return;
+    }
+    let cancelled = false;
+    api.get("/api/purchases/invoices", {
+      params: { supplier_id: supplierId, status: "posted", limit: "all" },
+      headers: getAuthHeaders(),
+    })
+      .then(({ data }) => {
+        if (!cancelled) setSupplierInvoices(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setSupplierInvoices([]);
+      });
+    return () => { cancelled = true; };
+  }, [tab, supplierId]);
 
   // Deep-link drill-down from the supplier statement: open the matching detail.
   useEffect(() => {
@@ -441,7 +712,7 @@ export default function Purchases() {
   function openForm() {
     setEditId(null);
     setSupplierId(""); setDocDate(todayISO());
-    setRefText(""); setNotes(""); setItems([]); setShowForm(true);
+    setRefText(""); setNotes(""); setSourceInvoiceId(""); setItems([]); setShowForm(true);
   }
 
   async function fillFormFromDoc(which, data, id) {
@@ -450,6 +721,7 @@ export default function Purchases() {
     setDocDate(docDateValue?.slice(0, 10) || todayISO());
     setRefText(data.ref_text || "");
     setNotes(data.notes || "");
+    setSourceInvoiceId(data.invoice_id ? String(data.invoice_id) : "");
     const docItems = data.items || [];
     const mapped = await Promise.all(
       docItems.map(async (it) => {
@@ -463,6 +735,7 @@ export default function Purchases() {
           ? it.unit_cost
           : deriveUnitCost(totalCost, qty);
         return {
+          line_key: newInvoiceLineKey(),
           product_id: it.product_id,
           name: it.name,
           barcode: it.barcode,
@@ -474,11 +747,25 @@ export default function Purchases() {
           cost_mode: "total",
           discount_pct: it.discount_pct != null && it.discount_pct !== 0 ? it.discount_pct : "",
           bonus_quantity: it.bonus_quantity != null && it.bonus_quantity !== 0 ? it.bonus_quantity : "",
+          expiry_date: it.expiry_date || "",
           last_purchase_cost: pricing?.last_purchase?.unit_cost ?? null,
           sell_price: pricing?.sell_price ?? null,
           min_price: pricing?.min_price ?? null,
           max_price: pricing?.max_price ?? null,
           sell_price_prompted_for: null,
+          priceManual: true,
+          manualKey: returnPriceContextKey(
+            { supplierId: data.supplier_id, asOf: docDateValue?.slice(0, 10), invoiceId: data.invoice_id },
+            it.product_id,
+            it.product_unit_id
+          ),
+          suggestedKey: returnPriceContextKey(
+            { supplierId: data.supplier_id, asOf: docDateValue?.slice(0, 10), invoiceId: data.invoice_id },
+            it.product_id,
+            it.product_unit_id
+          ),
+          priceHint: "",
+          priceMissing: false,
         };
       })
     );
@@ -489,22 +776,32 @@ export default function Purchases() {
 
   async function persist() {
     if (!supplierId) { toast.error("اختر المورد"); return null; }
-    if (items.length === 0) { toast.error("أضف أصنافاً"); return null; }
+    const lines = completeInvoiceLines(items);
+    if (lines.length === 0) { toast.error("أضف أصنافاً"); return null; }
+    const bad = lines.find((it) => !invoiceLineQtyValid(it));
+    if (bad) {
+      toast.error("أدخل كمية أكبر من صفر لكل صنف");
+      return null;
+    }
     setSaving(true);
     const payload = {
       supplier_id: Number(supplierId),
       notes,
-      items: items.map((it) => ({
+      items: lines.map((it) => ({
         product_id: it.product_id,
         quantity: Number(it.quantity),
         unit_id: it.unit_id != null ? Number(it.unit_id) : undefined,
         total_cost: Number(it.total_cost),
         discount_pct: it.discount_pct === "" ? undefined : Number(it.discount_pct),
         bonus_quantity: it.bonus_quantity === "" ? undefined : Number(it.bonus_quantity),
+        expiry_date: it.expiry_date || undefined,
       })),
     };
     try {
-      if (tab === "returns") payload.return_date = docDate;
+      if (tab === "returns") {
+        payload.return_date = docDate;
+        payload.invoice_id = sourceInvoiceId ? Number(sourceInvoiceId) : null;
+      }
       else if (tab === "invoices") { payload.invoice_date = docDate; payload.ref_text = refText; }
       else payload.order_date = docDate;
       if (editId) {
@@ -516,7 +813,7 @@ export default function Purchases() {
       toast.success("تم الحفظ كمسودة");
       return data?.id ?? null;
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الحفظ");
+      toast.error(apiErrorMessage(e, "فشل الحفظ"));
       return null;
     } finally { setSaving(false); }
   }
@@ -541,7 +838,7 @@ export default function Purchases() {
       setShowForm(false);
       setEditId(null);
       loadList(tab);
-    } catch (e) { toast.error(e.response?.data?.error || "فشل الترحيل"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل الترحيل")); }
     });
   }
 
@@ -559,7 +856,7 @@ export default function Purchases() {
       await api.post(path, {}, { headers: getAuthHeaders() });
       toast.success("تم الترحيل");
       loadList(tab);
-    } catch (e) { toast.error(e.response?.data?.error || "فشل الترحيل"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل الترحيل")); }
     });
   }
 
@@ -575,6 +872,27 @@ export default function Purchases() {
     await guardSubmit(async () => {
       setPostingAll(true);
       try {
+        if (isBakery) {
+          const drafts = rows.filter((r) => r.status === "draft");
+          let n = 0;
+          const errors = [];
+          for (const doc of drafts) {
+            const path = tab === "returns" ? `/api/purchases/returns/${doc.id}/post` : `/api/purchases/invoices/${doc.id}/post`;
+            try {
+              await api.post(path, {}, { headers: getAuthHeaders() });
+              n += 1;
+            } catch (e) {
+              errors.push({ id: doc.id, error: apiErrorMessage(e, "فشل الترحيل") });
+            }
+          }
+          const failed = errors.length;
+          if (n === 0 && failed === 0) toast.error("لا توجد مسودات للترحيل");
+          else if (n === 0) toast.error(errors[0]?.error || "فشل الترحيل");
+          else if (failed) toast.error(`تم ترحيل ${n} مستند — فشل ${failed}`);
+          else toast.success(`تم ترحيل ${n} مستند`);
+          loadList(tab);
+          return;
+        }
         const path = tab === "returns" ? "/api/purchases/returns/post-all" : "/api/purchases/invoices/post-all";
         const { data } = await api.post(path, {}, { headers: getAuthHeaders() });
         const n = Number(data?.posted_count) || 0;
@@ -590,7 +908,7 @@ export default function Purchases() {
         }
         loadList(tab);
       } catch (e) {
-        toast.error(e.response?.data?.error || "فشل الترحيل");
+        toast.error(apiErrorMessage(e, "فشل الترحيل"));
       } finally {
         setPostingAll(false);
       }
@@ -604,13 +922,16 @@ export default function Purchases() {
       await api.delete(path, { headers: getAuthHeaders() });
       toast.success("تم الحذف");
       loadList(tab);
-    } catch (e) { toast.error(e.response?.data?.error || "فشل الحذف"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل الحذف")); }
   }
 
   async function openDetail(which, id) {
     try {
       const path = which === "orders" ? `/api/purchases/orders/${id}` : which === "returns" ? `/api/purchases/returns/${id}` : `/api/purchases/invoices/${id}`;
-      const { data } = await api.get(path, { headers: getAuthHeaders() });
+      const { data } = await api.get(path, {
+        headers: getAuthHeaders(),
+        params: isBakery && which !== "orders" ? { membership: "bakery" } : undefined,
+      });
       if (data.status === "draft") {
         fillFormFromDoc(which, data, id);
       } else {
@@ -629,9 +950,35 @@ export default function Purchases() {
 
   const invoiceCols = [
     { key: "invoice_no", header: "رقم", value: (r) => `#${r.invoice_no ?? r.id}`, render: (r) => `#${r.invoice_no ?? r.id}` },
-    { key: "supplier_name", header: "المورد" },
+    { key: "supplier_name", header: "المورد", nameColumn: true, wrap: true },
     { key: "invoice_date", header: "التاريخ", value: (r) => dateOnly(r.invoice_date), render: (r) => dateOnly(r.invoice_date) },
-    { key: "total", header: "الإجمالي", align: "left", className: "num", value: (r) => ils(r.total), render: (r) => ils(r.total) },
+    ...(isBakery
+      ? [
+          {
+            key: "bakery_total",
+            header: "إجمالي أصناف المخبز",
+            align: "left",
+            className: "num",
+            value: (r) => ils(r.bakery_total),
+            render: (r) => ils(r.bakery_total),
+          },
+          {
+            key: "total",
+            header: "إجمالي الفاتورة",
+            align: "left",
+            className: "num",
+            value: (r) => ils(r.invoice_total ?? r.total),
+            render: (r) => (
+              <span>
+                {ils(r.invoice_total ?? r.total)}
+                {r.mixed ? <span className="ui-field__hint"> مختلطة</span> : null}
+              </span>
+            ),
+          },
+        ]
+      : [
+          { key: "total", header: "الإجمالي", align: "left", className: "num", value: (r) => ils(r.total), render: (r) => ils(r.total) },
+        ]),
     { key: "status", header: "الحالة", value: (r) => STATUS_LABEL[r.status], render: (r) => <StatusPill tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</StatusPill> },
     {
       key: "actions", header: "إجراءات",
@@ -640,7 +987,7 @@ export default function Purchases() {
           <Button variant="ghost" size="sm" onClick={() => openDetail("invoices", r.id)}>عرض</Button>
           <Button variant="ghost" size="sm" icon="print" onClick={() => printDoc("invoices", r.id)}>طباعة</Button>
           {r.status === "draft" && <Button variant="outline" size="sm" icon="check" onClick={() => postDoc("invoices", r.id)}>ترحيل</Button>}
-          {r.status === "draft" && <Button variant="ghost" size="sm" icon="trash" onClick={() => removeDoc("invoices", r.id)} />}
+          {r.status === "draft" && <Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => removeDoc("invoices", r.id)} />}
         </div>
       ),
     },
@@ -648,9 +995,35 @@ export default function Purchases() {
 
   const returnCols = [
     { key: "return_no", header: "رقم", value: (r) => `#${r.return_no ?? r.id}`, render: (r) => `#${r.return_no ?? r.id}` },
-    { key: "supplier_name", header: "المورد" },
+    { key: "supplier_name", header: "المورد", nameColumn: true, wrap: true },
     { key: "return_date", header: "التاريخ", value: (r) => dateOnly(r.return_date), render: (r) => dateOnly(r.return_date) },
-    { key: "total", header: "الإجمالي", align: "left", className: "num", value: (r) => ils(r.total), render: (r) => ils(r.total) },
+    ...(isBakery
+      ? [
+          {
+            key: "bakery_total",
+            header: "إجمالي أصناف المخبز",
+            align: "left",
+            className: "num",
+            value: (r) => ils(r.bakery_total),
+            render: (r) => ils(r.bakery_total),
+          },
+          {
+            key: "total",
+            header: "إجمالي المرتجع",
+            align: "left",
+            className: "num",
+            value: (r) => ils(r.invoice_total ?? r.total),
+            render: (r) => (
+              <span>
+                {ils(r.invoice_total ?? r.total)}
+                {r.mixed ? <span className="ui-field__hint"> مختلط</span> : null}
+              </span>
+            ),
+          },
+        ]
+      : [
+          { key: "total", header: "الإجمالي", align: "left", className: "num", value: (r) => ils(r.total), render: (r) => ils(r.total) },
+        ]),
     { key: "status", header: "الحالة", value: (r) => STATUS_LABEL[r.status], render: (r) => <StatusPill tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</StatusPill> },
     {
       key: "actions", header: "إجراءات",
@@ -659,7 +1032,7 @@ export default function Purchases() {
           <Button variant="ghost" size="sm" onClick={() => openDetail("returns", r.id)}>عرض</Button>
           <Button variant="ghost" size="sm" icon="print" onClick={() => printDoc("returns", r.id)}>طباعة</Button>
           {r.status === "draft" && <Button variant="outline" size="sm" icon="check" onClick={() => postDoc("returns", r.id)}>ترحيل</Button>}
-          {r.status === "draft" && <Button variant="ghost" size="sm" icon="trash" onClick={() => removeDoc("returns", r.id)} />}
+          {r.status === "draft" && <Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => removeDoc("returns", r.id)} />}
         </div>
       ),
     },
@@ -667,7 +1040,7 @@ export default function Purchases() {
 
   const orderCols = [
     { key: "order_no", header: "رقم", value: (r) => `#${r.order_no ?? r.id}`, render: (r) => `#${r.order_no ?? r.id}` },
-    { key: "supplier_name", header: "المورد" },
+    { key: "supplier_name", header: "المورد", nameColumn: true, wrap: true },
     { key: "order_date", header: "التاريخ", value: (r) => dateOnly(r.order_date), render: (r) => dateOnly(r.order_date) },
     { key: "total_amount", header: "الإجمالي", align: "left", className: "num", value: (r) => ils(r.total_amount), render: (r) => ils(r.total_amount) },
     { key: "status", header: "الحالة", value: (r) => STATUS_LABEL[r.status], render: (r) => <StatusPill tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</StatusPill> },
@@ -677,20 +1050,36 @@ export default function Purchases() {
         <div className="ui-table__actions">
           <Button variant="ghost" size="sm" onClick={() => openDetail("orders", r.id)}>عرض</Button>
           <Button variant="ghost" size="sm" icon="print" onClick={() => printDoc("orders", r.id)}>طباعة</Button>
-          {r.status !== "received" && <Button variant="ghost" size="sm" icon="trash" onClick={() => removeDoc("orders", r.id)} />}
+          {r.status !== "received" && <Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => removeDoc("orders", r.id)} />}
         </div>
       ),
     },
   ];
 
-  const rows = tab === "orders" ? orders : tab === "returns" ? returns : invoices;
+  const dateKey = tab === "orders" ? "order_date" : tab === "returns" ? "return_date" : "invoice_date";
+  const allRows = tab === "orders" ? orders : tab === "returns" ? returns : invoices;
+  const rows = allRows.filter((r) => {
+    const d = String(r[dateKey] || "").slice(0, 10);
+    if (listFrom && d && d < listFrom) return false;
+    if (listTo && d && d > listTo) return false;
+    return true;
+  });
   const cols = tab === "orders" ? orderCols : tab === "returns" ? returnCols : invoiceCols;
   const newLabel = tab === "orders" ? "أمر شراء جديد" : tab === "returns" ? "مرتجع جديد" : "فاتورة شراء جديدة";
   const reportTitle = tab === "orders" ? "أوامر الشراء" : tab === "returns" ? "مرتجعات الشراء" : "فواتير الشراء";
+  const pageTitle = title || (isBakery ? (tab === "returns" ? "مرتجعات موردي المخبز" : "مشتريات المخبز") : "فاتورة مشتريات");
+  const pageSubtitle = subtitle || (isBakery
+    ? "الفواتير التي تحتوي أصناف مخبز — الإجمالي الكامل للحساب، وأصناف المخبز للملخص"
+    : "فواتير وأوامر ومرتجعات الشراء");
+  const purchaseTabs = [
+    { id: "invoices", label: "فواتير الشراء", icon: "vouchers" },
+    ...(!hideOrders && !isBakery ? [{ id: "orders", label: "أوامر الشراء", icon: "purchases" }] : []),
+    ...(!forcedTab ? [{ id: "returns", label: "مرتجعات الشراء", icon: "refunds" }] : []),
+  ];
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
-      <PageHeader icon="purchases" title="فتورة مشتريات" subtitle="فواتير وأوامر ومرتجعات الشراء"
+      <PageHeader icon="purchases" title={pageTitle} subtitle={pageSubtitle}
         actions={
           <>
             <ReportToolbar
@@ -709,11 +1098,20 @@ export default function Purchases() {
           </>
         } />
 
-      <Tabs active={tab} onChange={setTab} tabs={[
-        { id: "invoices", label: "فواتير الشراء", icon: "vouchers" },
-        { id: "orders", label: "أوامر الشراء", icon: "purchases" },
-        { id: "returns", label: "مرتجعات الشراء", icon: "refunds" },
-      ]} />
+      {purchaseTabs.length > 1 ? (
+        <Tabs active={tab} onChange={setTab} tabs={purchaseTabs} />
+      ) : null}
+
+      <FilterBar
+        onReset={() => { setListFrom(""); setListTo(""); }}
+      >
+        <FormField label="من تاريخ" className="ui-field--date">
+          <Input type="date" value={listFrom} onChange={(e) => setListFrom(e.target.value)} />
+        </FormField>
+        <FormField label="إلى تاريخ" className="ui-field--date">
+          <Input type="date" value={listTo} onChange={(e) => setListTo(e.target.value)} />
+        </FormField>
+      </FilterBar>
 
       <DataTable columns={cols} rows={rows} loading={loading} emptyIcon="purchases" empty="لا توجد مستندات" emptyHint="أنشئ مستنداً جديداً للبدء" />
 
@@ -726,54 +1124,75 @@ export default function Purchases() {
         </>}>
         <FormGrid>
           <FormField label="المورد" required>
-            <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+            <Select value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setSourceInvoiceId(""); }}>
               <option value="">— اختر —</option>
               {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </Select>
           </FormField>
           <FormField label="التاريخ"><Input type="date" value={docDate} onChange={(e) => setDocDate(e.target.value)} /></FormField>
           {tab === "invoices" && <FormField label="مرجع الفاتورة"><Input value={refText} onChange={(e) => setRefText(e.target.value)} /></FormField>}
+          {tab === "returns" && (
+            <FormField label="فاتورة الشراء الأصلية">
+              <Select value={sourceInvoiceId} onChange={(e) => setSourceInvoiceId(e.target.value)} disabled={!supplierId}>
+                <option value="">— بدون فاتورة أصل —</option>
+                {supplierInvoices.map((inv) => (
+                  <option key={inv.id} value={inv.id}>
+                    #{inv.invoice_no ?? inv.id} — {dateOnly(inv.invoice_date)} — {ils(inv.total)}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+          )}
         </FormGrid>
         <div style={{ margin: "1rem 0 0.5rem", fontWeight: 700 }}>الأصناف</div>
-        <ItemEditor items={items} setItems={setItems} withVat={tab === "invoices"} defaultTaxRate={store.default_tax_rate} />
+        <ItemEditor
+          items={items}
+          setItems={setItems}
+          withVat={tab === "invoices"}
+          defaultTaxRate={store.default_tax_rate}
+          showExpiry={tab !== "orders"}
+          scope={isBakery ? null : "retail"}
+          membership={isBakery ? "bakery" : null}
+          priceMode={tab === "returns" ? "supplier" : "last-any"}
+          pricing={tab === "returns" ? { supplierId, asOf: docDate, invoiceId: sourceInvoiceId } : null}
+        />
+        {isBakery ? (
+          <p className="ui-field__hint">البحث لا يحذف أصنافاً أخرى — يمكن خلط أصناف المخبز والمتجر في فاتورة واحدة.</p>
+        ) : null}
         <FormField label="ملاحظات" className="ui-field--full"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></FormField>
       </Modal>
 
-      <Modal open={!!detail} title={detail ? `تفاصيل المستند #${detail.doc.invoice_no ?? detail.doc.return_no ?? detail.doc.order_no ?? detail.doc.id}` : ""} onClose={() => setDetail(null)} size="lg"
-        footer={detail ? <Button icon="print" onClick={() => printPurchaseDoc(detail.doc, detail.which, store)}>طباعة</Button> : null}>
+      <Modal
+        open={!!detail}
+        title={detail ? `تفاصيل المستند #${detail.doc.invoice_no ?? detail.doc.return_no ?? detail.doc.order_no ?? detail.doc.id}` : ""}
+        onClose={() => setDetail(null)}
+        size="full"
+        className="purchase-doc-detail-modal"
+        footer={detail ? <Button icon="print" onClick={() => printPurchaseDoc(detail.doc, detail.which, store)}>طباعة</Button> : null}
+      >
         {detail && (
-          <>
+          <div className="purchase-doc-detail">
             <div className="detail-header">
               <div>المورد: <strong>{detail.doc.supplier_name}</strong></div>
               <div>الحالة: <StatusPill tone={STATUS_TONE[detail.doc.status]}>{STATUS_LABEL[detail.doc.status]}</StatusPill></div>
             </div>
-            <DataTable
-              columns={[
-                { key: "name", header: "الصنف" },
-                { key: "unit_name", header: "الوحدة", render: (it) => it.unit_name || "—" },
-                { key: "quantity", header: "الكمية", align: "left", render: (it) => fmtQty(it.quantity) },
-                { key: "base_quantity", header: "كمية الأساس", align: "left", render: (it) => fmtQty(it.base_quantity ?? it.quantity) },
-                { key: "total_cost", header: "إجمالي الكلفة", align: "left", className: "num", render: (it) => ils(it.total_cost) },
-                { key: "discount_pct", header: "خصم %", align: "left", render: (it) => (it.discount_pct ? `${it.discount_pct}%` : "—") },
-                { key: "bonus_quantity", header: "بونص", align: "left", render: (it) => (it.bonus_quantity ? fmtQty(it.bonus_quantity) : "—") },
-                { key: "unit_cost", header: "كلفة الوحدة", align: "left", className: "num", render: (it) => ils(it.unit_cost) },
-                {
-                  key: "effective_unit_cost",
-                  header: "الكلفة الفعلية",
-                  align: "left",
-                  className: "num",
-                  render: (it) => {
-                    const effective = deriveEffectiveUnitCost(it.line_total, it.quantity);
-                    if (!lineHasPurchaseDiscount(it.discount_pct) || effective === "") return "—";
-                    return ils(effective);
-                  },
-                },
-                { key: "line_total", header: "الإجمالي", align: "left", className: "num", render: (it) => ils(it.line_total) },
-              ]}
-              rows={detail.doc.items || []}
-              empty="لا توجد أصناف"
-            />
-          </>
+            {isBakery && (detail.doc.bakery_total != null) ? (
+              <p className="dashboard-meta-line">
+                إجمالي أصناف المخبز: <strong>{ils(detail.doc.bakery_total)}</strong>
+                {" · "}
+                إجمالي المستند: <strong>{ils(detail.doc.invoice_total ?? detail.doc.total)}</strong>
+                {detail.doc.mixed ? " — فاتورة مختلطة" : null}
+                {" "}
+                <Link
+                  className="dashboard-inline-link"
+                  to={detail.which === "returns" ? `/purchases?returnId=${detail.doc.id}` : `/purchases?invoiceId=${detail.doc.id}`}
+                >
+                  فتح المستند الكامل
+                </Link>
+              </p>
+            ) : null}
+            <PurchaseDocDetailItems items={detail.doc.items} />
+          </div>
         )}
       </Modal>
     </div>

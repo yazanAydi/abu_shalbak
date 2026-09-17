@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { apiErrorMessage } from "../utils/apiError";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { todayISO } from "../utils/format";
 import { useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
-import ProductPicker from "../components/ProductPicker";
+import InvoiceLineProductCell from "../components/invoice/InvoiceLineProductCell";
 import InvoicePaymentPanel from "../components/InvoicePaymentPanel";
 import {
   PageHeader, Button, DataTable, Modal, StatusPill,
@@ -13,7 +14,20 @@ import {
 import { pickExportColumns } from "../utils/reportExport";
 import { printSalesInvoiceDoc } from "../utils/saleInvoicePrint";
 import QtyStepper from "../components/QtyStepper";
-import { handleEnterNavKeyDown } from "../utils/focusNavigation";
+import {
+  completeInvoiceLines,
+  focusInvoiceField,
+  focusInvoiceProduct,
+  handleInvoiceTableEnterKeyDown,
+  invoiceLineQtyValid,
+  newInvoiceLineKey,
+} from "../utils/invoiceLineEntry";
+import {
+  formatAllocationsAr,
+  PREFERRED_AUTO,
+  PREFERRED_UNKNOWN,
+  previewSaleAllocations,
+} from "../utils/stockBatchLabels";
 import { fetchProductUnits } from "./Purchases";
 import {
   computeSaleEditorTotals,
@@ -69,36 +83,81 @@ function SaleSummaryFooter({ totals }) {
   );
 }
 
+function emptySaleLine() {
+  return {
+    line_key: newInvoiceLineKey(),
+    product_id: null,
+    name: "",
+    barcode: "",
+    quantity: "",
+    unit_id: null,
+    units: [],
+    total_price: "",
+    unit_price: "",
+    price_mode: "unit",
+    discount_pct: "",
+    bonus_quantity: "",
+    preferred_expiry: PREFERRED_AUTO,
+    batches: [],
+  };
+}
+
 function ItemEditor({ items, setItems, defaultTaxRate = 0, taxInclusive = true }) {
-  async function addProduct(p) {
-    let exists = false;
-    setItems((prev) => {
-      exists = prev.some((x) => x.product_id === p.id);
-      return prev;
-    });
-    if (exists) return;
-    const units = await fetchProductUnits(p.id);
+  const [lineError, setLineError] = useState(null);
+  const pendingFocusRef = useRef(null);
+
+  useEffect(() => {
+    if (!pendingFocusRef.current) return;
+    const key = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+    focusInvoiceProduct(key);
+  }, [items]);
+
+  async function applyProduct(i, p) {
+    const [units, batchRes] = await Promise.all([
+      fetchProductUnits(p.id),
+      api.get(`/api/products/${p.id}/batches`, { headers: getAuthHeaders() }).then((r) => r.data).catch(() => ({ rows: [] })),
+    ]);
     const def = pickDefaultSaleUnit(units);
     const unitPrice = def.price ?? p.price ?? "";
-    setItems((prev) => {
-      if (prev.some((x) => x.product_id === p.id)) return prev;
-      return [
-        ...prev,
-        {
-          product_id: p.id,
-          name: p.name,
-          barcode: p.barcode,
-          quantity: 1,
-          unit_id: def.id,
-          units,
-          total_price: unitPrice !== "" ? String(Number(unitPrice)) : "",
-          unit_price: unitPrice !== "" ? String(Number(unitPrice)) : "",
-          price_mode: "unit",
-          discount_pct: "",
-          bonus_quantity: "",
-        },
-      ];
-    });
+    const batches = Array.isArray(batchRes?.rows) ? batchRes.rows : [];
+    setItems((prev) => prev.map((x, idx) => {
+      if (idx !== i) return x;
+      const qty = x.quantity === "" || x.quantity == null ? 1 : x.quantity;
+      return {
+        ...x,
+        product_id: p.id,
+        name: p.name,
+        barcode: p.barcode,
+        quantity: qty,
+        unit_id: def.id,
+        units,
+        unit_price: unitPrice !== "" ? String(Number(unitPrice)) : "",
+        total_price: unitPrice !== "" ? String(Number(unitPrice) * Number(qty || 1)) : "",
+        price_mode: "unit",
+        preferred_expiry: PREFERRED_AUTO,
+        batches,
+      };
+    }));
+    setLineError(null);
+  }
+
+  function addEmptyRow() {
+    const last = items[items.length - 1];
+    if (last && !last.product_id) {
+      setLineError({ line_key: last.line_key, message: "اختر الصنف أولاً" });
+      focusInvoiceProduct(last.line_key);
+      return;
+    }
+    if (last && last.product_id && !invoiceLineQtyValid(last)) {
+      setLineError({ line_key: last.line_key, message: "أدخل كمية أكبر من صفر" });
+      focusInvoiceField(last.line_key, "qty");
+      return;
+    }
+    const row = emptySaleLine();
+    pendingFocusRef.current = row.line_key;
+    setItems((prev) => [...prev, row]);
+    setLineError(null);
   }
 
   function update(i, key, val) {
@@ -142,10 +201,22 @@ function ItemEditor({ items, setItems, defaultTaxRate = 0, taxInclusive = true }
   const totals = computeSaleEditorTotals(items, defaultTaxRate, taxInclusive);
 
   return (
-    <div className="purchase-item-editor" data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
-      <div style={{ marginBottom: "0.75rem" }}>
-        <ProductPicker onPick={addProduct} />
+    <div
+      className="purchase-item-editor"
+      data-enter-nav="invoice-lines"
+      onKeyDownCapture={(e) => handleInvoiceTableEnterKeyDown(e, {
+        items,
+        addEmptyRow,
+        onInvalid: (err, row) => setLineError({ line_key: row?.line_key, message: err.message }),
+      })}
+    >
+      <div className="purchase-item-editor__toolbar">
+        <Button type="button" variant="outline" icon="plus" onClick={addEmptyRow}>إضافة صنف</Button>
       </div>
+      {lineError?.message ? <div className="purchase-item-editor__error">{lineError.message}</div> : null}
+      <p className="purchase-item-editor__hint">
+        الباركود المشترك لا يحدد الدفعة الفعلية — اختر تاريخ الصلاحية عند الحاجة. الافتراضي هو الأقرب انتهاءً.
+      </p>
       <div className="ui-table-wrap">
         <table className="ui-table">
           <thead>
@@ -154,6 +225,7 @@ function ItemEditor({ items, setItems, defaultTaxRate = 0, taxInclusive = true }
               <th>الوحدة</th>
               <th>سعر الوحدة</th>
               <th>الكمية</th>
+              <th>تاريخ الصلاحية</th>
               <th>خصم %</th>
               <th>بونص</th>
               <th>الإجمالي</th>
@@ -162,33 +234,67 @@ function ItemEditor({ items, setItems, defaultTaxRate = 0, taxInclusive = true }
           </thead>
           <tbody>
             {items.length === 0 ? (
-              <tr><td colSpan={8} style={{ textAlign: "center", color: "var(--office-panel-muted)" }}>أضف أصنافاً</td></tr>
+              <tr><td colSpan={9} style={{ textAlign: "center", color: "var(--office-panel-muted)" }}>أضف أصنافاً عبر «إضافة صنف»</td></tr>
             ) : items.map((it, i) => {
               const line = computeSaleLineTotals(it.total_price, it.discount_pct, defaultTaxRate, taxInclusive);
+              const selectedUnit = (it.units || []).find((u) => u.id === Number(it.unit_id));
+              const conv = selectedUnit ? Number(selectedUnit.conversion_to_base) || 1 : 1;
+              const preview = it.product_id
+                ? previewSaleAllocations(
+                    it.batches,
+                    ((Number(it.quantity) || 0) + (Number(it.bonus_quantity) || 0)) * conv,
+                    it.preferred_expiry
+                  )
+                : [];
               return (
-                <tr key={`${it.product_id}-${i}`}>
-                  <td>{it.name}</td>
+                <tr key={it.line_key || `${it.product_id}-${i}`} data-invoice-line={it.line_key || `${i}`}>
                   <td>
-                    <Select value={it.unit_id ?? ""} onChange={(e) => update(i, "unit_id", e.target.value ? Number(e.target.value) : null)}>
+                    <InvoiceLineProductCell
+                      value={it.product_id}
+                      productName={it.name}
+                      onPick={(p) => applyProduct(i, p)}
+                      lineKey={it.line_key}
+                    />
+                  </td>
+                  <td>
+                    <Select data-invoice-field="unit" value={it.unit_id ?? ""} onChange={(e) => update(i, "unit_id", e.target.value ? Number(e.target.value) : null)}>
                       {(it.units || []).map((u) => (
                         <option key={u.id} value={u.id}>{u.unit_name}</option>
                       ))}
                     </Select>
                   </td>
                   <td>
-                    <input className="ui-input" type="number" min="0" step="0.01" value={it.unit_price ?? ""} onFocus={selectInputOnFocus} onChange={(e) => updateUnitPrice(i, e.target.value)} />
+                    <input className="ui-input" type="number" min="0" step="0.01" data-invoice-field="price" value={it.unit_price ?? ""} onFocus={selectInputOnFocus} onChange={(e) => updateUnitPrice(i, e.target.value)} />
                   </td>
                   <td>
-                    <QtyStepper className="ui-input" min={0} value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
+                    <QtyStepper className="ui-input" min={0} data-invoice-field="qty" value={it.quantity} onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
+                  </td>
+                  <td className="invoice-batch-cell">
+                    <Select
+                      data-invoice-field="expiry"
+                      value={it.preferred_expiry ?? PREFERRED_AUTO}
+                      onChange={(e) => update(i, "preferred_expiry", e.target.value)}
+                    >
+                      <option value={PREFERRED_AUTO}>تلقائي (الأقرب انتهاءً)</option>
+                      {(it.batches || []).filter((b) => b.expiry_date).map((b) => (
+                        <option key={b.id || b.expiry_date} value={b.expiry_date}>
+                          {b.expiry_date} — {b.quantity} {b.status_label ? `(${b.status_label})` : ""}
+                        </option>
+                      ))}
+                      <option value={PREFERRED_UNKNOWN}>غير محدد</option>
+                    </Select>
+                    {preview.length > 0 ? (
+                      <div className="purchase-item-editor__meta">{formatAllocationsAr(preview)}</div>
+                    ) : null}
                   </td>
                   <td>
-                    <input className="ui-input" type="number" min="0" max="100" step="0.1" value={it.discount_pct ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "discount_pct", e.target.value)} />
+                    <input className="ui-input" type="number" min="0" max="100" step="0.1" data-invoice-field="discount" value={it.discount_pct ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "discount_pct", e.target.value)} />
                   </td>
                   <td>
-                    <QtyStepper className="ui-input" min={0} value={it.bonus_quantity ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "bonus_quantity", e.target.value)} />
+                    <QtyStepper className="ui-input" min={0} data-invoice-field="bonus" value={it.bonus_quantity ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "bonus_quantity", e.target.value)} />
                   </td>
                   <td className="num">{ils(line.lineTotal)}</td>
-                  <td><Button variant="ghost" size="sm" icon="trash" onClick={() => remove(i)} /></td>
+                  <td><Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => remove(i)} /></td>
                 </tr>
               );
             })}
@@ -252,7 +358,7 @@ export default function SalesInvoices() {
       const { data } = await api.get("/api/sales/invoices", { headers: getAuthHeaders() });
       setInvoices(Array.isArray(data) ? data : []);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر التحميل");
+      toast.error(apiErrorMessage(e, "تعذّر التحميل"));
     } finally {
       setLoading(false);
     }
@@ -284,6 +390,7 @@ export default function SalesInvoices() {
     setRefText("");
     setNotes("");
     setItems([]);
+    loadCustomers();
     setShowForm(true);
   }
 
@@ -294,9 +401,13 @@ export default function SalesInvoices() {
     setNotes(data.notes || "");
     const mapped = await Promise.all(
       (data.items || []).map(async (it) => {
-        const units = await fetchProductUnits(it.product_id);
+        const [units, batchRes] = await Promise.all([
+          fetchProductUnits(it.product_id),
+          api.get(`/api/products/${it.product_id}/batches`, { headers: getAuthHeaders() }).then((r) => r.data).catch(() => ({ rows: [] })),
+        ]);
         const qty = Number(it.quantity) || 0;
         return {
+          line_key: newInvoiceLineKey(),
           product_id: it.product_id,
           name: it.name,
           barcode: it.barcode,
@@ -308,11 +419,14 @@ export default function SalesInvoices() {
           price_mode: "total",
           discount_pct: it.discount_pct != null && it.discount_pct !== 0 ? it.discount_pct : "",
           bonus_quantity: it.bonus_quantity != null && it.bonus_quantity !== 0 ? it.bonus_quantity : "",
+          preferred_expiry: it.preferred_expiry_date || PREFERRED_AUTO,
+          batches: Array.isArray(batchRes?.rows) ? batchRes.rows : [],
         };
       })
     );
     setItems(mapped);
     setEditId(id);
+    await loadCustomers();
     setShowForm(true);
   }
 
@@ -321,8 +435,13 @@ export default function SalesInvoices() {
       toast.error("اختر العميل");
       return null;
     }
-    if (items.length === 0) {
+    const lines = completeInvoiceLines(items);
+    if (lines.length === 0) {
       toast.error("أضف أصنافاً");
+      return null;
+    }
+    if (lines.some((it) => !invoiceLineQtyValid(it))) {
+      toast.error("أدخل كمية أكبر من صفر لكل صنف");
       return null;
     }
     setSaving(true);
@@ -331,13 +450,14 @@ export default function SalesInvoices() {
       invoice_date: docDate,
       ref_text: refText,
       notes,
-      items: items.map((it) => ({
+      items: lines.map((it) => ({
         product_id: it.product_id,
         quantity: Number(it.quantity),
         unit_id: it.unit_id != null ? Number(it.unit_id) : undefined,
         total_price: Number(it.total_price),
         discount_pct: it.discount_pct === "" ? undefined : Number(it.discount_pct),
         bonus_quantity: it.bonus_quantity === "" ? undefined : Number(it.bonus_quantity),
+        preferred_expiry_date: it.preferred_expiry && it.preferred_expiry !== PREFERRED_AUTO ? it.preferred_expiry : null,
       })),
     };
     try {
@@ -350,7 +470,7 @@ export default function SalesInvoices() {
       toast.success("تم الحفظ كمسودة");
       return data?.id ?? null;
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الحفظ");
+      toast.error(apiErrorMessage(e, "فشل الحفظ"));
       return null;
     } finally {
       setSaving(false);
@@ -385,7 +505,7 @@ export default function SalesInvoices() {
       toast.success("تم الحذف");
       loadList();
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الحذف");
+      toast.error(apiErrorMessage(e, "فشل الحذف"));
     }
   }
 
@@ -402,7 +522,7 @@ export default function SalesInvoices() {
       setPostTarget(null);
       loadList();
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الترحيل");
+      toast.error(apiErrorMessage(e, "فشل الترحيل"));
     } finally {
       setPosting(false);
     }
@@ -436,7 +556,7 @@ export default function SalesInvoices() {
       setPostAllOpen(false);
       loadList();
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل الترحيل");
+      toast.error(apiErrorMessage(e, "فشل الترحيل"));
     } finally {
       setPostingAll(false);
     }
@@ -467,7 +587,7 @@ export default function SalesInvoices() {
           {r.status === "draft" && (
             <>
               <Button variant="outline" size="sm" icon="check" onClick={() => startPost(r)}>ترحيل</Button>
-              <Button variant="ghost" size="sm" icon="trash" onClick={() => removeDoc(r.id)} />
+              <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => removeDoc(r.id)} />
             </>
           )}
         </div>
@@ -558,6 +678,21 @@ export default function SalesInvoices() {
                 { key: "name", header: "الصنف" },
                 { key: "unit_name", header: "الوحدة", render: (it) => it.unit_name || "—" },
                 { key: "quantity", header: "الكمية", render: (it) => fmtQty(it.quantity) },
+                {
+                  key: "batches",
+                  header: "الدفعات",
+                  render: (it) => {
+                    if (it.batch_allocations_json) {
+                      try {
+                        return formatAllocationsAr(JSON.parse(it.batch_allocations_json)) || "—";
+                      } catch {
+                        return "—";
+                      }
+                    }
+                    if (it.preferred_expiry_date === PREFERRED_UNKNOWN) return "غير محدد";
+                    return it.preferred_expiry_date || "تلقائي";
+                  },
+                },
                 { key: "unit_price", header: "سعر الوحدة", className: "num", render: (it) => ils(it.unit_price) },
                 { key: "line_total", header: "الإجمالي", className: "num", render: (it) => ils(it.line_total) },
               ]}

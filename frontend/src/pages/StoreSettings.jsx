@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -409,8 +410,8 @@ export default function StoreSettings() {
       setMsg("تم الحفظ بنجاح");
       toast.success("تم الحفظ بنجاح");
     } catch (e) {
-      setError(e.response?.data?.error || "فشل الحفظ");
-      toast.error(e.response?.data?.error || "فشل الحفظ");
+      setError(apiErrorMessage(e, "فشل الحفظ"));
+      toast.error(apiErrorMessage(e, "فشل الحفظ"));
     } finally {
       setSaving(false);
     }
@@ -441,7 +442,7 @@ export default function StoreSettings() {
         toast.error("تعذّر إرسال التنبيه");
       }
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل إرسال التنبيه");
+      toast.error(apiErrorMessage(e, "فشل إرسال التنبيه"));
     } finally {
       setSendingExpiryAlert(false);
     }
@@ -470,7 +471,7 @@ export default function StoreSettings() {
       setDeletePasswordConfirm("");
       toast.success(deletePasswordSet ? "تم تغيير كلمة مرور الحذف" : "تم حفظ كلمة مرور الحذف");
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر حفظ كلمة المرور");
+      toast.error(apiErrorMessage(e, "تعذّر حفظ كلمة المرور"));
     } finally {
       setDeletePasswordSaving(false);
     }
@@ -499,7 +500,7 @@ export default function StoreSettings() {
       setZeroPasswordConfirm("");
       toast.success(zeroPasswordSet ? "تم تغيير كلمة مرور تصفير الكميات" : "تم حفظ كلمة مرور تصفير الكميات");
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر حفظ كلمة المرور");
+      toast.error(apiErrorMessage(e, "تعذّر حفظ كلمة المرور"));
     } finally {
       setZeroPasswordSaving(false);
     }
@@ -518,7 +519,7 @@ export default function StoreSettings() {
       setZeroPasswordConfirm("");
       toast.success("تم حذف كلمة مرور تصفير الكميات");
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر حذف كلمة المرور");
+      toast.error(apiErrorMessage(e, "تعذّر حذف كلمة المرور"));
     } finally {
       setZeroPasswordSaving(false);
     }
@@ -537,7 +538,7 @@ export default function StoreSettings() {
       setDeletePasswordConfirm("");
       toast.success("تم حذف كلمة مرور الحذف");
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر حذف كلمة المرور");
+      toast.error(apiErrorMessage(e, "تعذّر حذف كلمة المرور"));
     } finally {
       setDeletePasswordSaving(false);
     }

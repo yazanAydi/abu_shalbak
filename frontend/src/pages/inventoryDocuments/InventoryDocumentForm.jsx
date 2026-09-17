@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../../utils/apiError";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../../apiClient";
@@ -156,7 +157,7 @@ export default function InventoryDocumentForm({ docType }) {
         toast.success("تم حفظ السند");
         navigate(`${cfg.pathBase}/${data.id}`);
       } catch (e) {
-        toast.error(e.response?.data?.error || "فشل حفظ السند");
+        toast.error(apiErrorMessage(e, "فشل حفظ السند"));
       } finally {
         setSaving(false);
       }

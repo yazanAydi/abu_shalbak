@@ -29,6 +29,9 @@ import {
   fingerprintCheckoutPayload,
   resolveCheckoutIdempotency,
 } from "../utils/checkoutIdempotency.js";
+import { resolveOnAccountParty } from "../utils/onAccountParty.js";
+import { resolveCheckoutNotes } from "../utils/checkoutNotes.js";
+import { isUnitSaleEnabled } from "../utils/bakeryMembership.js";
 
 const SUSPENDED_QTY_TOLERANCE = 0.0001;
 
@@ -148,17 +151,29 @@ export function createCheckoutRouter(db) {
       return res.status(400).json({ error: validationError, code: "VALIDATION_ERROR" });
     }
 
-    const { items, customer_id } = req.body;
+    const { items, customer_id, employee_id } = req.body;
     const idempotencyKey = String(req.body.idempotency_key).trim();
     const settings = await getAppSettings(db);
-    const custId = customer_id ? Number(customer_id) : null;
+    const rawCustId = customer_id ? Number(customer_id) : null;
+    const rawEmpId = employee_id ? Number(employee_id) : null;
+    let custId = rawCustId;
+    let empId = rawEmpId;
     const suspendedSaleId = req.body.suspended_sale_id ? Number(req.body.suspended_sale_id) : null;
+    let notes = null;
+    try {
+      notes = resolveCheckoutNotes(req.body);
+    } catch (e) {
+      if (e?.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      throw e;
+    }
     const payloadFingerprint = fingerprintCheckoutPayload({
       items,
       payments: req.body.payments,
       payment_method: req.body.payment_method,
-      customer_id: custId,
+      customer_id: rawCustId,
+      employee_id: rawEmpId,
       suspended_sale_id: suspendedSaleId,
+      notes,
     });
 
     try {
@@ -251,14 +266,6 @@ export function createCheckoutRouter(db) {
           name: p.name,
         });
       }
-      if (String(p.inventory_scope || "retail") === "bakery") {
-        return res.status(409).json({
-          error: "مواد المخبز غير قابلة للبيع",
-          code: "BAKERY_SUPPLY_NOT_SELLABLE",
-          product_id: productId,
-          name: p.name,
-        });
-      }
 
       let unitId = line.unit_id != null ? Number(line.unit_id) : line.product_unit_id != null ? Number(line.product_unit_id) : null;
       const explicitUnitId =
@@ -288,6 +295,28 @@ export function createCheckoutRouter(db) {
           unit = fallback;
         }
         unitId = unit.id;
+      }
+
+      const unitSellable = isUnitSaleEnabled(unit);
+      const bakery = String(p.inventory_scope || "retail") === "bakery";
+      if (bakery && !unitSellable) {
+        return res.status(409).json({
+          error: "مواد المخبز غير قابلة للبيع",
+          code: "BAKERY_SUPPLY_NOT_SELLABLE",
+          product_id: productId,
+          name: p.name,
+        });
+      }
+      if (!bakery && !unitSellable) {
+        const anySale = units.some((u) => isUnitSaleEnabled(u));
+        if (anySale) {
+          return res.status(409).json({
+            error: "لا توجد وحدة بيع للمنتج",
+            code: "NO_SELLABLE_UNIT",
+            product_id: productId,
+            name: p.name,
+          });
+        }
       }
 
       if (Number(unit.is_default) === 1 && !explicitUnitId) {
@@ -470,8 +499,24 @@ export function createCheckoutRouter(db) {
       changeCurrencyCode,
     } = paymentResolved;
 
-    if (onAccountTotal > 0 && !custId) {
-      return res.status(400).json({ error: "اختر عميلاً للبيع على الذمة", code: "CUSTOMER_REQUIRED" });
+    if (onAccountTotal > 0) {
+      try {
+        const party = await resolveOnAccountParty(db, {
+          customerId: rawCustId,
+          employeeId: rawEmpId,
+        });
+        custId = party.customerId;
+        empId = party.employeeId;
+      } catch (e) {
+        if (e?.status) return res.status(e.status).json({ error: e.message, code: e.code });
+        throw e;
+      }
+      if (!custId && !empId) {
+        return res.status(400).json({
+          error: "اختر عميلاً أو موظفاً للبيع على الذمة",
+          code: "CUSTOMER_REQUIRED",
+        });
+      }
     }
 
     // Credit + drawer checks run inside the write transaction below.
@@ -520,6 +565,18 @@ export function createCheckoutRouter(db) {
         if (resolved.kind !== "proceed") return resolved;
 
         if (onAccountTotal > 0) {
+          const party = await resolveOnAccountParty(db, {
+            customerId: rawCustId,
+            employeeId: rawEmpId,
+          });
+          custId = party.customerId;
+          empId = party.employeeId;
+          if (!custId && !empId) {
+            const err = new Error("اختر عميلاً أو موظفاً للبيع على الذمة");
+            err.status = 400;
+            err.code = "CUSTOMER_REQUIRED";
+            throw err;
+          }
           const saleSnapshot = {
             itemsForJson,
             normalized,
@@ -540,6 +597,8 @@ export function createCheckoutRouter(db) {
             payloadFingerprint,
             suspendedSaleId: suspendedSaleId || null,
             promoBreakdown,
+            employeeId: empId,
+            notes,
           };
           const created = await createOnAccountRequest(
             db,
@@ -547,6 +606,7 @@ export function createCheckoutRouter(db) {
               cashierId: req.user.id,
               shiftId: shift.id,
               custId,
+              employeeId: empId,
               saleSnapshot,
               totals: {
                 subtotal,
@@ -556,6 +616,7 @@ export function createCheckoutRouter(db) {
                 summaryMethod,
               },
               req,
+              notes,
               idempotencyKey,
               payloadFingerprint,
             },
@@ -604,6 +665,7 @@ export function createCheckoutRouter(db) {
         payloadFingerprint,
         suspendedSaleId: suspendedSaleId || null,
         promoBreakdown,
+        employeeId: empId,
         }, { inTransaction: true });
         if (sale.replayTxId) return { kind: "sale", transactionId: sale.replayTxId };
         return { kind: "sale_created", sale };

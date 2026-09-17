@@ -7,6 +7,7 @@ export default function Button({
   icon,
   children,
   className = "",
+  type = "button",
   ...rest
 }) {
   const cls = [
@@ -19,7 +20,7 @@ export default function Button({
     .filter(Boolean)
     .join(" ");
   return (
-    <button className={cls} {...rest}>
+    <button type={type} className={cls} {...rest}>
       {icon ? <Icon name={icon} /> : null}
       {children}
     </button>

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { todayISO } from "../utils/format";
 import api from "../apiClient";
 import PartyPicker from "../components/PartyPicker";
@@ -21,6 +22,7 @@ import {
   Select,
   useToast,
 } from "../components/ui";
+import { apiErrorMessage } from "../utils/apiError";
 
 function currentYearRange() {
   const y = new Date().getFullYear();
@@ -29,6 +31,7 @@ function currentYearRange() {
 
 export default function AccountStatement() {
   const toast = useToast();
+  const navigate = useNavigate();
   const defaults = useMemo(() => currentYearRange(), []);
   const [partyType, setPartyType] = useState("supplier");
   const [party, setParty] = useState(null);
@@ -62,7 +65,7 @@ export default function AccountStatement() {
       setReport(data);
       setPage(nextPage);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر تحميل كشف الحساب");
+      toast.error(apiErrorMessage(e, "تعذّر تحميل كشف الحساب"));
       setReport(null);
     } finally {
       setLoading(false);
@@ -87,7 +90,7 @@ export default function AccountStatement() {
       const full = await loadFullForExport();
       printAccountStatement(full, partyType);
     } catch (e) {
-      toast.error(e.response?.data?.error || "تعذّر الطباعة");
+      toast.error(apiErrorMessage(e, "تعذّر الطباعة"));
     }
   }
 
@@ -100,7 +103,7 @@ export default function AccountStatement() {
     try {
       await downloadAccountStatementExcel(api, { partyType, partyId: party.id, from, to });
     } catch (e) {
-      toast.error(e.response?.data?.error || "تعذّر تصدير Excel");
+      toast.error(apiErrorMessage(e, "تعذّر تصدير Excel"));
     }
   }
 
@@ -163,7 +166,7 @@ export default function AccountStatement() {
                 placeholder={partyType === "supplier" ? "ابحث عن مورد…" : "ابحث عن عميل…"}
               />
               {party ? (
-                <p style={{ marginTop: 6, fontSize: "0.9rem" }}>
+                <p className="ui-field__hint ui-mt-sm">
                   المحدد: <strong>{party.name}</strong>
                 </p>
               ) : null}
@@ -176,10 +179,20 @@ export default function AccountStatement() {
             </FormField>
           </FormGrid>
 
-          <div className="ui-toolbar" style={{ marginTop: 16, gap: 8, flexWrap: "wrap" }}>
+          <div className="ui-toolbar ui-mt-md">
             <Button type="button" onClick={() => loadReport(1)} disabled={loading || !party}>
               {loading ? "جاري التحميل…" : "عرض"}
             </Button>
+            {partyType === "supplier" && party?.id ? (
+              <Button
+                type="button"
+                variant="outline"
+                icon="finance"
+                onClick={() => navigate(`/suppliers/${party.id}/statement`)}
+              >
+                كشف حساب المورد
+              </Button>
+            ) : null}
             <SecondaryButton type="button" onClick={handlePrint} disabled={!party}>طباعة</SecondaryButton>
             <SecondaryButton type="button" onClick={handlePdf} disabled={!party}>PDF</SecondaryButton>
             <SecondaryButton type="button" onClick={handleExcel} disabled={!party}>Excel</SecondaryButton>
@@ -188,15 +201,15 @@ export default function AccountStatement() {
         </CardBody>
       </Card>
 
-      {loading ? <p style={{ marginTop: 16 }}>جاري تحميل كشف الحساب…</p> : null}
+      {loading ? <p className="ui-text-muted ui-mt-md">جاري تحميل كشف الحساب…</p> : null}
 
       {!loading && report ? (
         <>
-          <div style={{ marginTop: 16 }}>
+          <div className="ui-mt-md">
             <AccountStatementView report={report} partyType={partyType} />
           </div>
           {pagination && pagination.totalPages > 1 ? (
-            <div className="ui-toolbar" style={{ marginTop: 12 }}>
+            <div className="ui-toolbar ui-mt-sm">
               <SecondaryButton
                 type="button"
                 disabled={page <= 1 || loading}

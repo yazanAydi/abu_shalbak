@@ -2,7 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { requireAuth, requireAdmin, requireReportsPermission, requireAnyReportsPermission, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
-import { isAdmin, isKioskOnlyRole, isValidRole, USER_ROLES } from "../utils/roles.js";
+import { isAdmin, isKioskOnlyRole, isValidRole, USER_ROLES, ATTENDANCE_ROLES } from "../utils/roles.js";
 import {
   csvBufferToRecords,
   normalizeProductRow,
@@ -23,7 +23,7 @@ import {
 } from "./hesabatiUploadHandlers.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
-import { productDeletePasswordSchema, userPermissionsSchema } from "../middleware/schemas.js";
+import { productDeletePasswordSchema, userPermissionsSchema, userEmployeeSetupSchema } from "../middleware/schemas.js";
 import {
   allAccountantPermissionsEnabled,
   defaultAccountantPermissions,
@@ -58,6 +58,15 @@ import {
   listTelegramPollFailures,
   retryTelegramPollFailure,
 } from "../services/telegramPollRecovery.js";
+import {
+  attachEmployeeIdentityToUserInTx,
+  getUserAccount,
+  listUnlinkedEmployeesForAccountLink,
+  listUserAccounts,
+  parseUserEmployeeLinkBody,
+  setupEmployeeForStaffUser,
+  reconcileStaffEmployeeIdentities,
+} from "../services/employeeService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -620,19 +629,19 @@ export function createAdminRouter(db, dbPath) {
   });
 
   router.get("/users", async (_req, res) => {
-    const rows = await db.all(
-      `SELECT id, username, role, created_at,
-              CASE WHEN permissions_json IS NOT NULL AND TRIM(permissions_json) != '' THEN 1 ELSE 0 END
-                AS has_custom_permissions
-       FROM users
-       ORDER BY username`
-    );
-    res.json(
-      rows.map((row) => ({
-        ...row,
-        has_custom_permissions: !!row.has_custom_permissions,
-      }))
-    );
+    res.json(await listUserAccounts(db));
+  });
+
+  router.get("/users/linkable-employees", async (_req, res) => {
+    res.json(await listUnlinkedEmployeesForAccountLink(db));
+  });
+
+  router.post("/users/reconcile-employees", async (req, res, next) => {
+    try {
+      res.json(await reconcileStaffEmployeeIdentities(db, req));
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.get("/users/:id/permissions", async (req, res) => {
@@ -720,7 +729,7 @@ export function createAdminRouter(db, dbPath) {
     res.json({ permissions, custom: true });
   });
 
-  router.post("/users", async (req, res) => {
+  router.post("/users", async (req, res, next) => {
     const { username, password, role } = req.body || {};
     if (!username?.trim() || !role) {
       return res.status(400).json({ error: "اسم المستخدم والدور مطلوبان" });
@@ -740,6 +749,18 @@ export function createAdminRouter(db, dbPath) {
     if (password != null && String(password).length > 0 && String(password).length < 6) {
       return res.status(400).json({ error: "كلمة المرور يجب أن تكون 6 أحرف على الأقل" });
     }
+    let linkBody;
+    try {
+      linkBody = parseUserEmployeeLinkBody(req.body);
+    } catch (e) {
+      return next(e);
+    }
+    if (linkBody.employee_id && !ATTENDANCE_ROLES.includes(role)) {
+      return res.status(400).json({
+        error: "اختيار موظف موجود متاح عند إنشاء حساب كاشير أو موظف رفوف أو موظف مخبز فقط",
+        code: "USER_NOT_STAFF",
+      });
+    }
     const hash = await bcrypt.hash(
       kioskOnly && !password
         ? crypto.randomBytes(32).toString("hex")
@@ -747,25 +768,73 @@ export function createAdminRouter(db, dbPath) {
       10
     );
     try {
-      const info = await db.run(
-        "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-        [String(username).trim(), hash, role]
-      );
-      const row = await db.get(
-        "SELECT id, username, role, created_at FROM users WHERE id = ?",
-        [info.lastID]
-      );
-      await logAudit(db, req, AUDIT_ACTIONS.USER_CREATE, "users", row.id, null, { username: row.username, role: row.role });
+      const created = await withTransaction(db, async () => {
+        const info = await db.run(
+          "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+          [String(username).trim(), hash, role]
+        );
+        const user = await db.get(
+          "SELECT id, username, role, created_at FROM users WHERE id = ?",
+          [info.lastID]
+        );
+        const attach = await attachEmployeeIdentityToUserInTx(
+          db,
+          user,
+          { ...linkBody, createdBy: req.user?.id ?? null },
+          { autoCreate: ATTENDANCE_ROLES.includes(role) }
+        );
+        return { user, attach };
+      });
+      await logAudit(db, req, AUDIT_ACTIONS.USER_CREATE, "users", created.user.id, null, {
+        username: created.user.username,
+        role: created.user.role,
+        employee_id: created.attach.employee?.id ?? null,
+      });
+      if (created.attach.created) {
+        await logAudit(db, req, AUDIT_ACTIONS.EMPLOYEE_CREATE, "employees", created.attach.employee.id, null, {
+          name: created.attach.employee.name,
+          user_id: created.user.id,
+          source: "user_create",
+        });
+      } else if (created.attach.linked) {
+        await logAudit(db, req, AUDIT_ACTIONS.EMPLOYEE_CASHIER_LINK, "employees", created.attach.employee.id, {
+          user_id: null,
+        }, {
+          user_id: created.user.id,
+          username: created.user.username,
+          source: "user_create",
+        });
+      }
+      const row = await getUserAccount(db, created.user.id);
       res.status(201).json(row);
     } catch (e) {
       if (e && String(e.code || "").startsWith("SQLITE_CONSTRAINT")) {
         return res.status(409).json({ error: "اسم المستخدم موجود مسبقاً" });
       }
-      throw e;
+      next(e);
     }
   });
 
-  router.patch("/users/:id", async (req, res) => {
+  router.post(
+    "/users/:id/employee-setup",
+    validate(userEmployeeSetupSchema),
+    async (req, res, next) => {
+      try {
+        const result = await setupEmployeeForStaffUser(db, req.params.id, req.body, req);
+        const row = await getUserAccount(db, Number(req.params.id));
+        res.status(result.created ? 201 : 200).json({
+          ...row,
+          employee: result.employee,
+          created: result.created,
+          linked: result.linked,
+        });
+      } catch (e) {
+        next(e);
+      }
+    }
+  );
+
+  router.patch("/users/:id", async (req, res, next) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "المعرّف غير صالح" });
     const ex = await db.get("SELECT * FROM users WHERE id = ?", [id]);
@@ -792,16 +861,48 @@ export function createAdminRouter(db, dbPath) {
         }
       }
     }
-    if (role !== undefined) {
-      await db.run("UPDATE users SET role = ? WHERE id = ?", [role, id]);
+    const nextRole = role !== undefined ? role : ex.role;
+    const becomingStaff =
+      role !== undefined && ATTENDANCE_ROLES.includes(role) && !ATTENDANCE_ROLES.includes(ex.role);
+    let linkBody;
+    try {
+      linkBody = parseUserEmployeeLinkBody(req.body);
+    } catch (e) {
+      return next(e);
     }
+    if (linkBody.employee_id && !ATTENDANCE_ROLES.includes(nextRole)) {
+      return res.status(400).json({
+        error: "ربط سجل موظف متاح لحسابات الكاشير وموظف الرفوف وموظف المخبز فقط",
+        code: "USER_NOT_STAFF",
+      });
+    }
+    let passwordHash = null;
     if (password !== undefined && String(password).length > 0) {
-      const hash = await bcrypt.hash(String(password), 10);
-      await db.run("UPDATE users SET password = ? WHERE id = ?", [hash, id]);
+      passwordHash = await bcrypt.hash(String(password), 10);
     }
-    const row = await db.get("SELECT id, username, role, created_at FROM users WHERE id = ?", [
-      id,
-    ]);
+    try {
+      await withTransaction(db, async () => {
+        if (role !== undefined) {
+          await db.run("UPDATE users SET role = ? WHERE id = ?", [role, id]);
+        }
+        if (passwordHash) {
+          await db.run("UPDATE users SET password = ? WHERE id = ?", [passwordHash, id]);
+        }
+        const user = await db.get("SELECT id, username, role, created_at FROM users WHERE id = ?", [id]);
+        if (becomingStaff || (ATTENDANCE_ROLES.includes(user.role) && linkBody.employee_id)) {
+          await attachEmployeeIdentityToUserInTx(
+            db,
+            user,
+            { ...linkBody, createdBy: req.user?.id ?? null },
+            { autoCreate: becomingStaff }
+          );
+        }
+      });
+    } catch (e) {
+      next(e);
+      return;
+    }
+    const row = await getUserAccount(db, id);
     invalidateUserCache(id);
     await logAudit(db, req, AUDIT_ACTIONS.USER_UPDATE, "users", id, { role: ex.role }, { role: row.role });
     res.json(row);
@@ -831,6 +932,35 @@ export function createAdminRouter(db, dbPath) {
       return res
         .status(400)
         .json({ error: "لا يمكن حذف مستخدم له سجل مبيعات؛ غيّر الدور بدلاً من ذلك" });
+    }
+    const linkedEmployee = await db.get("SELECT id FROM employees WHERE user_id = ?", [id]);
+    if (linkedEmployee) {
+      return res.status(400).json({
+        error:
+          "لا يمكن حذف حساب مربوط بسجل موظف. عطّل سجل الموظف أو غيّر الدور حتى تبقى الرواتب والذمم والورديات.",
+        code: "USER_HAS_EMPLOYEE",
+      });
+    }
+    const shifts = await db.get("SELECT COUNT(*) as c FROM cashier_shifts WHERE cashier_id = ?", [id]);
+    if (shifts.c > 0) {
+      return res.status(400).json({
+        error: "لا يمكن حذف حساب له ورديات. غيّر الدور بدلاً من الحذف.",
+        code: "USER_HAS_SHIFTS",
+      });
+    }
+    const punches = await db.get("SELECT COUNT(*) as c FROM attendance_punches WHERE user_id = ?", [id]);
+    if (punches.c > 0) {
+      return res.status(400).json({
+        error: "لا يمكن حذف حساب له سجل حضور. غيّر الدور بدلاً من الحذف.",
+        code: "USER_HAS_ATTENDANCE",
+      });
+    }
+    const faces = await db.get("SELECT COUNT(*) as c FROM face_descriptors WHERE user_id = ?", [id]);
+    if (faces.c > 0) {
+      return res.status(400).json({
+        error: "لا يمكن حذف حساب له تسجيل وجه. غيّر الدور بدلاً من الحذف.",
+        code: "USER_HAS_FACE",
+      });
     }
     await db.run("DELETE FROM users WHERE id = ?", [id]);
     await logAudit(db, req, AUDIT_ACTIONS.USER_DELETE, "users", id, { username: ex.username, role: ex.role }, null);

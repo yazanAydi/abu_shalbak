@@ -14,28 +14,41 @@ import {
 } from "../utils/telegram.js";
 import { round2 } from "../utils/money.js";
 import { validateCustomerCredit, throwCreditError } from "../utils/customerCredit.js";
+import { resolveEmployeeCustomerForPostedSale } from "./employeeService.js";
 
 export { getTelegramManagerUser };
 
 async function insertOnAccountRequest(db, params) {
-  const { cashierId, shiftId, custId, saleSnapshot, totals, req, idempotencyKey, payloadFingerprint } =
-    params;
+  const {
+    cashierId,
+    shiftId,
+    custId,
+    employeeId = null,
+    saleSnapshot,
+    totals,
+    req,
+    notes = null,
+    idempotencyKey,
+    payloadFingerprint,
+  } = params;
   const ins = await db.run(
     `INSERT INTO on_account_requests (
-      cashier_id, shift_id, customer_id, sale_snapshot_json,
+      cashier_id, shift_id, customer_id, employee_id, sale_snapshot_json,
       subtotal, tax, total_amount, on_account_amount, payment_method, status,
-      idempotency_key, payload_fingerprint
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      notes, idempotency_key, payload_fingerprint
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
     [
       cashierId,
       shiftId,
       custId,
+      employeeId || null,
       JSON.stringify(saleSnapshot),
       totals.subtotal,
       totals.tax,
       totals.total,
       totals.onAccountTotal,
       totals.summaryMethod,
+      notes || null,
       idempotencyKey || saleSnapshot?.idempotencyKey || null,
       payloadFingerprint || null,
     ]
@@ -43,11 +56,17 @@ async function insertOnAccountRequest(db, params) {
   const requestId = ins.lastID;
   const row = await db.get("SELECT * FROM on_account_requests WHERE id = ?", [requestId]);
   const cashier = await db.get("SELECT username FROM users WHERE id = ?", [cashierId]);
-  const customer = await db.get("SELECT name FROM customers WHERE id = ?", [custId]);
+  const customer = custId
+    ? await db.get("SELECT name FROM customers WHERE id = ?", [custId])
+    : null;
+  const employee = employeeId
+    ? await db.get("SELECT id, name FROM employees WHERE id = ?", [employeeId])
+    : null;
 
   if (req?.user) {
     await logAuditUser(db, req.user, AUDIT_ACTIONS.ON_ACCOUNT_REQUEST_CREATE, "on_account_requests", requestId, null, {
       customer_id: custId,
+      employee_id: employeeId || null,
       on_account_amount: totals.onAccountTotal,
       total: totals.total,
     });
@@ -58,6 +77,7 @@ async function insertOnAccountRequest(db, params) {
     request_id: requestId,
     cashier,
     customer,
+    employee,
     totals,
   };
 }
@@ -69,9 +89,11 @@ export async function notifyOnAccountRequestTelegram(db, created, cashierId, cus
       telegramMessageId = await sendOnAccountApprovalMessage({
         requestId: created.request_id,
         cashierName: created.cashier?.username || String(cashierId),
-        customerName: created.customer?.name || String(custId),
+        customerName: created.customer?.name || null,
+        employeeName: created.employee?.name || null,
         onAccountAmount: created.totals.onAccountTotal,
         total: created.totals.total,
+        notes: created.request?.notes || null,
       });
       await db.run("UPDATE on_account_requests SET telegram_message_id = ? WHERE id = ?", [
         telegramMessageId,
@@ -101,6 +123,7 @@ export async function createOnAccountRequest(db, params, options = {}) {
     request_id: created.request_id,
     cashier: created.cashier,
     customer: created.customer,
+    employee: created.employee,
     totals: created.totals,
     pending_approval: true,
     telegram: isZimmaTelegramConfigured() && !!telegramMessageId,
@@ -110,11 +133,13 @@ export async function createOnAccountRequest(db, params, options = {}) {
 
 export async function getOnAccountRequestById(db, id) {
   return db.get(
-    `SELECT oar.*, u.username AS cashier_username, m.username AS manager_username, c.name AS customer_name
+    `SELECT oar.*, u.username AS cashier_username, m.username AS manager_username,
+            c.name AS customer_name, e.name AS employee_name
      FROM on_account_requests oar
      JOIN users u ON u.id = oar.cashier_id
      LEFT JOIN users m ON m.id = oar.manager_id
-     JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN employees e ON e.id = oar.employee_id
      WHERE oar.id = ?`,
     [id]
   );
@@ -122,10 +147,11 @@ export async function getOnAccountRequestById(db, id) {
 
 export async function listPendingOnAccountRequests(db) {
   return db.all(
-    `SELECT oar.*, u.username AS cashier_username, c.name AS customer_name
+    `SELECT oar.*, u.username AS cashier_username, c.name AS customer_name, e.name AS employee_name
      FROM on_account_requests oar
      JOIN users u ON u.id = oar.cashier_id
-     JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN employees e ON e.id = oar.employee_id
      WHERE oar.status = 'pending'
      ORDER BY oar.created_at ASC, oar.id ASC`
   );
@@ -133,12 +159,14 @@ export async function listPendingOnAccountRequests(db) {
 
 export async function listOnAccountRequestHistory(db, status = "all", limit = 200) {
   const lim = Math.min(500, Math.max(1, Number(limit) || 200));
-  let sql = `SELECT oar.*, u.username AS cashier_username, m.username AS manager_username, c.name AS customer_name
+  let sql = `SELECT oar.*, u.username AS cashier_username, m.username AS manager_username,
+                    c.name AS customer_name, e.name AS employee_name
              FROM on_account_requests oar
              JOIN users u ON u.id = oar.cashier_id
      LEFT JOIN users m ON m.id = oar.manager_id
-     JOIN customers c ON c.id = oar.customer_id
-     WHERE oar.status != 'pending'`;
+     LEFT JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN employees e ON e.id = oar.employee_id
+             WHERE oar.status != 'pending'`;
   const params = [];
   if (status === "approved" || status === "rejected") {
     sql += " AND oar.status = ?";
@@ -152,10 +180,11 @@ export async function listOnAccountRequestHistory(db, status = "all", limit = 20
 export async function listMyOnAccountRequests(db, cashierId, limit = 100) {
   const lim = Math.min(200, Math.max(1, Number(limit) || 100));
   return db.all(
-    `SELECT oar.*, m.username AS manager_username, c.name AS customer_name
+    `SELECT oar.*, m.username AS manager_username, c.name AS customer_name, e.name AS employee_name
      FROM on_account_requests oar
      LEFT JOIN users m ON m.id = oar.manager_id
-     JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN employees e ON e.id = oar.employee_id
      WHERE oar.cashier_id = ?
      ORDER BY oar.created_at DESC, oar.id DESC
      LIMIT ?`,
@@ -165,10 +194,11 @@ export async function listMyOnAccountRequests(db, cashierId, limit = 100) {
 
 export async function listUnreadOnAccountDecisions(db, cashierId) {
   return db.all(
-    `SELECT oar.*, m.username AS manager_username, c.name AS customer_name
+    `SELECT oar.*, m.username AS manager_username, c.name AS customer_name, e.name AS employee_name
      FROM on_account_requests oar
      LEFT JOIN users m ON m.id = oar.manager_id
-     JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN customers c ON c.id = oar.customer_id
+     LEFT JOIN employees e ON e.id = oar.employee_id
      WHERE oar.cashier_id = ?
        AND oar.status IN ('approved', 'rejected')
        AND oar.cashier_acknowledged_at IS NULL
@@ -211,11 +241,13 @@ async function notifyTelegramAfterDecision(request, managerUser, status, decisio
     requestId: request.id,
     status,
     customerName: request.customer_name,
+    employeeName: request.employee_name || null,
     onAccountAmount: request.on_account_amount,
     total: request.total_amount,
     transactionId: request.transaction_id,
     approverName: managerUser?.username || null,
     decisionSource,
+    notes: request.notes || null,
   };
   if (request.telegram_message_id) {
     try {
@@ -243,10 +275,13 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
     total_amount: row.total_amount,
     on_account_amount: row.on_account_amount,
     customer_name: row.customer_name,
+    employee_id: row.employee_id ?? null,
+    employee_name: row.employee_name || null,
     transaction_id: row.transaction_id,
     created_at: row.created_at,
     approved_at: row.approved_at,
     rejected_at: row.rejected_at,
+    notes: row.notes || null,
     review_notes: row.review_notes,
     decision_source: row.decision_source ?? null,
     cashier_notified_at: row.cashier_notified_at ?? null,
@@ -366,7 +401,39 @@ export async function approveOnAccountRequest(
     }
 
     const onAccountAmount = round2(Number(request.on_account_amount ?? snapshot.onAccountTotal) || 0);
-    const creditErr = await validateCustomerCredit(db, request.customer_id, onAccountAmount);
+    const employeeId = request.employee_id || snapshot.employeeId || null;
+    let custId = request.customer_id ? Number(request.customer_id) : null;
+    if (employeeId) {
+      const posted = await resolveEmployeeCustomerForPostedSale(db, {
+        employeeId,
+        requestCustomerId: request.customer_id,
+      });
+      custId = posted.customerId;
+      if (posted.created) {
+        const auditUser = req?.user || managerUser;
+        await logAuditUser(
+          db,
+          auditUser,
+          AUDIT_ACTIONS.EMPLOYEE_DEBT_ACCOUNT_CREATE,
+          "employees",
+          posted.employeeId,
+          { customer_id: null },
+          { customer_id: custId, created: true, source: "on_account_post" }
+        );
+      }
+    } else if (!custId) {
+      const err = new Error("اختر عميلاً أو موظفاً للبيع على الذمة");
+      err.status = 400;
+      err.code = "CUSTOMER_REQUIRED";
+      throw err;
+    }
+
+    if (Number(request.customer_id) !== Number(custId)) {
+      await db.run("UPDATE on_account_requests SET customer_id = ? WHERE id = ?", [custId, requestId]);
+      request.customer_id = custId;
+    }
+
+    const creditErr = await validateCustomerCredit(db, custId, onAccountAmount);
     if (creditErr) throwCreditError(creditErr);
 
     const saleResult = await executeCheckoutSale(
@@ -374,7 +441,7 @@ export async function approveOnAccountRequest(
       {
         cashierId: request.cashier_id,
         shiftId: shift.id,
-        custId: request.customer_id,
+        custId,
         itemsForJson: snapshot.itemsForJson,
         normalized: snapshot.normalized,
         detailed: snapshot.detailed,
@@ -393,6 +460,8 @@ export async function approveOnAccountRequest(
         payloadFingerprint: request.payload_fingerprint || snapshot.payloadFingerprint || null,
         suspendedSaleId: snapshot.suspendedSaleId,
         promoBreakdown: snapshot.promoBreakdown || [],
+        employeeId,
+        notes: request.notes || snapshot.notes || null,
       },
       { inTransaction: true }
     );

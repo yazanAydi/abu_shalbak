@@ -38,8 +38,12 @@ export async function captureBaseline(db) {
       COALESCE((SELECT MAX(id) FROM sale_payments), 0) AS sale_payments,
       COALESCE((SELECT MAX(id) FROM transaction_items), 0) AS transaction_items,
       COALESCE((SELECT MAX(id) FROM refunds), 0) AS refunds,
-      COALESCE((SELECT MAX(id) FROM voucher_lines), 0) AS voucher_lines
+      COALESCE((SELECT MAX(id) FROM voucher_lines), 0) AS voucher_lines,
+      COALESCE((SELECT MAX(id) FROM employee_settlements), 0) AS employee_settlements
   `);
+  const reversedSettlements = await db.all(
+    "SELECT id FROM employee_settlements WHERE kind = 'debt' AND status = 'reversed'"
+  );
   const year = new Date().getFullYear();
   const seq = await db.get(
     "SELECT last_seq FROM receipt_sequences WHERE store_id = 1 AND year = ?",
@@ -75,6 +79,7 @@ export async function captureBaseline(db) {
     })),
     counts,
     maxIds,
+    reversedSettlementIds: reversedSettlements.map((row) => row.id),
     receiptSeq: Number(seq?.last_seq) || 0,
   };
 }

@@ -139,7 +139,7 @@ export function createOfficeRouter(db) {
 
     const rawByPath = {
       "/expiry": expiryPageAlerts,
-      "/bakery-supplies": bakeryLowStock,
+      "/bakery/products": bakeryLowStock,
       "/inventory": negativeStock,
       "/refund-approvals": pendingRefunds,
       "/on-account-approvals": pendingOnAccount,

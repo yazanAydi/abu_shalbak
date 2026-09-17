@@ -74,7 +74,7 @@ export async function fetchEnrichedSupplierEvents(db, supplierId, from, to) {
      UNION ALL
      SELECT 'purchase_return', 'return', pr.return_date,
             0, pr.total, pr.id, pr.return_no,
-            NULL, u.username, NULL, pr.created_at, pr.id
+            NULL, u.username, pr.notes, pr.created_at, pr.id
        FROM purchase_returns pr
        LEFT JOIN users u ON u.id = pr.created_by
        WHERE pr.supplier_id = ? AND pr.status = 'posted'${pret.c}
@@ -178,7 +178,7 @@ function sourceRouteFor(e) {
     case "purchase_return":
       return `/purchases?returnId=${e.documentId}`;
     case "supplier_payment":
-      return e.sourceKind === "voucher" ? `/vouchers?id=${e.documentId}` : null;
+      return e.sourceKind === "voucher" ? `/vouchers/payment?id=${e.documentId}` : null;
     default:
       return null;
   }
@@ -266,6 +266,7 @@ export async function buildSupplierStatementLedger(db, supplier, opts = {}) {
   let totalCredit = 0;
   let totalInvoices = 0;
   let totalPayments = 0;
+  let totalReturns = 0;
   let counter = 0;
 
   const eventMovements = rawEvents.map((e) => {
@@ -274,13 +275,20 @@ export async function buildSupplierStatementLedger(db, supplier, opts = {}) {
     totalCredit = round2(totalCredit + e.credit);
     if (e.type === "purchase_invoice") totalInvoices = round2(totalInvoices + e.credit);
     if (e.type === "supplier_payment") totalPayments = round2(totalPayments + e.debit);
+    if (e.type === "purchase_return") totalReturns = round2(totalReturns + e.debit);
+    const typeLabel = describeEvent(e);
+    const description = e.description
+      ? e.type === "adjustment"
+        ? (e.description.includes(typeLabel) ? e.description : `${typeLabel} — ${e.description}`)
+        : `${typeLabel} — ${e.description}`
+      : typeLabel;
     return {
       id: `${e.type}_${e.sourceKind}_${e.documentId}_${++counter}`,
       date: e.sortDate,
       type: e.type,
       documentId: e.documentId,
       documentNo: e.documentNo,
-      description: e.description || describeEvent(e),
+      description,
       debit: e.debit,
       credit: e.credit,
       runningBalance: running,
@@ -320,6 +328,7 @@ export async function buildSupplierStatementLedger(db, supplier, opts = {}) {
     totalCredit,
     totalInvoices,
     totalPayments,
+    totalReturns,
     movements,
   };
 }

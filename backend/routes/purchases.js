@@ -19,6 +19,16 @@ import {
   wacAfterInbound,
   wacAfterOutbound,
 } from "../utils/purchaseInventoryCost.js";
+import { parseOverviewRange } from "../utils/financeOverview.js";
+import { postedPurchaseTotalsForDateRange } from "../utils/purchasePeriodTotals.js";
+import { normalizeExpiryDate } from "../utils/expiryDate.js";
+import {
+  applyPurchaseReceiveBatches,
+  applyPurchaseReturnBatches,
+} from "../services/stockBatchService.js";
+import { resolveSupplierPurchaseUnitPrice } from "../utils/supplierPurchasePrice.js";
+import { resolveBakeryReportCategories } from "../services/bakeryReportService.js";
+import { bakeryMembershipSql, BAKERY_KIND_WORKSPACE } from "../utils/bakeryMembership.js";
 
 async function nextNo(db, table, col) {
   // SQLINJECTION_REGRESSION: table/col must be hardcoded allowlist only — never user input
@@ -76,6 +86,48 @@ async function resolvePurchaseUnit(db, productId, unitId) {
   return { id: null, unit_name: null, conversion: 1 };
 }
 
+async function bakeryDocFilter(db, req) {
+  const raw = String(req.query?.membership || req.query?.workspace || "").trim().toLowerCase();
+  if (raw !== "bakery") return null;
+  const resolved = await resolveBakeryReportCategories(db);
+  const names = (resolved.categories || []).map((row) => String(row.name || "").trim()).filter(Boolean);
+  return bakeryMembershipSql(names, { alias: "p", kind: BAKERY_KIND_WORKSPACE });
+}
+
+function decorateBakeryDoc(row) {
+  const bakeryTotal = round2(Number(row.bakery_total) || 0);
+  const invoiceTotal = round2(Number(row.total) || 0);
+  const bakeryLines = Number(row.bakery_line_count) || 0;
+  const otherLines = Number(row.other_line_count) || 0;
+  row.bakery_total = bakeryTotal;
+  row.invoice_total = invoiceTotal;
+  row.bakery_line_count = bakeryLines;
+  row.other_line_count = otherLines;
+  row.mixed = bakeryLines > 0 && otherLines > 0;
+  return row;
+}
+
+async function annotateDocItemsMembership(db, items) {
+  if (!Array.isArray(items) || !items.length) return items;
+  const resolved = await resolveBakeryReportCategories(db);
+  const names = (resolved.categories || []).map((row) => String(row.name || "").trim()).filter(Boolean);
+  const filter = bakeryMembershipSql(names, { alias: "p", kind: BAKERY_KIND_WORKSPACE });
+  const ids = [...new Set(items.map((it) => Number(it.product_id)).filter(Boolean))];
+  const memberIds = new Set();
+  if (ids.length) {
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = await db.all(
+      `SELECT p.id FROM products p WHERE p.id IN (${placeholders})${filter.sql}`,
+      [...ids, ...filter.params]
+    );
+    for (const row of rows) memberIds.add(Number(row.id));
+  }
+  for (const item of items) {
+    item.bakery_item = memberIds.has(Number(item.product_id)) ? 1 : 0;
+  }
+  return items;
+}
+
 async function normalizeItems(db, items) {
   if (!Array.isArray(items) || items.length === 0) return null;
   const out = [];
@@ -113,6 +165,7 @@ async function normalizeItems(db, items) {
       bonus_quantity: bonusQty,
       payable_total: payableTotal,
       vat_rate: Number(it.vat_rate),
+      expiry_date: normalizeExpiryDate(it.expiry_date),
     });
   }
   return out;
@@ -130,6 +183,14 @@ async function applyPurchaseInvoicePost(db, inv, items, userId) {
     const newCost = wacAfterInbound(oldStock, oldCost, addQty, baseUnitCost);
     await db.run("UPDATE products SET cost = ? WHERE id = ?", [newCost, it.product_id]);
     await refreshUnitCostCache(db, it.product_id);
+    await applyPurchaseReceiveBatches(db, {
+      productId: it.product_id,
+      expiryDate: it.expiry_date,
+      quantity: addQty,
+      cost: baseUnitCost,
+      referenceId: inv.id,
+      invoiceItemId: it.id,
+    });
     await recordMovement(db, {
       productId: it.product_id,
       movementType: "purchase",
@@ -166,7 +227,16 @@ async function postPurchaseInvoice(db, invoiceId, userId) {
   if (inv.status === "posted") return { error: "الفاتورة مرحّلة بالفعل", status: 400, code: "ALREADY_POSTED" };
   const items = await db.all("SELECT * FROM purchase_invoice_items WHERE invoice_id = ?", [inv.id]);
   if (items.length === 0) return { error: "لا توجد أصناف", status: 400, code: "EMPTY" };
-  const row = await withTransaction(db, async () => applyPurchaseInvoicePost(db, inv, items, userId));
+  let alreadyPosted = false;
+  const row = await withTransaction(db, async () => {
+    const fresh = await db.get("SELECT status FROM purchase_invoices WHERE id = ?", [inv.id]);
+    if (fresh?.status === "posted") {
+      alreadyPosted = true;
+      return null;
+    }
+    return applyPurchaseInvoicePost(db, inv, items, userId);
+  });
+  if (alreadyPosted) return { error: "الفاتورة مرحّلة بالفعل", status: 400, code: "ALREADY_POSTED" };
   return { row };
 }
 
@@ -181,6 +251,13 @@ async function applyPurchaseReturnPost(db, ret, items, userId) {
     const newCost = wacAfterOutbound(oldStock, oldCost, baseQty, baseUnitCost);
     await db.run("UPDATE products SET cost = ? WHERE id = ?", [newCost, it.product_id]);
     await refreshUnitCostCache(db, it.product_id);
+    await applyPurchaseReturnBatches(db, {
+      productId: it.product_id,
+      expiryDate: it.expiry_date,
+      quantity: baseQty,
+      referenceId: ret.id,
+      invoiceItemId: it.id,
+    });
     await recordMovement(db, {
       productId: it.product_id,
       movementType: "purchase_return",
@@ -204,7 +281,16 @@ async function postPurchaseReturn(db, returnId, userId) {
   if (ret.status === "posted") return { error: "المرتجع مرحّل بالفعل", status: 400, code: "ALREADY_POSTED" };
   const items = await db.all("SELECT * FROM purchase_return_items WHERE return_id = ?", [ret.id]);
   if (items.length === 0) return { error: "لا توجد أصناف", status: 400, code: "EMPTY" };
-  const row = await withTransaction(db, async () => applyPurchaseReturnPost(db, ret, items, userId));
+  let alreadyPosted = false;
+  const row = await withTransaction(db, async () => {
+    const fresh = await db.get("SELECT status FROM purchase_returns WHERE id = ?", [ret.id]);
+    if (fresh?.status === "posted") {
+      alreadyPosted = true;
+      return null;
+    }
+    return applyPurchaseReturnPost(db, ret, items, userId);
+  });
+  if (alreadyPosted) return { error: "المرتجع مرحّل بالفعل", status: 400, code: "ALREADY_POSTED" };
   return { row };
 }
 
@@ -314,11 +400,59 @@ export function createPurchasesRouter(db) {
 
   // ════════════ Purchase Invoices ════════════
 
+  router.get("/supplier-unit-price", requireAuth, requirePurchases, async (req, res, next) => {
+    try {
+      const result = await resolveSupplierPurchaseUnitPrice(db, {
+        supplierId: req.query.supplier_id,
+        productId: req.query.product_id,
+        unitId: req.query.unit_id,
+        asOf: req.query.as_of,
+        invoiceId: req.query.invoice_id,
+      });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get("/summary", requireAuth, requirePurchasesOrBakery, async (req, res) => {
+    const range = parseOverviewRange(req.query);
+    if (range.error) return res.status(range.status).json({ error: range.error });
+    const totals = await postedPurchaseTotalsForDateRange(db, range.from, range.to);
+    res.json({ from: range.from, to: range.to, ...totals });
+  });
+
   router.get("/invoices", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+    try {
     const { supplier_id, status } = req.query;
-    let sql = `SELECT pi.*, s.name AS supplier_name FROM purchase_invoices pi
-               JOIN suppliers s ON s.id = pi.supplier_id WHERE 1=1`;
+    const bakery = await bakeryDocFilter(db, req);
+    let sql = `SELECT pi.*, s.name AS supplier_name`;
     const params = [];
+    if (bakery) {
+      sql += `,
+        (SELECT COALESCE(SUM(COALESCE(pii.line_total, pii.total_cost)), 0)
+         FROM purchase_invoice_items pii
+         JOIN products p ON p.id = pii.product_id
+         WHERE pii.invoice_id = pi.id${bakery.sql}) AS bakery_total,
+        (SELECT COUNT(*)
+         FROM purchase_invoice_items pii
+         JOIN products p ON p.id = pii.product_id
+         WHERE pii.invoice_id = pi.id${bakery.sql}) AS bakery_line_count,
+        (SELECT COUNT(*)
+         FROM purchase_invoice_items pii
+         JOIN products p ON p.id = pii.product_id
+         WHERE pii.invoice_id = pi.id AND NOT (1=1${bakery.sql})) AS other_line_count`;
+    }
+    sql += ` FROM purchase_invoices pi
+               JOIN suppliers s ON s.id = pi.supplier_id WHERE 1=1`;
+    if (bakery) {
+      sql += ` AND EXISTS (
+        SELECT 1 FROM purchase_invoice_items pii
+        JOIN products p ON p.id = pii.product_id
+        WHERE pii.invoice_id = pi.id${bakery.sql}
+      )`;
+      params.push(...bakery.params, ...bakery.params, ...bakery.params, ...bakery.params);
+    }
     if (supplier_id) { sql += " AND pi.supplier_id = ?"; params.push(Number(supplier_id)); }
     if (status) { sql += " AND pi.status = ?"; params.push(status); }
     sql += ` ORDER BY pi.created_at DESC${listLimitSql(req.query).sql}`;
@@ -343,11 +477,19 @@ export function createPurchasesRouter(db) {
       for (const row of rows) {
         row.items = byInvoice.get(row.id) || [];
       }
+      if (bakery) await annotateDocItemsMembership(db, items);
+    }
+    if (bakery) {
+      for (const row of rows) decorateBakeryDoc(row);
     }
     res.json(rows);
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.get("/invoices/:id", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
+    try {
     const inv = await db.get(
       `SELECT pi.*, s.name AS supplier_name FROM purchase_invoices pi
        JOIN suppliers s ON s.id = pi.supplier_id WHERE pi.id = ?`,
@@ -360,7 +502,20 @@ export function createPurchasesRouter(db) {
       [inv.id]
     );
     const party_balance = await partyBalanceForPurchaseInvoice(db, inv);
+    const bakery = await bakeryDocFilter(db, req);
+    if (bakery) {
+      await annotateDocItemsMembership(db, items);
+      const bakeryLines = items.filter((it) => Number(it.bakery_item) === 1);
+      inv.bakery_total = round2(bakeryLines.reduce((sum, it) => sum + purchaseLineGross(it), 0));
+      inv.invoice_total = round2(Number(inv.total) || 0);
+      inv.bakery_line_count = bakeryLines.length;
+      inv.other_line_count = items.length - bakeryLines.length;
+      inv.mixed = inv.bakery_line_count > 0 && inv.other_line_count > 0;
+    }
     res.json({ ...inv, items, party_balance });
+    } catch (e) {
+      next(e);
+    }
   });
 
   async function computeInvoiceTotals(db, norm) {
@@ -390,9 +545,9 @@ export function createPurchasesRouter(db) {
         for (const i of lines) {
           await db.run(
             `INSERT INTO purchase_invoice_items
-               (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity]
+               (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date]
           );
         }
         return db.get("SELECT * FROM purchase_invoices WHERE id = ?", [ins.lastID]);
@@ -425,9 +580,9 @@ export function createPurchasesRouter(db) {
         for (const i of lines) {
           await db.run(
             `INSERT INTO purchase_invoice_items
-               (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [inv.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity]
+               (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [inv.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date]
           );
         }
         return db.get("SELECT * FROM purchase_invoices WHERE id = ?", [inv.id]);
@@ -477,14 +632,49 @@ export function createPurchasesRouter(db) {
   // ════════════ Purchase Returns ════════════
 
   router.get("/returns", requireAuth, requirePurchases, async (req, res, next) => {
-    const rows = await db.all(
-      `SELECT pr.*, s.name AS supplier_name FROM purchase_returns pr
-       JOIN suppliers s ON s.id = pr.supplier_id ORDER BY pr.created_at DESC${listLimitSql(req.query).sql}`
-    );
+    try {
+    const bakery = await bakeryDocFilter(db, req);
+    let sql = `SELECT pr.*, s.name AS supplier_name`;
+    const params = [];
+    if (bakery) {
+      sql += `,
+        (SELECT COALESCE(SUM(COALESCE(pri.line_total, pri.total_cost)), 0)
+         FROM purchase_return_items pri
+         JOIN products p ON p.id = pri.product_id
+         WHERE pri.return_id = pr.id${bakery.sql}) AS bakery_total,
+        (SELECT COUNT(*)
+         FROM purchase_return_items pri
+         JOIN products p ON p.id = pri.product_id
+         WHERE pri.return_id = pr.id${bakery.sql}) AS bakery_line_count,
+        (SELECT COUNT(*)
+         FROM purchase_return_items pri
+         JOIN products p ON p.id = pri.product_id
+         WHERE pri.return_id = pr.id AND NOT (1=1${bakery.sql})) AS other_line_count`;
+      params.push(...bakery.params, ...bakery.params, ...bakery.params);
+    }
+    sql += ` FROM purchase_returns pr
+       JOIN suppliers s ON s.id = pr.supplier_id WHERE 1=1`;
+    if (bakery) {
+      sql += ` AND EXISTS (
+        SELECT 1 FROM purchase_return_items pri
+        JOIN products p ON p.id = pri.product_id
+        WHERE pri.return_id = pr.id${bakery.sql}
+      )`;
+      params.push(...bakery.params);
+    }
+    sql += ` ORDER BY pr.created_at DESC${listLimitSql(req.query).sql}`;
+    const rows = await db.all(sql, params);
+    if (bakery) {
+      for (const row of rows) decorateBakeryDoc(row);
+    }
     res.json(rows);
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.get("/returns/:id", requireAuth, requirePurchases, async (req, res, next) => {
+    try {
     const ret = await db.get(
       `SELECT pr.*, s.name AS supplier_name FROM purchase_returns pr
        JOIN suppliers s ON s.id = pr.supplier_id WHERE pr.id = ?`,
@@ -497,7 +687,20 @@ export function createPurchasesRouter(db) {
       [ret.id]
     );
     const party_balance = await partyBalanceForPurchaseReturn(db, ret);
+    const bakery = await bakeryDocFilter(db, req);
+    if (bakery) {
+      await annotateDocItemsMembership(db, items);
+      const bakeryLines = items.filter((it) => Number(it.bakery_item) === 1);
+      ret.bakery_total = round2(bakeryLines.reduce((sum, it) => sum + purchaseLineGross(it), 0));
+      ret.invoice_total = round2(Number(ret.total) || 0);
+      ret.bakery_line_count = bakeryLines.length;
+      ret.other_line_count = items.length - bakeryLines.length;
+      ret.mixed = ret.bakery_line_count > 0 && ret.other_line_count > 0;
+    }
     res.json({ ...ret, items, party_balance });
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.post("/returns", requireAuth, requirePurchases, async (req, res, next) => {
@@ -518,9 +721,9 @@ export function createPurchasesRouter(db) {
         for (const i of lines) {
           await db.run(
             `INSERT INTO purchase_return_items
-               (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity]
+               (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date]
           );
         }
         return db.get("SELECT * FROM purchase_returns WHERE id = ?", [ins.lastID]);
@@ -543,19 +746,25 @@ export function createPurchasesRouter(db) {
     const { total, lines } = await computeInvoiceTotals(db, norm);
     try {
       const row = await withTransaction(db, async () => {
+        const nextInvoiceId =
+          req.body?.invoice_id === undefined
+            ? ret.invoice_id
+            : req.body.invoice_id
+              ? Number(req.body.invoice_id)
+              : null;
         await db.run(
           `UPDATE purchase_returns
-             SET supplier_id = ?, return_date = ?, notes = ?, total = ?
+             SET supplier_id = ?, invoice_id = ?, return_date = ?, notes = ?, total = ?
            WHERE id = ?`,
-          [sid, return_date || ret.return_date, notes || null, total, ret.id]
+          [sid, nextInvoiceId, return_date || ret.return_date, notes || null, total, ret.id]
         );
         await db.run("DELETE FROM purchase_return_items WHERE return_id = ?", [ret.id]);
         for (const i of lines) {
           await db.run(
             `INSERT INTO purchase_return_items
-               (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [ret.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity]
+               (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [ret.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date]
           );
         }
         return db.get("SELECT * FROM purchase_returns WHERE id = ?", [ret.id]);

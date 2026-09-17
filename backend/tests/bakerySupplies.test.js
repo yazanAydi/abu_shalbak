@@ -92,6 +92,84 @@ describe("bakery supplies inventory", () => {
     expect(rows.some((p) => p.id === bakeryProductId)).toBe(false);
   });
 
+  test("cashier product search and POS lookup hide bakery supplies", async () => {
+    const search = await request(ctx.app)
+      .get("/api/v1/products")
+      .query({ search: "طحين" })
+      .set(authHeader(cashierToken));
+    expect(search.status).toBe(200);
+    expect(unwrapList(search.body).some((p) => p.id === bakeryProductId)).toBe(false);
+
+    const posLookup = await request(ctx.app)
+      .get("/api/v1/pos/lookup")
+      .query({ barcode: "8800001001" })
+      .set(authHeader(cashierToken));
+    expect(posLookup.status).toBe(200);
+    expect(unwrapData(posLookup.body).found).toBe(false);
+
+    const cashierLookup = await request(ctx.app)
+      .get("/api/v1/products/lookup")
+      .query({ barcode: "8800001001" })
+      .set(authHeader(cashierToken));
+    expect(cashierLookup.status).toBe(200);
+    expect(unwrapData(cashierLookup.body).found).toBe(false);
+  });
+
+  test("office search still finds bakery supplies", async () => {
+    const search = await request(ctx.app)
+      .get("/api/v1/products")
+      .query({ search: "طحين" })
+      .set(authHeader(adminToken));
+    expect(search.status).toBe(200);
+    expect(unwrapList(search.body).some((p) => p.id === bakeryProductId)).toBe(true);
+
+    const officeLookup = await request(ctx.app)
+      .get("/api/v1/products/lookup")
+      .query({ barcode: "8800001001" })
+      .set(authHeader(adminToken));
+    expect(officeLookup.status).toBe(200);
+    expect(unwrapData(officeLookup.body).found).toBe(true);
+  });
+
+  test("retail supermarket SKU stays on POS without a bakery toggle", async () => {
+    const search = await request(ctx.app)
+      .get("/api/v1/pos/search?q=Test")
+      .set(authHeader(cashierToken));
+    expect(search.status).toBe(200);
+    expect(unwrapList(search.body).some((p) => p.id === ctx.productId)).toBe(true);
+
+    const lookup = await request(ctx.app)
+      .get("/api/v1/pos/lookup")
+      .query({ barcode: "9990001" })
+      .set(authHeader(cashierToken));
+    expect(lookup.status).toBe(200);
+    expect(unwrapData(lookup.body).found).toBe(true);
+  });
+
+  test("retail SKU stays on POS after its only unit is sale_enabled off", async () => {
+    await ctx.db.run(
+      "UPDATE product_units SET sale_enabled = 0 WHERE product_id = ?",
+      [ctx.productId]
+    );
+    const search = await request(ctx.app)
+      .get("/api/v1/pos/search?q=Test")
+      .set(authHeader(cashierToken));
+    expect(search.status).toBe(200);
+    expect(unwrapList(search.body).some((p) => p.id === ctx.productId)).toBe(true);
+
+    const lookup = await request(ctx.app)
+      .get("/api/v1/pos/lookup")
+      .query({ barcode: "9990001" })
+      .set(authHeader(cashierToken));
+    expect(lookup.status).toBe(200);
+    expect(unwrapData(lookup.body).found).toBe(true);
+
+    await ctx.db.run(
+      "UPDATE product_units SET sale_enabled = 1 WHERE product_id = ?",
+      [ctx.productId]
+    );
+  });
+
   test("checkout rejects bakery supply products", async () => {
     const res = await request(ctx.app)
       .post("/api/v1/checkout")
@@ -142,6 +220,38 @@ describe("bakery supplies inventory", () => {
 
     const after = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [bakeryProductId]);
     expect(after.stock).toBe(before.stock - 2);
+  });
+
+  test("consumption adjustment detail includes who, date, and counted items", async () => {
+    const res = await request(ctx.app)
+      .post("/api/v1/inventory/adjustments")
+      .set(authHeader(adminToken))
+      .send({
+        adjustment_type: "consumption",
+        adjustment_date: "2026-09-17",
+        items: [{ product_id: bakeryProductId, quantity: 1.5 }],
+        post: true,
+      });
+    expect(res.status).toBe(201);
+    const created = unwrapData(res.body);
+
+    const detail = await request(ctx.app)
+      .get(`/api/v1/inventory/adjustments/${created.id}`)
+      .set(authHeader(adminToken));
+    expect(detail.status).toBe(200);
+    const data = unwrapData(detail.body);
+    expect(data.created_by_name).toBe("testadmin");
+    expect(String(data.adjustment_date).slice(0, 10)).toBe("2026-09-17");
+    expect(data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          product_id: bakeryProductId,
+          name: "طحين",
+          quantity: 1.5,
+          unit: "كغم",
+        }),
+      ])
+    );
   });
 
   test("low-stock report filtered to bakery scope", async () => {

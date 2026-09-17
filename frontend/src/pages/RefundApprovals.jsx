@@ -16,9 +16,11 @@ import {
   SecondaryButton,
   ReportToolbar,
   Tabs,
+  Notice,
   useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import { apiErrorMessage } from "../utils/apiError";
 
 function formatDt(v) {
   return dateTime(v);
@@ -55,7 +57,7 @@ export default function RefundApprovals() {
       const payload = data?.data ?? data;
       setRows(Array.isArray(payload) ? payload : []);
     } catch (e) {
-      if (!silent) toast.error(e.response?.data?.error || e.message || "تعذّر التحميل");
+      if (!silent) toast.error(apiErrorMessage(e, "تعذّر التحميل"));
       if (!silent) setRows([]);
     } finally {
       pollBusy.current = false;
@@ -90,7 +92,7 @@ export default function RefundApprovals() {
       setReviewTarget({ ...row, ...fresh, action, readOnly: false });
       setReviewNotes("");
     } catch (e) {
-      toast.error(e.response?.data?.error || "تعذّر فتح الطلب");
+      toast.error(apiErrorMessage(e, "تعذّر فتح الطلب"));
     }
   }
 
@@ -307,22 +309,20 @@ export default function RefundApprovals() {
         {reviewTarget ? (
           <>
             {staleMessage ? (
-              <p style={{ color: "var(--office-warning, #b45309)", marginBottom: "0.75rem" }}>
-                {staleMessage}
-              </p>
+              <Notice tone="warn">{staleMessage}</Notice>
             ) : null}
             <form id="refund-review-form" onSubmit={submitReview}>
-              <p style={{ color: "var(--office-text-muted)", lineHeight: 1.6 }}>
+              <p className="ui-hint">
                 {reviewTarget.cashier_username} — فاتورة #{reviewTarget.transaction_id} —{" "}
                 {ils(reviewTarget.total_amount ?? 0)}
                 {reviewTarget.readOnly ? ` — ${statusLabel(reviewTarget.status)}` : null}
               </p>
               {!reviewTarget.readOnly ? (
-                <FormField label="ملاحظات (اختياري)">
+                <FormField label="ملاحظات" optional>
                   <Input value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} />
                 </FormField>
               ) : reviewTarget.review_notes ? (
-                <p style={{ marginTop: "0.75rem" }}>
+                <p className="ui-mt-md">
                   <strong>ملاحظات:</strong> {reviewTarget.review_notes}
                 </p>
               ) : null}

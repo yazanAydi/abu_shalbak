@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../apiClient";
@@ -120,7 +121,7 @@ export default function ProductOrganization() {
       setProducts(items);
       setTotal(nextTotal);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذر تحميل المنتجات");
+      toast.error(apiErrorMessage(e, "تعذر تحميل المنتجات"));
     } finally {
       setLoading(false);
     }
@@ -181,7 +182,7 @@ export default function ProductOrganization() {
         );
       } catch (e) {
         setProducts((rows) => revertRow(rows, product.id, snapshot));
-        const message = e.response?.data?.error || e.message || errorLabel();
+        const message = apiErrorMessage(e) || errorLabel();
         setSaveState((s) => ({
           ...s,
           [product.id]: { status: ROW_SAVE.ERROR, field, message },

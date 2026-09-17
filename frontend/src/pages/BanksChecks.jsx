@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -125,7 +126,7 @@ export default function BanksChecks() {
       setCheckForm(emptyCheck);
       loadChecks();
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل التسجيل");
+      toast.error(apiErrorMessage(e, "فشل التسجيل"));
     } finally {
       setSaving(false);
     }
@@ -137,7 +138,7 @@ export default function BanksChecks() {
       toast.success("تم تحديث الحالة");
       loadChecks();
     } catch (e) {
-      toast.error(e.response?.data?.error || "فشل التحديث");
+      toast.error(apiErrorMessage(e, "فشل التحديث"));
     }
   }
 

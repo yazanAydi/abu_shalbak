@@ -4,6 +4,7 @@ import {
   buildStatementHistoryImportPlan,
   applyStatementHistoryImport,
 } from "../utils/statementHistoryService.js";
+import { assertOrdinaryCustomerWritable } from "../utils/employeeCustomer.js";
 
 /**
  * @param {object} db
@@ -15,6 +16,9 @@ export function createStatementHistoryPreviewHandler(db, partyType) {
       const partyId = Number(req.params.id);
       if (!Number.isFinite(partyId) || partyId <= 0) {
         return res.status(400).json({ error: "معرّف غير صالح", code: "VALIDATION_ERROR" });
+      }
+      if (partyType === "customer") {
+        await assertOrdinaryCustomerWritable(db, partyId);
       }
 
       const file = requireImportFile(req, res);
@@ -52,6 +56,9 @@ export function createStatementHistoryConfirmHandler(db, partyType) {
       const partyId = Number(req.params.id);
       if (!Number.isFinite(partyId) || partyId <= 0) {
         return res.status(400).json({ error: "معرّف غير صالح", code: "VALIDATION_ERROR" });
+      }
+      if (partyType === "customer") {
+        await assertOrdinaryCustomerWritable(db, partyId);
       }
 
       const file = requireImportFile(req, res);

@@ -83,7 +83,7 @@
 }
 
 .today-card--items {
-  border-inline-start: 3px solid #8b5cf6;
+  border-inline-start: 3px solid var(--office-info);
 }
 
 .today-card--tax {
@@ -91,7 +91,7 @@
 }
 
 .today-card--account {
-  border-inline-start: 3px solid #0ea5e9;
+  border-inline-start: 3px solid var(--office-accent);
 }
 
 .today-card-icon {

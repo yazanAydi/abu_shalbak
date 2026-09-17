@@ -13,13 +13,13 @@ export async function searchProductsApi(query, opts = {}) {
   const limit = opts.limit ?? 20;
   const exclude = new Set((opts.excludeIds ?? []).map(Number));
 
-  const { data } = await api.get("/api/products", {
-    params: { search: q },
+  const { data } = await api.get("/api/pos/search", {
+    params: { q },
     headers: getAuthHeaders(),
     signal: opts.signal,
   });
 
-  let rows = Array.isArray(data) ? data : [];
+  let rows = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : [];
 
   if (rows.length === 0 && /^\d+$/.test(normalizeBarcode(q))) {
     try {

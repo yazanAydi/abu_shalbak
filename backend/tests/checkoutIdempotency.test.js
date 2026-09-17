@@ -84,6 +84,37 @@ describe("Checkout idempotency", () => {
     expect(a).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  test("employee_id changes fingerprint only when set", () => {
+    const base = {
+      items: [{ product_id: 1, unit_id: 2, quantity: 1, price: 10 }],
+      payment_method: "on_account",
+      customer_id: null,
+    };
+    expect(fingerprintCheckoutPayload(base)).toBe(
+      fingerprintCheckoutPayload({ ...base, employee_id: null })
+    );
+    expect(fingerprintCheckoutPayload({ ...base, employee_id: 5 })).not.toBe(
+      fingerprintCheckoutPayload(base)
+    );
+    expect(fingerprintCheckoutPayload({ ...base, employee_id: 5 })).not.toBe(
+      fingerprintCheckoutPayload({ ...base, employee_id: 6 })
+    );
+  });
+
+  test("on-account notes change fingerprint only when non-empty", () => {
+    const base = {
+      items: [{ product_id: 1, unit_id: 2, quantity: 1, price: 10 }],
+      payment_method: "on_account",
+      customer_id: 3,
+    };
+    expect(fingerprintCheckoutPayload(base)).toBe(
+      fingerprintCheckoutPayload({ ...base, notes: null })
+    );
+    expect(fingerprintCheckoutPayload({ ...base, notes: "سلّم بعد الظهر" })).not.toBe(
+      fingerprintCheckoutPayload(base)
+    );
+  });
+
   test("requests without a key are rejected", async () => {
     const r = await request(ctx.app)
       .post("/api/v1/checkout")

@@ -697,7 +697,7 @@ export function createShiftsRouter(db) {
     // counts below let the client say so when it does not.
     const detailLimit = listLimitSql(req.query, 500);
     const transactions = await db.all(
-      `SELECT id, cashier_id, items_json, subtotal, tax, total, payment_method, receipt_number, created_at, shift_id
+      `SELECT id, cashier_id, items_json, subtotal, tax, total, payment_method, receipt_number, notes, created_at, shift_id
        FROM transactions WHERE shift_id = ? ORDER BY created_at ASC, id ASC${detailLimit.sql}`,
       [shiftId]
     );

@@ -3,6 +3,7 @@ import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/tax.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { listLimitSql } from "../utils/listQuery.js";
+import { assertOrdinaryCustomerWritable } from "../utils/employeeCustomer.js";
 
 export function createBanksRouter(db) {
   const router = Router();
@@ -77,6 +78,11 @@ export function createBanksRouter(db) {
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) {
       return res.status(400).json({ error: "المبلغ غير صالح", code: "VALIDATION_ERROR" });
+    }
+    try {
+      if (customer_id) await assertOrdinaryCustomerWritable(db, customer_id);
+    } catch (e) {
+      return next(e);
     }
     const ins = await db.run(
       `INSERT INTO bank_checks

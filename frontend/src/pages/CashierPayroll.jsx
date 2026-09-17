@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -10,6 +11,7 @@ import {
   formatShiftStatus,
 } from "../utils/payrollHelpers";
 import FaceEnrollmentPanel from "../components/FaceEnrollmentPanel";
+import EmployeeRecordsPanel from "./EmployeeRecordsPanel";
 import "./CashierPayroll.css";
 import {
   PageHeader,
@@ -37,7 +39,8 @@ const ROLE_LABELS = {
 };
 
 const PAGE_TABS = [
-  { id: "rates", label: "أجور الساعة" },
+  { id: "records", label: "الموظفون" },
+  { id: "rates", label: "أجور الساعة (كاشير/كشك)" },
   { id: "enroll", label: "تسجيل الوجه" },
   { id: "report", label: "تقرير الساعات" },
 ];
@@ -73,7 +76,7 @@ const REPORT_SUMMARY_COLUMNS = [
 
 export default function CashierPayroll() {
   const toast = useToast();
-  const [tab, setTab] = useState("rates");
+  const [tab, setTab] = useState("records");
 
   const [employees, setEmployees] = useState([]);
   const [ratesLoading, setRatesLoading] = useState(true);
@@ -105,7 +108,7 @@ export default function CashierPayroll() {
       const { data } = await api.get("/api/payroll/employees", { headers: getAuthHeaders() });
       setEmployees(Array.isArray(data) ? data : []);
     } catch (e) {
-      setRatesErr(e.response?.data?.error || e.message || "فشل تحميل الموظفين");
+      setRatesErr(apiErrorMessage(e, "فشل تحميل الموظفين"));
     } finally {
       setRatesLoading(false);
     }
@@ -129,7 +132,7 @@ export default function CashierPayroll() {
       setExpandedUser(null);
     } catch (e) {
       setReport(null);
-      setReportErr(e.response?.data?.error || e.message || "فشل تحميل التقرير");
+      setReportErr(apiErrorMessage(e, "فشل تحميل التقرير"));
     } finally {
       setReportLoading(false);
     }
@@ -176,7 +179,7 @@ export default function CashierPayroll() {
       cancelEditRate();
       loadEmployees();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الحفظ");
+      toast.error(apiErrorMessage(e, "فشل الحفظ"));
     } finally {
       setSavingRate(false);
     }
@@ -255,7 +258,7 @@ export default function CashierPayroll() {
       setManualPunchTime("");
       loadReport();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل إضافة التسجيل");
+      toast.error(apiErrorMessage(e, "فشل إضافة التسجيل"));
     } finally {
       setPunchSaving(false);
     }
@@ -292,7 +295,7 @@ export default function CashierPayroll() {
       cancelEditPunch();
       loadReport();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل تحديث التسجيل");
+      toast.error(apiErrorMessage(e, "فشل تحديث التسجيل"));
     } finally {
       setPunchSaving(false);
     }
@@ -307,7 +310,7 @@ export default function CashierPayroll() {
       if (editingPunchId === punchId) cancelEditPunch();
       loadReport();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل حذف التسجيل");
+      toast.error(apiErrorMessage(e, "فشل حذف التسجيل"));
     } finally {
       setPunchSaving(false);
     }
@@ -397,8 +400,8 @@ export default function CashierPayroll() {
   return (
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
-        title="الموظفون"
-        subtitle="أجور الساعة، تسجيل الوجه، وتقرير ساعات العمل"
+        title="أجور الساعة والدوام"
+        subtitle="حسابات الموظفين وكشف الحساب والرواتب في القوائم الجانبية. هذه الصفحة لأجور الساعة وتسجيل الوجه وتقرير الساعات فقط."
         icon="shifts"
         actions={
           tab === "report" ? (
@@ -420,6 +423,8 @@ export default function CashierPayroll() {
 
       <Tabs tabs={PAGE_TABS} active={tab} onChange={setTab} />
 
+      {tab === "records" ? <EmployeeRecordsPanel /> : null}
+
       {tab === "rates" ? (
         <Card className="ui-mt-md">
           <CardBody>
@@ -439,7 +444,7 @@ export default function CashierPayroll() {
         </Card>
       ) : tab === "enroll" ? (
         <FaceEnrollmentPanel />
-      ) : (
+      ) : tab === "report" ? (
         <>
           <Card className="ui-mt-md payroll-report-filters-card">
             <CardBody className="payroll-report-filters">
@@ -671,7 +676,7 @@ export default function CashierPayroll() {
             </>
           ) : null}
         </>
-      )}
+      ) : null}
     </div>
   );
 }

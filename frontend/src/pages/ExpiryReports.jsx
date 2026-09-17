@@ -12,6 +12,7 @@ import {
   Input,
   useToast,
 } from "../components/ui";
+import { Batches } from "./Inventory";
 import { dateOnly } from "../utils/format";
 
 const EXPIRY_COLUMNS = [
@@ -38,7 +39,8 @@ const LOW_STOCK_COLUMNS = [
 
 const LOW_STOCK_THRESHOLD = 5;
 
-export default function ExpiryReports() {
+export default function ExpiryReports({ workspace = null }) {
+  const isBakery = workspace === "bakery";
   const toast = useToast();
   const [searchParams] = useSearchParams();
   const [rows, setRows] = useState([]);
@@ -46,9 +48,11 @@ export default function ExpiryReports() {
   const [days, setDays] = useState(30);
   const [threshold, setThreshold] = useState(LOW_STOCK_THRESHOLD);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState(() =>
-    searchParams.get("tab") === "lowstock" ? "lowstock" : "expiry"
-  );
+  const [tab, setTab] = useState(() => {
+    if (searchParams.get("tab") === "lowstock") return "lowstock";
+    if (searchParams.get("tab") === "batches") return "batches";
+    return "expiry";
+  });
 
   useEffect(() => {
     if (searchParams.get("tab") === "lowstock") setTab("lowstock");
@@ -59,30 +63,30 @@ export default function ExpiryReports() {
   const loadExpiry = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get(`/api/inventory/expiry?days=${days}`);
+      const { data } = await api.get(`/api/inventory/expiry?days=${days}${isBakery ? "&membership=bakery" : ""}`);
       setRows(data);
     } catch {
       toast.error("تعذّر تحميل تقرير الصلاحية");
     } finally {
       setLoading(false);
     }
-  }, [days, toast]);
+  }, [days, toast, isBakery]);
 
   const loadLowStock = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get(`/api/inventory/low-stock?threshold=${threshold}`);
+      const { data } = await api.get(`/api/inventory/low-stock?threshold=${threshold}${isBakery ? "&membership=bakery" : ""}`);
       setLowStock(data);
     } catch {
       toast.error("تعذّر تحميل تقرير المخزون المنخفض");
     } finally {
       setLoading(false);
     }
-  }, [threshold, toast]);
+  }, [threshold, toast, isBakery]);
 
   useEffect(() => {
     if (tab === "expiry") loadExpiry();
-    else loadLowStock();
+    else if (tab === "lowstock") loadLowStock();
   }, [tab, loadExpiry, loadLowStock]);
 
   const reportConfig = useMemo(() => {
@@ -135,18 +139,20 @@ export default function ExpiryReports() {
   const tabs = useMemo(
     () => [
       { id: "expiry", label: "تقرير الصلاحية" },
-      { id: "lowstock", label: "المخزون المنخفض" },
+      { id: "batches", label: "التشغيلات" },
+      ...(!isBakery ? [{ id: "lowstock", label: "المخزون المنخفض" }] : []),
     ],
-    []
+    [isBakery]
   );
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
-        title="تقارير المخزون"
-        subtitle="الصلاحية والمخزون المنخفض"
+        title={isBakery ? "صلاحيات وتشغيلات المخبز" : "تقارير المخزون"}
+        subtitle={isBakery ? "تواريخ الصلاحية ودفعات أصناف المخبز والمواد" : "الصلاحية والمخزون المنخفض"}
         icon="expiry"
         actions={
+          tab === "batches" ? null : (
           <ReportToolbar
             title={reportConfig.title}
             subtitle={reportConfig.subtitle}
@@ -155,6 +161,7 @@ export default function ExpiryReports() {
             filename={reportConfig.filename}
             disabled={loading}
           />
+          )
         }
       />
 
@@ -192,6 +199,8 @@ export default function ExpiryReports() {
           />
         </>
       )}
+
+      {tab === "batches" && <Batches membership={isBakery ? "bakery" : null} />}
 
       {tab === "lowstock" && (
         <>

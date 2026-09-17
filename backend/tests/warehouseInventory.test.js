@@ -1,0 +1,276 @@
+import request from "supertest";
+import {
+  createTestContext,
+  destroyTestContext,
+  login,
+  authHeader,
+} from "./helpers.js";
+import { upsertProductUnit } from "../utils/productUnits.js";
+
+function unwrap(res) {
+  return res.body?.data ?? res.body;
+}
+
+describe("warehouse supermarket stock and purchase returns", () => {
+  let ctx;
+  let adminToken;
+  let productId;
+  let bakeryProductId;
+  let pieceId;
+  let supplierId;
+  let mainWarehouse;
+  let returnsWarehouse;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+    adminToken = (await login(ctx.app, "testadmin", "adminpass123", "office")).body.token;
+    productId = ctx.productId;
+
+    const bakery = await ctx.db.run(
+      `INSERT INTO products (barcode, name, price, cost, category, stock, inventory_scope, sku)
+       VALUES ('8811990001', 'طحين مخبز', 8, 3, 'مواد', 40, 'bakery', '88001')`
+    );
+    bakeryProductId = bakery.lastID;
+    await ctx.db.run("UPDATE products SET sku = ? WHERE id = ?", ["4242", productId]);
+
+    const bakeryUnit = await upsertProductUnit(ctx.db, bakeryProductId, {
+      unit_name: "كغم",
+      barcode: "8811990001",
+      price: 8,
+      cost: 3,
+      conversion_to_base: 1,
+      is_default: true,
+    });
+    ctx.bakeryUnitId = bakeryUnit.id;
+
+    const piece = await upsertProductUnit(ctx.db, productId, {
+      unit_name: "حبة",
+      barcode: "9990001",
+      price: 10,
+      cost: 5,
+      conversion_to_base: 1,
+      is_default: true,
+    });
+    pieceId = piece.id;
+
+    const supplier = await ctx.db.run(
+      "INSERT INTO suppliers (name, supplier_code, balance, opening_balance) VALUES ('مورد مستودعات', 'WH-1', 0, 0)"
+    );
+    supplierId = supplier.lastID;
+
+    const warehouses = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses").set(authHeader(adminToken))
+    );
+    mainWarehouse = warehouses.find((w) => w.type === "main");
+    returnsWarehouse = warehouses.find((w) => w.type === "returns");
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  function findWh(rows, type) {
+    const warehouses = Array.isArray(rows) ? rows : rows?.warehouses || [];
+    const wanted = type === "main" ? mainWarehouse : returnsWarehouse;
+    return warehouses.find((r) => Number(r.warehouse_id) === Number(wanted.id));
+  }
+
+  async function retailTotals() {
+    return ctx.db.get(
+      `SELECT COALESCE(SUM(stock), 0) AS total_qty,
+              COALESCE(SUM(stock * COALESCE(cost, 0)), 0) AS total_value
+         FROM products
+        WHERE COALESCE(inventory_scope, 'retail') = 'retail'`
+    );
+  }
+
+  test("valuation puts supermarket stock on the main warehouse and skips bakery materials", async () => {
+    const expected = await retailTotals();
+    const bakery = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [bakeryProductId]);
+    const res = await request(ctx.app)
+      .get("/api/v1/warehouses/valuation")
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    const data = unwrap(res);
+    const main = findWh(data, "main");
+    const returnsRow = findWh(data, "returns");
+    expect(main.total_qty).toBe(Number(expected.total_qty));
+    expect(main.total_value).toBeCloseTo(Number(expected.total_value), 2);
+    expect(Number(bakery.stock)).toBe(40);
+    expect(main.total_qty).not.toBe(Number(expected.total_qty) + Number(bakery.stock));
+    expect(returnsRow.total_qty).toBe(0);
+    expect(returnsRow.total_value).toBeCloseTo(0, 2);
+  });
+
+  test("stock report lists supermarket products under the main warehouse", async () => {
+    const res = await request(ctx.app)
+      .get("/api/v1/warehouses/stock")
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    const rows = unwrap(res);
+    const mainLines = rows.filter((r) => Number(r.warehouse_id) === Number(mainWarehouse.id));
+    expect(mainLines.some((r) => Number(r.product_id) === Number(productId))).toBe(true);
+    expect(mainLines.some((r) => Number(r.product_id) === Number(bakeryProductId))).toBe(false);
+  });
+
+  test("product overview shows current stock on the main warehouse", async () => {
+    const res = await request(ctx.app)
+      .get(`/api/v1/products/${productId}/overview`)
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    const data = unwrap(res);
+    const main = (data.warehouses || []).find((w) => Number(w.warehouse_id) === Number(mainWarehouse.id));
+    expect(main).toBeTruthy();
+    expect(Number(main.quantity)).toBe(100);
+  });
+
+  test("draft purchase return does not appear in the returns warehouse", async () => {
+    const created = await request(ctx.app)
+      .post("/api/v1/purchases/returns")
+      .set(authHeader(adminToken))
+      .send({
+        supplier_id: supplierId,
+        return_date: "2026-09-17",
+        items: [{ product_id: productId, unit_id: pieceId, quantity: 4, total_cost: 20 }],
+      });
+    expect(created.status).toBe(201);
+
+    const res = await request(ctx.app)
+      .get("/api/v1/warehouses/valuation")
+      .set(authHeader(adminToken));
+    expect(findWh(unwrap(res), "returns").total_qty).toBe(0);
+  });
+
+  test("posted purchase return appears on the returns warehouse", async () => {
+    const before = findWh(
+      unwrap(await request(ctx.app).get("/api/v1/warehouses/valuation").set(authHeader(adminToken))),
+      "main"
+    );
+    const created = await request(ctx.app)
+      .post("/api/v1/purchases/returns")
+      .set(authHeader(adminToken))
+      .send({
+        supplier_id: supplierId,
+        return_date: "2026-09-17",
+        items: [{ product_id: productId, unit_id: pieceId, quantity: 6, total_cost: 30 }],
+      });
+    expect(created.status).toBe(201);
+    const ret = unwrap(created);
+    const posted = await request(ctx.app)
+      .post(`/api/v1/purchases/returns/${ret.id}/post`)
+      .set(authHeader(adminToken));
+    expect(posted.status).toBe(200);
+
+    const valuation = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/valuation").set(authHeader(adminToken))
+    );
+    const main = findWh(valuation, "main");
+    const returnsRow = findWh(valuation, "returns");
+    expect(main.total_qty).toBe(before.total_qty - 6);
+    expect(returnsRow.total_qty).toBe(6);
+    expect(returnsRow.total_value).toBeCloseTo(30, 2);
+
+    const stock = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/stock").set(authHeader(adminToken))
+    );
+    const returnLine = stock.find(
+      (r) =>
+        Number(r.warehouse_id) === Number(returnsWarehouse.id) &&
+        Number(r.product_id) === Number(productId)
+    );
+    expect(returnLine).toBeTruthy();
+    expect(Number(returnLine.quantity)).toBe(6);
+    expect(Number(returnLine.value)).toBeCloseTo(30, 2);
+
+    const overview = unwrap(
+      await request(ctx.app)
+        .get(`/api/v1/products/${productId}/overview`)
+        .set(authHeader(adminToken))
+    );
+    const returnsLoc = (overview.warehouses || []).find(
+      (w) => Number(w.warehouse_id) === Number(returnsWarehouse.id)
+    );
+    expect(Number(returnsLoc.quantity)).toBe(6);
+  });
+
+  test("search filters stock by name, barcode, or product number", async () => {
+    const hdr = authHeader(adminToken);
+    const byName = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/stock").query({ q: "Test Product" }).set(hdr)
+    );
+    expect(byName.some((r) => Number(r.product_id) === Number(productId))).toBe(true);
+    expect(byName.some((r) => Number(r.product_id) === Number(bakeryProductId))).toBe(false);
+
+    const byBarcode = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/stock").query({ q: "9990001" }).set(hdr)
+    );
+    expect(byBarcode.some((r) => Number(r.product_id) === Number(productId))).toBe(true);
+
+    const bySku = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/stock").query({ q: "4242" }).set(hdr)
+    );
+    expect(bySku.some((r) => Number(r.product_id) === Number(productId))).toBe(true);
+
+    const miss = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/stock").query({ q: "طحين مخبز" }).set(hdr)
+    );
+    expect(miss.some((r) => Number(r.product_id) === Number(bakeryProductId))).toBe(false);
+  });
+
+  test("bakery membership shows bakery stock and posted bakery returns", async () => {
+    const hdr = authHeader(adminToken);
+    const before = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/valuation").query({ membership: "bakery" }).set(hdr)
+    );
+    const bakeryMainBefore = findWh(before, "main");
+    expect(bakeryMainBefore.total_qty).toBe(40);
+
+    const stock = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/stock").query({ membership: "bakery" }).set(hdr)
+    );
+    expect(stock.some((r) => Number(r.product_id) === Number(bakeryProductId))).toBe(true);
+    expect(stock.some((r) => Number(r.product_id) === Number(productId))).toBe(false);
+
+    const named = unwrap(
+      await request(ctx.app)
+        .get("/api/v1/warehouses/stock")
+        .query({ membership: "bakery", q: "طحين" })
+        .set(hdr)
+    );
+    expect(named.some((r) => Number(r.product_id) === Number(bakeryProductId))).toBe(true);
+
+    const created = await request(ctx.app)
+      .post("/api/v1/purchases/returns")
+      .set(hdr)
+      .send({
+        supplier_id: supplierId,
+        return_date: "2026-09-17",
+        items: [{ product_id: bakeryProductId, unit_id: ctx.bakeryUnitId, quantity: 5, total_cost: 15 }],
+      });
+    expect(created.status).toBe(201);
+    const posted = await request(ctx.app)
+      .post(`/api/v1/purchases/returns/${unwrap(created).id}/post`)
+      .set(hdr);
+    expect(posted.status).toBe(200);
+
+    const bakeryVal = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/valuation").query({ membership: "bakery" }).set(hdr)
+    );
+    expect(findWh(bakeryVal, "main").total_qty).toBe(35);
+    expect(findWh(bakeryVal, "returns").total_qty).toBe(5);
+    expect(findWh(bakeryVal, "returns").total_value).toBeCloseTo(15, 2);
+
+    const supermarketVal = unwrap(
+      await request(ctx.app).get("/api/v1/warehouses/valuation").set(hdr)
+    );
+    expect(findWh(supermarketVal, "returns").total_qty).toBe(6);
+
+    const overview = unwrap(
+      await request(ctx.app).get(`/api/v1/products/${bakeryProductId}/overview`).set(hdr)
+    );
+    const mainLoc = (overview.warehouses || []).find(
+      (w) => Number(w.warehouse_id) === Number(mainWarehouse.id)
+    );
+    expect(Number(mainLoc.quantity)).toBe(35);
+  });
+});

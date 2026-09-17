@@ -4,10 +4,11 @@ import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils } from "../utils/format";
 import {
-  PageHeader, Card, CardBody, Button, DataTable, Modal, Tabs,
-  FormField, FormGrid, Input, Textarea, Icon, SearchInput, ReportToolbar, useToast,
+  PageHeader, Button, DataTable, Modal, Tabs, Notice, StatCard, HelpTip,
+  FormField, FormGrid, Input, Textarea, SearchInput, ReportToolbar, useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import { apiErrorMessage } from "../utils/apiError";
 import { displayEntityCode, displayListRowNumber } from "../utils/entityCodeDisplay";
 import { supplierBalanceView, SUPPLIER_BALANCE_SUMMARY_LABELS } from "../utils/supplierBalanceDisplay";
 import HesabatiStatementModal from "../components/HesabatiStatementModal";
@@ -16,11 +17,16 @@ import useAuthUser from "../hooks/useAuthUser";
 import { isAdminRole } from "../utils/roles";
 import { userHasOfficePermission } from "../utils/accountantPermissions";
 import { supplierAsVoucherParty, voucherDraftPath } from "../utils/voucherDraft";
-import SupplierPurchaseItemsView from "../components/SupplierPurchaseItemsView";
 
 function renderSupplierBalance(systemBalance) {
   const { displayAmount, className } = supplierBalanceView(systemBalance);
   return <span className={className}>{ils(displayAmount)}</span>;
+}
+
+function renderSignedBalance(systemBalance) {
+  const n = Number(systemBalance) || 0;
+  const { className } = supplierBalanceView(n);
+  return <span className={className}>{ils(n)}</span>;
 }
 
 /** Signed system balance for CSV transfer: positive = we owe, negative = supplier credit. */
@@ -47,6 +53,7 @@ export default function SupplierManagement() {
   // Statement-history imports write history and stay admin-only.
   const canImport = isAdminRole(user?.role);
   const canVouchers = userHasOfficePermission(user, "vouchers");
+  const canStatement = userHasOfficePermission(user, "account_statement");
   const [tab, setTab] = useState("list");
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -56,7 +63,6 @@ export default function SupplierManagement() {
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [statementSupplier, setStatementSupplier] = useState(null);
-  const [purchasesSupplier, setPurchasesSupplier] = useState(null);
   const [historyImportSupplier, setHistoryImportSupplier] = useState(null);
   const [balances, setBalances] = useState(null);
 
@@ -68,7 +74,7 @@ export default function SupplierManagement() {
         { headers: getAuthHeaders() }
       );
       setSuppliers(data);
-    } catch { toast.error("تعذّر تحميل الموردين"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "تعذّر تحميل الموردين")); }
     finally { setLoading(false); }
   }, [toast]);
 
@@ -76,7 +82,7 @@ export default function SupplierManagement() {
     try {
       const { data } = await api.get("/api/suppliers/balances?only_open=1", { headers: getAuthHeaders() });
       setBalances(data);
-    } catch { toast.error("تعذّر تحميل الأرصدة"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "تعذّر تحميل الأرصدة")); }
   }, [toast]);
 
   // Debounced so typing a name costs one request instead of one per keystroke;
@@ -117,7 +123,7 @@ export default function SupplierManagement() {
       }
       setShowForm(false);
       load(search);
-    } catch (e2) { toast.error(e2.response?.data?.error || "فشل الحفظ"); }
+    } catch (e2) { toast.error(apiErrorMessage(e2, "فشل الحفظ")); }
     finally { setSaving(false); }
   }
 
@@ -127,18 +133,23 @@ export default function SupplierManagement() {
       await api.delete(`/api/suppliers/${s.id}`, { headers: getAuthHeaders() });
       toast.success("تم الحذف");
       load(search);
-    } catch (e) { toast.error(e.response?.data?.error || "فشل الحذف"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل الحذف")); }
   }
 
   function openStatementReport(s) {
     setStatementSupplier(s);
   }
 
+  function openSupplierStatement(s) {
+    if (!s?.id) return;
+    navigate(`/suppliers/${s.id}/statement`);
+  }
+
   const f = (key) => (e) => setForm((p) => ({ ...p, [key]: e.target.value }));
 
   const columns = [
     { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => supplierExportCode(s), render: (s, i) => displayListRowNumber(0, 0, i) },
-    { key: "name", header: "الاسم", value: (s) => s.name, render: (s) => <strong>{s.name}</strong> },
+    { key: "name", header: "الاسم", nameColumn: true, wrap: true, value: (s) => s.name, render: (s) => <strong>{s.name}</strong> },
     { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "", render: (s) => s.contact_phone || "—" },
     { key: "payment_terms", header: "شروط الدفع", hideOnMobile: true, value: (s) => s.payment_terms || "", render: (s) => s.payment_terms || "—" },
     { key: "balance", header: "الرصيد (مستحق)", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
@@ -147,13 +158,15 @@ export default function SupplierManagement() {
       render: (s) => (
         <div className="ui-table__actions ui-table__actions--split">
           <div className="ui-table__actions-cluster">
+            {canStatement ? (
+              <Button variant="ghost" size="sm" icon="finance" onClick={() => openSupplierStatement(s)}>كشف حساب</Button>
+            ) : null}
             <Button variant="ghost" size="sm" icon="finance" onClick={() => openStatementReport(s)}>عرض التقرير</Button>
-            <Button variant="ghost" size="sm" icon="products" onClick={() => setPurchasesSupplier(s)}>المنتجات المشتراة</Button>
             {canImport ? (
               <Button variant="ghost" size="sm" icon="download" onClick={() => setHistoryImportSupplier(s)}>استيراد كشف قديم</Button>
             ) : null}
             <Button variant="ghost" size="sm" icon="edit" onClick={() => startEdit(s)}>تعديل</Button>
-            <Button variant="ghost" size="sm" icon="trash" onClick={() => remove(s)} />
+            <Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => remove(s)} />
           </div>
           {canVouchers ? (
             <div className="ui-table__actions-cluster ui-table__actions-cluster--end">
@@ -181,10 +194,25 @@ export default function SupplierManagement() {
   ];
 
   const balanceColumns = [
-    { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => supplierExportCode(s), render: (s, i) => displayListRowNumber(0, 0, i) },
-    { key: "name", header: "الاسم" },
+    { key: "supplier_code", header: "الرقم", className: "num", hideOnMobile: true, value: (s) => supplierExportCode(s), render: (s) => supplierExportCode(s) || "—" },
+    { key: "name", header: "الاسم", nameColumn: true, wrap: true, render: (s) => (
+      canStatement ? (
+        <Button variant="ghost" size="sm" onClick={() => openSupplierStatement(s)}>{s.name}</Button>
+      ) : s.name
+    ) },
     { key: "contact_phone", header: "الهاتف", value: (s) => s.contact_phone || "", render: (s) => s.contact_phone || "—" },
-    { key: "balance", header: "الرصيد", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSupplierBalance(s.balance) },
+    { key: "credit_total", header: "دائن", align: "left", className: "num", value: (s) => Number(s.credit_total || 0).toFixed(2), render: (s) => ils(s.credit_total) },
+    { key: "debit_total", header: "مدين", align: "left", className: "num", value: (s) => Number(s.debit_total || 0).toFixed(2), render: (s) => ils(s.debit_total) },
+    { key: "return_total", header: "مرتجع", align: "left", className: "num", value: (s) => Number(s.return_total || 0).toFixed(2), render: (s) => ils(s.return_total) },
+    { key: "balance", header: "المجموع", align: "left", className: "num", value: (s) => supplierBalanceExportValue(s.balance), render: (s) => renderSignedBalance(s.balance) },
+    {
+      key: "actions",
+      header: "إجراءات",
+      className: "ui-table__actions-cell",
+      render: (s) => canStatement ? (
+        <Button variant="ghost" size="sm" icon="finance" onClick={() => openSupplierStatement(s)}>كشف حساب</Button>
+      ) : "—",
+    },
   ];
 
   const reportConfig = useMemo(() => {
@@ -198,6 +226,7 @@ export default function SupplierManagement() {
           { label: SUPPLIER_BALANCE_SUMMARY_LABELS.payable, value: ils(balances.total_payable) },
           { label: SUPPLIER_BALANCE_SUMMARY_LABELS.receivable, value: ils(balances.total_advance) },
         ],
+        meta: [balances.sign_note].filter(Boolean),
       };
     }
     return {
@@ -222,6 +251,7 @@ export default function SupplierManagement() {
               rows={reportConfig.rows}
               filename={reportConfig.filename}
               summary={reportConfig.summary}
+              meta={reportConfig.meta}
               disabled={loading}
               getExportRows={
                 tab === "list"
@@ -241,18 +271,10 @@ export default function SupplierManagement() {
       />
 
       {canImport ? (
-      <Card>
-        <CardBody>
-          <h3 style={{ marginTop: 0 }}>استيراد أرصدة الموردين</h3>
-          <p style={{ color: "var(--office-text-muted)" }}>
-            ملف حساباتي Excel، أو تصدير CSV موقّع من هذه الشاشة لنقل الموردين إلى جهاز آخر.
-            صدّر بعد هذا التحديث — الملفات القديمة بعلامة ₪ لا تفرّق بين مستحق ودائن.
-          </p>
-          <Link to="/import-supplier-balances">
-            <Button icon="suppliers">فتح صفحة الاستيراد</Button>
-          </Link>
-        </CardBody>
-      </Card>
+      <Notice tone="info">
+        استيراد أرصدة الموردين من حساباتي أو نقلها عبر CSV.{" "}
+        <Link to="/import-supplier-balances">فتح صفحة الاستيراد</Link>
+      </Notice>
       ) : null}
 
       <Tabs active={tab} onChange={setTab} tabs={[
@@ -273,18 +295,26 @@ export default function SupplierManagement() {
         </>
       )}
 
-      {tab === "balances" && balances && (
+          {tab === "balances" && balances && (
         <>
           <div className="ui-stat-grid">
-            <div className="ui-stat">
-              <div className="ui-stat__icon ui-stat__icon--red"><Icon name="finance" /></div>
-              <div><div className="ui-stat__label">{SUPPLIER_BALANCE_SUMMARY_LABELS.payable}</div><div className="ui-stat__value">{ils(balances.total_payable)}</div></div>
-            </div>
-            <div className="ui-stat">
-              <div className="ui-stat__icon ui-stat__icon--green"><Icon name="finance" /></div>
-              <div><div className="ui-stat__label">{SUPPLIER_BALANCE_SUMMARY_LABELS.receivable}</div><div className="ui-stat__value">{ils(balances.total_advance)}</div></div>
-            </div>
+            <StatCard
+              label={SUPPLIER_BALANCE_SUMMARY_LABELS.payable}
+              value={ils(balances.total_payable)}
+              icon="finance"
+              tone="red"
+            />
+            <StatCard
+              label={SUPPLIER_BALANCE_SUMMARY_LABELS.receivable}
+              value={ils(balances.total_advance)}
+              icon="finance"
+              tone="green"
+            />
           </div>
+          <p className="ui-text-muted" role="note">
+            الموجب = علينا للمورد · السالب = رصيد لنا{" "}
+            <HelpTip>{balances.sign_note || "دائن − مدين − مرتجع = المجموع. الأرصدة الافتتاحية ضمن دائن/مدين."}</HelpTip>
+          </p>
           <DataTable
             columns={balanceColumns}
             rows={balances.suppliers}
@@ -325,16 +355,6 @@ export default function SupplierManagement() {
         onClose={() => setStatementSupplier(null)}
       />
 
-      <Modal
-        open={!!purchasesSupplier}
-        title={purchasesSupplier ? `المنتجات المشتراة: ${purchasesSupplier.name}` : ""}
-        onClose={() => setPurchasesSupplier(null)}
-        size="lg"
-        footer={<Button onClick={() => setPurchasesSupplier(null)}>إغلاق</Button>}
-      >
-        {purchasesSupplier && <SupplierPurchaseItemsView supplierId={purchasesSupplier.id} />}
-      </Modal>
-
       <StatementHistoryImportModal
         open={!!historyImportSupplier}
         partyType="supplier"
@@ -345,3 +365,4 @@ export default function SupplierManagement() {
     </div>
   );
 }
+

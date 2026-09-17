@@ -7,9 +7,11 @@ import InventoryCount from "./InventoryCount";
 import ProductPicker from "../components/ProductPicker";
 import {
   PageHeader, Button, DataTable, Modal, Tabs, StatusPill,
-  FormField, FormGrid, Input, Select, Textarea, Icon, ReportToolbar, useToast,
+  FormField, FormGrid, Input, Select, Textarea, ReportToolbar, useToast,
+  FilterBar, Notice, DateField,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import { apiErrorMessage } from "../utils/apiError";
 import QtyStepper from "../components/QtyStepper";
 import { handleEnterNavKeyDown } from "../utils/focusNavigation";
 
@@ -63,19 +65,19 @@ function Adjustments() {
         toast.success(post ? "تم الترحيل" : "حُفظت كمسودة");
       }
       setShow(false); setItems([]); setNotes(""); setEditId(null); load();
-    } catch (e) { toast.error(e.response?.data?.error || "فشل الحفظ"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل الحفظ")); }
     finally { setSaving(false); }
   }
 
   async function post(id) {
     if (!window.confirm("ترحيل التسوية سيحدّث المخزون. متابعة؟")) return;
     try { await api.post(`/api/inventory/adjustments/${id}/post`, {}, { headers: getAuthHeaders() }); toast.success("تم الترحيل"); load(); }
-    catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function remove(id) {
     if (!window.confirm("حذف المسودة؟")) return;
     try { await api.delete(`/api/inventory/adjustments/${id}`, { headers: getAuthHeaders() }); toast.success("تم الحذف"); load(); }
-    catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function openDetail(id) {
     try {
@@ -109,17 +111,21 @@ function Adjustments() {
       <div className="ui-table__actions">
         <Button variant="ghost" size="sm" onClick={() => openDetail(r.id)}>عرض</Button>
         {r.status === "draft" && <Button variant="outline" size="sm" icon="check" onClick={() => post(r.id)}>ترحيل</Button>}
-        {r.status === "draft" && <Button variant="ghost" size="sm" icon="trash" onClick={() => remove(r.id)} />}
+        {r.status === "draft" && <Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => remove(r.id)} />}
       </div>
     ) },
   ];
 
   return (
     <>
-      <div className="ui-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <ReportToolbar title="تسويات المخزون" columns={pickExportColumns(adjColumns)} rows={list} filename="inventory-adjustments" disabled={loading} />
-        <Button icon="plus" onClick={() => { setEditId(null); setType("in"); setDate(todayISO()); setNotes(""); setItems([]); setShow(true); }}>تسوية جديدة</Button>
-      </div>
+      <FilterBar
+        actions={
+          <>
+            <Button icon="plus" onClick={() => { setEditId(null); setType("in"); setDate(todayISO()); setNotes(""); setItems([]); setShow(true); }}>تسوية جديدة</Button>
+            <ReportToolbar title="تسويات المخزون" columns={pickExportColumns(adjColumns)} rows={list} filename="inventory-adjustments" disabled={loading} />
+          </>
+        }
+      />
       <DataTable
         loading={loading}
         columns={adjColumns}
@@ -138,22 +144,22 @@ function Adjustments() {
           <FormField label="نوع التسوية"><Select value={type} onChange={(e) => setType(e.target.value)}>{Object.entries(ADJ_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></FormField>
           <FormField label="التاريخ"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></FormField>
         </FormGrid>
-        <p className="ui-field__hint" style={{ margin: "0.5rem 0" }}>
+        <Notice tone="info" className="ui-mt-md">
           {type === "correction" ? "للتصحيح: أدخل كمية موجبة للزيادة أو سالبة للنقص." : "أدخل الكمية (موجبة) وسيُطبَّق اتجاهها تلقائياً حسب النوع."}
-        </p>
+        </Notice>
         <div data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
-        <div style={{ marginBottom: "0.75rem" }}><ProductPicker onPick={addProduct} scope="retail" /></div>
-        <div className="ui-table-wrap" style={{ marginBottom: "0.75rem" }}>
+        <div className="ui-mt-md"><ProductPicker onPick={addProduct} scope="retail" /></div>
+        <div className="ui-table-wrap ui-mt-md">
           <table className="ui-table">
-            <thead><tr><th>الصنف</th><th>الكمية</th><th>الكلفة</th><th></th></tr></thead>
+            <thead><tr><th className="ui-table__col--name">الصنف</th><th>الكمية</th><th>الكلفة</th><th></th></tr></thead>
             <tbody>
-              {items.length === 0 && <tr><td colSpan={4} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً</td></tr>}
+              {items.length === 0 && <tr><td colSpan={4} className="ui-table__empty-cell">أضف أصنافاً</td></tr>}
               {items.map((it, i) => (
                 <tr key={it.product_id}>
-                  <td>{it.name}</td>
-                  <td><QtyStepper className="ui-input" style={{ width: 140 }} min={0} value={it.quantity} onChange={(e) => upd(i, "quantity", e.target.value)} /></td>
-                  <td><input className="ui-input" style={{ width: 100 }} type="number" step="0.01" value={it.unit_cost} onChange={(e) => upd(i, "unit_cost", e.target.value)} /></td>
-                  <td><Button variant="ghost" size="sm" icon="trash" onClick={() => setItems((p) => p.filter((_, idx) => idx !== i))} /></td>
+                  <td className="ui-table__col--name">{it.name}</td>
+                  <td><QtyStepper className="ui-input ui-input--narrow" min={0} value={it.quantity} onChange={(e) => upd(i, "quantity", e.target.value)} /></td>
+                  <td><input className="ui-input ui-input--narrow" type="number" step="0.01" value={it.unit_cost} onChange={(e) => upd(i, "unit_cost", e.target.value)} /></td>
+                  <td><Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => setItems((p) => p.filter((_, idx) => idx !== i))} /></td>
                 </tr>
               ))}
             </tbody>
@@ -167,7 +173,7 @@ function Adjustments() {
         {detail && (
           <DataTable
             columns={[
-              { key: "name", header: "الصنف" },
+              { key: "name", header: "الصنف", nameColumn: true, wrap: true },
               { key: "quantity", header: "الكمية", align: "left", render: (it) => fmtQty(it.quantity) },
               { key: "unit_cost", header: "الكلفة", align: "left", className: "num", render: (it) => (it.unit_cost != null ? ils(it.unit_cost) : "—") },
             ]}
@@ -180,7 +186,7 @@ function Adjustments() {
   );
 }
 
-function Movements() {
+function Movements({ membership = null }) {
   const toast = useToast();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -195,15 +201,16 @@ function Movements() {
       if (type) params.set("type", type);
       if (from) params.set("from", from);
       if (to) params.set("to", to);
+      if (membership) params.set("membership", membership);
       const { data } = await api.get(`/api/inventory/movements?${params}`, { headers: getAuthHeaders() });
       setRows(data);
     } catch { toast.error("تعذّر التحميل"); } finally { setLoading(false); }
-  }, [type, from, to, toast]);
+  }, [type, from, to, toast, membership]);
   useEffect(() => { load(); }, [load]);
 
   const moveColumns = [
     { key: "created_at", header: "التاريخ", value: (r) => dateTime(r.created_at), render: (r) => dateTime(r.created_at) },
-    { key: "product_name", header: "الصنف" },
+    { key: "product_name", header: "الصنف", nameColumn: true, wrap: true },
     { key: "movement_type", header: "النوع", value: (r) => MOVE_LABELS[r.movement_type] || r.movement_type, render: (r) => <StatusPill tone={MOVE_TONE[r.movement_type] || "neutral"} noDot>{MOVE_LABELS[r.movement_type] || r.movement_type}</StatusPill> },
     { key: "quantity", header: "الكمية", value: (r) => `${r.quantity > 0 ? "+" : ""}${fmtQty(r.quantity)}`, render: (r) => <span className={r.quantity > 0 ? "positive" : "negative"}>{r.quantity > 0 ? "+" : ""}{fmtQty(r.quantity)}</span> },
     { key: "notes", header: "ملاحظات", value: (r) => r.notes || "—", render: (r) => r.notes || "—" },
@@ -212,15 +219,22 @@ function Movements() {
 
   return (
     <>
-      <div className="ui-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <ReportToolbar title="حركة المخزون" columns={moveColumns} rows={rows} filename="inventory-movements" disabled={loading} />
-        <Select value={type} onChange={(e) => setType(e.target.value)} style={{ maxWidth: 200 }}>
-          <option value="">كل الأنواع</option>
-          {Object.entries(MOVE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </Select>
-        <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ maxWidth: 170 }} />
-        <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ maxWidth: 170 }} />
-      </div>
+      <FilterBar
+        actions={<ReportToolbar title="حركة المخزون" columns={moveColumns} rows={rows} filename="inventory-movements" disabled={loading} />}
+      >
+        <FormField label="النوع">
+          <Select value={type} onChange={(e) => setType(e.target.value)}>
+            <option value="">كل الأنواع</option>
+            {Object.entries(MOVE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </Select>
+        </FormField>
+        <FormField label="من تاريخ" className="ui-field--date">
+          <DateField value={from} onChange={(e) => setFrom(e.target.value)} />
+        </FormField>
+        <FormField label="إلى تاريخ" className="ui-field--date">
+          <DateField value={to} onChange={(e) => setTo(e.target.value)} />
+        </FormField>
+      </FilterBar>
       <DataTable
         loading={loading}
         columns={moveColumns}
@@ -256,7 +270,7 @@ function NegativeStock() {
 
   const columns = [
     { key: "barcode", header: "الباركود" },
-    { key: "name", header: "الصنف" },
+    { key: "name", header: "الصنف", nameColumn: true, wrap: true },
     { key: "category", header: "التصنيف", value: (r) => r.category || "—", render: (r) => r.category || "—" },
     {
       key: "stock",
@@ -269,16 +283,16 @@ function NegativeStock() {
 
   return (
     <>
-      <p className="ui-field__hint" style={{ marginBottom: "0.75rem" }}>
-        البيع تحت الصفر مسموح في النظام — هذه القائمة للمتابعة والتسوية فقط ({count} صنف).
-      </p>
+      <Notice tone="info">
+        البيع تحت الصفر مسموح — هذه القائمة للمتابعة والتسوية فقط ({count} صنف).
+      </Notice>
       <ReportToolbar title="مخزون سالب" columns={columns} rows={rows} filename="negative-stock" disabled={loading} />
       <DataTable loading={loading} columns={columns} rows={rows} emptyIcon="inventory" empty="لا يوجد مخزون سالب" />
     </>
   );
 }
 
-function Batches() {
+function Batches({ membership = null }) {
   const toast = useToast();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -287,9 +301,13 @@ function Batches() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const { data } = await api.get("/api/inventory/batches", { headers: getAuthHeaders() }); setRows(data); }
-    catch { toast.error("تعذّر التحميل"); } finally { setLoading(false); }
-  }, [toast]);
+    try {
+      const params = new URLSearchParams();
+      if (membership) params.set("membership", membership);
+      const { data } = await api.get(`/api/inventory/batches?${params}`, { headers: getAuthHeaders() });
+      setRows(data);
+    } catch { toast.error("تعذّر التحميل"); } finally { setLoading(false); }
+  }, [toast, membership]);
   useEffect(() => { load(); }, [load]);
 
   async function save() {
@@ -302,7 +320,7 @@ function Batches() {
       toast.success("تمت إضافة الدفعة"); setShow(false);
       setForm({ product_id: null, name: "", batch_no: "", expiry_date: "", quantity: "", cost: "" });
       load();
-    } catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function remove(id) {
     if (!window.confirm("حذف الدفعة؟")) return;
@@ -311,7 +329,7 @@ function Batches() {
   }
 
   const batchColumns = [
-    { key: "product_name", header: "الصنف" },
+    { key: "product_name", header: "الصنف", nameColumn: true, wrap: true },
     { key: "batch_no", header: "رقم الدفعة", value: (r) => r.batch_no || "—", render: (r) => r.batch_no || "—" },
     { key: "expiry_date", header: "الصلاحية", value: (r) => dateOnly(r.expiry_date), render: (r) => dateOnly(r.expiry_date) },
     { key: "quantity", header: "الكمية", value: (r) => fmtQty(r.quantity), render: (r) => fmtQty(r.quantity) },
@@ -332,15 +350,19 @@ function Batches() {
         return <StatusPill tone="green">سارية</StatusPill>;
       },
     },
-    { key: "actions", header: "", render: (r) => <Button variant="ghost" size="sm" icon="trash" onClick={() => remove(r.id)} /> },
+    { key: "actions", header: "", render: (r) => <Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => remove(r.id)} /> },
   ];
 
   return (
     <>
-      <div className="ui-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <ReportToolbar title="دفعات المخزون" columns={pickExportColumns(batchColumns)} rows={rows} filename="inventory-batches" disabled={loading} />
-        <Button icon="plus" onClick={() => setShow(true)}>دفعة جديدة</Button>
-      </div>
+      <FilterBar
+        actions={
+          <>
+            <Button icon="plus" onClick={() => setShow(true)}>دفعة جديدة</Button>
+            <ReportToolbar title="دفعات المخزون" columns={pickExportColumns(batchColumns)} rows={rows} filename="inventory-batches" disabled={loading} />
+          </>
+        }
+      />
       <DataTable
         loading={loading}
         columns={batchColumns}
@@ -351,9 +373,14 @@ function Batches() {
 
       <Modal open={show} title="دفعة جديدة" onClose={() => setShow(false)}
         footer={<><Button onClick={save}>حفظ</Button><Button variant="secondary" onClick={() => setShow(false)}>إلغاء</Button></>}>
-        <div style={{ marginBottom: "0.75rem" }}>
-          <ProductPicker onPick={(p) => setForm((f) => ({ ...f, product_id: p.id, name: p.name }))} />
-          {form.name && <p className="ui-field__hint" style={{ marginTop: 4 }}>المنتج: <strong>{form.name}</strong></p>}
+        <div className="ui-mt-md">
+          <ProductPicker
+            onPick={(p) => setForm((f) => ({ ...f, product_id: p.id, name: p.name }))}
+            scope={membership === "bakery" ? null : "retail"}
+            membership={membership === "bakery" ? "bakery" : null}
+            placeholder={membership === "bakery" ? "ابحث عن صنف مخبز…" : undefined}
+          />
+          {form.name && <p className="ui-field__hint">المنتج: <strong>{form.name}</strong></p>}
         </div>
         <FormGrid>
           <FormField label="رقم الدفعة"><Input value={form.batch_no} onChange={(e) => setForm((f) => ({ ...f, batch_no: e.target.value }))} /></FormField>
@@ -366,23 +393,40 @@ function Batches() {
   );
 }
 
-export default function Inventory() {
-  const [tab, setTab] = useState("count");
+export default function Inventory({
+  workspace = null,
+  initialTab = "count",
+  allowedTabs = null,
+  title,
+  subtitle,
+}) {
+  const isBakery = workspace === "bakery";
+  const [tab, setTab] = useState(initialTab);
+  const membership = isBakery ? "bakery" : null;
+  const tabs = [
+    { id: "count", label: "الجرد", icon: "inventory" },
+    { id: "adjustments", label: "التسويات", icon: "edit" },
+    { id: "movements", label: "حركة المخزون", icon: "refunds" },
+    { id: "negative", label: "مخزون سالب", icon: "alert" },
+    { id: "batches", label: "الدفعات والصلاحية", icon: "expiry" },
+  ].filter((item) => !allowedTabs || allowedTabs.includes(item.id));
   return (
     <div className="office-page" dir="rtl" lang="ar">
-      <PageHeader icon="inventory" title="المخزون" subtitle="الجرد، التسويات، حركة المخزون والدفعات" />
-      <Tabs active={tab} onChange={setTab} tabs={[
-        { id: "count", label: "الجرد", icon: "inventory" },
-        { id: "adjustments", label: "التسويات", icon: "edit" },
-        { id: "movements", label: "حركة المخزون", icon: "refunds" },
-        { id: "negative", label: "مخزون سالب", icon: "alert" },
-        { id: "batches", label: "الدفعات والصلاحية", icon: "expiry" },
-      ]} />
+      <PageHeader
+        icon="inventory"
+        title={title || (isBakery ? "حركة مخزون المخبز" : "المخزون")}
+        subtitle={subtitle || (isBakery ? "حركات الشراء والبيع والمرتجع والجرد والتسوية لأصناف المخبز" : "الجرد، التسويات، حركة المخزون والدفعات")}
+      />
+      {tabs.length > 1 ? (
+        <Tabs active={tab} onChange={setTab} tabs={tabs} />
+      ) : null}
       {tab === "count" && <InventoryCount embedded />}
       {tab === "adjustments" && <Adjustments />}
-      {tab === "movements" && <Movements />}
+      {tab === "movements" && <Movements membership={membership} />}
       {tab === "negative" && <NegativeStock />}
-      {tab === "batches" && <Batches />}
+      {tab === "batches" && <Batches membership={membership} />}
     </div>
   );
 }
+
+export { Batches, Movements };

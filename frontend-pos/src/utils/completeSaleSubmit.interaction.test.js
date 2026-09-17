@@ -5,6 +5,7 @@ import {
   IDEMPOTENCY_REUSE_AR,
   MISSING_ON_ACCOUNT_CUSTOMER,
   SUSPENDED_ALREADY_COMPLETED_AR,
+  checkoutAttemptSignature,
   submitCompleteSale,
 } from "./completeSaleSubmit";
 
@@ -64,6 +65,7 @@ function OnAccountRetryHarness() {
     cartItems: CART,
   });
   const [customerId, setCustomerId] = useState(null);
+  const [employeeId, setEmployeeId] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const isSubmittingRef = useRef(false);
   const idempotencyKeyRef = useRef(null);
@@ -76,6 +78,7 @@ function OnAccountRetryHarness() {
       selectedPayment: "on_account",
       cartItems: CART,
       customerId,
+      employeeId,
       isLoading,
       isSubmittingRef,
       idempotencyKeyRef,
@@ -87,6 +90,7 @@ function OnAccountRetryHarness() {
       setPayModalOpen: noop,
       setSelectedPayment: noop,
       setCustomerId,
+      setEmployeeId,
       setActiveSuspendedSaleId: noop,
       loadShift: noop,
       loadSuspendedList: noop,
@@ -99,6 +103,9 @@ function OnAccountRetryHarness() {
       {state.error ? <p className="pos-err">{state.error}</p> : null}
       <button type="button" onClick={() => setCustomerId(42)}>
         اختر العميل
+      </button>
+      <button type="button" onClick={() => setEmployeeId(7)}>
+        اختر الموظف
       </button>
       <button type="button" onClick={() => void onComplete()}>
         إتمام البيع
@@ -166,7 +173,30 @@ describe("on-account checkout lock interaction", () => {
     const body = mockPost.mock.calls[0][1];
     expect(body.payment_method).toBe("on_account");
     expect(body.customer_id).toBe(42);
+    expect(body.employee_id).toBeUndefined();
     expect(container.querySelector(".pos-err")).toBeNull();
+  });
+
+  test("employee selection submits employee_id without a customer_id", async () => {
+    const completeBtn = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "إتمام البيع"
+    );
+    const pickEmployeeBtn = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "اختر الموظف"
+    );
+
+    await act(async () => {
+      pickEmployeeBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      completeBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    const body = mockPost.mock.calls[0][1];
+    expect(body.payment_method).toBe("on_account");
+    expect(body.employee_id).toBe(7);
+    expect(body.customer_id).toBeUndefined();
   });
 });
 
@@ -184,6 +214,7 @@ describe("checkout conflict codes", () => {
       selectedPayment: "cash",
       cartItems: CART,
       customerId: null,
+      employeeId: null,
       isLoading: false,
       isSubmittingRef: { current: false },
       idempotencyKeyRef: { current: "keep-this-key-xxxx" },
@@ -197,6 +228,7 @@ describe("checkout conflict codes", () => {
       setPayModalOpen: jest.fn(),
       setSelectedPayment: jest.fn(),
       setCustomerId: jest.fn(),
+      setEmployeeId: jest.fn(),
       setActiveSuspendedSaleId: jest.fn(),
       loadShift: jest.fn(),
       loadSuspendedList: jest.fn(),
@@ -290,5 +322,101 @@ describe("checkout conflict codes", () => {
     expect(warnings[0].message).toContain("INV-9");
     expect(warnings[0].message).toContain("لا تُعد إدخال البيع");
     expect(warnings[0].message).toContain("dispatch failed");
+  });
+});
+
+describe("on-account notes payload signature", () => {
+  test("empty notes match an omitted notes field", () => {
+    const base = {
+      items: CART,
+      payment_method: "on_account",
+      customer_id: 42,
+    };
+    expect(checkoutAttemptSignature(base)).toBe(checkoutAttemptSignature({ ...base, notes: "" }));
+    expect(checkoutAttemptSignature(base)).toBe(checkoutAttemptSignature({ ...base, notes: "  " }));
+    expect(checkoutAttemptSignature({ ...base, notes: "ملاحظة" })).not.toBe(
+      checkoutAttemptSignature(base)
+    );
+  });
+
+  test("retry after a server error keeps notes and the same idempotency key", async () => {
+    mockPost.mockReset();
+    const serverErr = new Error("server");
+    serverErr.response = { status: 500, data: { error: "x" } };
+    mockPost.mockRejectedValueOnce(serverErr);
+    mockPost.mockResolvedValueOnce({ data: { pending_approval: true, request_id: 11 } });
+
+    const args = {
+      paymentPayload: { payment_method: "on_account", notes: "ملاحظة الذمة" },
+      selectedPayment: "on_account",
+      cartItems: CART,
+      customerId: 42,
+      employeeId: null,
+      isLoading: false,
+      isSubmittingRef: { current: false },
+      idempotencyKeyRef: { current: null },
+      submittedPayloadRef: { current: null },
+      activeSuspendedSaleId: null,
+      dispatch: jest.fn(),
+      setIsLoading: jest.fn(),
+      setOnAccountWaitingId: jest.fn(),
+      setPayModalOpen: jest.fn(),
+      setSelectedPayment: jest.fn(),
+      setCustomerId: jest.fn(),
+      setEmployeeId: jest.fn(),
+      setActiveSuspendedSaleId: jest.fn(),
+      loadShift: jest.fn(),
+      loadSuspendedList: jest.fn(),
+      syncSuspendedCart: jest.fn(),
+    };
+
+    await submitCompleteSale(args);
+    expect(args.idempotencyKeyRef.current).toBeTruthy();
+    expect(mockPost.mock.calls[0][1].notes).toBe("ملاحظة الذمة");
+    const key = args.idempotencyKeyRef.current;
+
+    await submitCompleteSale(args);
+    expect(mockPost.mock.calls[1][1].idempotency_key).toBe(key);
+    expect(mockPost.mock.calls[1][1].notes).toBe("ملاحظة الذمة");
+  });
+
+  test("changing notes after an error mints a new idempotency key", async () => {
+    mockPost.mockReset();
+    const serverErr = new Error("server");
+    serverErr.response = { status: 500, data: { error: "x" } };
+    mockPost.mockRejectedValueOnce(serverErr);
+    mockPost.mockRejectedValueOnce(serverErr);
+
+    const args = {
+      paymentPayload: { payment_method: "on_account", notes: "أولى" },
+      selectedPayment: "on_account",
+      cartItems: CART,
+      customerId: 42,
+      employeeId: null,
+      isLoading: false,
+      isSubmittingRef: { current: false },
+      idempotencyKeyRef: { current: null },
+      submittedPayloadRef: { current: null },
+      activeSuspendedSaleId: null,
+      dispatch: jest.fn(),
+      setIsLoading: jest.fn(),
+      setOnAccountWaitingId: jest.fn(),
+      setPayModalOpen: jest.fn(),
+      setSelectedPayment: jest.fn(),
+      setCustomerId: jest.fn(),
+      setEmployeeId: jest.fn(),
+      setActiveSuspendedSaleId: jest.fn(),
+      loadShift: jest.fn(),
+      loadSuspendedList: jest.fn(),
+      syncSuspendedCart: jest.fn(),
+    };
+
+    await submitCompleteSale(args);
+    const firstKey = args.idempotencyKeyRef.current;
+    args.paymentPayload = { payment_method: "on_account", notes: "ثانية" };
+    await submitCompleteSale(args);
+    expect(args.idempotencyKeyRef.current).toBeTruthy();
+    expect(args.idempotencyKeyRef.current).not.toBe(firstKey);
+    expect(mockPost.mock.calls[1][1].notes).toBe("ثانية");
   });
 });

@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders, getUser } from "../utils/auth";
-import { ROLE_LABELS_AR, USER_ROLES, isAdminRole, isKioskOnlyRole, roleNeedsPassword } from "../utils/roles";
+import {
+  ROLE_LABELS_AR,
+  USER_ROLES,
+  isAdminRole,
+  isKioskOnlyRole,
+  roleNeedsPassword,
+} from "../utils/roles";
 import {
   PageHeader,
   Card,
+  CardHeader,
   CardBody,
   DataTable,
   FormField,
@@ -16,9 +23,18 @@ import {
   DangerButton,
   StatusBadge,
   ReportToolbar,
+  Notice,
   useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import { reconcileStaffEmployees } from "../utils/reconcileStaffEmployees";
+import { apiErrorMessage } from "../utils/apiError";
+
+const emptyForm = {
+  username: "",
+  password: "",
+  role: "cashier",
+};
 
 export default function UserManagement() {
   const toast = useToast();
@@ -28,7 +44,7 @@ export default function UserManagement() {
     : USER_ROLES.filter((role) => role !== "admin");
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ username: "", password: "", role: "cashier" });
+  const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(null);
   const [editRole, setEditRole] = useState("cashier");
@@ -37,10 +53,17 @@ export default function UserManagement() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const recon = await reconcileStaffEmployees();
       const { data } = await api.get("/api/admin/users", { headers: getAuthHeaders() });
-      setUsers(data);
+      setUsers(Array.isArray(data) ? data : []);
+      if (recon?.created_count > 0) {
+        toast.success("أُضيفت حسابات الموظفين الناقصة");
+      }
+      if (recon?.ambiguous_count > 0) {
+        toast.info("وُجدت سجلات موظفين بنفس الاسم دون دمج. لم يُغيَّر تاريخها المالي.");
+      }
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل التحميل");
+      toast.error(apiErrorMessage(e, "فشل التحميل"));
     } finally {
       setLoading(false);
     }
@@ -69,11 +92,11 @@ export default function UserManagement() {
       await api.post("/api/admin/users", body, {
         headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       });
-      setForm({ username: "", password: "", role: "cashier" });
+      setForm(emptyForm);
       toast.success("تم إنشاء المستخدم");
-      load();
+      await load();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الإنشاء");
+      toast.error(apiErrorMessage(e, "فشل الإنشاء"));
     } finally {
       setSaving(false);
     }
@@ -101,9 +124,9 @@ export default function UserManagement() {
       });
       cancelEdit();
       toast.success("تم الحفظ");
-      load();
+      await load();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الحفظ");
+      toast.error(apiErrorMessage(e, "فشل الحفظ"));
     } finally {
       setSaving(false);
     }
@@ -114,9 +137,9 @@ export default function UserManagement() {
     try {
       await api.delete(`/api/admin/users/${id}`, { headers: getAuthHeaders() });
       toast.success("تم الحذف");
-      load();
+      await load();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الحذف");
+      toast.error(apiErrorMessage(e, "فشل الحذف"));
     }
   }
 
@@ -124,14 +147,13 @@ export default function UserManagement() {
     {
       key: "username",
       header: "المستخدم",
+      nameColumn: true,
       value: (u) => u.username,
       render: (u) => (
         <>
           {u.username}
           {u.id === me?.id ? (
-            <span style={{ color: "var(--office-text-muted)", marginInlineStart: 6 }}>
-              (أنت)
-            </span>
+            <span className="ui-hint"> (أنت)</span>
           ) : null}
         </>
       ),
@@ -169,7 +191,7 @@ export default function UserManagement() {
               placeholder="كلمة مرور جديدة (اختياري)"
               value={editPassword}
               onChange={(e) => setEditPassword(e.target.value)}
-              style={{ maxWidth: 200 }}
+              className="ui-input--narrow"
             />
             <PrimaryButton size="sm" type="button" onClick={() => saveEdit(u.id)} disabled={saving}>
               حفظ
@@ -188,6 +210,7 @@ export default function UserManagement() {
             <DangerButton
               size="sm"
               type="button"
+              aria-label={`حذف ${u.username}`}
               onClick={() => removeUser(u.id)}
               disabled={u.id === me?.id}
             >
@@ -214,19 +237,27 @@ export default function UserManagement() {
         }
         icon="users"
         actions={
-          <ReportToolbar
-            title="إدارة الحسابات"
-            columns={pickExportColumns(columns)}
-            rows={users}
-            filename="users"
-            disabled={loading}
-          />
+          <>
+            <PrimaryButton
+              type="button"
+              onClick={() => document.getElementById("new-user-form")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            >
+              مستخدم جديد
+            </PrimaryButton>
+            <ReportToolbar
+              title="إدارة الحسابات"
+              columns={pickExportColumns(columns)}
+              rows={users}
+              filename="users"
+              disabled={loading}
+            />
+          </>
         }
       />
 
-      <Card>
+      <Card id="new-user-form">
+        <CardHeader title="مستخدم جديد" />
         <CardBody>
-          <h2 className="dashboard-section-title">مستخدم جديد</h2>
           <FormGrid>
             <FormField label="اسم المستخدم">
               <Input
@@ -246,9 +277,7 @@ export default function UserManagement() {
               </FormField>
             ) : (
               <FormField label="كلمة المرور">
-                <p className="ui-hint" style={{ margin: 0 }}>
-                  غير مطلوبة — موظفو المخبز/الرفوف يسجّلون الحضور عبر كشك الوجه فقط
-                </p>
+                <Notice tone="info">غير مطلوبة — كشك الوجه فقط</Notice>
               </FormField>
             )}
             <FormField label="الدور">
@@ -275,7 +304,7 @@ export default function UserManagement() {
             type="button"
             onClick={addUser}
             disabled={saving}
-            style={{ marginTop: "1rem" }}
+            className="ui-mt-md"
           >
             {saving ? "…" : "إضافة"}
           </PrimaryButton>
@@ -283,8 +312,8 @@ export default function UserManagement() {
       </Card>
 
       <Card>
+        <CardHeader title="المستخدمون" />
         <CardBody>
-          <h2 className="dashboard-section-title">المستخدمون</h2>
           <DataTable
             columns={columns}
             rows={users}

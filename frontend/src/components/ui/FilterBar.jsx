@@ -1,11 +1,24 @@
-/**
- * Standard filter toolbar — date/status fields + optional action buttons.
- */
-export default function FilterBar({ children, actions, className = "" }) {
+import Button from "./Button";
+
+export default function FilterBar({
+  children,
+  actions,
+  className = "",
+  onReset,
+  resetLabel = "إعادة تعيين",
+  sticky,
+}) {
   return (
-    <div className={`ui-toolbar ui-filter-bar ${className}`.trim()}>
+    <div className={`ui-toolbar ui-filter-bar ${sticky ? "ui-filter-bar--sticky" : ""} ${className}`.trim()}>
       <div className="ui-filter-bar__fields">{children}</div>
-      {actions ? <div className="ui-filter-bar__actions">{actions}</div> : null}
+      <div className="ui-filter-bar__actions">
+        {actions}
+        {onReset ? (
+          <Button type="button" variant="secondary" size="sm" onClick={onReset}>
+            {resetLabel}
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -387,8 +387,26 @@ export async function checkInvariants(db, baseline, extras = {}) {
   );
 
   // 14. Customer balance cache = baseline + on_account payments + voucher deltas
+  //     − new active payroll debt settlements + reversals of pre-snapshot settlements
   const custMismatches = [];
   const customers = await db.all("SELECT id, balance FROM customers");
+  const maxSettle = Number(baseline.maxIds?.employee_settlements) || 0;
+  const reversedAtBaseline = new Set((baseline.reversedSettlementIds || []).map(Number));
+  const newlyReversedOld = await db.all(
+    `SELECT customer_id, amount, id
+     FROM employee_settlements
+     WHERE kind = 'debt' AND status = 'reversed' AND id <= ?`,
+    [maxSettle]
+  );
+  const reversedOldByCustomer = new Map();
+  for (const row of newlyReversedOld) {
+    if (reversedAtBaseline.has(Number(row.id))) continue;
+    const cid = String(row.customer_id);
+    reversedOldByCustomer.set(
+      cid,
+      (reversedOldByCustomer.get(cid) || 0) + (Number(row.amount) || 0)
+    );
+  }
   for (const c of customers) {
     const id = String(c.id);
     const before = baseline.customers[id];
@@ -407,7 +425,20 @@ export async function checkInvariants(db, baseline, extras = {}) {
        WHERE vl.customer_id = ? AND vl.id > ?`,
       [c.id, Number(baseline.maxIds?.voucher_lines) || 0]
     );
-    const expected = before.balance + Number(oa?.s || 0) + Number(vouchers?.s || 0);
+    const settlements = await db.get(
+      `SELECT COALESCE(SUM(CASE WHEN status = 'active' THEN amount ELSE 0 END), 0) AS s
+       FROM employee_settlements
+       WHERE kind = 'debt' AND customer_id = ? AND id > ?`,
+      [c.id, maxSettle]
+    );
+    // New insert-then-reverse: omitted from the active sum, nets to 0.
+    // Pre-snapshot settlements reversed after the snapshot add the amount back.
+    const expected =
+      before.balance +
+      Number(oa?.s || 0) +
+      Number(vouchers?.s || 0) -
+      Number(settlements?.s || 0) +
+      Number(reversedOldByCustomer.get(id) || 0);
     if (!near(c.balance, expected)) {
       custMismatches.push(`customer ${id}: balance=${c.balance} expected=${expected}`);
     }

@@ -5,6 +5,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  createTestEmployee,
 } from "./helpers.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 
@@ -48,10 +49,11 @@ describe("Telegram sulaf callback", () => {
   });
 
   test("create advance request and approve via Telegram", async () => {
+    const emp = await createTestEmployee(ctx.db, { name: "أحمد" });
     const createRes = await request(ctx.app)
       .post("/api/v1/advance-requests")
       .set(authHeader(cashierToken))
-      .send({ employee_name: "أحمد", amount: 50, notes: "سلفة" });
+      .send({ employee_id: emp.id, amount: 50, notes: "سلفة" });
 
     expect(createRes.status).toBe(201);
     const requestId = createRes.body.data.request_id;
@@ -81,10 +83,11 @@ describe("Telegram sulaf callback", () => {
   });
 
   test("reject advance via Telegram", async () => {
+    const emp = await createTestEmployee(ctx.db, { name: "محمود" });
     const createRes = await request(ctx.app)
       .post("/api/v1/advance-requests")
       .set(authHeader(cashierToken))
-      .send({ employee_name: "محمود", amount: 25 });
+      .send({ employee_id: emp.id, amount: 25 });
 
     const requestId = createRes.body.data.request_id;
 

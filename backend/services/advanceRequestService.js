@@ -10,6 +10,10 @@ import {
   sendAdvanceDecisionStatusMessage,
 } from "../utils/telegram.js";
 import { withTransaction } from "../utils/dbTx.js";
+import {
+  assertCanApproveLinkedSalaryAdvance,
+  postPosSalaryAdvanceInTx,
+} from "./employeePaymentService.js";
 
 export { getTelegramManagerUser };
 
@@ -18,19 +22,35 @@ async function computeShiftExpectedCash(db, shiftId, openingCash) {
 }
 
 export async function createAdvanceRequest(db, params) {
-  const { cashierId, employeeName, amount, notes, req } = params;
-  const trimmedName = String(employeeName || "").trim();
-  const amt = round2(Number(amount));
-  if (!trimmedName) {
-    const err = new Error("اسم الموظف مطلوب");
+  const { cashierId, employeeId, amount, notes, req } = params;
+  const empId = Number(employeeId);
+  if (!empId) {
+    const err = new Error("اختر الموظف");
     err.status = 400;
+    err.code = "EMPLOYEE_REQUIRED";
     throw err;
   }
+  const amt = round2(Number(amount));
   if (!Number.isFinite(amt) || amt <= 0) {
     const err = new Error("المبلغ يجب أن يكون أكبر من صفر");
     err.status = 400;
     throw err;
   }
+
+  const employee = await db.get("SELECT id, name, active FROM employees WHERE id = ?", [empId]);
+  if (!employee) {
+    const err = new Error("الموظف غير موجود");
+    err.status = 400;
+    err.code = "EMPLOYEE_NOT_FOUND";
+    throw err;
+  }
+  if (!Number(employee.active)) {
+    const err = new Error("لا يمكن طلب سلف لموظف غير نشط");
+    err.status = 400;
+    err.code = "EMPLOYEE_INACTIVE";
+    throw err;
+  }
+  const snapshotName = String(employee.name || "").trim();
 
   const { shift, error: shiftErr } = await requireOpenShiftForCashier(db, cashierId);
   if (shiftErr || !shift) {
@@ -41,9 +61,10 @@ export async function createAdvanceRequest(db, params) {
 
   const created = await withTransaction(db, async () => {
     const ins = await db.run(
-      `INSERT INTO advance_requests (cashier_id, shift_id, employee_name, amount, notes, status)
-       VALUES (?, ?, ?, ?, ?, 'pending')`,
-      [cashierId, shift.id, trimmedName, amt, notes != null ? String(notes).trim() || null : null]
+      `INSERT INTO advance_requests
+         (cashier_id, shift_id, employee_id, employee_name, amount, notes, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+      [cashierId, shift.id, employee.id, snapshotName, amt, notes != null ? String(notes).trim() || null : null]
     );
     const requestId = ins.lastID;
     const row = await db.get("SELECT * FROM advance_requests WHERE id = ?", [requestId]);
@@ -51,12 +72,13 @@ export async function createAdvanceRequest(db, params) {
 
     if (req?.user) {
       await logAuditUser(db, req.user, AUDIT_ACTIONS.ADVANCE_REQUEST_CREATE, "advance_requests", requestId, null, {
-        employee_name: trimmedName,
+        employee_id: employee.id,
+        employee_name: snapshotName,
         amount: amt,
       });
     }
 
-    return { request: row, request_id: requestId, cashier };
+    return { request: row, request_id: requestId, cashier, trimmedName: snapshotName };
   });
 
   let telegramMessageId = null;
@@ -65,7 +87,7 @@ export async function createAdvanceRequest(db, params) {
       telegramMessageId = await sendAdvanceApprovalMessage({
         requestId: created.request_id,
         cashierName: created.cashier?.username || String(cashierId),
-        employeeName: trimmedName,
+        employeeName: created.trimmedName,
         amount: amt,
         notes: notes || "",
       });
@@ -238,6 +260,11 @@ export async function approveAdvanceRequest(
       throw err;
     }
 
+    const employeeId = request.employee_id != null ? Number(request.employee_id) : null;
+    if (employeeId) {
+      await assertCanApproveLinkedSalaryAdvance(db, managerUser);
+    }
+
     const expectedCash = await computeShiftExpectedCash(db, shift.id, shift.opening_cash);
     const amount = round2(Number(request.amount));
     if (expectedCash < amount) {
@@ -248,24 +275,52 @@ export async function approveAdvanceRequest(
     }
 
     const now = new Date().toISOString();
-    await db.run(
+    const desc = employeeId
+      ? `سلفة على الراتب — ${request.employee_name} #${requestId}`
+      : `سلف — ${request.employee_name} #${requestId}`;
+    const movement = await db.run(
       `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description, advance_request_id)
        VALUES (?, 'advance', ?, ?, ?)`,
-      [shift.id, -amount, `سلف — ${request.employee_name} #${requestId}`, requestId]
+      [shift.id, -amount, desc, requestId]
     );
+
+    let ledger = null;
+    if (employeeId) {
+      ledger = await postPosSalaryAdvanceInTx(db, {
+        employeeId,
+        amount,
+        advanceRequestId: requestId,
+        shiftCashMovementId: movement.lastID,
+        createdBy: managerUser.id,
+        note: request.notes
+          ? `سلفة على الراتب — ${request.employee_name} #${requestId} — ${request.notes}`
+          : undefined,
+      });
+    }
 
     await db.run(
       `UPDATE advance_requests SET
         status = 'approved', manager_id = ?, approved_at = ?,
         review_notes = COALESCE(?, review_notes), rejected_at = NULL,
-        decision_source = ?
+        decision_source = ?,
+        ledger_entry_id = COALESCE(?, ledger_entry_id),
+        operating_expense_id = COALESCE(?, operating_expense_id)
        WHERE id = ?`,
-      [managerUser.id, now, reviewNotes, decisionSource, requestId]
+      [
+        managerUser.id,
+        now,
+        reviewNotes,
+        decisionSource,
+        ledger?.id ?? null,
+        ledger?.operating_expense_id ?? null,
+        requestId,
+      ]
     );
 
     const auditUser = req?.user || managerUser;
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.ADVANCE_REQUEST_APPROVE, "advance_requests", requestId, { status: "pending" }, {
       manager_id: managerUser.id,
+      employee_id: employeeId,
       amount,
     });
 

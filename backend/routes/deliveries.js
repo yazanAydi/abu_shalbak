@@ -3,6 +3,7 @@ import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { nextNumericDoc } from "../utils/receiptNumber.js";
+import { assertOrdinaryCustomerWritable } from "../utils/employeeCustomer.js";
 
 const SALES_STATUS = ["pending", "out", "delivered", "cancelled"];
 const RECV_STATUS = ["pending", "received", "cancelled"];
@@ -25,8 +26,13 @@ export function createDeliveriesRouter(db) {
     res.json(await db.all(sql, params));
   });
 
-  router.post("/sales", requireAuth, requireDeliveries, async (req, res) => {
+  router.post("/sales", requireAuth, requireDeliveries, async (req, res, next) => {
     const { transaction_id, customer_id, driver, vehicle, address, delivery_date, notes } = req.body || {};
+    try {
+      if (customer_id) await assertOrdinaryCustomerWritable(db, customer_id);
+    } catch (e) {
+      return next(e);
+    }
     const noRow = await db.get("SELECT MAX(delivery_no) AS mx FROM sales_deliveries");
     const no = await nextNumericDoc(db, "delivery", Number(noRow?.mx) || 0);
     const ins = await db.run(

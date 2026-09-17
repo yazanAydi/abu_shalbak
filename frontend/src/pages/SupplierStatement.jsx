@@ -19,8 +19,10 @@ import {
   DataTable,
   Button,
   SecondaryButton,
+  FilterBar,
   FormField,
   FormGrid,
+  HelpTip,
   Input,
   Select,
   Textarea,
@@ -29,6 +31,7 @@ import {
   PrimaryButton,
   useToast,
 } from "../components/ui";
+import { apiErrorMessage } from "../utils/apiError";
 
 const todayIso = () => todayISO();
 
@@ -83,7 +86,7 @@ export default function SupplierStatement() {
       );
       setReport(data);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر تحميل كشف الحساب");
+      toast.error(apiErrorMessage(e, "تعذّر تحميل كشف الحساب"));
       setReport(null);
     } finally {
       setLoading(false);
@@ -116,7 +119,7 @@ export default function SupplierStatement() {
     try {
       await downloadSupplierStatementExcel(api, supplierId, { from, to, type: typeFilter, search });
     } catch (e) {
-      toast.error(e.response?.data?.error || "تعذّر تصدير Excel");
+      toast.error(apiErrorMessage(e, "تعذّر تصدير Excel"));
     }
   }
 
@@ -170,7 +173,7 @@ export default function SupplierStatement() {
       setAdjOpen(false);
       await load();
     } catch (err) {
-      toast.error(err.response?.data?.error || "تعذّر حفظ التسوية");
+      toast.error(apiErrorMessage(err, "تعذّر حفظ التسوية"));
     } finally {
       setAdjSaving(false);
     }
@@ -181,7 +184,7 @@ export default function SupplierStatement() {
       { key: "date", header: "التاريخ", render: (m) => (m.date ? dateOnly(m.date) : "—") },
       { key: "type", header: "نوع الحركة", render: (m) => movementTypeLabel(m.type) },
       { key: "documentNo", header: "رقم المستند", className: "num", render: (m) => m.documentNo || "—" },
-      { key: "description", header: "البيان", render: (m) => m.description || "—" },
+      { key: "description", header: "البيان", nameColumn: true, wrap: true, render: (m) => m.description || "—" },
       {
         key: "debit",
         header: "مدين",
@@ -271,15 +274,22 @@ export default function SupplierStatement() {
                 </span>{" "}
                 ({balanceLabel(supplier.currentBalance)})
               </div>
+              <div className="ui-text-muted">
+                الموجب = علينا للمورد · السالب = رصيد لنا{" "}
+                <HelpTip>
+                  دائن يزيد ما علينا للمورد. مدين ينقصه. مرتجع المشتريات يظهر كحركة مدينة بتاريخ المرتجع.
+                </HelpTip>
+              </div>
             </div>
           </CardBody>
         </Card>
       ) : null}
 
-      <div className="ui-stat-grid" style={{ marginTop: 16 }}>
+      <div className="ui-stat-grid ui-mt-md">
         <StatCard label="الرصيد الافتتاحي" value={amount(summary?.openingBalance)} icon="finance" tone="teal" />
         <StatCard label="إجمالي الفواتير" value={amount(summary?.totalInvoices)} icon="products" tone="orange" />
         <StatCard label="إجمالي الدفعات" value={amount(summary?.totalPayments)} icon="vouchers" tone="green" />
+        <StatCard label="إجمالي المرتجعات" value={amount(summary?.totalReturns)} icon="refunds" tone="orange" />
         <StatCard
           label={`الرصيد النهائي — ${balanceLabel(finalBalance)}`}
           value={amount(summary?.finalBalance)}
@@ -288,39 +298,43 @@ export default function SupplierStatement() {
         />
       </div>
 
-      <Card style={{ marginTop: 16 }}>
-        <CardBody>
-          <FormGrid columns={2}>
-            <FormField label="من تاريخ">
-              <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-            </FormField>
-            <FormField label="إلى تاريخ">
-              <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-            </FormField>
-            <FormField label="نوع الحركة">
-              <Select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-                {TYPE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </Select>
-            </FormField>
-            <FormField label="بحث برقم المستند">
-              <SearchInput
-                placeholder="رقم فاتورة أو سند…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </FormField>
-          </FormGrid>
-          <div className="ui-toolbar" style={{ marginTop: 16, gap: 8, flexWrap: "wrap" }}>
-            <Button type="button" onClick={load} disabled={loading}>
-              {loading ? "جاري التحميل…" : "تطبيق الفلاتر"}
-            </Button>
-          </div>
-        </CardBody>
-      </Card>
+      <FilterBar
+        className="ui-mt-md"
+        onReset={() => {
+          setFrom("");
+          setTo("");
+          setTypeFilter("");
+          setSearch("");
+        }}
+        actions={
+          <Button type="button" onClick={load} disabled={loading}>
+            {loading ? "جاري التحميل…" : "تطبيق الفلاتر"}
+          </Button>
+        }
+      >
+        <FormField label="من تاريخ" className="ui-field--date">
+          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </FormField>
+        <FormField label="إلى تاريخ" className="ui-field--date">
+          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </FormField>
+        <FormField label="نوع الحركة">
+          <Select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+            {TYPE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </Select>
+        </FormField>
+        <FormField label="بحث برقم المستند">
+          <SearchInput
+            placeholder="رقم فاتورة أو سند…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </FormField>
+      </FilterBar>
 
-      <Card style={{ marginTop: 16 }}>
+      <Card className="ui-mt-md">
         <CardBody>
           <DataTable
             columns={columns}

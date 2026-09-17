@@ -58,21 +58,49 @@ export function buildInventoryDocumentPrintHtml(doc, store = {}, extras = {}) {
   <meta charset="utf-8" />
   <title>${escapeHtml(title)} #${escapeHtml(docNo)}</title>
   <style>
-    html { -webkit-locale: "en"; font-language-override: "eng"; font-feature-settings: "locl" 0; }
-    @page { size: A4; margin: 12mm; }
-    body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; color: #111; margin: 0; padding: 12px; }
-    h1 { text-align: center; margin: 6px 0 10px; font-size: 18px; }
-    .print-branding { text-align: center; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid #ddd; }
-    .print-branding img { display: block; margin: 0 auto 8px; max-width: 140px; max-height: 90px; }
-    .meta { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 8px 0 12px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { border: 1px solid #999; padding: 6px 8px; text-align: right; vertical-align: top; }
-    th { background: #1f3a5f; color: #fff; }
+    html {
+      -webkit-locale: "en";
+      font-language-override: "eng";
+      font-feature-settings: "locl" 0;
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+    }
+    @page { size: A4; margin: 9mm; }
+    html, body { height: auto; min-height: 0; }
+    body {
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      font-size: 10.5pt;
+      line-height: 1.25;
+      color: #111;
+      margin: 0;
+      padding: 0;
+    }
+    p { margin: 0; }
+    h1 { text-align: center; margin: 4px 0 3px; font-size: 13.5pt; font-weight: 700; line-height: 1.2; }
+    .print-branding { text-align: center; margin: 0 0 4px; padding-bottom: 4px; border-bottom: 1px solid #ddd; }
+    .print-branding img { display: block; margin: 0 auto 2px; max-width: 96px; max-height: 58px; object-fit: contain; }
+    .meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px 16px;
+      margin: 0 0 6px;
+      padding: 4px 8px;
+      border: 1px solid #ddd;
+      background: #f7f8fa;
+      font-size: 10.5pt;
+      line-height: 1.3;
+    }
+    table { width: 100%; border-collapse: collapse; margin-top: 4px; page-break-inside: auto; }
+    th, td { border: 1px solid #999; padding: 2px 4px; text-align: right; vertical-align: top; line-height: 1.25; font-size: 10.5pt; }
+    th { background: #1f3a5f; color: #fff; font-weight: 600; font-size: 9.5pt; }
     td.num, th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .notes { margin-top: 12px; font-size: 12px; }
-    .printed-by { margin: 14px 0 0; font-size: 12px; text-align: start; }
-    .footer { margin-top: 16px; font-size: 10px; color: #666; text-align: center; }
-    @media print { thead { display: table-header-group; } tr { page-break-inside: avoid; } }
+    .notes { margin-top: 6px; font-size: 10.5pt; }
+    .printed-by { margin: 8px 0 0; font-size: 10.5pt; text-align: start; }
+    .footer { margin: 6px 0 0; font-size: 8.5pt; color: #666; text-align: center; }
+    @media print {
+      thead { display: table-header-group; }
+      tbody tr { page-break-inside: avoid; break-inside: avoid; }
+    }
   </style>
 </head>
 <body>

@@ -29,7 +29,7 @@ describe("office permission consistency", () => {
 
   beforeAll(async () => {
     ctx = await createTestContext();
-    expect(allAccountantPermissionKeys()).toHaveLength(34);
+    expect(allAccountantPermissionKeys()).toHaveLength(35);
 
     adminUser = await ctx.db.get("SELECT id FROM users WHERE username = ?", ["testadmin"]);
     const allOnUser = await createAccountantUser(ctx.db, {
@@ -62,7 +62,7 @@ describe("office permission consistency", () => {
   }
 
   describe("all-on accountant can use every normal feature", () => {
-    test("representative GET + write for each of the 34 keys", async () => {
+    test("representative GET + write for each of the 35 keys", async () => {
       const hdr = authHeader(allOnToken);
 
       const today = await request(ctx.app).get("/api/v1/reports/today").set(hdr);
@@ -173,6 +173,11 @@ describe("office permission consistency", () => {
         .get("/api/v1/reports/range?from=2026-01-01&to=2026-01-07")
         .set(hdr);
       expect(salesRange.status).toBe(200);
+
+      const bakeryReport = await request(ctx.app)
+        .get("/api/v1/reports/bakery?from=2026-01-01&to=2026-01-07")
+        .set(hdr);
+      expect(bakeryReport.status).toBe(200);
 
       const shifts = await request(ctx.app).get("/api/v1/shifts").set(hdr);
       expect(shifts.status).toBe(200);
@@ -403,6 +408,41 @@ describe("office permission consistency", () => {
       );
       expect(
         (await request(ctx.app).get("/api/v1/inventory/low-stock").set(authHeader(templateToken))).status
+      ).toBe(200);
+    });
+
+    test("bakery report is denied until the bakery permission is granted", async () => {
+      await setTemplate({ bakery: false, bakery_supplies: false, sales_reports: true });
+      expect(
+        (
+          await request(ctx.app)
+            .get("/api/v1/reports/bakery?from=2026-01-01&to=2026-01-07")
+            .set(authHeader(templateToken))
+        ).status
+      ).toBe(403);
+      await setTemplate({ bakery: false, bakery_supplies: true });
+      expect(
+        (
+          await request(ctx.app)
+            .get("/api/v1/reports/bakery?from=2026-01-01&to=2026-01-07")
+            .set(authHeader(templateToken))
+        ).status
+      ).toBe(200);
+      expect(
+        (
+          await request(ctx.app)
+            .put("/api/v1/reports/bakery/categories")
+            .set(authHeader(templateToken))
+            .send({ category_ids: [1] })
+        ).status
+      ).toBe(403);
+      await setTemplate({ bakery: true });
+      expect(
+        (
+          await request(ctx.app)
+            .get("/api/v1/reports/bakery?from=2026-01-01&to=2026-01-07")
+            .set(authHeader(templateToken))
+        ).status
       ).toBe(200);
     });
 

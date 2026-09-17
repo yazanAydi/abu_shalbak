@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { todayISO } from "../utils/format";
 import api from "../apiClient";
@@ -6,15 +7,17 @@ import { ils, dateOnly, qty as fmtQty } from "../utils/format";
 import ProductPicker from "../components/ProductPicker";
 import QtyStepper from "../components/QtyStepper";
 import { handleEnterNavKeyDown } from "../utils/focusNavigation";
+import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
 import {
   PageHeader, Button, DataTable, Modal, Tabs, StatusPill,
-  FormField, FormGrid, Input, Select, Textarea, Icon, ReportToolbar, useToast,
+  FormField, FormGrid, Input, Select, Textarea, Icon, ReportToolbar, FilterBar, useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 
 const WH_TYPES = { main: "رئيسي", store: "متجر", returns: "مرتجعات", damaged: "تالف" };
 
-export default function Warehouses() {
+export default function Warehouses({ workspace = null }) {
+  const isBakery = workspace === "bakery";
   const toast = useToast();
   const [tab, setTab] = useState("warehouses");
   const [warehouses, setWarehouses] = useState([]);
@@ -22,6 +25,8 @@ export default function Warehouses() {
   const [valuation, setValuation] = useState(null);
   const [transfers, setTransfers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [qDebounced, setQDebounced] = useState("");
 
   const [showWh, setShowWh] = useState(false);
   const [whForm, setWhForm] = useState({ name: "", code: "", type: "store" });
@@ -32,6 +37,18 @@ export default function Warehouses() {
   const [detail, setDetail] = useState(null);
   const [editId, setEditId] = useState(null);
 
+  useEffect(() => {
+    const t = window.setTimeout(() => setQDebounced(q.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [q]);
+
+  const catalogParams = useCallback(() => {
+    const params = {};
+    if (isBakery) params.membership = "bakery";
+    if (qDebounced) params.q = qDebounced;
+    return params;
+  }, [isBakery, qDebounced]);
+
   const loadWarehouses = useCallback(async () => {
     try { const { data } = await api.get("/api/warehouses", { headers: getAuthHeaders() }); setWarehouses(data); }
     catch { /* */ }
@@ -40,11 +57,15 @@ export default function Warehouses() {
   const loadTab = useCallback(async (which) => {
     setLoading(true);
     try {
-      if (which === "stock") setStock((await api.get("/api/warehouses/stock", { headers: getAuthHeaders() })).data);
-      else if (which === "valuation") setValuation((await api.get("/api/warehouses/valuation", { headers: getAuthHeaders() })).data);
-      else if (which === "transfers") setTransfers((await api.get("/api/warehouses/transfers", { headers: getAuthHeaders() })).data);
+      if (which === "stock") {
+        setStock((await api.get("/api/warehouses/stock", { headers: getAuthHeaders(), params: catalogParams() })).data);
+      } else if (which === "valuation") {
+        setValuation((await api.get("/api/warehouses/valuation", { headers: getAuthHeaders(), params: catalogParams() })).data);
+      } else if (which === "transfers") {
+        setTransfers((await api.get("/api/warehouses/transfers", { headers: getAuthHeaders() })).data);
+      }
     } catch { toast.error("تعذّر التحميل"); } finally { setLoading(false); }
-  }, [toast]);
+  }, [toast, catalogParams]);
 
   useEffect(() => { loadWarehouses(); }, [loadWarehouses]);
   useEffect(() => { if (tab !== "warehouses") loadTab(tab); else setLoading(false); }, [tab, loadTab]);
@@ -54,12 +75,12 @@ export default function Warehouses() {
     try {
       await api.post("/api/warehouses", whForm, { headers: getAuthHeaders() });
       toast.success("تمت الإضافة"); setShowWh(false); setWhForm({ name: "", code: "", type: "store" }); loadWarehouses();
-    } catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function removeWh(id) {
     if (!window.confirm("حذف المستودع؟")) return;
     try { await api.delete(`/api/warehouses/${id}`, { headers: getAuthHeaders() }); toast.success("تم"); loadWarehouses(); }
-    catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
 
   function addItem(p) {
@@ -81,17 +102,17 @@ export default function Warehouses() {
         toast.success("حُفظ كمسودة");
       }
       setShowTransfer(false); setTransferItems([]); setEditId(null); loadTab("transfers");
-    } catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    } catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function postTransfer(id) {
     if (!window.confirm("ترحيل التحويل سينقل المخزون بين المستودعين. متابعة؟")) return;
     try { await api.post(`/api/warehouses/transfers/${id}/post`, {}, { headers: getAuthHeaders() }); toast.success("تم الترحيل"); loadTab("transfers"); }
-    catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function removeTransfer(id) {
     if (!window.confirm("حذف المسودة؟")) return;
     try { await api.delete(`/api/warehouses/transfers/${id}`, { headers: getAuthHeaders() }); toast.success("تم"); loadTab("transfers"); }
-    catch (e) { toast.error(e.response?.data?.error || "فشل"); }
+    catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
   async function openDetail(id) {
     try {
@@ -118,7 +139,9 @@ export default function Warehouses() {
     { key: "code", header: "الكود", value: (w) => w.code || "—", render: (w) => w.code || "—" },
     { key: "type", header: "النوع", value: (w) => WH_TYPES[w.type] || w.type, render: (w) => <StatusPill tone="blue" noDot>{WH_TYPES[w.type] || w.type}</StatusPill> },
     { key: "active", header: "الحالة", value: (w) => (w.active ? "مفعّل" : "معطّل"), render: (w) => <StatusPill tone={w.active ? "green" : "neutral"}>{w.active ? "مفعّل" : "معطّل"}</StatusPill> },
-    { key: "actions", header: "", render: (w) => <Button variant="ghost" size="sm" icon="trash" onClick={() => removeWh(w.id)} /> },
+    { key: "actions", header: "", render: (w) => (
+      isBakery ? null : <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => removeWh(w.id)} />
+    ) },
   ];
 
   const transferColumns = [
@@ -132,7 +155,7 @@ export default function Warehouses() {
       <div className="ui-table__actions">
         <Button variant="ghost" size="sm" onClick={() => openDetail(t.id)}>عرض</Button>
         {t.status === "draft" && <Button variant="outline" size="sm" icon="check" onClick={() => postTransfer(t.id)}>ترحيل</Button>}
-        {t.status === "draft" && <Button variant="ghost" size="sm" icon="trash" onClick={() => removeTransfer(t.id)} />}
+        {t.status === "draft" && <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => removeTransfer(t.id)} />}
       </div>
     ) },
   ];
@@ -140,6 +163,8 @@ export default function Warehouses() {
   const stockColumns = [
     { key: "warehouse_name", header: "المستودع" },
     { key: "product_name", header: "الصنف" },
+    { key: "barcode", header: "الباركود", value: (r) => displayProductBarcode(r), render: (r) => displayProductBarcode(r) },
+    { key: "sku", header: "رقم المنتج", value: (r) => displayProductSku(r.sku), render: (r) => displayProductSku(r.sku) },
     { key: "quantity", header: "الكمية", value: (r) => fmtQty(r.quantity), render: (r) => fmtQty(r.quantity) },
     { key: "value", header: "القيمة", value: (r) => ils(r.value), render: (r) => ils(r.value) },
   ];
@@ -155,23 +180,28 @@ export default function Warehouses() {
       return { title: "تحويلات المستودعات", columns: pickExportColumns(transferColumns), rows: transfers, filename: "warehouse-transfers" };
     }
     if (tab === "stock") {
-      return { title: "تقرير مخزون المستودعات", columns: stockColumns, rows: stock, filename: "warehouse-stock" };
+      return { title: isBakery ? "مخزون مستودعات المخبز" : "تقرير مخزون المستودعات", columns: stockColumns, rows: stock, filename: isBakery ? "bakery-warehouse-stock" : "warehouse-stock" };
     }
     if (tab === "valuation" && valuation) {
       return {
-        title: "تقييم المخزون",
+        title: isBakery ? "تقييم مخزون المخبز" : "تقييم المخزون",
         columns: valuationColumns,
         rows: valuation.warehouses || [],
-        filename: "warehouse-valuation",
+        filename: isBakery ? "bakery-warehouse-valuation" : "warehouse-valuation",
         summary: [{ label: "إجمالي قيمة المخزون", value: ils(valuation.grand_total) }],
       };
     }
-    return { title: "المستودعات", columns: pickExportColumns(warehouseColumns), rows: warehouses, filename: "warehouses" };
-  }, [tab, warehouses, transfers, stock, valuation]);
+    return { title: isBakery ? "مستودعات المخبز" : "المستودعات", columns: pickExportColumns(warehouseColumns), rows: warehouses, filename: isBakery ? "bakery-warehouses" : "warehouses" };
+  }, [tab, warehouses, transfers, stock, valuation, isBakery]);
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
-      <PageHeader icon="warehouses" title="المستودعات" subtitle="المستودعات، التحويلات، تقارير المخزون والتقييم"
+      <PageHeader
+        icon="warehouses"
+        title={isBakery ? "مستودعات المخبز" : "المستودعات"}
+        subtitle={isBakery
+          ? "مخزون المخبز في المستودع الرئيسي، ومرتجعات شراء المخبز المرحّلة في مستودع المرتجعات"
+          : "مخزون السوبرماركت في المستودع الرئيسي، ومرتجعات الشراء المرحّلة في مستودع المرتجعات"}
         actions={
           <>
             <ReportToolbar
@@ -182,7 +212,7 @@ export default function Warehouses() {
               summary={reportConfig.summary}
               disabled={loading && tab !== "warehouses"}
             />
-            {tab === "warehouses" ? <Button icon="plus" onClick={() => setShowWh(true)}>مستودع جديد</Button>
+            {!isBakery && tab === "warehouses" ? <Button icon="plus" onClick={() => setShowWh(true)}>مستودع جديد</Button>
               : tab === "transfers" ? <Button icon="plus" onClick={() => { setEditId(null); setTransferForm({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: todayISO(), notes: "" }); setTransferItems([]); setShowTransfer(true); }}>تحويل جديد</Button> : null}
           </>
         } />
@@ -193,6 +223,19 @@ export default function Warehouses() {
         { id: "stock", label: "تقرير المخزون", icon: "inventory" },
         { id: "valuation", label: "تقييم المخزون", icon: "finance" },
       ]} />
+
+      {(tab === "stock" || tab === "valuation") && (
+        <FilterBar onReset={q ? () => setQ("") : undefined}>
+          <FormField label="بحث">
+            <Input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="الاسم أو الباركود أو رقم المنتج"
+              aria-label="بحث بالاسم أو الباركود أو رقم المنتج"
+            />
+          </FormField>
+        </FilterBar>
+      )}
 
       {tab === "warehouses" && (
         <DataTable
@@ -220,8 +263,10 @@ export default function Warehouses() {
           columns={stockColumns}
           rows={stock}
           emptyIcon="inventory"
-          empty="لا يوجد مخزون موزّع على المستودعات"
-          emptyHint="يُسجَّل المخزون لكل مستودع عبر التحويلات"
+          empty={qDebounced ? "لا توجد أصناف مطابقة" : "لا يوجد مخزون في المستودعات"}
+          emptyHint={isBakery
+            ? "مخزون المخبز يظهر تلقائياً في المستودع الرئيسي. فواتير مرتجعات شراء المخبز المرحّلة تظهر في مستودع المرتجعات."
+            : "مخزون السوبرماركت يظهر تلقائياً في المستودع الرئيسي. فواتير مرتجعات الشراء المرحّلة تظهر في مستودع المرتجعات."}
         />
       )}
 
@@ -269,7 +314,14 @@ export default function Warehouses() {
         </FormGrid>
         <div style={{ margin: "1rem 0 0.5rem", fontWeight: 700 }}>الأصناف</div>
         <div data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
-        <div style={{ marginBottom: "0.75rem" }}><ProductPicker onPick={addItem} /></div>
+        <div style={{ marginBottom: "0.75rem" }}>
+          <ProductPicker
+            onPick={addItem}
+            scope={isBakery ? null : "retail"}
+            membership={isBakery ? "bakery" : null}
+            placeholder={isBakery ? "ابحث عن صنف مخبز…" : undefined}
+          />
+        </div>
         <div className="ui-table-wrap" style={{ marginBottom: "0.75rem" }}>
           <table className="ui-table">
             <thead><tr><th>الصنف</th><th>الكمية</th><th></th></tr></thead>
@@ -279,7 +331,7 @@ export default function Warehouses() {
                 <tr key={it.product_id}>
                   <td>{it.name}</td>
                   <td><QtyStepper className="ui-input" style={{ width: 140 }} min={0} value={it.quantity} onChange={(e) => setTransferItems((prev) => prev.map((x, idx) => idx === i ? { ...x, quantity: e.target.value } : x))} /></td>
-                  <td><Button variant="ghost" size="sm" icon="trash" onClick={() => setTransferItems((p) => p.filter((_, idx) => idx !== i))} /></td>
+                  <td><Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => setTransferItems((p) => p.filter((_, idx) => idx !== i))} /></td>
                 </tr>
               ))}
             </tbody>

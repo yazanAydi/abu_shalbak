@@ -17,6 +17,7 @@ export const ACCOUNTANT_PERMISSION_DEFS = [
   { key: "categories", labelAr: "التصنيفات", defaultEnabled: false },
   { key: "stock_count", labelAr: "جرد المخزون", defaultEnabled: false },
   { key: "bakery_supplies", labelAr: "مواد المخبز", defaultEnabled: false },
+  { key: "bakery", labelAr: "المخبز", defaultEnabled: false },
   { key: "warehouses", labelAr: "المستودعات", defaultEnabled: false },
   { key: "expiry", labelAr: "الصلاحية", defaultEnabled: true },
   { key: "finance", labelAr: "المالية", defaultEnabled: true },
@@ -38,7 +39,7 @@ export const ACCOUNTANT_PERMISSION_DEFS = [
   { key: "marketing", labelAr: "التسويق", defaultEnabled: false },
   { key: "deliveries", labelAr: "التوصيل", defaultEnabled: true },
   { key: "user_accounts", labelAr: "الحسابات", defaultEnabled: false },
-  { key: "employee_payroll", labelAr: "الموظفون", defaultEnabled: true },
+  { key: "employee_payroll", labelAr: "كشف حساب ورواتب الموظفين", defaultEnabled: true },
   { key: "store_settings", labelAr: "الإعدادات", defaultEnabled: false },
   { key: "currencies", labelAr: "العملات", defaultEnabled: false },
   { key: "permissions", labelAr: "الصلاحيات", defaultEnabled: false },
@@ -153,7 +154,8 @@ export const HOME_PATH_NAV_ORDER = [
   { path: "/units", key: "units" },
   { path: "/categories", key: "categories" },
   { path: "/inventory", key: "stock_count" },
-  { path: "/bakery-supplies", key: "bakery_supplies" },
+  { path: "/bakery", key: "bakery" },
+  { path: "/bakery/products", key: "bakery_supplies" },
   { path: "/warehouses", key: "warehouses" },
   { path: "/expiry", key: "expiry" },
   { path: "/finance", key: "finance" },
@@ -175,6 +177,8 @@ export const HOME_PATH_NAV_ORDER = [
   { path: "/marketing", key: "marketing" },
   { path: "/deliveries", key: "deliveries" },
   { path: "/manage-users", key: "user_accounts" },
+  { path: "/employee-statements", key: "employee_payroll" },
+  { path: "/employee-salaries", key: "employee_payroll" },
   { path: "/cashier-payroll", key: "employee_payroll" },
   { path: "/settings", key: "store_settings" },
   { path: "/settings/currency", key: "currencies" },
@@ -194,8 +198,14 @@ export function homePathForPermissions(role, permissions) {
 
 export function permissionKeyForPath(pathname) {
   if (!pathname) return null;
+  if (pathname === "/bakery-supplies") return "bakery_supplies";
   const exact = HOME_PATH_NAV_ORDER.find((item) => item.path === pathname);
   if (exact) return exact.key;
+  if (pathname.startsWith("/bakery/products")) return "bakery_supplies";
+  if (pathname.startsWith("/bakery/sales")) return "bakery";
+  if (pathname.startsWith("/bakery/purchases") || pathname.startsWith("/bakery/returns")) return "purchases";
+  if (pathname.startsWith("/bakery/expiry")) return "expiry";
+  if (pathname.startsWith("/bakery/movements")) return "stock_count";
   if (pathname.startsWith("/products/")) return "products";
   if (pathname.startsWith("/suppliers/") && pathname.endsWith("/statement")) return "account_statement";
   if (pathname.startsWith("/vouchers/")) return "vouchers";
@@ -205,6 +215,27 @@ export function permissionKeyForPath(pathname) {
 }
 
 export function canAccessOfficePath(role, permissions, pathname) {
+  if (
+    pathname === "/bakery-supplies" ||
+    (pathname && pathname.startsWith("/bakery/products"))
+  ) {
+    return (
+      hasAccountantPermission(role, permissions, "bakery_supplies") ||
+      hasAccountantPermission(role, permissions, "bakery")
+    );
+  }
+  if (pathname && pathname.startsWith("/bakery/purchases")) {
+    return (
+      hasAccountantPermission(role, permissions, "purchases") ||
+      hasAccountantPermission(role, permissions, "bakery_supplies")
+    );
+  }
+  if (pathname && pathname.startsWith("/bakery/movements")) {
+    return (
+      hasAccountantPermission(role, permissions, "stock_count") ||
+      hasAccountantPermission(role, permissions, "bakery_supplies")
+    );
+  }
   const key = permissionKeyForPath(pathname);
   if (!key) return role === "admin";
   return hasAccountantPermission(role, permissions, key);

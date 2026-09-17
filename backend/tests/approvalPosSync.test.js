@@ -6,6 +6,7 @@ import {
   login,
   authHeader,
   withCheckoutKey,
+  createTestEmployee,
 } from "./helpers.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 import { buildPosDecisionSnapshot } from "../routes/pos.js";
@@ -71,10 +72,11 @@ describe("POS recovery after Telegram sulaf/zimma decisions", () => {
   }
 
   test("cashier GET and unread see sulaf approve/reject from Telegram", async () => {
+    const empA = await createTestEmployee(ctx.db, { name: "أحمد" });
     const createRes = await request(ctx.app)
       .post("/api/v1/advance-requests")
       .set(authHeader(cashierToken))
-      .send({ employee_name: "أحمد", amount: 40, notes: "سلفة" });
+      .send({ employee_id: empA.id, amount: 40, notes: "سلفة" });
     expect(createRes.status).toBe(201);
     const requestId = unwrap(createRes.body).request_id;
 
@@ -107,10 +109,11 @@ describe("POS recovery after Telegram sulaf/zimma decisions", () => {
       .set(authHeader(cashierToken));
     expect(unwrap(unreadAfter.body).some((r) => r.id === requestId)).toBe(false);
 
+    const empB = await createTestEmployee(ctx.db, { name: "محمود" });
     const rejectCreate = await request(ctx.app)
       .post("/api/v1/advance-requests")
       .set(authHeader(cashierToken))
-      .send({ employee_name: "محمود", amount: 15 });
+      .send({ employee_id: empB.id, amount: 15 });
     const rejectId = unwrap(rejectCreate.body).request_id;
     const rejected = await telegramCallback("sulaf", "reject", rejectId);
     expect(rejected.action).toBe("reject");

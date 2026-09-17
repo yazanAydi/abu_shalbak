@@ -1,4 +1,4 @@
-import { buildPrintBrandingHtml, buildPartyBalanceHtml, buildPrintedByHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
+import { buildPrintBrandingHtml, buildPartyBalanceHtml, buildPrintedByHtml, A4_PRINT_SHEET_CSS, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { formatDiscountPercent } from "./saleInvoiceTotals";
 import { dateOnly, formatDateTimeShopAr } from "./format";
@@ -28,8 +28,7 @@ function formatTimestamp(value) {
  * @param {object} doc full sales invoice with items[]
  * @param {object} [store]
  */
-export function printSalesInvoiceDoc(doc, store = {}) {
-  if (!doc) return;
+export function buildSalesInvoicePrintHtml(doc, store = {}) {
   const items = doc.items || [];
   const docNo = doc.invoice_no ?? doc.id;
   const docDate = dateOnly(doc.invoice_date);
@@ -43,12 +42,6 @@ export function printSalesInvoiceDoc(doc, store = {}) {
     ? Math.round((discountSaved / listGrossTotal) * 10000) / 100
     : 0;
   const hasDiscount = discountSaved > 0.005;
-
-  const w = window.open("", "_blank", "width=900,height=840");
-  if (!w) {
-    window.alert("اسمح بفتح النافذة المنبثقة للطباعة.");
-    return;
-  }
 
   const bodyRows = items
     .map(
@@ -77,23 +70,16 @@ export function printSalesInvoiceDoc(doc, store = {}) {
     `<tr class="grand"><td>الصافي</td><td class="num">${money(afterDiscount)}</td></tr>`,
   ].join("");
 
-  const html = `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="ar-u-nu-latn" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <title>فتورة مبيعات #${escapeHtml(docNo)}</title>
   <style>
-    @page { size: A4; margin: 12mm; }
-    body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; color: #111; margin: 0; padding: 12px; }
-    h1 { text-align: center; margin: 6px 0 10px; font-size: 18px; }
-    .meta { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 8px 0 12px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { border: 1px solid #999; padding: 6px 8px; text-align: right; }
-    th { background: #1f3a5f; color: #fff; }
-    td.num { font-variant-numeric: tabular-nums; }
-    .totals { width: 50%; margin-top: 12px; margin-inline-start: auto; }
-    .totals .grand td { background: #eef2f7; font-weight: 700; }
+    @page { size: A4; }
+    ${A4_PRINT_SHEET_CSS}
     ${PRINT_BRANDING_CSS}
+    th { background: #1f3a5f; color: #fff; }
   </style>
 </head>
 <body>
@@ -104,7 +90,7 @@ export function printSalesInvoiceDoc(doc, store = {}) {
     <div><strong>التاريخ:</strong> ${escapeHtml(docDate)}</div>
     <div><strong>الحالة:</strong> ${escapeHtml(STATUS_LABEL[doc.status] || doc.status || "—")}</div>
     ${doc.ref_text ? `<div><strong>المرجع:</strong> ${escapeHtml(doc.ref_text)}</div>` : ""}
-    <div><strong>تاريخ الطباعة:</strong> ${escapeHtml(formatTimestamp())}</div>
+    <div><strong>تاريخ الطباعة:</strong> <span class="when">${escapeHtml(formatTimestamp())}</span></div>
   </div>
   <table>
     <thead>
@@ -114,15 +100,27 @@ export function printSalesInvoiceDoc(doc, store = {}) {
     </thead>
     <tbody>${bodyRows || `<tr><td colspan="9" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
-  <table class="totals">${totalsRows}</table>
+  <div class="totals-wrap"><table class="totals">${totalsRows}</table></div>
   ${buildPartyBalanceHtml(doc.party_balance)}
   ${buildPrintedByHtml()}
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}
   <p class="footer">${escapeHtml(storeName)} — فتورة مبيعات</p>
 </body>
 </html>`;
+}
 
-  w.document.write(html);
+/**
+ * @param {object} doc full sales invoice with items[]
+ * @param {object} [store]
+ */
+export function printSalesInvoiceDoc(doc, store = {}) {
+  if (!doc) return;
+  const w = window.open("", "_blank", "width=900,height=840");
+  if (!w) {
+    window.alert("اسمح بفتح النافذة المنبثقة للطباعة.");
+    return;
+  }
+  w.document.write(buildSalesInvoicePrintHtml(doc, store));
   w.document.close();
   printDocumentWhenReady(w.document);
 }

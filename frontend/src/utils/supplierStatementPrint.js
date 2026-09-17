@@ -1,4 +1,4 @@
-import { buildPrintBrandingHtml, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
+import { buildPrintBrandingHtml, A4_PRINT_SHEET_CSS, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { dateOnly, formatDateTimeShopAr } from "./format";
 
@@ -85,24 +85,13 @@ export function printSupplierStatement(report) {
   <meta charset="utf-8" />
   <title>${escapeHtml(report.report_title || "كشف حساب المورد")}</title>
   <style>
-    @page { size: A4 landscape; margin: 10mm; }
-    body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11px; color: #111; margin: 0; padding: 12px; }
-    h1 { text-align: center; margin: 0 0 4px; font-size: 18px; }
-    .store { text-align: center; font-weight: 700; margin-bottom: 8px; font-size: 14px; }
-    .meta { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 6px 0 10px; }
-    .meta div { font-size: 12px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { border: 1px solid #999; padding: 5px 6px; text-align: right; vertical-align: top; }
+    @page { size: A4 landscape; }
+    ${A4_PRINT_SHEET_CSS}
+    ${PRINT_BRANDING_CSS}
     th { background: #1f3a5f; color: #fff; }
-    td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
     .balance-neg { color: #c53030; font-weight: 600; }
     tfoot td { background: #eef2f7; font-weight: 700; }
-    .final { margin-top: 12px; font-size: 13px; font-weight: 700; }
-    .signatures { margin-top: 36px; display: flex; justify-content: space-between; }
-    .signatures div { width: 30%; border-top: 1px solid #333; padding-top: 6px; text-align: center; font-size: 12px; }
-    .footer { margin-top: 12px; font-size: 10px; color: #666; text-align: center; }
-    ${PRINT_BRANDING_CSS}
-    @media print { thead { display: table-header-group; } tr { page-break-inside: avoid; } }
+    .final { margin-top: 6px; font-size: 11pt; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -126,6 +115,10 @@ export function printSupplierStatement(report) {
     <div><strong>الفترة:</strong> ${escapeHtml(range)}</div>
     <div><strong>تاريخ الإصدار:</strong> ${escapeHtml(formatTimestamp(report.generated_at))}</div>
   </div>
+  <p class="footer" style="text-align:right;margin:0 0 8px">
+    دائن يزيد ما علينا للمورد. مدين ينقصه. مرتجع المشتريات حركة مدينة بتاريخ المرتجع. الرصيد الموجب = علينا للمورد.
+    ${summary.totalReturns != null ? ` إجمالي المرتجعات: ${amountCell(summary.totalReturns)}.` : ""}
+  </p>
   <table>
     <thead>
       <tr>
@@ -144,7 +137,7 @@ export function printSupplierStatement(report) {
       </tr>
     </tfoot>
   </table>
-  <div class="final">الرصيد النهائي: ${amountCell(Math.abs(finalBalance))} (${escapeHtml(balanceLabel(finalBalance))})</div>
+  <div class="final">الرصيد النهائي: ${amountCell(finalBalance)} (${escapeHtml(balanceLabel(finalBalance))})</div>
   <div class="signatures">
     <div>توقيع المحاسب</div>
     <div>توقيع المورد</div>

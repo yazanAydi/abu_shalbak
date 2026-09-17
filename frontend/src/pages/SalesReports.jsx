@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
@@ -18,17 +19,19 @@ import { exportToCsv } from "../utils/reportExport";
 import {
   PageHeader,
   Card,
+  CardHeader,
   CardBody,
   DataTable,
+  FilterBar,
   FormField,
-  FormGrid,
-  Input,
+  DateField,
   PrimaryButton,
   SecondaryButton,
   StatCard,
   Tabs,
   EmptyState,
   Skeleton,
+  Notice,
   useToast,
 } from "../components/ui";
 
@@ -83,7 +86,7 @@ export default function SalesReports() {
       setDailyReport(data);
       setRangeReport(null);
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر تحميل التقرير");
+      setErr(apiErrorMessage(e, "تعذّر تحميل التقرير"));
       setDailyReport(null);
     } finally {
       setLoading(false);
@@ -111,7 +114,7 @@ export default function SalesReports() {
       setRangeReport(data);
       setDailyReport(null);
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر تحميل التقرير");
+      setErr(apiErrorMessage(e, "تعذّر تحميل التقرير"));
       setRangeReport(null);
     } finally {
       setLoading(false);
@@ -252,34 +255,33 @@ export default function SalesReports() {
 
       <Tabs tabs={MODE_TABS} active={mode} onChange={onModeChange} />
 
-      <Card className="ui-mt-md">
-        <CardBody>
-          <FormGrid columns={mode === "day" ? 1 : 2}>
-            {mode === "day" ? (
-              <FormField label="تاريخ التقرير">
-                <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-              </FormField>
-            ) : (
-              <>
-                <FormField label="من">
-                  <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-                </FormField>
-                <FormField label="إلى">
-                  <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-                </FormField>
-              </>
-            )}
-          </FormGrid>
-
-          <div className="sales-report-presets" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+      <FilterBar
+        className="ui-mt-md"
+        actions={
+          <>
             {presets.map((p) => (
               <SecondaryButton key={p.id} type="button" onClick={() => applyPreset(p)}>
                 {p.label}
               </SecondaryButton>
             ))}
-          </div>
-        </CardBody>
-      </Card>
+          </>
+        }
+      >
+        {mode === "day" ? (
+          <FormField label="تاريخ التقرير" className="ui-field--date">
+            <DateField value={date} onChange={(e) => setDate(e.target.value)} />
+          </FormField>
+        ) : (
+          <>
+            <FormField label="من" className="ui-field--date">
+              <DateField value={from} onChange={(e) => setFrom(e.target.value)} />
+            </FormField>
+            <FormField label="إلى" className="ui-field--date">
+              <DateField value={to} onChange={(e) => setTo(e.target.value)} />
+            </FormField>
+          </>
+        )}
+      </FilterBar>
 
       {err ? (
         <EmptyState title={err} className="ui-mt-md" />
@@ -291,9 +293,7 @@ export default function SalesReports() {
       ) : mode === "day" && dailyReport ? (
         <>
           {incompleteProfitNote(dailyReport) ? (
-            <p className="dashboard-meta-line muted ui-mt-md" role="status">
-              {INCOMPLETE_PROFIT_AR}
-            </p>
+            <Notice tone="warn" className="ui-mt-md">{INCOMPLETE_PROFIT_AR}</Notice>
           ) : null}
           <div className="ui-stat-grid ui-mt-md">
             {dailyStatCards.map((c) => (
@@ -302,15 +302,15 @@ export default function SalesReports() {
           </div>
 
           <Card className="ui-mt-md">
-            <CardBody>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                <h2 className="dashboard-section-title" style={{ margin: 0, border: "none", padding: 0 }}>
-                  تفاصيل الدفع والتحصيل
-                </h2>
+            <CardHeader
+              title="تفاصيل الدفع والتحصيل"
+              actions={
                 <Link to={`/shift-audit?date_from=${date}&date_to=${date}`} className="dashboard-inline-link">
                   عرض الورديات لهذا اليوم
                 </Link>
-              </div>
+              }
+            />
+            <CardBody>
               <div className="ui-stat-grid ui-mt-sm">
                 <StatCard label="نقد (إجمالي)" value={ils(dailyReport.cash_total)} icon="finance" />
                 <StatCard label="بطاقة (إجمالي)" value={ils(dailyReport.card_total)} icon="finance" />
@@ -323,10 +323,8 @@ export default function SalesReports() {
           </Card>
 
           <Card className="ui-mt-md">
+            <CardHeader title="أفضل المنتجات" />
             <CardBody>
-              <h2 className="dashboard-section-title" style={{ margin: 0, border: "none", padding: 0 }}>
-                أفضل المنتجات
-              </h2>
               {topProducts.length === 0 ? (
                 <p className="dashboard-meta-line muted ui-mt-sm">لا مبيعات في هذا اليوم</p>
               ) : (
@@ -338,9 +336,7 @@ export default function SalesReports() {
       ) : mode === "range" && rangeReport ? (
         <>
           {incompleteProfitNote(rangeReport) ? (
-            <p className="dashboard-meta-line muted ui-mt-md" role="status">
-              {INCOMPLETE_PROFIT_AR}
-            </p>
+            <Notice tone="warn" className="ui-mt-md">{INCOMPLETE_PROFIT_AR}</Notice>
           ) : null}
           <div className="ui-stat-grid ui-mt-md">
             {rangeStatCards.map((c) => (
@@ -349,10 +345,8 @@ export default function SalesReports() {
           </div>
 
           <Card className="ui-mt-md">
+            <CardHeader title="التفصيل اليومي" />
             <CardBody>
-              <h2 className="dashboard-section-title" style={{ margin: 0, border: "none", padding: 0 }}>
-                التفصيل اليومي
-              </h2>
               {(rangeReport.by_day || []).length === 0 ? (
                 <p className="dashboard-meta-line muted ui-mt-sm">لا مبيعات في هذه الفترة</p>
               ) : (

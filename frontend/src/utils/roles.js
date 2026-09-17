@@ -17,6 +17,13 @@ export const ROLE_LABELS_AR = {
   bakery_employee: "موظف مخبز",
 };
 
+/** Shop-floor roles that get a linked employee record */
+export const ATTENDANCE_ROLES = ["cashier", "bakery_employee", "shelves_employee"];
+
+export function isAttendanceRole(role) {
+  return ATTENDANCE_ROLES.includes(role);
+}
+
 /** Roles that use face kiosk only — no password / app login */
 export const KIOSK_ONLY_ROLES = ["bakery_employee", "shelves_employee"];
 

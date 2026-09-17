@@ -29,6 +29,10 @@ import { buildCustomerLedger } from "../utils/customerLedger.js";
 import { getAccountStatement } from "../utils/accountStatementService.js";
 import { withTransaction } from "../utils/dbTx.js";
 import {
+  assertOrdinaryCustomerWritable,
+  sqlOrdinaryCustomer,
+} from "../utils/employeeCustomer.js";
+import {
   createStatementHistoryPreviewHandler,
   createStatementHistoryConfirmHandler,
 } from "./statementHistoryHandlers.js";
@@ -58,6 +62,7 @@ async function applyCustomerMetadataPatch(db, id, body) {
   return withTransaction(db, async () => {
     const live = await db.get("SELECT * FROM customers WHERE id = ?", [id]);
     if (!live) throw httpErr(404, "العميل غير موجود", "NOT_FOUND");
+    await assertOrdinaryCustomerWritable(db, id);
 
     const b = body || {};
     const sets = [];
@@ -176,7 +181,7 @@ export function createCustomersRouter(db) {
 
 
 
-    let sql = `${CUSTOMER_SELECT} WHERE 1=1${groupFilter.clause}`;
+    let sql = `${CUSTOMER_SELECT} WHERE ${sqlOrdinaryCustomer("c")}${groupFilter.clause}`;
 
     if (q) {
 
@@ -350,7 +355,7 @@ export function createCustomersRouter(db) {
 
       return res.status(400).json({
 
-        error: "لا يمكن حذف فئة مرتبطة بعملاء",
+        error: "لا يمكن حذف فئة مرتبطة بعملاء أو حسابات ذمة موظفين",
 
         code: "GROUP_IN_USE",
 
@@ -376,7 +381,7 @@ export function createCustomersRouter(db) {
 
 
 
-    const whereParts = [];
+    const whereParts = [sqlOrdinaryCustomer("c")];
 
     if (onlyOpen) whereParts.push("ABS(c.balance) > 0.009");
 
@@ -410,9 +415,9 @@ export function createCustomersRouter(db) {
 
     const totalsWhere = groupFilter.clause
 
-      ? `WHERE c.balance_group_id = ?`
+      ? `WHERE ${sqlOrdinaryCustomer("c")} AND c.balance_group_id = ?`
 
-      : "";
+      : `WHERE ${sqlOrdinaryCustomer("c")}`;
 
     const totals = await db.get(
 
@@ -442,7 +447,7 @@ export function createCustomersRouter(db) {
 
        FROM customer_balance_groups g
 
-       LEFT JOIN customers c ON c.balance_group_id = g.id
+       LEFT JOIN customers c ON c.balance_group_id = g.id AND ${sqlOrdinaryCustomer("c")}
 
        WHERE g.active = 1
 
@@ -594,33 +599,25 @@ export function createCustomersRouter(db) {
 
 
 
-  router.delete("/:id", requireAuth, requireCustomers, async (req, res) => {
-
-    const existing = await db.get("SELECT * FROM customers WHERE id = ?", [req.params.id]);
-
-    if (!existing) return res.status(404).json({ error: "العميل غير موجود", code: "NOT_FOUND" });
-
-    const hasActivity = await customerHasLedgerActivity(db, existing.id);
-
-    if (hasActivity) {
-
-      return res.status(400).json({
-
-        error: "لا يمكن حذف عميل له حركات محاسبية (مبيعات أو سندات)",
-
-        code: "HAS_LEDGER_ACTIVITY",
-
-      });
-
+  router.delete("/:id", requireAuth, requireCustomers, async (req, res, next) => {
+    try {
+      const existing = await db.get("SELECT * FROM customers WHERE id = ?", [req.params.id]);
+      if (!existing) return res.status(404).json({ error: "العميل غير موجود", code: "NOT_FOUND" });
+      await assertOrdinaryCustomerWritable(db, existing.id);
+      const hasActivity = await customerHasLedgerActivity(db, existing.id);
+      if (hasActivity) {
+        return res.status(400).json({
+          error: "لا يمكن حذف عميل له حركات محاسبية (مبيعات أو سندات)",
+          code: "HAS_LEDGER_ACTIVITY",
+        });
+      }
+      await db.run("DELETE FROM customers WHERE id = ?", [req.params.id]);
+      res.json({ success: true });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
     }
-
-    await db.run("DELETE FROM customers WHERE id = ?", [req.params.id]);
-
-    res.json({ success: true });
-
   });
-
-
 
   router.get("/:id/ledger", requireAuth, requireFinance, async (req, res) => {
 
@@ -725,6 +722,7 @@ export function createCustomersRouter(db) {
       const result = await withTransaction(db, async () => {
         const customer = await db.get("SELECT * FROM customers WHERE id = ?", [req.params.id]);
         if (!customer) throw httpErr(404, "العميل غير موجود", "NOT_FOUND");
+        await assertOrdinaryCustomerWritable(db, customer.id);
         await db.run("UPDATE customers SET balance = balance - ? WHERE id = ?", [delta, customer.id]);
         const live = await db.get("SELECT balance FROM customers WHERE id = ?", [customer.id]);
         return { new_balance: round2(Number(live.balance)) };

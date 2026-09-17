@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -73,7 +74,7 @@ export default function UnitsManagement() {
       if (status === 404) {
         setCatalogErr("تعذّر تحميل القائمة — أعد تشغيل الخادم (npm run start:api)");
       } else {
-        setCatalogErr(e.response?.data?.error || e.message || "تعذّر تحميل قائمة الوحدات");
+        setCatalogErr(apiErrorMessage(e, "تعذّر تحميل قائمة الوحدات"));
       }
       setCatalog([]);
       setCatalogTotal(0);
@@ -90,7 +91,7 @@ export default function UnitsManagement() {
       });
       setUnitNames(Array.isArray(data) ? data : []);
     } catch (e) {
-      toast.error(e.response?.data?.error || "تعذّر تحميل أسماء الوحدات");
+      toast.error(apiErrorMessage(e, "تعذّر تحميل أسماء الوحدات"));
     } finally {
       setLoadingNames(false);
     }
@@ -113,7 +114,7 @@ export default function UnitsManagement() {
       setNewUnitName("");
       loadUnitNames();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الإضافة");
+      toast.error(apiErrorMessage(e, "فشل الإضافة"));
     } finally {
       setSavingName(false);
     }
@@ -128,7 +129,7 @@ export default function UnitsManagement() {
       toast.success("تم الحذف");
       loadUnitNames();
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل الحذف");
+      toast.error(apiErrorMessage(e, "فشل الحذف"));
     }
   }
 
@@ -269,7 +270,7 @@ export default function UnitsManagement() {
                 header: "",
                 align: "left",
                 render: (c) => (
-                  <Button variant="ghost" size="sm" icon="trash" onClick={() => removeUnitName(c)}>
+                  <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => removeUnitName(c)}>
                     حذف
                   </Button>
                 ),

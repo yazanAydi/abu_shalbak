@@ -1,4 +1,5 @@
 import { round2 } from "./money.js";
+import { normalizeCheckoutNotes } from "./checkoutNotes.js";
 
 const API_BASE = "https://api.telegram.org/bot";
 const TELEGRAM_MAX_TEXT = 4096;
@@ -638,24 +639,41 @@ function buildApprovalKeyboard(prefix, requestId, withButtons) {
   };
 }
 
+function zimmaPartyLines({ customerName, employeeName }) {
+  const lines = [];
+  if (employeeName) lines.push(`الموظف: ${employeeName}`);
+  if (customerName) lines.push(`العميل: ${customerName}`);
+  return lines;
+}
+
+function zimmaNotesLine(notes) {
+  const text = normalizeCheckoutNotes(notes);
+  return text ? `ملاحظات: ${text}` : null;
+}
+
 export async function sendOnAccountApprovalMessage({
   requestId,
   cashierName,
   customerName,
+  employeeName = null,
   onAccountAmount,
   total,
+  notes = null,
 }) {
   const { token, chatId } = zimmaBotConfig();
   const withButtons = isZimmaWebhookConfigured();
   const text = [
     `طلب بيع على الذمة #${requestId}`,
     `الكاشير: ${cashierName}`,
-    `العميل: ${customerName}`,
+    ...zimmaPartyLines({ customerName, employeeName }),
     `مبلغ الذمة: ${ils(onAccountAmount)}`,
     `إجمالي الفاتورة: ${ils(total)}`,
+    zimmaNotesLine(notes),
     "",
     withButtons ? "اختر موافقة أو رفض:" : "للموافقة أو الرفض: لوحة الإدارة → موافقات الذمة",
-  ].join("\n");
+  ]
+    .filter((line) => line != null)
+    .join("\n");
   const body = { chat_id: chatId, text };
   const markup = buildApprovalKeyboard("zimma", requestId, withButtons);
   if (markup) body.reply_markup = markup;
@@ -710,11 +728,13 @@ export async function editOnAccountRequestMessage({
   requestId,
   status,
   customerName,
+  employeeName = null,
   onAccountAmount,
   total,
   transactionId,
   approverName = null,
   decisionSource = null,
+  notes = null,
 }) {
   const statusAr =
     status === "approved" ? "✅ تمت الموافقة" : status === "rejected" ? "❌ مرفوض" : status;
@@ -722,13 +742,14 @@ export async function editOnAccountRequestMessage({
     decisionSource === "telegram" ? "تيليجرام" : decisionSource === "admin" ? "لوحة الإدارة" : null;
   const lines = [
     `طلب بيع على الذمة #${requestId}`,
-    `العميل: ${customerName}`,
+    ...zimmaPartyLines({ customerName, employeeName }),
     `مبلغ الذمة: ${ils(onAccountAmount)}`,
     `إجمالي الفاتورة: ${ils(total)}`,
+    zimmaNotesLine(notes),
     transactionId ? `الفاتورة: #${transactionId}` : null,
     "",
     statusAr,
-  ].filter(Boolean);
+  ].filter((line) => line != null);
   if (approverName) lines.push(`بواسطة: ${approverName}`);
   if (sourceAr) lines.push(`المصدر: ${sourceAr}`);
   await editApprovalMessage({ botKind: "zimma", messageId, lines });
@@ -763,11 +784,13 @@ export async function sendOnAccountDecisionStatusMessage({
   requestId,
   status,
   customerName,
+  employeeName = null,
   onAccountAmount,
   total,
   transactionId,
   approverName,
   decisionSource = "admin",
+  notes = null,
 }) {
   if (!isZimmaTelegramConfigured()) return null;
   const { token, chatId } = zimmaBotConfig();
@@ -775,14 +798,15 @@ export async function sendOnAccountDecisionStatusMessage({
   const sourceAr = decisionSource === "telegram" ? "تيليجرام" : "لوحة الإدارة";
   const text = [
     `تحديث طلب ذمة #${requestId}`,
-    `العميل: ${customerName}`,
+    ...zimmaPartyLines({ customerName, employeeName }),
     `مبلغ الذمة: ${ils(onAccountAmount)}`,
+    zimmaNotesLine(notes),
     transactionId ? `الفاتورة: #${transactionId}` : null,
     statusAr,
     approverName ? `بواسطة: ${approverName}` : null,
     `المصدر: ${sourceAr}`,
   ]
-    .filter(Boolean)
+    .filter((line) => line != null)
     .join("\n");
   const result = await telegramRequest("sendMessage", { chat_id: chatId, text }, token);
   return result?.message_id ?? null;

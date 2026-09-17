@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import Icon from "../icons/Icon";
+import { handleEnterNavKeyDown } from "../../utils/focusNavigation";
 
 export default function Modal({ open, title, onClose, children, footer, size }) {
   useEffect(() => {
@@ -22,7 +23,9 @@ export default function Modal({ open, title, onClose, children, footer, size }) 
             <Icon name="close" size={20} />
           </button>
         </div>
-        <div className="ui-modal__body">{children}</div>
+        <div className="ui-modal__body" data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
+          {children}
+        </div>
         {footer && <div className="ui-modal__footer">{footer}</div>}
       </div>
     </div>

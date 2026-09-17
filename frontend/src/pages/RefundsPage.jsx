@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useState } from "react";
 import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
 import { Link } from "react-router-dom";
@@ -80,7 +81,7 @@ export default function RefundsPage() {
       setRows(Array.isArray(listRes.data) ? listRes.data : []);
       setSelected(new Set());
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر التحميل");
+      setErr(apiErrorMessage(e, "تعذّر التحميل"));
       setRows([]);
     } finally {
       setLoading(false);
@@ -159,7 +160,7 @@ export default function RefundsPage() {
       setBulkNote("");
       await fetchList();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشلت العملية الجماعية");
+      setErr(apiErrorMessage(e, "فشلت العملية الجماعية"));
     }
   }
 
@@ -173,7 +174,7 @@ export default function RefundsPage() {
       }
       await fetchList();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل الحذف");
+      setErr(apiErrorMessage(e, "فشل الحذف"));
     }
   }
 
@@ -186,7 +187,7 @@ export default function RefundsPage() {
       const url = URL.createObjectURL(res.data);
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل الطباعة");
+      setErr(apiErrorMessage(e, "فشل الطباعة"));
     }
   }
 

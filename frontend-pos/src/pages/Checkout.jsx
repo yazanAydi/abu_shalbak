@@ -75,6 +75,7 @@ export default function Checkout() {
   const [activePromos, setActivePromos] = useState([]);
   const [selectedPayment, setSelectedPayment] = useState(null);
   const [customerId, setCustomerId] = useState(null);
+  const [employeeId, setEmployeeId] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [payModalOpen, setPayModalOpen] = useState(false);
   const [clearCartOpen, setClearCartOpen] = useState(false);
@@ -220,7 +221,7 @@ export default function Checkout() {
     [cartItems, activePromos]
   );
 
-  const { subtotal, tax, discount, total } = estimated;
+  const { tax, discount, total } = estimated;
 
   const addToCart = useCallback((product) => {
     if (isLoading) return;
@@ -247,6 +248,7 @@ export default function Checkout() {
     dispatch({ type: "CLEAR_CART" });
     setSelectedPayment(null);
     setCustomerId(null);
+    setEmployeeId(null);
     setPayModalOpen(false);
     setActiveSuspendedSaleId(null);
     focusBarcodeInput();
@@ -339,6 +341,7 @@ export default function Checkout() {
         selectedPayment,
         cartItems,
         customerId,
+        employeeId,
         isLoading,
         isSubmittingRef,
         idempotencyKeyRef,
@@ -350,6 +353,7 @@ export default function Checkout() {
         setPayModalOpen,
         setSelectedPayment,
         setCustomerId,
+        setEmployeeId,
         setActiveSuspendedSaleId,
         loadShift,
         loadSuspendedList,
@@ -359,6 +363,7 @@ export default function Checkout() {
     [
       cartItems,
       customerId,
+      employeeId,
       isLoading,
       loadShift,
       loadSuspendedList,
@@ -380,6 +385,7 @@ export default function Checkout() {
       submittedPayloadRef.current = null;
       setSelectedPayment(null);
       setCustomerId(null);
+      setEmployeeId(null);
       writeWaitingRequestId("onAccount", null);
       setOnAccountWaitingId(null);
       setActiveSuspendedSaleId(null);
@@ -464,6 +470,7 @@ export default function Checkout() {
     dispatch({ type: "CLEAR_SALE_ERR" });
     setSelectedPayment("cash");
     setCustomerId(null);
+    setEmployeeId(null);
     setPayModalOpen(true);
   }
 
@@ -645,6 +652,7 @@ export default function Checkout() {
     setPayModalOpen(false);
     setSelectedPayment(null);
     setCustomerId(null);
+    setEmployeeId(null);
     focusBarcodeInput();
   }
 
@@ -713,36 +721,8 @@ export default function Checkout() {
       </div>
 
       <footer className="pos-footer">
-        <div className="pos-toolbar">
-          <button type="button" className="pos-toolbar-btn pos-toolbar-btn--danger" onClick={requestClearCart}>
-            مسح السلة
-          </button>
-          <button
-            type="button"
-            className="pos-toolbar-btn"
-            onClick={holdCartNow}
-            disabled={holdLoading || !shiftReady}
-          >
-            {holdLoading ? "جاري التعليق…" : "تعليق الفاتورة"}
-          </button>
-          <button
-            type="button"
-            className="pos-toolbar-btn pos-toolbar-btn--badge"
-            onClick={openSuspendedList}
-          >
-            الفواتير المعلقة
-            {suspendedCount > 0 ? (
-              <span className="pos-toolbar-badge">({suspendedCount})</span>
-            ) : null}
-          </button>
-          <button type="button" className="pos-toolbar-btn" onClick={() => setRefundOpen(true)}>
-            استرجاع
-          </button>
-          <button type="button" className="pos-toolbar-btn" onClick={() => setAdvanceOpen(true)}>
-            سلف
-          </button>
-        </div>
         <div className="pos-shortcut-hints">
+          <span>{formatShortcutHint(shortcuts.completeSale)}</span>
           <span>{formatShortcutHint(shortcuts.undoLastScan)}</span>
           <span>{formatShortcutHint(shortcuts.newInvoice)}</span>
           {shortcuts.holdCart.key ? (
@@ -753,7 +733,6 @@ export default function Checkout() {
           ) : null}
         </div>
         <PosPaymentPanel
-          subtotal={subtotal}
           tax={tax}
           discount={discount}
           total={total}
@@ -765,7 +744,37 @@ export default function Checkout() {
           receiptData={receiptData}
           onPrintLocal={doPrintLocal}
           onOpenReceiptTab={doOpenReceiptTab}
-        />
+        >
+          <div className="pos-toolbar">
+            <button type="button" className="pos-toolbar-btn pos-toolbar-btn--danger" onClick={requestClearCart}>
+              مسح السلة
+            </button>
+            <button
+              type="button"
+              className="pos-toolbar-btn"
+              onClick={holdCartNow}
+              disabled={holdLoading || !shiftReady}
+            >
+              {holdLoading ? "جاري التعليق…" : "تعليق الفاتورة"}
+            </button>
+            <button
+              type="button"
+              className="pos-toolbar-btn pos-toolbar-btn--badge"
+              onClick={openSuspendedList}
+            >
+              الفواتير المعلقة
+              {suspendedCount > 0 ? (
+                <span className="pos-toolbar-badge">({suspendedCount})</span>
+              ) : null}
+            </button>
+            <button type="button" className="pos-toolbar-btn" onClick={() => setRefundOpen(true)}>
+              استرجاع
+            </button>
+            <button type="button" className="pos-toolbar-btn" onClick={() => setAdvanceOpen(true)}>
+              سلف
+            </button>
+          </div>
+        </PosPaymentPanel>
       </footer>
 
       <Suspense fallback={null}>
@@ -872,8 +881,10 @@ export default function Checkout() {
             detailLine={(d) => {
               if (!d) return null;
               const parts = [];
+              if (d.employee_name) parts.push(`الموظف: ${d.employee_name}`);
               if (d.customer_name) parts.push(`العميل: ${d.customer_name}`);
               if (d.on_account_amount != null) parts.push(`الذمة: ${ils(d.on_account_amount)}`);
+              if (d.notes) parts.push(d.notes);
               return parts.length ? parts.join(" — ") : null;
             }}
             onClose={handleOnAccountWaitingClose}
@@ -913,6 +924,8 @@ export default function Checkout() {
         onSelectPayment={setSelectedPayment}
         customerId={customerId}
         onSelectCustomer={setCustomerId}
+        employeeId={employeeId}
+        onSelectEmployee={setEmployeeId}
         error={error}
         isLoading={isLoading}
         onTarhil={completeSale}

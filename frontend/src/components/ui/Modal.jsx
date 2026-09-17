@@ -5,6 +5,24 @@ import { handleEnterNavKeyDown } from "../../utils/focusNavigation";
 const FOCUSABLE =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
+let lockCount = 0;
+let previousOverflow = "";
+
+function lockBody() {
+  if (lockCount === 0 && typeof document !== "undefined") {
+    previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+  }
+  lockCount += 1;
+}
+
+function unlockBody() {
+  lockCount = Math.max(0, lockCount - 1);
+  if (lockCount === 0 && typeof document !== "undefined") {
+    document.body.style.overflow = previousOverflow;
+  }
+}
+
 function isEnabled(el) {
   return el && !el.hasAttribute("disabled");
 }
@@ -18,8 +36,18 @@ function getInitialFocus(root) {
   return field || items[0] || root;
 }
 
-export default function Modal({ open, title, onClose, children, footer, size }) {
+export default function Modal({
+  open,
+  title,
+  description,
+  onClose,
+  children,
+  footer,
+  size,
+  className,
+}) {
   const titleId = useId();
+  const descId = useId();
   const dialogRef = useRef(null);
   const previouslyFocused = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -27,6 +55,7 @@ export default function Modal({ open, title, onClose, children, footer, size }) 
 
   useEffect(() => {
     if (!open) return undefined;
+    lockBody();
     previouslyFocused.current = document.activeElement;
     const root = dialogRef.current;
     getInitialFocus(root)?.focus();
@@ -58,27 +87,47 @@ export default function Modal({ open, title, onClose, children, footer, size }) 
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
+      unlockBody();
       previouslyFocused.current?.focus?.();
     };
   }, [open]);
 
   if (!open) return null;
 
+  const sizeClass =
+    size === "xl"
+      ? "ui-modal--xl"
+      : size === "lg"
+        ? "ui-modal--lg"
+        : size === "full"
+          ? "ui-modal--full"
+          : size === "sm"
+            ? "ui-modal--sm"
+            : "";
+
   return (
     <div className="ui-modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
       <div
         ref={dialogRef}
-        className={`ui-modal ${size === "xl" ? "ui-modal--xl" : size === "lg" ? "ui-modal--lg" : ""}`}
+        className={["ui-modal", sizeClass, className].filter(Boolean).join(" ")}
         dir="rtl"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={description ? descId : undefined}
         tabIndex={-1}
       >
         <div className="ui-modal__header">
-          <h3 id={titleId} className="ui-modal__title">
-            {title}
-          </h3>
+          <div>
+            <h3 id={titleId} className="ui-modal__title">
+              {title}
+            </h3>
+            {description ? (
+              <p id={descId} className="ui-modal__description">
+                {description}
+              </p>
+            ) : null}
+          </div>
           <button type="button" className="ui-modal__close" onClick={onClose} aria-label="إغلاق">
             <Icon name="close" size={20} />
           </button>

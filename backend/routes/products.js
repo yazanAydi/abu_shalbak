@@ -48,6 +48,7 @@ import { ensureEntityCode, parseNumericCode, productSkuLookupValues } from "../u
 import { recordPriceChange } from "../utils/priceHistory.js";
 import { getSalesByPrice } from "../utils/salesByPrice.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { listStockBatches } from "../services/stockBatchService.js";
 import {
   BAKERY_CATEGORY_NAME,
   createProductCategory,
@@ -65,9 +66,17 @@ import {
   updateUnitName,
 } from "../utils/unitNameCatalog.js";
 import { round2 } from "../utils/money.js";
+import { listProductWarehouseLocations } from "../utils/warehouseInventory.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { MISSING_CATALOG_FILTER } from "../utils/catalogMissingFilter.js";
 import { addLedgerEntry } from "../utils/inventoryLedger.js";
+import { resolveBakeryReportCategories } from "../services/bakeryReportService.js";
+import {
+  bakeryMembershipSelectExtras,
+  bakeryMembershipSql,
+  parseBakeryKind,
+  posCatalogVisibleSql,
+} from "../utils/bakeryMembership.js";
 
 function parseProductStock(raw) {
   const n = Number(raw);
@@ -602,6 +611,16 @@ export async function searchProducts(db, rawQuery, options = {}) {
   const { sql: scopeSql, params: scopeParams } = inventoryScopeClause(scope, "p");
   const scopeSqlPlain = scope ? " AND COALESCE(inventory_scope, 'retail') = ?" : "";
   const scopeParamsPlain = scope ? [scope] : [];
+  const membership = options.membership || { sql: "", params: [] };
+  const membershipPlain = options.membershipPlain || membership;
+  const extrasP = membership.sql ? bakeryMembershipSelectExtras("p") : "";
+  const extrasPlain = membershipPlain.sql ? bakeryMembershipSelectExtras("") : "";
+  const posSqlP = options.posOnly ? ` AND ${posCatalogVisibleSql("p.id", "p.inventory_scope")}` : "";
+  const posSqlPlain = options.posOnly ? ` AND ${posCatalogVisibleSql("id", "inventory_scope")}` : "";
+  const scopedSql = `${scopeSql}${membership.sql}${posSqlP}`;
+  const scopedParams = [...scopeParams, ...membership.params];
+  const scopedSqlPlain = `${scopeSqlPlain}${membershipPlain.sql}${posSqlPlain}`;
+  const scopedParamsPlain = [...scopeParamsPlain, ...membershipPlain.params];
   const limit = Math.min(100, Math.max(1, Number(options.limit) || 50));
 
   const like = `%${normalized}%`;
@@ -614,25 +633,25 @@ export async function searchProducts(db, rawQuery, options = {}) {
 
   if (/^\d+$/.test(normalized)) {
     const fromUnits = await db.all(
-      `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P},
+      `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P}${extrasP},
               pu.barcode AS matched_barcode, pu.unit_name AS matched_barcode_label,
               pu.id AS unit_id, pu.price AS unit_price, pu.conversion_to_base
        FROM product_units pu
        JOIN products p ON p.id = pu.product_id
-       WHERE pu.barcode = ?${scopeSql}`,
-      [normalized, ...scopeParams]
+       WHERE pu.barcode = ?${scopedSql}`,
+      [normalized, ...scopedParams]
     );
     for (const row of fromUnits) {
       byId.set(row.id, { ...row, price: row.unit_price ?? row.price });
     }
 
     const fromPb = await db.all(
-      `SELECT ${PRODUCT_LIST_SELECT_P},
+      `SELECT ${PRODUCT_LIST_SELECT_P}${extrasP},
               pb.barcode AS matched_barcode, pb.label AS matched_barcode_label
        FROM product_barcodes pb
        JOIN products p ON p.id = pb.product_id
-       WHERE pb.barcode = ?${scopeSql}`,
-      [normalized, ...scopeParams]
+       WHERE pb.barcode = ?${scopedSql}`,
+      [normalized, ...scopedParams]
     );
     for (const row of fromPb) {
       byId.set(row.id, row);
@@ -640,11 +659,11 @@ export async function searchProducts(db, rawQuery, options = {}) {
 
     if (!byId.size) {
       const fromPrimary = await db.all(
-        `SELECT ${PRODUCT_LIST_SELECT},
+        `SELECT ${PRODUCT_LIST_SELECT}${extrasPlain},
                 CAST(barcode AS TEXT) AS matched_barcode, 'أساسي' AS matched_barcode_label
          FROM products
-         WHERE CAST(barcode AS TEXT) = ?${scopeSqlPlain}`,
-        [normalized, ...scopeParamsPlain]
+         WHERE CAST(barcode AS TEXT) = ?${scopedSqlPlain}`,
+        [normalized, ...scopedParamsPlain]
       );
       for (const row of fromPrimary) {
         byId.set(row.id, row);
@@ -655,10 +674,10 @@ export async function searchProducts(db, rawQuery, options = {}) {
     if (skuValues.length) {
       const skuPlaceholders = skuValues.map(() => "?").join(", ");
       const fromSku = await db.all(
-        `SELECT ${PRODUCT_LIST_SELECT_P}
+        `SELECT ${PRODUCT_LIST_SELECT_P}${extrasP}
          FROM products p
-         WHERE p.sku IN (${skuPlaceholders})${scopeSql}`,
-        [...skuValues, ...scopeParams]
+         WHERE p.sku IN (${skuPlaceholders})${scopedSql}`,
+        [...skuValues, ...scopedParams]
       );
       for (const row of fromSku) {
         if (!byId.has(row.id)) byId.set(row.id, row);
@@ -673,15 +692,15 @@ export async function searchProducts(db, rawQuery, options = {}) {
   // A الرقم query like "4" must not also pull barcodes that merely contain the digit 4.
   if (!hasExactSku) {
     const likeRows = await db.all(
-      `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P}
+      `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P}${extrasP}
        FROM products p
        LEFT JOIN product_barcodes pb ON pb.product_id = p.id
        WHERE (p.name LIKE ?
           OR CAST(p.barcode AS TEXT) LIKE ?
-          OR pb.barcode LIKE ?)${scopeSql}
+          OR pb.barcode LIKE ?)${scopedSql}
        ORDER BY p.name ASC
        LIMIT ?`,
-      [likeLower, like, like, ...scopeParams, limit]
+      [likeLower, like, like, ...scopedParams, limit]
     );
 
     for (const row of likeRows) {
@@ -720,7 +739,8 @@ export function createProductsRouter(db) {
     db,
     "products",
     "product_organization",
-    "bakery_supplies"
+    "bakery_supplies",
+    "bakery"
   );
   const requireCategories = requireReportsPermission(db, "categories");
   const requireUnits = requireReportsPermission(db, "units");
@@ -731,25 +751,44 @@ export function createProductsRouter(db) {
     return db.get("SELECT * FROM products WHERE id = ?", [pid]);
   }
 
+  async function bakeryMembershipFromQuery(req, alias) {
+    const raw = String(req.query?.membership || "").trim().toLowerCase();
+    if (raw !== "bakery") return { sql: "", params: [] };
+    const resolved = await resolveBakeryReportCategories(db);
+    const names = (resolved.categories || []).map((row) => String(row.name || "").trim()).filter(Boolean);
+    const kind = parseBakeryKind(req.query?.kind, "workspace");
+    return bakeryMembershipSql(names, { alias, kind });
+  }
+
   async function enforceCatalogListScope(req, res, next) {
     try {
       const hasProducts = await userHasAccountantPermission(db, req.user, "products");
       const hasOrg = await userHasAccountantPermission(db, req.user, "product_organization");
       const hasBakery = await userHasAccountantPermission(db, req.user, "bakery_supplies");
+      const hasBakeryReport = await userHasAccountantPermission(db, req.user, "bakery");
       const requested = req.query.scope ? parseInventoryScope(req.query.scope) : null;
+      const wantsMembership = String(req.query.membership || "").trim().toLowerCase() === "bakery";
 
-      if (!hasProducts && !hasOrg && hasBakery) {
+      if (wantsMembership && !hasBakery && !hasBakeryReport) {
+        return res.status(403).json(PRODUCT_FORBIDDEN);
+      }
+
+      if (!hasProducts && !hasOrg && hasBakery && !hasBakeryReport) {
         if (requested && requested !== "bakery") {
           return res.status(403).json(PRODUCT_FORBIDDEN);
         }
-        req.query.scope = "bakery";
+        if (!wantsMembership) req.query.scope = "bakery";
+        return next();
+      }
+      if (!hasProducts && !hasOrg && hasBakeryReport) {
+        req.query.membership = "bakery";
         return next();
       }
       if ((hasProducts || hasOrg) && !hasBakery) {
         if (requested === "bakery") {
           return res.status(403).json(PRODUCT_FORBIDDEN);
         }
-        if (!requested) req.query.scope = "retail";
+        if (!requested && !wantsMembership) req.query.scope = "retail";
         return next();
       }
       return next();
@@ -811,9 +850,14 @@ export function createProductsRouter(db) {
     if (searchTerm) {
       const scope = req.query.scope ? parseInventoryScope(req.query.scope) : null;
       const searchLimit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+      const membership = await bakeryMembershipFromQuery(req, "p");
+      const membershipPlain = await bakeryMembershipFromQuery(req, "");
       const rows = await searchProducts(db, searchTerm, {
         scope: scope || undefined,
         limit: searchLimit,
+        membership,
+        membershipPlain,
+        posOnly: req.user?.role === "cashier",
       });
       return res.json(projectProductForRole(rows ?? [], req.user?.role));
     }
@@ -829,6 +873,10 @@ export function createProductsRouter(db) {
 
   async function listCatalogProducts(req, res) {
     const scope = req.query.scope ? parseInventoryScope(req.query.scope) : null;
+    const membership = await bakeryMembershipFromQuery(req, "");
+    const membershipP = await bakeryMembershipFromQuery(req, "p");
+    const extras = membership.sql ? bakeryMembershipSelectExtras("") : "";
+    const extrasP = membership.sql ? bakeryMembershipSelectExtras("p") : "";
 
     const { sql: scopeSql, params: scopeParams } = inventoryScopeClause(scope);
     const idsParam = String(req.query.ids ?? "").trim();
@@ -841,17 +889,17 @@ export function createProductsRouter(db) {
       if (ids.length === 0) return res.json([]);
       const placeholders = ids.map(() => "?").join(",");
       const rows = await db.all(
-        `SELECT ${PRODUCT_LIST_SELECT}
-         FROM products WHERE id IN (${placeholders})${scopeSql}`,
-        [...ids, ...scopeParams]
+        `SELECT ${PRODUCT_LIST_SELECT}${extras}
+         FROM products WHERE id IN (${placeholders})${scopeSql}${membership.sql}`,
+        [...ids, ...scopeParams, ...membership.params]
       );
       return res.json(projectProductForRole(rows, req.user?.role));
     }
 
     if (String(req.query.fields || "") === "id") {
       const rows = await db.all(
-        `SELECT id FROM products WHERE 1=1${scopeSql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC LIMIT 5000`,
-        scopeParams
+        `SELECT id FROM products WHERE 1=1${scopeSql}${membership.sql} ORDER BY CAST(sku AS INTEGER) ASC, id ASC LIMIT 5000`,
+        [...scopeParams, ...membership.params]
       );
       return res.json(rows);
     }
@@ -869,11 +917,13 @@ export function createProductsRouter(db) {
     const alias = needsJoin ? "p" : "";
     const catalogFilters = adminCatalogFilters(req.query, alias);
     const scoped = needsJoin ? inventoryScopeClause(scope, "p") : { sql: scopeSql, params: scopeParams };
+    const member = needsJoin ? membershipP : membership;
     const reviewCol = alias ? "p.needs_review" : "needs_review";
     const skuCol = alias ? "p.sku" : "sku";
     const idCol = alias ? "p.id" : "id";
-    let whereSql = `WHERE 1=1${scoped.sql}${catalogFilters.sql}`;
-    const params = [...scoped.params, ...catalogFilters.params];
+    const selectCols = needsJoin ? `${PRODUCT_LIST_SELECT_P}${extrasP}` : `${PRODUCT_LIST_SELECT}${extras}`;
+    let whereSql = `WHERE 1=1${scoped.sql}${member.sql}${catalogFilters.sql}`;
+    const params = [...scoped.params, ...member.params, ...catalogFilters.params];
     if (req.query.needs_review === "1" || req.query.needs_review === "true") {
       whereSql += ` AND COALESCE(${reviewCol}, 0) = 1`;
     }
@@ -884,8 +934,8 @@ export function createProductsRouter(db) {
       ? `SELECT COUNT(DISTINCT p.id) AS total ${fromSql} ${whereSql}`
       : `SELECT COUNT(*) AS total ${fromSql} ${whereSql}`;
     const selectSql = needsJoin
-      ? `SELECT DISTINCT ${PRODUCT_LIST_SELECT_P} ${fromSql} ${whereSql} ORDER BY CAST(${skuCol} AS INTEGER) ASC, ${idCol} ASC LIMIT ? OFFSET ?`
-      : `SELECT ${PRODUCT_LIST_SELECT} ${fromSql} ${whereSql} ORDER BY CAST(${skuCol} AS INTEGER) ASC, ${idCol} ASC LIMIT ? OFFSET ?`;
+      ? `SELECT DISTINCT ${selectCols} ${fromSql} ${whereSql} ORDER BY CAST(${skuCol} AS INTEGER) ASC, ${idCol} ASC LIMIT ? OFFSET ?`
+      : `SELECT ${selectCols} ${fromSql} ${whereSql} ORDER BY CAST(${skuCol} AS INTEGER) ASC, ${idCol} ASC LIMIT ? OFFSET ?`;
     const countRow = await db.get(countSql, params);
     const rows = await db.all(selectSql, [...params, limit, offset]);
     return res.json({
@@ -898,7 +948,9 @@ export function createProductsRouter(db) {
 
   router.get("/by-barcode/:barcode", requireAuth, async (req, res) => {
     const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
-    const payload = await buildBarcodeLookupResponse(db, barcode);
+    const payload = await buildBarcodeLookupResponse(db, barcode, {
+      forPos: req.user?.role === "cashier",
+    });
     if (!payload) {
       return res.status(404).json({ error: "المنتج غير موجود" });
     }
@@ -1038,8 +1090,9 @@ export function createProductsRouter(db) {
     if (!barcode) {
       return res.json({ found: false });
     }
+    const forPos = req.user?.role === "cashier" || req.query.pos === "1" || req.query.pos === "true";
 
-    const payload = await buildBarcodeLookupResponse(db, barcode);
+    const payload = await buildBarcodeLookupResponse(db, barcode, { forPos });
     if (payload) {
       return res.json(
         projectProductForRole(
@@ -1051,6 +1104,10 @@ export function createProductsRouter(db) {
           req.user?.role
         )
       );
+    }
+
+    if (forPos) {
+      return res.json({ found: false });
     }
 
     const found = await findProductByBarcode(db, barcode);
@@ -1072,8 +1129,12 @@ export function createProductsRouter(db) {
 
   router.get("/:barcode", requireAuth, async (req, res) => {
     const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
-    const payload = await buildBarcodeLookupResponse(db, barcode);
+    const forPos = req.user?.role === "cashier";
+    const payload = await buildBarcodeLookupResponse(db, barcode, { forPos });
     if (!payload) {
+      if (forPos) {
+        return res.status(404).json({ error: "المنتج غير موجود" });
+      }
       const found = await findProductByBarcode(db, barcode);
       if (!found) {
         return res.status(404).json({ error: "المنتج غير موجود" });
@@ -1353,6 +1414,16 @@ export function createProductsRouter(db) {
     const b = req.body || {};
     if (!b.barcode) return res.status(400).json({ error: "الباركود مطلوب" });
     try {
+      let saleEnabled = b.sale_enabled;
+      if (saleEnabled === undefined && String(product.inventory_scope || "retail") === "bakery") {
+        const sellable = await db.get(
+          `SELECT id FROM product_units
+           WHERE product_id = ? AND COALESCE(sale_enabled, 1) = 1
+           LIMIT 1`,
+          [product.id]
+        );
+        saleEnabled = Boolean(sellable);
+      }
       const row = await upsertProductUnit(db, product.id, {
         unit_name: b.unit_name || b.unitName,
         barcode: b.barcode,
@@ -1362,7 +1433,7 @@ export function createProductsRouter(db) {
         is_default: b.is_default === true,
         purchase_enabled: b.purchase_enabled,
         is_default_purchase: b.is_default_purchase,
-        sale_enabled: b.sale_enabled,
+        sale_enabled: saleEnabled,
         alias_barcodes: b.alias_barcodes,
       });
       res.status(201).json(formatProductUnit(row));
@@ -1621,13 +1692,7 @@ export function createProductsRouter(db) {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
 
-    const warehouses = await db.all(
-      `SELECT w.id AS warehouse_id, w.name AS warehouse_name, w.code, w.type, ws.quantity
-       FROM warehouse_stock ws JOIN warehouses w ON w.id = ws.warehouse_id
-       WHERE ws.product_id = ? AND ws.quantity != 0
-       ORDER BY w.name`,
-      [product.id]
-    );
+    const warehouses = await listProductWarehouseLocations(db, product.id);
 
     let daysUntilExpiry = null;
     if (product.expiry_date) {
@@ -1889,15 +1954,14 @@ export function createProductsRouter(db) {
   router.get("/:id/batches", requireAuth, requireProducts, async (req, res) => {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
-    const rows = await db.all(
-      `SELECT b.id, b.batch_no, b.expiry_date, b.quantity, b.cost, b.notes, b.created_at,
-              CAST(julianday(b.expiry_date) - julianday('now') AS INTEGER) AS days_remaining
-       FROM product_batches b
-       WHERE b.product_id = ?
-       ORDER BY b.expiry_date IS NULL, b.expiry_date ASC, b.id DESC`,
-      [product.id]
-    );
-    res.json({ product_id: product.id, product_name: product.name, rows });
+    const listed = await listStockBatches(db, product.id);
+    res.json({
+      product_id: product.id,
+      product_name: product.name,
+      product_stock: listed.product_stock,
+      near_expiry_days: listed.near_expiry_days,
+      rows: listed.rows,
+    });
   });
 
   router.get("/:id/audit-log", requireAuth, requireProducts, async (req, res) => {

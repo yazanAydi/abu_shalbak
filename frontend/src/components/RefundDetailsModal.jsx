@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -30,7 +31,7 @@ export default function RefundDetailsModal({ open, refundId, onClose, onUpdated,
       setData(d);
       setReviewNotes(d?.refund?.review_notes || "");
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل التحميل");
+      setErr(apiErrorMessage(e, "فشل التحميل"));
       setData(null);
     } finally {
       setLoading(false);
@@ -54,7 +55,7 @@ export default function RefundDetailsModal({ open, refundId, onClose, onUpdated,
       onUpdated();
       onClose();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "فشل الحفظ");
+      setErr(apiErrorMessage(e, "فشل الحفظ"));
     } finally {
       setActing(false);
     }

@@ -12,7 +12,13 @@ import {
   Input,
   DangerButton,
   SecondaryButton,
+  PrimaryButton,
+  FilterBar,
+  Notice,
+  DataTable,
+  StatusPill,
 } from "../components/ui";
+import { apiErrorMessage } from "../utils/apiError";
 
 const SESSION_COLUMNS = [
   { key: "id", header: "رقم" },
@@ -26,18 +32,22 @@ const SESSION_COLUMNS = [
 ];
 
 const LINE_COLUMNS = [
-  { key: "name", header: "المنتج" },
+  { key: "name", header: "المنتج", nameColumn: true, wrap: true },
   { key: "barcode", header: "الباركود" },
-  { key: "system_qty", header: "رصيد النظام" },
-  { key: "counted_qty", header: "المعدود" },
+  { key: "system_qty", header: "رصيد النظام", className: "num" },
+  { key: "counted_qty", header: "المعدود", className: "num" },
   {
     key: "variance",
     header: "الفرق",
+    className: "num",
     value: (L) => `${L.variance > 0 ? "+" : ""}${L.variance}`,
+    render: (L) => (
+      <span className={L.variance > 0 ? "positive" : L.variance < 0 ? "negative" : ""}>
+        {L.variance > 0 ? "+" : ""}{L.variance}
+      </span>
+    ),
   },
 ];
-
-const ils = (n) => `₪${Number(n ?? 0).toFixed(2)}`;
 
 export default function InventoryCount({ embedded = false }) {
   const canZeroAllStock = isAdminRole(useAuthUser()?.role);
@@ -89,7 +99,7 @@ export default function InventoryCount({ embedded = false }) {
       await loadSessions();
       setMsg("فُتحت جلسة جرد جديدة");
     } catch (e) {
-      setError(e.response?.data?.error || "فشل فتح جلسة");
+      setError(apiErrorMessage(e, "فشل فتح جلسة"));
     }
   }
 
@@ -107,7 +117,7 @@ export default function InventoryCount({ embedded = false }) {
       setCountedQty("");
       setMsg("تم حفظ الكمية");
     } catch (e) {
-      setError(e.response?.data?.error || "فشل الحفظ");
+      setError(apiErrorMessage(e, "فشل الحفظ"));
     } finally {
       setSaving(false);
     }
@@ -122,7 +132,7 @@ export default function InventoryCount({ embedded = false }) {
       setActiveSession(null);
       setMsg("تم ترحيل الجرد وتحديث المخزون");
     } catch (e) {
-      setError(e.response?.data?.error || "فشل الترحيل");
+      setError(apiErrorMessage(e, "فشل الترحيل"));
     } finally {
       setSaving(false);
     }
@@ -164,7 +174,7 @@ export default function InventoryCount({ embedded = false }) {
       setZeroModalOpen(false);
       setZeroPassword("");
     } catch (e) {
-      const message = e.response?.data?.error || "فشل تصفير الكميات";
+      const message = apiErrorMessage(e, "فشل تصفير الكميات");
       if (zeroPasswordSet) {
         setZeroPasswordError(message);
       } else {
@@ -193,42 +203,74 @@ export default function InventoryCount({ embedded = false }) {
     };
   }, [activeSession, sessions]);
 
+  const sessionListColumns = [
+    ...SESSION_COLUMNS.slice(0, 1),
+    {
+      key: "status",
+      header: "الحالة",
+      value: (s) => (s.status === "open" ? "مفتوح" : s.status === "posted" ? "مرحّل" : "ملغي"),
+      render: (s) => (
+        <StatusPill tone={s.status === "open" ? "green" : s.status === "posted" ? "blue" : "neutral"}>
+          {s.status === "open" ? "مفتوح" : s.status === "posted" ? "مرحّل" : "ملغي"}
+        </StatusPill>
+      ),
+    },
+    SESSION_COLUMNS[2],
+    SESSION_COLUMNS[3],
+    {
+      key: "actions",
+      header: "عمليات",
+      render: (s) => (
+        <SecondaryButton size="sm" type="button" onClick={() => loadSession(s.id)}>
+          عرض
+        </SecondaryButton>
+      ),
+    },
+  ];
+
   const content = (
     <>
-      {error && <div className="error-banner" onClick={() => setError(null)}>{error} ✕</div>}
-      {msg && <div className="success-banner" onClick={() => setMsg(null)}>{msg} ✕</div>}
+      {error ? <Notice tone="danger">{error}</Notice> : null}
+      {msg ? <Notice tone="success">{msg}</Notice> : null}
 
       {activeSession ? (
         <div className="inventory-session">
-          <div className="session-header">
-            <h2>جلسة جرد #{activeSession.id} — {activeSession.status === "open" ? "مفتوحة" : activeSession.status}</h2>
-            <div className="session-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <ReportToolbar
-                title={reportConfig.title}
-                columns={reportConfig.columns}
-                rows={reportConfig.rows}
-                filename={reportConfig.filename}
-              />
-              {canZeroAllStock ? (
-              <button className="btn-danger" onClick={openZeroAllStock} disabled={saving}>
-                تصفير كل الكميات
-              </button>
-              ) : null}
-              {activeSession.status === "open" && (
-                <button className="btn-danger" onClick={() => postSession(activeSession)} disabled={saving}>
-                  ترحيل الجرد
-                </button>
-              )}
-              <button className="btn-secondary" onClick={() => setActiveSession(null)}>رجوع للقائمة</button>
-            </div>
-          </div>
+          <FilterBar
+            actions={
+              <div className="ui-btn-group">
+                <ReportToolbar
+                  title={reportConfig.title}
+                  columns={reportConfig.columns}
+                  rows={reportConfig.rows}
+                  filename={reportConfig.filename}
+                />
+                {canZeroAllStock ? (
+                  <DangerButton type="button" onClick={openZeroAllStock} disabled={saving}>
+                    تصفير كل الكميات
+                  </DangerButton>
+                ) : null}
+                {activeSession.status === "open" ? (
+                  <DangerButton type="button" onClick={() => postSession(activeSession)} disabled={saving}>
+                    ترحيل الجرد
+                  </DangerButton>
+                ) : null}
+                <SecondaryButton type="button" onClick={() => setActiveSession(null)}>
+                  رجوع للقائمة
+                </SecondaryButton>
+              </div>
+            }
+          >
+            <p className="ui-card__title">
+              جلسة جرد #{activeSession.id} — {activeSession.status === "open" ? "مفتوحة" : activeSession.status}
+            </p>
+          </FilterBar>
 
           {activeSession.status === "open" && (
             <div className="count-input-area">
-              <h3>إضافة صنف</h3>
+              <h3 className="ui-section">إضافة صنف</h3>
               <ProductPicker onPick={setSelectedProduct} />
               {selectedProduct && (
-                <div className="count-product-row">
+                <div className="count-product-row ui-btn-group">
                   <span>{selectedProduct.name}</span>
                   <span>رصيد النظام: {selectedProduct.stock}</span>
                   <QtyStepper
@@ -237,87 +279,51 @@ export default function InventoryCount({ embedded = false }) {
                     value={countedQty}
                     onChange={(e) => setCountedQty(e.target.value)}
                   />
-                  <button onClick={() => addCountLine(activeSession, selectedProduct)} disabled={saving}>
+                  <PrimaryButton type="button" onClick={() => addCountLine(activeSession, selectedProduct)} disabled={saving}>
                     حفظ
-                  </button>
+                  </PrimaryButton>
                 </div>
               )}
             </div>
           )}
 
-          <h3>أسطر الجرد ({activeSession.lines?.length || 0})</h3>
-          {activeSession.lines?.length > 0 ? (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>المنتج</th>
-                  <th>الباركود</th>
-                  <th>رصيد النظام</th>
-                  <th>المعدود</th>
-                  <th>الفرق</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeSession.lines.map((L) => (
-                  <tr key={L.id} className={L.variance !== 0 ? "variance-row" : ""}>
-                    <td>{L.name}</td>
-                    <td>{L.barcode}</td>
-                    <td>{L.system_qty}</td>
-                    <td>{L.counted_qty}</td>
-                    <td className={L.variance > 0 ? "positive" : L.variance < 0 ? "negative" : ""}>
-                      {L.variance > 0 ? "+" : ""}{L.variance}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="empty-msg">لا توجد أسطر جرد بعد</p>
-          )}
+          <h3 className="ui-section">أسطر الجرد ({activeSession.lines?.length || 0})</h3>
+          <DataTable
+            columns={LINE_COLUMNS}
+            rows={activeSession.lines || []}
+            empty="لا توجد أسطر جرد بعد"
+            emptyIcon="inventory"
+            rowClassName={(L) => (L.variance !== 0 ? "variance-row" : undefined)}
+          />
         </div>
       ) : (
         <div className="sessions-list">
-          <div className="list-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <ReportToolbar
-              title={reportConfig.title}
-              columns={reportConfig.columns}
-              rows={reportConfig.rows}
-              filename={reportConfig.filename}
-              disabled={loading}
-            />
-            <button className="btn-primary" onClick={openNew}>+ فتح جلسة جرد جديدة</button>
-            {canZeroAllStock ? (
-            <button className="btn-danger" onClick={openZeroAllStock} disabled={saving}>
-              تصفير كل الكميات
-            </button>
-            ) : null}
-          </div>
-          {loading ? (
-            <p>جاري التحميل…</p>
-          ) : sessions.length === 0 ? (
-            <p className="empty-msg">لا توجد جلسات جرد</p>
-          ) : (
-            <table className="data-table">
-              <thead>
-                <tr><th>رقم</th><th>الحالة</th><th>أُنشئ في</th><th>بواسطة</th><th>عمليات</th></tr>
-              </thead>
-              <tbody>
-                {sessions.map((s) => (
-                  <tr key={s.id}>
-                    <td>{s.id}</td>
-                    <td>{s.status === "open" ? "مفتوح" : s.status === "posted" ? "مرحّل" : "ملغي"}</td>
-                    <td>{s.created_at?.slice(0, 16)}</td>
-                    <td>{s.created_by_name || "—"}</td>
-                    <td>
-                      <button className="btn-link" onClick={() => loadSession(s.id).then(() => {})}>
-                        عرض
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          <FilterBar
+            actions={
+              <div className="ui-btn-group">
+                <PrimaryButton type="button" onClick={openNew}>فتح جلسة جرد جديدة</PrimaryButton>
+                {canZeroAllStock ? (
+                  <DangerButton type="button" onClick={openZeroAllStock} disabled={saving}>
+                    تصفير كل الكميات
+                  </DangerButton>
+                ) : null}
+                <ReportToolbar
+                  title={reportConfig.title}
+                  columns={reportConfig.columns}
+                  rows={reportConfig.rows}
+                  filename={reportConfig.filename}
+                  disabled={loading}
+                />
+              </div>
+            }
+          />
+          <DataTable
+            loading={loading}
+            columns={sessionListColumns}
+            rows={sessions}
+            empty="لا توجد جلسات جرد"
+            emptyIcon="inventory"
+          />
         </div>
       )}
 
@@ -327,20 +333,22 @@ export default function InventoryCount({ embedded = false }) {
         title="تصفير كل الكميات"
         footer={
           <>
-            <SecondaryButton type="button" onClick={closeZeroAllStock} disabled={saving}>
-              إلغاء
-            </SecondaryButton>
             <DangerButton type="button" onClick={confirmZeroAllStock} disabled={saving}>
               {saving ? "جاري التصفير…" : "تأكيد التصفير"}
             </DangerButton>
+            <SecondaryButton type="button" onClick={closeZeroAllStock} disabled={saving}>
+              إلغاء
+            </SecondaryButton>
           </>
         }
       >
-        <p style={{ marginTop: 0 }}>
+        <Notice tone="warn">
           هل تريد تصفير كمية كل المنتجات؟ لا يمكن التراجع عن هذه الخطوة.
-        </p>
+        </Notice>
         {hasOpenSession ? (
-          <p>يوجد جلسة جرد مفتوحة. ترحيل تلك الجلسة بعد التصفير قد يغيّر المخزون مرة أخرى.</p>
+          <Notice tone="info" className="ui-mt-md">
+            يوجد جلسة جرد مفتوحة. ترحيل تلك الجلسة بعد التصفير قد يغيّر المخزون مرة أخرى.
+          </Notice>
         ) : null}
         {zeroPasswordSet ? (
           <form
@@ -349,11 +357,12 @@ export default function InventoryCount({ embedded = false }) {
               confirmZeroAllStock();
             }}
           >
-            <FormField label="كلمة مرور التصفير" required>
+            <FormField label="كلمة مرور التصفير" required error={zeroPasswordError}>
               <Input
                 type="password"
                 value={zeroPassword}
                 autoFocus
+                invalid={Boolean(zeroPasswordError)}
                 onChange={(e) => {
                   setZeroPassword(e.target.value);
                   if (zeroPasswordError) setZeroPasswordError(null);
@@ -363,9 +372,6 @@ export default function InventoryCount({ embedded = false }) {
               />
             </FormField>
           </form>
-        ) : null}
-        {zeroPasswordError ? (
-          <p style={{ color: "var(--office-danger)", marginTop: "0.5rem" }}>{zeroPasswordError}</p>
         ) : null}
       </Modal>
     </>

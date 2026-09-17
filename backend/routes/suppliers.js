@@ -16,6 +16,7 @@ import {
 } from "./statementHistoryHandlers.js";
 import { resolvePrintBranding } from "../utils/storeBranding.js";
 import { getAppSettings } from "../utils/settings.js";
+import { buildSupplierBalanceReport } from "../utils/supplierBalanceReport.js";
 
 const MOVEMENT_TYPE_AR = {
   opening_balance: "رصيد افتتاحي",
@@ -65,23 +66,12 @@ export function createSuppliersRouter(db) {
   });
 
   router.get("/balances", requireAuth, requireFinance, async (req, res, next) => {
-    const onlyOpen = String(req.query.only_open || "") === "1";
-    const rows = await db.all(
-      `SELECT id, supplier_code, name, contact_phone, balance
-       FROM suppliers
-       ${onlyOpen ? "WHERE ABS(balance) > 0.009" : ""}
-       ORDER BY balance DESC, name`
-    );
-    const totals = await db.get(
-      `SELECT COALESCE(SUM(CASE WHEN balance > 0 THEN balance ELSE 0 END),0) AS total_payable,
-              COALESCE(SUM(CASE WHEN balance < 0 THEN -balance ELSE 0 END),0) AS total_advance
-       FROM suppliers`
-    );
-    res.json({
-      suppliers: rows,
-      total_payable: round2(Number(totals?.total_payable) || 0),
-      total_advance: round2(Number(totals?.total_advance) || 0),
-    });
+    try {
+      const onlyOpen = String(req.query.only_open || "") === "1";
+      res.json(await buildSupplierBalanceReport(db, { onlyOpen }));
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.post("/upload", requireAuth, requireAdmin, importUploadMiddleware(), async (req, res, next) => {
@@ -271,6 +261,9 @@ export function createSuppliersRouter(db) {
         totalCredit: ledger.totalCredit,
         totalInvoices: ledger.totalInvoices,
         totalPayments: ledger.totalPayments,
+        totalReturns: ledger.totalReturns || 0,
+        sign_note:
+          "دائن يزيد ما علينا للمورد. مدين ينقصه. مرتجع المشتريات حركة مدينة بتاريخ المرتجع. الرصيد الموجب = علينا للمورد.",
         finalBalance: ledger.finalBalance,
       },
       movements,

@@ -1,5 +1,5 @@
 import { cellValue } from "./reportExport";
-import { buildPrintBrandingHtml, PRINT_BRANDING_CSS } from "./printBranding";
+import { buildPrintBrandingHtml, A4_PRINT_SHEET_CSS, PRINT_BRANDING_CSS } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { formatDateTimeShopAr } from "./format";
 
@@ -59,57 +59,11 @@ export function printReport({ title, subtitle, columns, rows, summary, meta, sto
   <meta charset="utf-8" />
   <title>${escapeHtml(title)}</title>
   <style>
-    @page { size: A4; margin: 14mm; }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      padding: 16px;
-      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
-      color: #111;
-      background: #fff;
-      font-size: 12px;
-      line-height: 1.4;
-    }
-    h1 { margin: 0 0 4px; font-size: 20px; }
-    .subtitle { margin: 0 0 8px; color: #444; font-size: 13px; }
-    .meta { margin: 0 0 4px; color: #666; font-size: 11px; }
-    .generated { margin: 0 0 16px; color: #666; font-size: 11px; }
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 8px;
-      margin: 0 0 16px;
-    }
-    .summary-item {
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      padding: 8px 10px;
-      background: #fafafa;
-    }
-    .summary-label { display: block; color: #666; font-size: 11px; margin-bottom: 2px; }
-    .summary-value { display: block; font-weight: 600; font-size: 14px; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 11px;
-    }
-    th, td {
-      border: 1px solid #ccc;
-      padding: 6px 8px;
-      text-align: right;
-      vertical-align: top;
-    }
-    th {
-      background: #f0f0f0;
-      font-weight: 600;
-    }
-    tr:nth-child(even) td { background: #fafafa; }
+    @page { size: A4; }
+    ${A4_PRINT_SHEET_CSS}
     ${PRINT_BRANDING_CSS}
-    @media print {
-      body { padding: 0; }
-      thead { display: table-header-group; }
-      tr { page-break-inside: avoid; }
-    }
+    th { background: #f0f0f0; }
+    tr:nth-child(even) td { background: #fafafa; }
   </style>
 </head>
 <body>
@@ -162,17 +116,8 @@ export function printSummaryReport({ title, subtitle, sections, meta, store }) {
   <meta charset="utf-8" />
   <title>${escapeHtml(title)}</title>
   <style>
-    @page { size: A4; margin: 14mm; }
-    body { margin: 0; padding: 16px; font-family: "Segoe UI", Tahoma, Arial, sans-serif; color: #111; background: #fff; }
-    h1 { margin: 0 0 4px; font-size: 20px; }
-    h2.section-title { margin: 16px 0 8px; font-size: 15px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
-    .subtitle { margin: 0 0 8px; color: #444; }
-    .meta { margin: 0 0 4px; color: #666; font-size: 11px; }
-    .generated { margin: 0 0 16px; color: #666; font-size: 11px; }
-    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin-bottom: 12px; }
-    .summary-item { border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; background: #fafafa; }
-    .summary-label { display: block; color: #666; font-size: 11px; margin-bottom: 2px; }
-    .summary-value { display: block; font-weight: 600; font-size: 14px; }
+    @page { size: A4; }
+    ${A4_PRINT_SHEET_CSS}
     ${PRINT_BRANDING_CSS}
   </style>
 </head>

@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../../utils/apiError";
 import { useEffect, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
@@ -56,7 +57,7 @@ export default function EditBarcodeModal({ open, onClose, product, onSaved }) {
       onSaved?.(data);
       close();
     } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر تغيير الباركود");
+      setErr(apiErrorMessage(e, "تعذّر تغيير الباركود"));
     } finally {
       setSaving(false);
     }

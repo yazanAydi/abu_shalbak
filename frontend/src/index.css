@@ -11,11 +11,16 @@ html {
 body {
   margin: 0;
   font-family: var(--office-font, system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif);
-  background: var(--office-bg, #eef4f7);
-  color: var(--office-text, #1e293b);
+  background: var(--office-bg, #f1f5f9);
+  color: var(--office-text, #0f172a);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--office-focus-ring, 0 0 0 3px rgba(15, 118, 110, 0.28));
 }
 
 code {

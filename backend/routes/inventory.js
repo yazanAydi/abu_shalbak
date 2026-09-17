@@ -9,6 +9,8 @@ import { withTransaction } from "../utils/dbTx.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { getZeroAllStockPasswordHash } from "../utils/settings.js";
 import { forbidden } from "../utils/httpError.js";
+import { resolveBakeryReportCategories } from "../services/bakeryReportService.js";
+import { bakeryMembershipSql, parseBakeryKind } from "../utils/bakeryMembership.js";
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
 // Maps adjustment type -> ledger movement_type and sign of stock change.
 const ADJ_MOVEMENT = {
@@ -25,6 +27,17 @@ export function createInventoryRouter(db) {
   const requireStockCount = requireReportsPermission(db, "stock_count");
   const requireStockOrBakery = requireAnyReportsPermission(db, "stock_count", "bakery_supplies");
   const requireExpiryOrBakery = requireAnyReportsPermission(db, "expiry", "bakery_supplies");
+  const requireStockRead = requireAnyReportsPermission(db, "stock_count", "bakery_supplies", "bakery");
+  const requireExpiryRead = requireAnyReportsPermission(db, "expiry", "bakery_supplies", "bakery");
+
+  async function membershipProductFilter(req, alias = "p") {
+    const raw = String(req.query?.membership || "").trim().toLowerCase();
+    if (raw !== "bakery") return { sql: "", params: [] };
+    const resolved = await resolveBakeryReportCategories(db);
+    const names = (resolved.categories || []).map((row) => String(row.name || "").trim()).filter(Boolean);
+    const kind = parseBakeryKind(req.query?.kind, "workspace");
+    return bakeryMembershipSql(names, { alias, kind });
+  }
 
   // ───── Stock Count Sessions ─────
 
@@ -225,19 +238,25 @@ export function createInventoryRouter(db) {
 
   // ───── Expiry Reports ─────
 
-  router.get("/expiry", requireAuth, requireExpiry, async (req, res) => {
+  router.get("/expiry", requireAuth, requireExpiryRead, async (req, res, next) => {
+    try {
     const { days = 30 } = req.query;
     const d = Math.max(1, Math.min(365, Number(days) || 30));
+    const membership = await membershipProductFilter(req, "");
     const rows = await db.all(
       `SELECT id, barcode, name, unit, stock, expiry_date,
          CAST(julianday(expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
        FROM products
        WHERE expiry_date IS NOT NULL AND expiry_date != ''
          AND julianday(expiry_date) <= julianday('now', '+' || ? || ' days')
+         ${membership.sql}
        ORDER BY expiry_date ASC${listLimitSql(req.query, 500).sql}`,
-      [d]
+      [d, ...membership.params]
     );
     res.json(rows);
+    } catch (e) {
+      next(e);
+    }
   });
 
   // ───── Stock Adjustments ─────
@@ -253,10 +272,17 @@ export function createInventoryRouter(db) {
   });
 
   router.get("/adjustments/:id", requireAuth, requireStockOrBakery, async (req, res) => {
-    const adj = await db.get("SELECT * FROM stock_adjustments WHERE id = ?", [req.params.id]);
+    const adj = await db.get(
+      `SELECT a.*, COALESCE(NULLIF(TRIM(e.name), ''), u.username) AS created_by_name
+       FROM stock_adjustments a
+       LEFT JOIN users u ON u.id = a.created_by
+       LEFT JOIN employees e ON e.user_id = a.created_by
+       WHERE a.id = ?`,
+      [req.params.id]
+    );
     if (!adj) return res.status(404).json({ error: "التسوية غير موجودة", code: "NOT_FOUND" });
     const items = await db.all(
-      `SELECT ai.*, p.name, p.barcode FROM stock_adjustment_items ai
+      `SELECT ai.*, p.name, p.barcode, p.unit FROM stock_adjustment_items ai
        JOIN products p ON p.id = ai.product_id WHERE ai.adjustment_id = ?`,
       [adj.id]
     );
@@ -401,8 +427,10 @@ export function createInventoryRouter(db) {
 
   // ───── Movement ledger ─────
 
-  router.get("/movements", requireAuth, requireStockOrBakery, async (req, res) => {
+  router.get("/movements", requireAuth, requireStockRead, async (req, res, next) => {
+    try {
     const { product_id, type, from, to, scope } = req.query;
+    const membership = await membershipProductFilter(req, "p");
     let sql = `SELECT m.id, m.product_id, m.movement_type, m.quantity_delta AS quantity,
                       m.qty_before, m.qty_after, m.reference_type AS ref_type, m.reference_id AS ref_id,
                       m.notes, m.user_id AS created_by, m.created_at,
@@ -415,25 +443,40 @@ export function createInventoryRouter(db) {
     if (type) { sql += " AND m.movement_type = ?"; params.push(type); }
     if (from) { sql += " AND date(m.created_at) >= ?"; params.push(from); }
     if (to) { sql += " AND date(m.created_at) <= ?"; params.push(to); }
-    if (scope === "bakery" || scope === "retail") {
+    if (membership.sql) {
+      sql += membership.sql;
+      params.push(...membership.params);
+    } else if (scope === "bakery" || scope === "retail") {
       sql += " AND COALESCE(p.inventory_scope, 'retail') = ?";
       params.push(scope);
     }
     sql += " ORDER BY m.created_at DESC, m.id DESC LIMIT 500";
     res.json(await db.all(sql, params));
+    } catch (e) {
+      next(e);
+    }
   });
 
   // ───── Product batches (batch + expiry tracking) ─────
 
-  router.get("/batches", requireAuth, requireStockOrBakery, async (req, res) => {
+  router.get("/batches", requireAuth, requireStockRead, async (req, res, next) => {
+    try {
     const { product_id } = req.query;
+    const membership = await membershipProductFilter(req, "p");
     let sql = `SELECT b.*, p.name AS product_name, p.barcode,
                  CAST(julianday(b.expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
                FROM product_batches b JOIN products p ON p.id = b.product_id WHERE 1=1`;
     const params = [];
     if (product_id) { sql += " AND b.product_id = ?"; params.push(Number(product_id)); }
+    if (membership.sql) {
+      sql += membership.sql;
+      params.push(...membership.params);
+    }
     sql += " ORDER BY b.expiry_date IS NULL, b.expiry_date ASC LIMIT 500";
     res.json(await db.all(sql, params));
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.post("/batches", requireAuth, requireStockOrBakery, async (req, res) => {
@@ -464,9 +507,11 @@ export function createInventoryRouter(db) {
 
   // ───── Low Stock ─────
 
-  router.get("/low-stock", requireAuth, requireExpiryOrBakery, async (req, res) => {
+  router.get("/low-stock", requireAuth, requireExpiryRead, async (req, res, next) => {
+    try {
     const { threshold = 10, scope } = req.query;
     const t = Math.max(0, Number(threshold) || 10);
+    const membership = await membershipProductFilter(req, "");
     let sql = `SELECT id, barcode, name, unit, stock, category, min_stock,
                       COALESCE(inventory_scope, 'retail') AS inventory_scope
                FROM products WHERE (
@@ -474,7 +519,10 @@ export function createInventoryRouter(db) {
                  OR (min_stock IS NULL AND stock <= ?)
                )`;
     const params = [t];
-    if (scope === "bakery" || scope === "retail") {
+    if (membership.sql) {
+      sql += membership.sql;
+      params.push(...membership.params);
+    } else if (scope === "bakery" || scope === "retail") {
       sql += " AND COALESCE(inventory_scope, 'retail') = ?";
       params.push(scope);
     }
@@ -482,6 +530,9 @@ export function createInventoryRouter(db) {
     sql += listLimitSql(req.query, 500).sql;
     const rows = await db.all(sql, params);
     res.json(rows);
+    } catch (e) {
+      next(e);
+    }
   });
 
   // ───── Negative Stock (oversold) ─────

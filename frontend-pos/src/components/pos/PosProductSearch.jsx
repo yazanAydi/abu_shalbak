@@ -65,7 +65,7 @@ export default function PosProductSearch({ onProductFound }) {
   const showDropdown = trimmed.length >= 2 && (loading || results.length > 0);
 
   return (
-    <div className="pos-product-search">
+    <div className="pos-product-search" data-enter-nav-skip="">
       <input
         type="text"
         className="pos-product-search-input"

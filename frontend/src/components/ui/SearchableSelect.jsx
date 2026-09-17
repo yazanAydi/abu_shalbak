@@ -1,5 +1,6 @@
 import { Children, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { focusNextField } from "../../utils/focusNavigation";
 
 const LIST_MAX_HEIGHT = 240;
 
@@ -140,7 +141,11 @@ export default function SearchableSelect({
       setHighlight((h) => Math.max((h < 0 ? filtered.length : h) - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (highlight >= 0 && highlight < filtered.length) commit(filtered[highlight]);
+      e.stopPropagation();
+      if (highlight >= 0 && highlight < filtered.length) {
+        commit(filtered[highlight]);
+        requestAnimationFrame(() => focusNextField(e.target));
+      }
     } else if (e.key === "Escape") {
       setOpen(false);
       setQuery("");

@@ -54,11 +54,14 @@ export async function fetchTransactionsForShopDate(db, dateStr) {
             cs.start_time AS shift_start_time
      FROM transactions t
      ${TX_BUSINESS_DAY_JOIN}
-     WHERE (datetime(t.created_at) >= datetime(?)
-       AND datetime(t.created_at) <= datetime(?))
-        OR (cs.start_time IS NOT NULL
-            AND datetime(cs.start_time) >= datetime(?)
-            AND datetime(cs.start_time) <= datetime(?))`,
+     WHERE COALESCE(t.status, 'completed') = 'completed'
+       AND (
+         (datetime(t.created_at) >= datetime(?)
+          AND datetime(t.created_at) <= datetime(?))
+         OR (cs.start_time IS NOT NULL
+             AND datetime(cs.start_time) >= datetime(?)
+             AND datetime(cs.start_time) <= datetime(?))
+       )`,
     [startSql, endSql, startSql, endSql]
   );
   return rows.filter((r) =>
@@ -107,11 +110,14 @@ export async function fetchTransactionsForShopDateRange(db, fromYmd, toYmd) {
             cs.start_time AS shift_start_time
      FROM transactions t
      ${TX_BUSINESS_DAY_JOIN}
-     WHERE (datetime(t.created_at) >= datetime(?)
-       AND datetime(t.created_at) <= datetime(?))
-        OR (cs.start_time IS NOT NULL
-            AND datetime(cs.start_time) >= datetime(?)
-            AND datetime(cs.start_time) <= datetime(?))`,
+     WHERE COALESCE(t.status, 'completed') = 'completed'
+       AND (
+         (datetime(t.created_at) >= datetime(?)
+          AND datetime(t.created_at) <= datetime(?))
+         OR (cs.start_time IS NOT NULL
+             AND datetime(cs.start_time) >= datetime(?)
+             AND datetime(cs.start_time) <= datetime(?))
+       )`,
     [startSql, endSql, startSql, endSql]
   );
   return rows.filter((r) =>

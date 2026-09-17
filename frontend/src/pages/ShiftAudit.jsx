@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
@@ -96,6 +97,11 @@ function ReceiptTotals({ record, showReceiptNumber = true }) {
         </strong>
       </div>
       <div>الدفع: {PM[record.payment_method] || record.payment_method}</div>
+      {record.notes ? (
+        <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
+          ملاحظات: {record.notes}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -313,7 +319,7 @@ export default function ShiftAudit() {
       const { data } = await api.get("/api/shifts/pending", { headers: getAuthHeaders() });
       setPendingRows(Array.isArray(data) ? data : []);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر تحميل الورديات المعلقة");
+      toast.error(apiErrorMessage(e, "تعذّر تحميل الورديات المعلقة"));
       setPendingRows([]);
     } finally {
       setPendingLoading(false);
@@ -334,7 +340,7 @@ export default function ShiftAudit() {
       });
       setRows(Array.isArray(data) ? data : []);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر التحميل");
+      toast.error(apiErrorMessage(e, "تعذّر التحميل"));
       setRows([]);
     } finally {
       setLoading(false);
@@ -380,7 +386,7 @@ export default function ShiftAudit() {
       const { data } = await api.get(`/api/shifts/${id}`, { headers: getAuthHeaders() });
       setDetail(data);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "تعذّر فتح التفاصيل");
+      toast.error(apiErrorMessage(e, "تعذّر فتح التفاصيل"));
     } finally {
       setDetailLoading(false);
     }
@@ -413,7 +419,7 @@ export default function ShiftAudit() {
         toast.error("لم يُرجَع نص الإيصال");
       }
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل طباعة الإيصال");
+      toast.error(apiErrorMessage(e, "فشل طباعة الإيصال"));
     } finally {
       setPrintingSaleId(null);
     }
@@ -429,7 +435,7 @@ export default function ShiftAudit() {
       const url = URL.createObjectURL(res.data);
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل طباعة إيصال الاسترجاع");
+      toast.error(apiErrorMessage(e, "فشل طباعة إيصال الاسترجاع"));
     } finally {
       setPrintingRefundId(null);
     }
@@ -496,7 +502,7 @@ export default function ShiftAudit() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
-      toast.error(e.response?.data?.error || e.message || "فشل التصدير");
+      toast.error(apiErrorMessage(e, "فشل التصدير"));
     }
   }
 

@@ -3,6 +3,7 @@ import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
 import { cartItemPromoKey, computeDealLineTotal } from "../../utils/posTotals";
 import { isKgSoldUnit } from "../../utils/cartProduct";
 import Icon from "../icons/Icon";
+import { handleEnterNavKeyDown } from "../../utils/focusNavigation";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -277,7 +278,7 @@ export default function PosCartTable({
   onUnitChange,
 }) {
   return (
-    <section className="pos-cart-panel" aria-label="سلة المشتريات">
+    <section className="pos-cart-panel" aria-label="سلة المشتريات" data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
       <CartTableHeader />
       <CartTableBody
         cartItems={cartItems}

@@ -31,6 +31,13 @@ import {
   shopBusinessDayYmd,
 } from "../utils/businessDay.js";
 import { addShopDays, shopDateRange, shopTodayYmd } from "../utils/shopTime.js";
+import {
+  assertBakeryDateRange,
+  getBakeryReport,
+  parseBakeryRevenueKind,
+  presentBakeryCategoryLists,
+  saveBakeryReportCategories,
+} from "../services/bakeryReportService.js";
 
 function parseDateParam(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return null;
@@ -282,6 +289,8 @@ export function createReportsRouter(db) {
   const salesReports = requireReportsPermission(db, "sales_reports");
   const expiry = requireReportsPermission(db, "expiry");
   const salesByPrice = requireReportsPermission(db, "sales_by_price");
+  const bakery = requireReportsPermission(db, "bakery");
+  const bakeryRead = requireAnyReportsPermission(db, "bakery", "bakery_supplies");
   const accountStatement = requireReportsPermission(db, "account_statement");
   const dashboardOrSales = requireAnyReportsPermission(db, "dashboard", "sales_reports");
 
@@ -539,6 +548,53 @@ export function createReportsRouter(db) {
         refunds_total: r.refunds_total,
         net_sales: r.net_sales,
       })),
+    });
+  });
+
+  router.get("/bakery", bakeryRead, async (req, res) => {
+    const from = parseDateParam(req.query.from);
+    const to = parseDateParam(req.query.to);
+    if (req.query.from && !from) {
+      return res.status(400).json({ error: "from يجب أن يكون بصيغة YYYY-MM-DD", code: "VALIDATION_ERROR" });
+    }
+    if (req.query.to && !to) {
+      return res.status(400).json({ error: "to يجب أن يكون بصيغة YYYY-MM-DD", code: "VALIDATION_ERROR" });
+    }
+    const fromYmd = from || shopTodayYmd();
+    const toYmd = to || fromYmd;
+    assertBakeryDateRange(fromYmd, toYmd);
+
+    const productId = req.query.product_id ? parsePositiveInt(req.query.product_id) : null;
+    if (req.query.product_id && !productId) {
+      return res.status(400).json({ error: "product_id غير صالح", code: "VALIDATION_ERROR" });
+    }
+
+    if (req.query.revenue_kind && !parseBakeryRevenueKind(req.query.revenue_kind)) {
+      return res.status(400).json({ error: "revenue_kind غير صالح", code: "VALIDATION_ERROR" });
+    }
+
+    const report = await getBakeryReport(db, {
+      from: fromYmd,
+      to: toYmd,
+      productId,
+      q: req.query.q,
+      sort: req.query.sort,
+      dir: req.query.dir,
+      revenueKind: req.query.revenue_kind,
+    });
+    res.json({ success: true, ...report });
+  });
+
+  router.put("/bakery/categories", bakery, async (req, res) => {
+    const resolved = await saveBakeryReportCategories(db, req.body?.category_ids);
+    const presented = await presentBakeryCategoryLists(db, resolved);
+    res.json({
+      success: true,
+      needs_configuration: resolved.needs_configuration,
+      configuration_source: resolved.source,
+      selected_categories: presented.selected_categories,
+      available_categories: presented.available_categories,
+      uncategorized_product_count: presented.uncategorized_product_count,
     });
   });
 
