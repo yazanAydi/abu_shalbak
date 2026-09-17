@@ -8,11 +8,13 @@ import {
   StatusBadge,
   PrimaryButton,
   SecondaryButton,
+  PageRefreshButton,
   Icon,
   SkeletonRows,
   Card,
   CardBody,
 } from "../components/ui";
+import { useRegisterPageRefresh, usePageRefresh } from "../components/layout/PageRefreshContext";
 import { ils, num, formatStockWithUnit } from "../utils/format";
 import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
 import { NO_UNIT_LABEL, UNCATEGORIZED_LABEL } from "../utils/productCatalogLabels";
@@ -90,11 +92,14 @@ export default function ProductDashboard() {
     });
   }
 
-  function refreshAfterProductChange() {
+  const refreshAfterProductChange = useCallback(() => {
     loadHeader();
     setVisited(new Set([active]));
     setVersion((v) => v + 1);
-  }
+  }, [loadHeader, active]);
+
+  useRegisterPageRefresh(refreshAfterProductChange);
+  const { refreshPage, refreshing } = usePageRefresh();
 
   function handlePriceSaved() {
     refreshAfterProductChange();
@@ -221,6 +226,7 @@ export default function ProductDashboard() {
         </div>
 
         <div className="pd-actions">
+          <PageRefreshButton onClick={refreshPage} refreshing={loading || refreshing} />
           <PrimaryButton type="button" onClick={() => setPriceOpen(true)}>
             <Icon name="finance" size={16} /> {Number(product?.is_weighed) === 1 ? "تغيير سعر الكغم" : "تغيير سعر البيع"}
           </PrimaryButton>

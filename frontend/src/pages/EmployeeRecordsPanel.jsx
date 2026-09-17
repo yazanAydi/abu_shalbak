@@ -4,6 +4,7 @@ import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils } from "../utils/format";
 import { reconcileStaffEmployees } from "../utils/reconcileStaffEmployees";
+import { isAttendanceRole } from "../utils/roles";
 import {
   Button,
   Card,
@@ -17,6 +18,7 @@ import {
   StatusPill,
   useToast,
 } from "../components/ui";
+import { useRegisterPageRefresh } from "../components/layout/PageRefreshContext";
 
 const TYPE_LABELS = {
   monthly: "شهري",
@@ -52,6 +54,7 @@ export default function EmployeeRecordsPanel() {
   const [debtCustomers, setDebtCustomers] = useState([]);
   const [customerId, setCustomerId] = useState("");
   const [saving, setSaving] = useState(false);
+  const [hourlyRateDraft, setHourlyRateDraft] = useState("");
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -81,6 +84,9 @@ export default function EmployeeRecordsPanel() {
       });
       setDebtCustomers(Array.isArray(customers) ? customers : []);
       setCustomerId(data.customer_id ? String(data.customer_id) : "");
+      setHourlyRateDraft(
+        data.hourly_rate != null && Number(data.hourly_rate) > 0 ? String(data.hourly_rate) : ""
+      );
     } catch (e) {
       toast.error(apiErrorMessage(e, "فشل تحميل بيانات الموظف"));
     }
@@ -94,6 +100,12 @@ export default function EmployeeRecordsPanel() {
   useEffect(() => {
     loadDetail(selectedId);
   }, [selectedId, loadDetail]);
+
+  const refreshPanel = useCallback(async () => {
+    await loadList();
+    if (selectedId) await loadDetail(selectedId);
+  }, [loadList, loadDetail, selectedId]);
+  useRegisterPageRefresh(refreshPanel);
 
   function openCreate() {
     setEditing(false);
@@ -175,6 +187,30 @@ export default function EmployeeRecordsPanel() {
       await loadList();
     } catch (e) {
       toast.error(apiErrorMessage(e, "فشل حفظ المعدل"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveLiveHourlyRate() {
+    if (!detail?.user_id) return;
+    const rate = Number(hourlyRateDraft);
+    if (!Number.isFinite(rate) || rate < 0) {
+      toast.error("أجر الساعة يجب أن يكون رقماً موجباً أو صفراً");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.patch(
+        `/api/payroll/cashiers/${detail.user_id}`,
+        { hourly_rate: rate },
+        { headers: getAuthHeaders() }
+      );
+      toast.success("تم حفظ أجر الساعة");
+      await loadDetail(detail.id);
+      await loadList();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "فشل حفظ أجر الساعة"));
     } finally {
       setSaving(false);
     }
@@ -270,9 +306,6 @@ export default function EmployeeRecordsPanel() {
             <Button icon="plus" onClick={openCreate}>
               موظف جديد
             </Button>
-            <Button variant="secondary" onClick={loadList} disabled={loading}>
-              تحديث
-            </Button>
           </div>
           <DataTable
             loading={loading}
@@ -305,6 +338,33 @@ export default function EmployeeRecordsPanel() {
               {detail.user_username ? ` · ${detail.user_username}` : ""}
               {detail.customer_name ? ` · ذمة: ${detail.customer_name}` : ""}
             </p>
+
+            {detail.user_id && isAttendanceRole(detail.user_role) ? (
+              <>
+                <h3>أجر الساعة</h3>
+                <p className="ui-text-muted">
+                  {detail.kind === "cashier"
+                    ? "راتب الكاشير = أجر الساعة × ساعات ورديات نقطة البيع. يُنسخ الأجر عند فتح الوردية التالية. سجل المعدلات أدناه لموظفي الراتب الشهري وليس لورديات الكاشير."
+                    : "أجر الساعة يُستخدم في تقرير الساعات من الحضور. سجل المعدلات أدناه لراتب شهري وليس لهذا الأجر."}
+                </p>
+                <FormGrid>
+                  <FormField label="أجر الساعة (₪)">
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={hourlyRateDraft}
+                      onChange={(e) => setHourlyRateDraft(e.target.value)}
+                    />
+                  </FormField>
+                </FormGrid>
+                <div className="ui-toolbar" style={{ gap: 8 }}>
+                  <Button onClick={saveLiveHourlyRate} disabled={saving}>
+                    حفظ أجر الساعة
+                  </Button>
+                </div>
+              </>
+            ) : null}
 
             <h3>حساب الذمة (عميل)</h3>
             <p className="ui-text-muted">
@@ -352,7 +412,11 @@ export default function EmployeeRecordsPanel() {
             </div>
 
             <h3>سجل المعدلات</h3>
-            <p className="ui-text-muted">زيادة الراتب = صف جديد بتاريخ سريان. الصفوف السابقة لا تُعاد حسابها.</p>
+            <p className="ui-text-muted">
+              {detail.user_id && isAttendanceRole(detail.user_role)
+                ? "سجل تاريخي لراتب شهري/يومي. لا يدفع ورديات الكاشير ولا ساعات الكشك."
+                : "زيادة الراتب = صف جديد بتاريخ سريان. الصفوف السابقة لا تُعاد حسابها."}
+            </p>
             <DataTable
               columns={[
                 { key: "effective_from", header: "يسري من" },

@@ -70,7 +70,7 @@ function assertDateRange(startOn, endOn) {
 
 async function getEmployeeRow(db, id) {
   return db.get(
-    `SELECT e.*, u.username AS user_username, u.role AS user_role,
+    `SELECT e.*, u.username AS user_username, u.role AS user_role, u.hourly_rate AS hourly_rate,
             c.name AS customer_name, c.customer_code AS customer_code,
             c.balance AS customer_balance
      FROM employees e
@@ -198,6 +198,7 @@ export function mapUserAccount(row) {
     username: row.username,
     role: row.role,
     created_at: row.created_at,
+    hourly_rate: row.hourly_rate == null ? null : Number(row.hourly_rate),
     has_custom_permissions: !!row.has_custom_permissions,
     employee_id: row.employee_id ?? null,
     employee_name: row.employee_name || null,
@@ -206,7 +207,7 @@ export function mapUserAccount(row) {
 }
 
 const USER_ACCOUNT_SELECT = `
-  SELECT u.id, u.username, u.role, u.created_at,
+  SELECT u.id, u.username, u.role, u.created_at, u.hourly_rate,
          CASE WHEN u.permissions_json IS NOT NULL AND TRIM(u.permissions_json) != '' THEN 1 ELSE 0 END
            AS has_custom_permissions,
          e.id AS employee_id, e.name AS employee_name, e.active AS employee_active
@@ -442,6 +443,7 @@ function mapEmployee(row, extras = {}) {
     user_id: row.user_id,
     user_username: row.user_username || null,
     user_role: row.user_role || null,
+    hourly_rate: row.hourly_rate == null ? null : Number(row.hourly_rate),
     customer_id: row.customer_id ?? null,
     customer_name: row.customer_name || null,
     customer_code: row.customer_code || null,
@@ -527,7 +529,7 @@ export async function listLinkableUsers(db, { includeUserId = null } = {}) {
 
 export async function listEmployees(db, { active = "all" } = {}) {
   let sql = `
-    SELECT e.*, u.username AS user_username, u.role AS user_role,
+    SELECT e.*, u.username AS user_username, u.role AS user_role, u.hourly_rate AS hourly_rate,
            c.name AS customer_name, c.customer_code AS customer_code,
            c.balance AS customer_balance
     FROM employees e

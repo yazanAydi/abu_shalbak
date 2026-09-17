@@ -8,6 +8,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useVisiblePoll } from "../../hooks/useVisiblePoll";
 import { OFFICE_NAV } from "./officeNavConfig";
 import Icon from "../icons/Icon";
+import { OFFICE_PAGE_REFRESH_EVENT } from "./PageRefreshContext";
 
 const LOW_STOCK_THRESHOLD = 5;
 const LOW_STOCK_RAIL_LIMIT = 10;
@@ -62,6 +63,15 @@ export default function OfficeSideRail() {
   useEffect(() => {
     if (!railVisible) return;
     loadLowStock();
+  }, [railVisible, loadLowStock]);
+
+  useEffect(() => {
+    if (!railVisible) return undefined;
+    function onPageRefresh() {
+      loadLowStock();
+    }
+    window.addEventListener(OFFICE_PAGE_REFRESH_EVENT, onPageRefresh);
+    return () => window.removeEventListener(OFFICE_PAGE_REFRESH_EVENT, onPageRefresh);
   }, [railVisible, loadLowStock]);
 
   useVisiblePoll(loadLowStock, 60_000, { enabled: railVisible });

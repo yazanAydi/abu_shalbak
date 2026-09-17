@@ -24,6 +24,7 @@ import {
   useToast,
 } from "../components/ui";
 import { apiErrorMessage } from "../utils/apiError";
+import { useRegisterPageRefresh } from "../components/layout/PageRefreshContext";
 
 export default function EmployeeHistoryStatement() {
   const toast = useToast();
@@ -93,6 +94,8 @@ export default function EmployeeHistoryStatement() {
     loadReport();
   }, [loadReport]);
 
+  useRegisterPageRefresh(loadReport);
+
   return (
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
@@ -104,11 +107,9 @@ export default function EmployeeHistoryStatement() {
             <Button variant="secondary" onClick={() => printEmployeeHistoryStatement(report)} disabled={!report}>
               طباعة
             </Button>
-            <Button variant="secondary" onClick={loadReport} disabled={loading || !employeeId}>
-              تحديث
-            </Button>
           </>
         }
+        refreshDisabled={!employeeId}
       />
 
       <FilterBar>

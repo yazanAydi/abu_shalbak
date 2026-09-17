@@ -31,6 +31,7 @@ import {
   StatusBadge,
   useToast,
 } from "../components/ui";
+import { useRegisterPageRefresh } from "../components/layout/PageRefreshContext";
 
 const ROLE_LABELS = {
   cashier: "كاشير",
@@ -76,7 +77,7 @@ const REPORT_SUMMARY_COLUMNS = [
 
 export default function CashierPayroll() {
   const toast = useToast();
-  const [tab, setTab] = useState("records");
+  const [tab, setTab] = useState("rates");
 
   const [employees, setEmployees] = useState([]);
   const [ratesLoading, setRatesLoading] = useState(true);
@@ -84,6 +85,7 @@ export default function CashierPayroll() {
   const [editingId, setEditingId] = useState(null);
   const [editRate, setEditRate] = useState("");
   const [savingRate, setSavingRate] = useState(false);
+  const [fillingId, setFillingId] = useState(null);
 
   const [from, setFrom] = useState(firstOfCurrentMonthYmd());
   const [to, setTo] = useState(todayYmd());
@@ -146,6 +148,12 @@ export default function CashierPayroll() {
     if (tab === "report") loadReport();
   }, [tab, loadReport]);
 
+  const refreshTab = useCallback(async () => {
+    if (tab === "report") await loadReport();
+    else if (tab === "rates") await loadEmployees();
+  }, [tab, loadReport, loadEmployees]);
+  useRegisterPageRefresh(refreshTab);
+
   useEffect(() => {
     cancelEditPunch();
     setManualPunchTime("");
@@ -160,6 +168,23 @@ export default function CashierPayroll() {
   function cancelEditRate() {
     setEditingId(null);
     setEditRate("");
+  }
+
+  async function fillMissingSnapshots(id) {
+    setFillingId(id);
+    try {
+      const { data } = await api.post(
+        `/api/payroll/cashiers/${id}/fill-missing-snapshots`,
+        {},
+        { headers: getAuthHeaders() }
+      );
+      const updated = data?.updated_count ?? 0;
+      toast.success(updated ? `عُبئت ${updated} وردية مغلقة بلا أجر` : "لا توجد ورديات مغلقة بلا أجر");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "فشل تعبئة أجر الورديات"));
+    } finally {
+      setFillingId(null);
+    }
   }
 
   async function saveRate(id) {
@@ -376,9 +401,21 @@ export default function CashierPayroll() {
             </SecondaryButton>
           </div>
         ) : (
-          <SecondaryButton size="sm" type="button" onClick={() => startEditRate(c)}>
-            تعديل
-          </SecondaryButton>
+          <div className="ui-table__actions">
+            <SecondaryButton size="sm" type="button" onClick={() => startEditRate(c)}>
+              تعديل
+            </SecondaryButton>
+            {c.hourly_rate > 0 ? (
+              <SecondaryButton
+                size="sm"
+                type="button"
+                onClick={() => fillMissingSnapshots(c.id)}
+                disabled={fillingId === c.id}
+              >
+                تعبئة الورديات المغلقة بلا أجر
+              </SecondaryButton>
+            ) : null}
+          </div>
         ),
     },
   ];
@@ -405,17 +442,8 @@ export default function CashierPayroll() {
         icon="shifts"
         actions={
           tab === "report" ? (
-            <>
-              <SecondaryButton type="button" onClick={onExportCsv} disabled={!flatSessionRows.length}>
-                تصدير CSV
-              </SecondaryButton>
-              <PrimaryButton type="button" onClick={loadReport} disabled={reportLoading}>
-                {reportLoading ? "جاري التحميل…" : "تحديث"}
-              </PrimaryButton>
-            </>
-          ) : tab === "rates" ? (
-            <SecondaryButton type="button" onClick={loadEmployees} disabled={ratesLoading}>
-              تحديث
+            <SecondaryButton type="button" onClick={onExportCsv} disabled={!flatSessionRows.length}>
+              تصدير CSV
             </SecondaryButton>
           ) : null
         }
@@ -429,7 +457,7 @@ export default function CashierPayroll() {
         <Card className="ui-mt-md">
           <CardBody>
             <p className="ui-text-muted" style={{ marginTop: 0 }}>
-              حدّد أجر الساعة لكل موظف — يُستخدم لحساب الراتب في تقرير الساعات.
+              حدّد أجر الساعة لكل موظف. يُنسخ إلى الوردية عند فتحها. التعبئة تملأ الورديات المغلقة بلا أجر فقط ولا تغيّر وردية لها أجر محفوظ.
             </p>
             {ratesLoading ? (
               <Skeleton style={{ height: 200 }} />

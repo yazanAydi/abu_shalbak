@@ -215,6 +215,15 @@ export const OFFICE_NAV = [
     visible: navVisible("employee_payroll"),
   },
   {
+    path: "/cashier-payroll",
+    label: "أجور الساعة والدوام",
+    icon: "shifts",
+    section: "finance",
+    permissionKey: "employee_payroll",
+    omitFromPermissionTopics: true,
+    visible: navVisible("employee_payroll"),
+  },
+  {
     path: "/sales-reports",
     label: "تقارير المبيعات",
     icon: "finance",

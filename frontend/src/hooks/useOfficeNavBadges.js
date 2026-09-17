@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { useVisiblePoll } from "./useVisiblePoll";
+import { OFFICE_PAGE_REFRESH_EVENT } from "../components/layout/PageRefreshContext";
 
 function unwrapData(body) {
   return body?.data ?? body;
@@ -41,6 +42,14 @@ export default function useOfficeNavBadges(enabled = true) {
 
   useEffect(() => {
     refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    function onPageRefresh() {
+      refresh();
+    }
+    window.addEventListener(OFFICE_PAGE_REFRESH_EVENT, onPageRefresh);
+    return () => window.removeEventListener(OFFICE_PAGE_REFRESH_EVENT, onPageRefresh);
   }, [refresh]);
 
   useVisiblePoll(refresh, 60_000, { enabled });

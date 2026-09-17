@@ -81,6 +81,7 @@ export default function Checkout() {
   const [clearCartOpen, setClearCartOpen] = useState(false);
   const [shiftLoading, setShiftLoading] = useState(true);
   const [shiftLoadError, setShiftLoadError] = useState("");
+  const [posRefreshing, setPosRefreshing] = useState(false);
   const [activeShift, setActiveShift] = useState(null);
   const [shiftTxCount, setShiftTxCount] = useState(0);
   const [suspendedCount, setSuspendedCount] = useState(0);
@@ -210,6 +211,33 @@ export default function Checkout() {
   useEffect(() => {
     if (shiftReady) loadSuspendedList();
   }, [shiftReady, loadSuspendedList]);
+
+  const refreshPos = useCallback(async () => {
+    if (isLoading) return;
+    setPosRefreshing(true);
+    try {
+      const shift = await loadShift();
+      loadActivePromos();
+      try {
+        const { data } = await api.get("/api/settings", { headers: getAuthHeaders() });
+        setAppSettings(data);
+      } catch {
+        setAppSettings(null);
+      }
+      if (!posNeedsShift || shift) {
+        try {
+          const { data } = await api.get("/api/suspended-sales", { headers: getAuthHeaders() });
+          setSuspendedCount(Number(data.count) || 0);
+          setSuspendedSales(data.sales || []);
+        } catch {
+          setSuspendedCount(0);
+          setSuspendedSales([]);
+        }
+      }
+    } finally {
+      setPosRefreshing(false);
+    }
+  }, [isLoading, loadShift, loadActivePromos, posNeedsShift]);
 
   const estimated = useMemo(
     () => estimateCartTotals(cartItems, appSettings, activePromos),
@@ -683,6 +711,8 @@ export default function Checkout() {
         onEndShift={() => setEndShiftOpen(true)}
         onLogout={handleLogout}
         onProductFound={addToCart}
+        onRefresh={refreshPos}
+        refreshing={posRefreshing}
       />
 
       <PosRefundNotifications

@@ -67,6 +67,7 @@ import {
   setupEmployeeForStaffUser,
   reconcileStaffEmployeeIdentities,
 } from "../services/employeeService.js";
+import { readHourlyRateInput, updateEmployeeHourlyRate } from "../services/cashierPayrollService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -761,6 +762,10 @@ export function createAdminRouter(db, dbPath) {
         code: "USER_NOT_STAFF",
       });
     }
+    const hourlyRateInput = readHourlyRateInput(req.body);
+    if (hourlyRateInput.provided && !ATTENDANCE_ROLES.includes(role)) {
+      return res.status(400).json({ error: "أجر الساعة يُحدَّد لموظفي المتجر فقط" });
+    }
     const hash = await bcrypt.hash(
       kioskOnly && !password
         ? crypto.randomBytes(32).toString("hex")
@@ -783,6 +788,9 @@ export function createAdminRouter(db, dbPath) {
           { ...linkBody, createdBy: req.user?.id ?? null },
           { autoCreate: ATTENDANCE_ROLES.includes(role) }
         );
+        if (hourlyRateInput.provided) {
+          await updateEmployeeHourlyRate(db, user.id, hourlyRateInput.value);
+        }
         return { user, attach };
       });
       await logAudit(db, req, AUDIT_ACTIONS.USER_CREATE, "users", created.user.id, null, {
@@ -840,8 +848,10 @@ export function createAdminRouter(db, dbPath) {
     const ex = await db.get("SELECT * FROM users WHERE id = ?", [id]);
     if (!ex) return res.status(404).json({ error: "المستخدم غير موجود" });
     const { role, password } = req.body || {};
-    if (role === undefined && (password === undefined || String(password) === "")) {
-      return res.status(400).json({ error: "مطلوب تعديل الدور و/أو كلمة مرور جديدة" });
+    const hourlyRateInput = readHourlyRateInput(req.body);
+    const hasPassword = password !== undefined && String(password) !== "";
+    if (role === undefined && !hasPassword && !hourlyRateInput.provided) {
+      return res.status(400).json({ error: "مطلوب تعديل الدور و/أو كلمة مرور جديدة و/أو أجر الساعة" });
     }
     try {
       forbidAccountantAdminPrivilege(req, role, ex.role);
@@ -876,6 +886,9 @@ export function createAdminRouter(db, dbPath) {
         code: "USER_NOT_STAFF",
       });
     }
+    if (hourlyRateInput.provided && !ATTENDANCE_ROLES.includes(nextRole)) {
+      return res.status(400).json({ error: "أجر الساعة يُحدَّد لموظفي المتجر فقط" });
+    }
     let passwordHash = null;
     if (password !== undefined && String(password).length > 0) {
       passwordHash = await bcrypt.hash(String(password), 10);
@@ -896,6 +909,9 @@ export function createAdminRouter(db, dbPath) {
             { ...linkBody, createdBy: req.user?.id ?? null },
             { autoCreate: becomingStaff }
           );
+        }
+        if (hourlyRateInput.provided) {
+          await updateEmployeeHourlyRate(db, id, hourlyRateInput.value);
         }
       });
     } catch (e) {

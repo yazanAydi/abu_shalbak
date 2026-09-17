@@ -31,6 +31,8 @@ export default function PosHeader({
   onEndShift,
   onLogout,
   onProductFound,
+  onRefresh,
+  refreshing = false,
 }) {
   return (
     <header className="pos-header" dir="rtl" lang="ar">
@@ -52,6 +54,17 @@ export default function PosHeader({
               إغلاق الوردية
             </button>
           </>
+        ) : null}
+        {typeof onRefresh === "function" ? (
+          <button
+            type="button"
+            className={`pos-btn-ghost pos-btn-ghost--compact${refreshing ? " is-refreshing" : ""}`}
+            onClick={onRefresh}
+            disabled={refreshing}
+            aria-label="تحديث"
+          >
+            تحديث
+          </button>
         ) : null}
         <LiveClock />
         <span className="pos-pill">{user?.username}</span>

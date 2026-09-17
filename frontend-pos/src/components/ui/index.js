@@ -4,6 +4,7 @@ export { default as Button } from "./Button";
 export { PrimaryButton, SecondaryButton, DangerButton } from "./ActionButtons";
 export { Card, CardHeader, CardBody } from "./Card";
 export { default as PageHeader } from "./PageHeader";
+export { default as PageRefreshButton } from "./PageRefreshButton";
 export { default as StatCard } from "./StatCard";
 export { default as SearchInput } from "./SearchInput";
 export { default as DataTable } from "./DataTable";

@@ -5,9 +5,11 @@ import {
   ROLE_LABELS_AR,
   USER_ROLES,
   isAdminRole,
+  isAttendanceRole,
   isKioskOnlyRole,
   roleNeedsPassword,
 } from "../utils/roles";
+import { ils } from "../utils/format";
 import {
   PageHeader,
   Card,
@@ -34,6 +36,7 @@ const emptyForm = {
   username: "",
   password: "",
   role: "cashier",
+  hourly_rate: "",
 };
 
 export default function UserManagement() {
@@ -49,6 +52,7 @@ export default function UserManagement() {
   const [editing, setEditing] = useState(null);
   const [editRole, setEditRole] = useState("cashier");
   const [editPassword, setEditPassword] = useState("");
+  const [editHourlyRate, setEditHourlyRate] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,6 +93,9 @@ export default function UserManagement() {
         role: form.role,
       };
       if (form.password) body.password = form.password;
+      if (isAttendanceRole(form.role) && form.hourly_rate !== "") {
+        body.hourly_rate = Number(form.hourly_rate);
+      }
       await api.post("/api/admin/users", body, {
         headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       });
@@ -107,11 +114,13 @@ export default function UserManagement() {
     setEditing(u.id);
     setEditRole(u.role);
     setEditPassword("");
+    setEditHourlyRate(u.hourly_rate != null && u.hourly_rate > 0 ? String(u.hourly_rate) : "");
   }
 
   function cancelEdit() {
     setEditing(null);
     setEditPassword("");
+    setEditHourlyRate("");
   }
 
   async function saveEdit(id) {
@@ -119,6 +128,9 @@ export default function UserManagement() {
     try {
       const body = { role: editRole };
       if (editPassword.trim()) body.password = editPassword;
+      if (isAttendanceRole(editRole) && editHourlyRate !== "") {
+        body.hourly_rate = Number(editHourlyRate);
+      }
       await api.patch(`/api/admin/users/${id}`, body, {
         headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       });
@@ -178,6 +190,27 @@ export default function UserManagement() {
           </Select>
         ) : (
           <StatusBadge tone="blue">{ROLE_LABELS_AR[u.role] || u.role}</StatusBadge>
+        ),
+    },
+    {
+      key: "hourly_rate",
+      header: "أجر الساعة",
+      value: (u) => (isAttendanceRole(u.role) && u.hourly_rate > 0 ? ils(u.hourly_rate) : "—"),
+      render: (u) =>
+        editing === u.id && isAttendanceRole(editRole) ? (
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={editHourlyRate}
+            onChange={(e) => setEditHourlyRate(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 120 }}
+          />
+        ) : isAttendanceRole(u.role) && u.hourly_rate != null && u.hourly_rate > 0 ? (
+          <span className="num">{ils(u.hourly_rate)}</span>
+        ) : (
+          "—"
         ),
     },
     {
@@ -289,6 +322,7 @@ export default function UserManagement() {
                     ...f,
                     role,
                     password: isKioskOnlyRole(role) ? "" : f.password,
+                    hourly_rate: isAttendanceRole(role) ? f.hourly_rate : "",
                   }));
                 }}
               >
@@ -299,6 +333,17 @@ export default function UserManagement() {
                 ))}
               </Select>
             </FormField>
+            {isAttendanceRole(form.role) ? (
+              <FormField label="أجر الساعة (₪)" hint="لكاشير نقطة البيع وموظفي الكشك — يُنسخ عند فتح الوردية">
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.hourly_rate}
+                  onChange={(e) => setForm((f) => ({ ...f, hourly_rate: e.target.value }))}
+                />
+              </FormField>
+            ) : null}
           </FormGrid>
           <PrimaryButton
             type="button"

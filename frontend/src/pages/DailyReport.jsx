@@ -33,6 +33,7 @@ import {
   Skeleton,
   SecondaryButton,
 } from "../components/ui";
+import { useRegisterPageRefresh } from "../components/layout/PageRefreshContext";
 
 // recharts is ~385 KB minified and only this one widget needs it, so it loads
 // alongside the chart data rather than blocking the rest of the dashboard.
@@ -293,6 +294,12 @@ export default function DailyReport() {
     [applyChart, fetchChartData]
   );
 
+  const refreshDashboard = useCallback(
+    () => loadDashboard({ initial: false }),
+    [loadDashboard]
+  );
+  useRegisterPageRefresh(refreshDashboard);
+
   async function onChartPeriodChange(period) {
     if (period === chartPeriod) return;
     setChartPeriod(period);
@@ -408,12 +415,6 @@ export default function DailyReport() {
             <SecondaryButton type="button" onClick={() => navigate(`/sales-reports?date=${todayYmd()}`)}>
               عرض تقرير اليوم
             </SecondaryButton>
-            <PrimaryButton
-              onClick={() => loadDashboard({ initial: false })}
-              disabled={refreshing}
-            >
-              {refreshing ? "جاري التحديث…" : "تحديث"}
-            </PrimaryButton>
           </>
         }
       />

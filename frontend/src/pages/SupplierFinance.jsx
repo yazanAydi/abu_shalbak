@@ -27,12 +27,12 @@ import {
   HelpPanel,
   Notice,
   PageHeader,
-  PrimaryButton,
   ReportToolbar,
   SectionTitle,
   Skeleton,
   StatCard,
 } from "../components/ui";
+import { useRegisterPageRefresh } from "../components/layout/PageRefreshContext";
 
 const incompleteStatus = { label: "غير مكتمل", tone: "orange", icon: "alert" };
 const currentStatus = { label: "رصيد حالي", tone: "neutral" };
@@ -70,6 +70,8 @@ export default function SupplierFinance() {
   useEffect(() => {
     loadOverview();
   }, [loadOverview]);
+
+  useRegisterPageRefresh(loadOverview);
 
   const unknown = !!(overview?.cogs_unknown || overview?.profit?.cogsKnown === false);
   const sales = overview?.sales;
@@ -121,9 +123,6 @@ export default function SupplierFinance() {
               filename="finance-overview"
               disabled={!overview}
             />
-            <PrimaryButton type="button" onClick={loadOverview} disabled={loading}>
-              {loading ? "جاري التحميل…" : "تحديث"}
-            </PrimaryButton>
           </>
         }
       />

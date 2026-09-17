@@ -24,6 +24,7 @@ import {
   useToast,
 } from "../components/ui";
 import { apiErrorMessage } from "../utils/apiError";
+import { useRegisterPageRefresh } from "../components/layout/PageRefreshContext";
 import { ils } from "../utils/format";
 import { getDatePresets, todayYmd, firstOfCurrentMonthYmd } from "../utils/reportDates";
 import useAuthUser from "../hooks/useAuthUser";
@@ -115,6 +116,8 @@ export default function Bakery({ variant = "sales" }) {
   useEffect(() => {
     loadReport();
   }, [loadReport]);
+
+  useRegisterPageRefresh(loadReport);
 
   function applyPreset(preset) {
     if (preset.mode === "day") {
@@ -299,6 +302,7 @@ export default function Bakery({ variant = "sales" }) {
             : "مبيعات أصناف البيع ومواد المخبز المتاحة للكاشير — بدون سجلات مالية إضافية"
         }
         icon="inventory"
+        refreshDisabled={needsConfig}
         actions={
           <ReportToolbar
             title={isOverview ? "نظرة عامة — المخبز" : "مبيعات المخبز"}
@@ -369,9 +373,6 @@ export default function Bakery({ variant = "sales" }) {
                 {p.label}
               </SecondaryButton>
             ))}
-            <PrimaryButton type="button" onClick={loadReport} disabled={loading}>
-              {loading ? "جاري التحميل…" : "تحديث"}
-            </PrimaryButton>
           </>
         }
       >

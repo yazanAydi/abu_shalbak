@@ -44,6 +44,14 @@ a,
   width: 17px;
   height: 17px;
 }
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ui-btn--spin-icon svg {
+  animation: ui-spin 0.75s linear infinite;
+}
 
 .ui-btn--sm {
   padding: 0.4rem 0.7rem;

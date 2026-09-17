@@ -116,9 +116,8 @@
   background: rgba(255, 255, 255, 0.14);
 }
 
-.pos-header .pos-btn-ghost:focus-visible {
-  outline: 2px solid #fff;
-  outline-offset: 2px;
+.pos-header .pos-btn-ghost.is-refreshing {
+  opacity: 0.8;
 }
 
 .pos-btn-ghost {

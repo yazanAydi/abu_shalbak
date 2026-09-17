@@ -43,6 +43,14 @@ a,
   height: 17px;
   flex-shrink: 0;
 }
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ui-btn--spin-icon svg {
+  animation: ui-spin 0.75s linear infinite;
+}
 
 .ui-btn--sm {
   min-height: var(--control-h-sm, 2rem);

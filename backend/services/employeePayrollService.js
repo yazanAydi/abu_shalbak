@@ -246,6 +246,8 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
     period_to: periodTo,
     as_of: asOf,
     hours,
+    cashier_user_id: emp.user_id ?? null,
+    live_hourly_rate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
     calculated_salary: calculatedSalary,
     salary_known: calculatedSalary != null || (progress && samePeriod?.salary_before_deductions != null),
     calculation_final: kind === "cashier" ? hours.calculation_final === true : false,

@@ -76,6 +76,21 @@ export async function listCashiers(db) {
 }
 
 /**
+ * @param {unknown} body
+ * @returns {{ provided: boolean, value?: unknown }}
+ */
+export function readHourlyRateInput(body) {
+  if (!body || !Object.prototype.hasOwnProperty.call(body, "hourly_rate")) {
+    return { provided: false };
+  }
+  const raw = body.hourly_rate;
+  if (raw === "" || raw === null || raw === undefined) {
+    return { provided: false };
+  }
+  return { provided: true, value: raw };
+}
+
+/**
  * @param {object} db
  * @param {number} userId
  * @param {number} hourlyRate
@@ -105,6 +120,47 @@ export async function updateEmployeeHourlyRate(db, userId, hourlyRate) {
 /** @deprecated Use updateEmployeeHourlyRate */
 export async function updateCashierHourlyRate(db, userId, hourlyRate) {
   return updateEmployeeHourlyRate(db, userId, hourlyRate);
+}
+
+/**
+ * Copy the live hourly rate onto closed (or pending-count) shifts that have no snapshot.
+ * Does not touch open shifts or rows that already have a positive snapshot.
+ * @param {object} db
+ * @param {number} userId
+ */
+export async function fillMissingClosedShiftSnapshots(db, userId) {
+  const id = Number(userId);
+  if (!id) throw new HttpError(400, "المعرّف غير صالح");
+
+  const user = await db.get("SELECT id, username, role, hourly_rate FROM users WHERE id = ?", [id]);
+  if (!user) throw new HttpError(404, "المستخدم غير موجود");
+  if (!ATTENDANCE_ROLES.includes(user.role)) {
+    throw new HttpError(400, "أجر الساعة يُحدَّد لموظفي المتجر فقط");
+  }
+
+  const rate = Number(user.hourly_rate);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw new HttpError(400, "حدّد أجر الساعة أولاً");
+  }
+
+  const rounded = round2(rate);
+  const info = await db.run(
+    `UPDATE cashier_shifts
+     SET hourly_rate_snapshot = ?
+     WHERE cashier_id = ?
+       AND status != 'open'
+       AND end_time IS NOT NULL
+       AND (hourly_rate_snapshot IS NULL OR hourly_rate_snapshot <= 0)`,
+    [rounded, id]
+  );
+
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    hourly_rate: rounded,
+    updated_count: Number(info?.changes || 0),
+  };
 }
 
 /**

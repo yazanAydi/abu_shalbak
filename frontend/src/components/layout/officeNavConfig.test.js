@@ -159,6 +159,21 @@ describe("permission settings topics", () => {
     ]);
   });
 
+  test("أجور الساعة والدوام sits in finance after salaries", () => {
+    const adminFinance = pathsIn(navFor("admin", ALL), "finance");
+    expect(adminFinance).toContain("/cashier-payroll");
+    expect(adminFinance.indexOf("/cashier-payroll")).toBe(
+      adminFinance.indexOf("/employee-salaries") + 1
+    );
+
+    const accountantFinance = pathsIn(navFor("accountant", { ...NONE, employee_payroll: true }), "finance");
+    expect(accountantFinance).toEqual([
+      "/employee-statements",
+      "/employee-salaries",
+      "/cashier-payroll",
+    ]);
+  });
+
   test("كشف حساب ورواتب الموظفين sits in المالية after المصروفات", () => {
     const finance = topics.find((t) => t.id === "finance");
     const keys = finance.features.map((f) => f.key);

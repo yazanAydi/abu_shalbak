@@ -314,11 +314,13 @@ export async function previewCashierHours(db, employeeId, periodFrom, periodTo) 
   }
   const rows = await loadCashierShiftsInPeriod(db, emp.user_id, from, to);
   const preview = buildCashierHoursPreviewFromRows(rows, { periodFrom: from, periodTo: to });
+  const liveRate = emp.hourly_rate == null ? null : Number(emp.hourly_rate);
   return {
     applicable: true,
     employee_id: emp.id,
     kind: "cashier",
     cashier_user_id: emp.user_id,
+    live_hourly_rate: Number.isFinite(liveRate) ? liveRate : null,
     ...preview,
   };
 }

@@ -1,4 +1,4 @@
-import { formatDateTimeShopAr } from "./format.js";
+import { formatDateTimeShopAr, round2 } from "./format.js";
 
 /** Format decimal hours as Arabic hours/minutes (e.g. 8س 15د). */
 export function formatHoursAr(hours) {
@@ -72,6 +72,69 @@ export function isPreviewPayIncomplete(preview) {
   if (!preview) return false;
   if (preview.preview_pay_incomplete === true) return true;
   return Number(preview.missing_snapshot_count || 0) > 0;
+}
+
+function shiftIsOpen(shift) {
+  return !shift?.end_time || shift.status === "open" || (shift.flags || []).includes("open");
+}
+
+function rateForShift(shift, liveHourlyRate) {
+  const snap = Number(shift?.hourly_rate);
+  if (Number.isFinite(snap) && snap > 0) return snap;
+  const live = Number(liveHourlyRate);
+  if (Number.isFinite(live) && live > 0) return live;
+  return null;
+}
+
+/** Hours that can be multiplied by a rate (ended shifts only). */
+export function payableHoursOf(hours, liveHourlyRate) {
+  const live = liveHourlyRate ?? hours?.live_hourly_rate;
+  let total = 0;
+  for (const shift of hours?.shifts || []) {
+    if (shiftIsOpen(shift)) continue;
+    const h = Number(shift.hours);
+    if (!Number.isFinite(h) || h <= 0) continue;
+    if (rateForShift(shift, live) == null) continue;
+    total += h;
+  }
+  return round2(total);
+}
+
+function shiftPayAmount(shift, liveHourlyRate) {
+  if (shiftIsOpen(shift)) return 0;
+  const h = Number(shift.hours);
+  const rate = rateForShift(shift, liveHourlyRate);
+  if (!Number.isFinite(h) || h <= 0 || rate == null) return 0;
+  return round2(rate * h);
+}
+
+/**
+ * Preview wage: ended shifts × snapshot (or live rate if the shift has no snapshot).
+ * Open shifts stay out. This is a display/prefill number — payout remains manual.
+ */
+export function estimatedCashierPay(hours, liveHourlyRate) {
+  const live = liveHourlyRate ?? hours?.live_hourly_rate;
+  const shifts = hours?.shifts || [];
+  if (!shifts.length) {
+    const posted = Number(hours?.posted_pay);
+    return Number.isFinite(posted) && posted > 0 ? round2(posted) : null;
+  }
+  let total = 0;
+  let any = false;
+  for (const shift of shifts) {
+    const pay = shiftPayAmount(shift, live);
+    if (pay > 0) {
+      total = round2(total + pay);
+      any = true;
+    }
+  }
+  if (any) return total;
+  const posted = Number(hours?.posted_pay);
+  return Number.isFinite(posted) && posted > 0 ? round2(posted) : null;
+}
+
+export function estimatedShiftPay(shift, liveHourlyRate) {
+  return shiftPayAmount(shift, liveHourlyRate);
 }
 
 export function formatDateTimeAr(iso) {

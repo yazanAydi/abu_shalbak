@@ -8,6 +8,7 @@ import useOfficeNavBadges, { navItemBadgeCount, sumSectionBadgeCount } from "../
 import NavBadge from "./NavBadge";
 import NavIconWithBadge from "./NavIconWithBadge";
 import Icon from "../icons/Icon";
+import { usePageRefresh } from "./PageRefreshContext";
 import "./OfficeLayout.css";
 
 export default function OfficeSidebar() {
@@ -19,6 +20,7 @@ export default function OfficeSidebar() {
   const items = filterOfficeNav(role, permissions);
   const groups = groupOfficeNav(items);
   const { badgesByPath, total } = useOfficeNavBadges(Boolean(role));
+  const { refreshPage, refreshing } = usePageRefresh();
   const initial = (user?.username || "?").charAt(0).toUpperCase();
 
   const [openSection, setOpenSection] = useState(null);
@@ -148,6 +150,17 @@ export default function OfficeSidebar() {
       </nav>
 
       <div className="office-navbar-user">
+        <button
+          type="button"
+          className={`office-navbar-refresh${refreshing ? " is-refreshing" : ""}`}
+          onClick={refreshPage}
+          disabled={refreshing || typeof refreshPage !== "function"}
+          aria-label="تحديث الصفحة"
+          title="تحديث"
+        >
+          <Icon name="refresh" size={18} />
+          <span className="office-navbar-refresh-label">تحديث</span>
+        </button>
         <div className="office-navbar-avatar" aria-hidden>
           {initial}
         </div>
@@ -213,6 +226,17 @@ export default function OfficeSidebar() {
               </ul>
             </div>
           ))}
+          <button
+            type="button"
+            className={`office-navbar-mobile-refresh${refreshing ? " is-refreshing" : ""}`}
+            onClick={() => {
+              if (typeof refreshPage === "function") refreshPage();
+              setMobileOpen(false);
+            }}
+            disabled={refreshing || typeof refreshPage !== "function"}
+          >
+            تحديث الصفحة
+          </button>
           <button
             type="button"
             className="office-navbar-mobile-logout"

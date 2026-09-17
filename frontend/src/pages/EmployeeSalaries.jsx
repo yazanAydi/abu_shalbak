@@ -12,7 +12,9 @@ import {
   formatShiftFlags,
   recordedHoursOf,
   eligibleHoursOf,
-  isPreviewPayIncomplete,
+  estimatedCashierPay,
+  estimatedShiftPay,
+  payableHoursOf,
 } from "../utils/payrollHelpers";
 import { allocatePayrollDeductions } from "../utils/payrollPayout";
 import {
@@ -97,6 +99,9 @@ export default function EmployeeSalaries() {
   const [note, setNote] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [showShifts, setShowShifts] = useState(false);
+  const [hourlyRateDraft, setHourlyRateDraft] = useState("");
+  const [savingRate, setSavingRate] = useState(false);
+  const [fillingSnapshots, setFillingSnapshots] = useState(false);
 
   const loadEmployees = useCallback(async () => {
     try {
@@ -124,6 +129,8 @@ export default function EmployeeSalaries() {
         params: { period_from: periodFrom, period_to: periodTo, as_of: asOf },
       });
       setPreview(data);
+      const live = data?.hours?.live_hourly_rate;
+      setHourlyRateDraft(live != null && Number(live) > 0 ? String(live) : "");
     } catch (e) {
       toast.error(apiErrorMessage(e, "فشل تحميل السلف والذمم"));
       setPreview(null);
@@ -136,12 +143,27 @@ export default function EmployeeSalaries() {
     loadPreview();
   }, [loadPreview]);
 
+  useEffect(() => {
+    if (!preview || payAmount !== "") return;
+    const estimated = estimatedCashierPay(preview.hours, preview.live_hourly_rate);
+    if (estimated != null && estimated > 0) {
+      setPayAmount(String(estimated));
+    }
+  }, [preview, payAmount]);
+
   const allocation = useMemo(
     () => allocatePayrollDeductions(payAmount, preview?.advances || [], preview?.debts || []),
     [payAmount, preview]
   );
   const hours = preview?.hours;
   const isCashier = preview?.kind === "cashier";
+  const cashierUserId = hours?.cashier_user_id;
+  const liveHourlyRate = hours?.live_hourly_rate ?? preview?.live_hourly_rate;
+  const missingSnapshot = Number(hours?.missing_snapshot_count || 0) > 0;
+  const liveRateMissing = liveHourlyRate == null || Number(liveHourlyRate) <= 0;
+  const showRateEditor = isCashier && hours?.applicable && (missingSnapshot || liveRateMissing);
+  const estimatedPay = isCashier ? estimatedCashierPay(hours, liveHourlyRate) : null;
+  const payableHours = isCashier ? payableHoursOf(hours, liveHourlyRate) : 0;
   const typed = payAmount === "" ? null : Number(payAmount);
   const knownPay = Number.isFinite(typed) && typed > 0 ? typed : null;
 
@@ -155,6 +177,48 @@ export default function EmployeeSalaries() {
       return;
     }
     setConfirmOpen(true);
+  }
+
+  async function saveLiveHourlyRate() {
+    if (!cashierUserId) return;
+    const rate = Number(hourlyRateDraft);
+    if (!Number.isFinite(rate) || rate < 0) {
+      toast.error("أجر الساعة يجب أن يكون رقماً موجباً أو صفراً");
+      return;
+    }
+    setSavingRate(true);
+    try {
+      await api.patch(
+        `/api/payroll/cashiers/${cashierUserId}`,
+        { hourly_rate: rate },
+        { headers: getAuthHeaders() }
+      );
+      toast.success("تم حفظ أجر الساعة — يُستخدم من الوردية التالية");
+      await loadPreview();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "فشل حفظ أجر الساعة"));
+    } finally {
+      setSavingRate(false);
+    }
+  }
+
+  async function fillMissingSnapshots() {
+    if (!cashierUserId) return;
+    setFillingSnapshots(true);
+    try {
+      const { data } = await api.post(
+        `/api/payroll/cashiers/${cashierUserId}/fill-missing-snapshots`,
+        {},
+        { headers: getAuthHeaders() }
+      );
+      const updated = data?.updated_count ?? 0;
+      toast.success(updated ? `عُبئت ${updated} وردية مغلقة بلا أجر` : "لا توجد ورديات مغلقة بلا أجر");
+      await loadPreview();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "فشل تعبئة أجر الورديات"));
+    } finally {
+      setFillingSnapshots(false);
+    }
   }
 
   async function submitPayout() {
@@ -211,10 +275,24 @@ export default function EmployeeSalaries() {
             </Select>
           </FormField>
           <FormField label="من فترة الراتب" required>
-            <Input type="date" value={periodFrom} onChange={(e) => setPeriodFrom(e.target.value)} />
+            <Input
+              type="date"
+              value={periodFrom}
+              onChange={(e) => {
+                setPeriodFrom(e.target.value);
+                setPayAmount("");
+              }}
+            />
           </FormField>
           <FormField label="إلى" required>
-            <Input type="date" value={periodTo} onChange={(e) => setPeriodTo(e.target.value)} />
+            <Input
+              type="date"
+              value={periodTo}
+              onChange={(e) => {
+                setPeriodTo(e.target.value);
+                setPayAmount("");
+              }}
+            />
           </FormField>
           <FormField label="حتى تاريخ">
             <Input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} />
@@ -241,16 +319,59 @@ export default function EmployeeSalaries() {
                   )}
                 </h3>
                 <p>
-                  الساعات المسجّلة: {formatHoursAr(recordedHoursOf(hours))} — المؤهلة:{" "}
-                  {formatHoursAr(eligibleHoursOf(hours))}
+                  الساعات المسجّلة: {formatHoursAr(recordedHoursOf(hours))} — المحسوبة للأجر:{" "}
+                  {formatHoursAr(payableHours)}
+                  {eligibleHoursOf(hours) !== payableHours
+                    ? ` — المؤهلة للترحيل: ${formatHoursAr(eligibleHoursOf(hours))}`
+                    : ""}
                 </p>
                 <p>
                   أجر الفترة:{" "}
-                  {isPreviewPayIncomplete(hours) || !preview.calculation_final
-                    ? "غير مكتمل"
-                    : ils(hours.posted_pay ?? preview.calculated_salary)}
+                  {estimatedPay != null ? (
+                    <strong className="num">{ils(estimatedPay)}</strong>
+                  ) : (
+                    "—"
+                  )}
+                  {!preview.calculation_final && estimatedPay != null ? (
+                    <span className="ui-text-muted"> — غير نهائي</span>
+                  ) : null}
                 </p>
-                <p className="ui-text-muted">الأجر للمعاينة فقط — اكتب المبلغ الذي تريد دفعه الآن.</p>
+                <p className="ui-text-muted">
+                  الأجر = ساعات كل وردية مغلقة × أجرها. الورديات المفتوحة خارج الحساب. يمكنك تعديل
+                  المبلغ قبل الدفع.
+                </p>
+                {showRateEditor ? (
+                  <div className="ui-mt-md">
+                    <Notice tone="warning">
+                      أجر الساعة الحالي يُستخدم من الوردية التالية ولا يغيّر ورديات أُغلقت بأجر محفوظ.
+                    </Notice>
+                    <FormGrid>
+                      <FormField label="أجر الساعة (₪)">
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={hourlyRateDraft}
+                          onChange={(e) => setHourlyRateDraft(e.target.value)}
+                        />
+                      </FormField>
+                    </FormGrid>
+                    <div className="ui-toolbar" style={{ gap: 8, marginTop: 8 }}>
+                      <Button onClick={saveLiveHourlyRate} disabled={savingRate || fillingSnapshots}>
+                        حفظ أجر الساعة
+                      </Button>
+                      {missingSnapshot && !liveRateMissing ? (
+                        <Button
+                          variant="secondary"
+                          onClick={fillMissingSnapshots}
+                          disabled={savingRate || fillingSnapshots}
+                        >
+                          تعبئة الورديات المغلقة بلا أجر
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
                 {(hours.review_flag_labels || hours.review_flags || []).length ? (
                   <Notice tone="warning">
                     يحتاج مراجعة:{" "}
@@ -275,6 +396,14 @@ export default function EmployeeSalaries() {
                         key: "hourly_rate",
                         header: "أجر الساعة",
                         render: (s) => (s.hourly_rate != null ? ils(s.hourly_rate) : "—"),
+                      },
+                      {
+                        key: "pay",
+                        header: "الأجر",
+                        render: (s) => {
+                          const pay = estimatedShiftPay(s, liveHourlyRate);
+                          return pay > 0 ? ils(pay) : "—";
+                        },
                       },
                       {
                         key: "status",

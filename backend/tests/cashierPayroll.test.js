@@ -195,4 +195,137 @@ describe("cashier payroll", () => {
       .set(authHeader(accountantToken));
     expect(res.status).toBe(200);
   });
+
+  test("POST admin user can set hourly_rate for cashier and list returns it", async () => {
+    const res = await request(ctx.app)
+      .post("/api/v1/admin/users")
+      .set(authHeader(adminToken))
+      .send({
+        username: "ratecashier",
+        password: "cashpass1",
+        role: "cashier",
+        hourly_rate: 18.5,
+      });
+    expect(res.status).toBe(201);
+    const body = res.body.data ?? res.body;
+    expect(body.hourly_rate).toBe(18.5);
+    expect(body.employee_id).toEqual(expect.any(Number));
+
+    const listed = await request(ctx.app).get("/api/v1/admin/users").set(authHeader(adminToken));
+    expect(listed.status).toBe(200);
+    const rows = listed.body.data ?? listed.body;
+    expect(rows.find((u) => u.username === "ratecashier").hourly_rate).toBe(18.5);
+
+    const emp = await request(ctx.app)
+      .get(`/api/v1/employees/${body.employee_id}`)
+      .set(authHeader(adminToken));
+    expect(emp.status).toBe(200);
+    expect((emp.body.data ?? emp.body).hourly_rate).toBe(18.5);
+  });
+
+  test("POST admin user rejects hourly_rate for non-staff role", async () => {
+    const res = await request(ctx.app)
+      .post("/api/v1/admin/users")
+      .set(authHeader(adminToken))
+      .send({
+        username: "rateacct",
+        password: "acctpass1",
+        role: "accountant",
+        hourly_rate: 10,
+      });
+    expect(res.status).toBe(400);
+  });
+
+  test("PATCH admin user updates hourly_rate without changing password", async () => {
+    const created = await request(ctx.app)
+      .post("/api/v1/admin/users")
+      .set(authHeader(adminToken))
+      .send({ username: "patchrate", password: "cashpass1", role: "cashier" });
+    expect(created.status).toBe(201);
+    const id = (created.body.data ?? created.body).id;
+    const res = await request(ctx.app)
+      .patch(`/api/v1/admin/users/${id}`)
+      .set(authHeader(adminToken))
+      .send({ hourly_rate: 22 });
+    expect(res.status).toBe(200);
+    expect((res.body.data ?? res.body).hourly_rate).toBe(22);
+  });
+
+  test("PATCH admin user rejects hourly_rate for admin", async () => {
+    const admin = await ctx.db.get("SELECT id FROM users WHERE username = ?", ["testadmin"]);
+    const res = await request(ctx.app)
+      .patch(`/api/v1/admin/users/${admin.id}`)
+      .set(authHeader(adminToken))
+      .send({ hourly_rate: 15 });
+    expect(res.status).toBe(400);
+  });
+
+  test("fill-missing-snapshots copies live rate onto closed shifts without snapshot only", async () => {
+    const created = await request(ctx.app)
+      .post("/api/v1/admin/users")
+      .set(authHeader(adminToken))
+      .send({
+        username: "fillrate",
+        password: "cashpass1",
+        role: "cashier",
+        hourly_rate: 25,
+      });
+    expect(created.status).toBe(201);
+    const userId = (created.body.data ?? created.body).id;
+
+    const missing = await ctx.db.run(
+      `INSERT INTO cashier_shifts (cashier_id, start_time, end_time, opening_cash, status, hourly_rate_snapshot)
+       VALUES (?, '2026-08-01T08:00:00.000Z', '2026-08-01T16:00:00.000Z', 100, 'closed', NULL)`,
+      [userId]
+    );
+    const kept = await ctx.db.run(
+      `INSERT INTO cashier_shifts (cashier_id, start_time, end_time, opening_cash, status, hourly_rate_snapshot)
+       VALUES (?, '2026-08-02T08:00:00.000Z', '2026-08-02T16:00:00.000Z', 100, 'closed', 12)`,
+      [userId]
+    );
+    const open = await ctx.db.run(
+      `INSERT INTO cashier_shifts (cashier_id, start_time, end_time, opening_cash, status, hourly_rate_snapshot)
+       VALUES (?, '2026-08-03T08:00:00.000Z', NULL, 100, 'open', NULL)`,
+      [userId]
+    );
+
+    const res = await request(ctx.app)
+      .post(`/api/v1/payroll/cashiers/${userId}/fill-missing-snapshots`)
+      .set(authHeader(adminToken))
+      .send({});
+    expect(res.status).toBe(200);
+    const body = res.body.data ?? res.body;
+    expect(body.hourly_rate).toBe(25);
+    expect(body.updated_count).toBe(1);
+
+    const missingAfter = await ctx.db.get(
+      "SELECT hourly_rate_snapshot FROM cashier_shifts WHERE id = ?",
+      [missing.lastID]
+    );
+    const keptAfter = await ctx.db.get(
+      "SELECT hourly_rate_snapshot FROM cashier_shifts WHERE id = ?",
+      [kept.lastID]
+    );
+    const openAfter = await ctx.db.get(
+      "SELECT hourly_rate_snapshot FROM cashier_shifts WHERE id = ?",
+      [open.lastID]
+    );
+    expect(Number(missingAfter.hourly_rate_snapshot)).toBe(25);
+    expect(Number(keptAfter.hourly_rate_snapshot)).toBe(12);
+    expect(openAfter.hourly_rate_snapshot).toBeNull();
+  });
+
+  test("fill-missing-snapshots requires a live hourly rate", async () => {
+    const created = await request(ctx.app)
+      .post("/api/v1/admin/users")
+      .set(authHeader(adminToken))
+      .send({ username: "noratefill", password: "cashpass1", role: "cashier" });
+    expect(created.status).toBe(201);
+    const userId = (created.body.data ?? created.body).id;
+    const res = await request(ctx.app)
+      .post(`/api/v1/payroll/cashiers/${userId}/fill-missing-snapshots`)
+      .set(authHeader(adminToken))
+      .send({});
+    expect(res.status).toBe(400);
+  });
 });

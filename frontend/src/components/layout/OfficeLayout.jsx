@@ -4,8 +4,14 @@ import api from "../../apiClient";
 import { getToken, setUser } from "../../utils/auth";
 import OfficeSidebar from "./OfficeSidebar";
 import OfficeSideRail from "./OfficeSideRail";
+import { PageRefreshProvider, usePageRefresh } from "./PageRefreshContext";
 import "../../styles/office-theme.css";
 import "./OfficeLayout.css";
+
+function OfficePageOutlet() {
+  const { pageKey } = usePageRefresh();
+  return <Outlet key={pageKey} />;
+}
 
 export default function OfficeLayout() {
   useEffect(() => {
@@ -38,14 +44,16 @@ export default function OfficeLayout() {
   }, []);
 
   return (
-    <div className="office-shell" dir="rtl" lang="ar">
-      <OfficeSidebar />
-      <div className="office-body">
-        <main className="office-content">
-          <Outlet />
-        </main>
-        <OfficeSideRail />
+    <PageRefreshProvider>
+      <div className="office-shell" dir="rtl" lang="ar">
+        <OfficeSidebar />
+        <div className="office-body">
+          <main className="office-content">
+            <OfficePageOutlet />
+          </main>
+          <OfficeSideRail />
+        </div>
       </div>
-    </div>
+    </PageRefreshProvider>
   );
 }

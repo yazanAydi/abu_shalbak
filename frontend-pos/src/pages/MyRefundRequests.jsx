@@ -97,6 +97,8 @@ export default function MyRefundRequests() {
         title="طلباتي للاسترجاع"
         subtitle="متابعة طلبات الاسترجاع المرسلة للمدير"
         icon="refunds"
+        onRefresh={load}
+        refreshing={loading}
         actions={
           <Link to="/checkout" className="nav-pill">
             العودة للكاشير

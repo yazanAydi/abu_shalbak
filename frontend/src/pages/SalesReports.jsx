@@ -25,7 +25,6 @@ import {
   FilterBar,
   FormField,
   DateField,
-  PrimaryButton,
   SecondaryButton,
   StatCard,
   Tabs,
@@ -34,6 +33,7 @@ import {
   Notice,
   useToast,
 } from "../components/ui";
+import { useRegisterPageRefresh } from "../components/layout/PageRefreshContext";
 
 const MODE_TABS = [
   { id: "day", label: "يوم واحد" },
@@ -125,6 +125,12 @@ export default function SalesReports() {
     if (mode === "day") loadDaily();
     else loadRange();
   }, [mode, loadDaily, loadRange]);
+
+  const refreshReport = useCallback(
+    () => (mode === "day" ? loadDaily() : loadRange()),
+    [mode, loadDaily, loadRange]
+  );
+  useRegisterPageRefresh(refreshReport);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -242,13 +248,6 @@ export default function SalesReports() {
             <SecondaryButton type="button" onClick={onExportCsv} disabled={!canPrint}>
               تصدير CSV
             </SecondaryButton>
-            <PrimaryButton
-              type="button"
-              onClick={() => (mode === "day" ? loadDaily() : loadRange())}
-              disabled={loading}
-            >
-              {loading ? "جاري التحميل…" : "تحديث"}
-            </PrimaryButton>
           </>
         }
       />

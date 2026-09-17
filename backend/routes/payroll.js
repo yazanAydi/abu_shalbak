@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import {
   buildPayrollReport,
+  fillMissingClosedShiftSnapshots,
   listEmployees,
   updateEmployeeHourlyRate,
 } from "../services/cashierPayrollService.js";
@@ -35,6 +36,15 @@ export function createPayrollRouter(db) {
         return res.status(400).json({ error: "أجر الساعة مطلوب" });
       }
       const row = await updateEmployeeHourlyRate(db, req.params.id, hourly_rate);
+      res.json(row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/cashiers/:id/fill-missing-snapshots", requireAuth, requirePayroll, async (req, res, next) => {
+    try {
+      const row = await fillMissingClosedShiftSnapshots(db, req.params.id);
       res.json(row);
     } catch (e) {
       next(e);
