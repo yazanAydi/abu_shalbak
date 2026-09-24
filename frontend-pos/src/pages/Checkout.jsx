@@ -795,6 +795,7 @@ export default function Checkout() {
       </div>
 
       <footer className="pos-footer">
+        <div id="pos-waiting-chip-slot" className="pos-waiting-chip-slot" />
         <div className="pos-shortcut-hints">
           <span>{formatShortcutHint(shortcuts.completeSale)}</span>
           <span>{formatShortcutHint(shortcuts.undoLastScan)}</span>

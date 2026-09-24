@@ -317,14 +317,21 @@
   font-weight: 700;
 }
 
+.pos-waiting-chip-slot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  justify-content: center;
+}
+
+.pos-waiting-chip-slot:empty {
+  display: none;
+}
+
 .pos-waiting-chip {
-  position: fixed;
-  bottom: 1.1rem;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 1000;
-  max-width: calc(100vw - 1.5rem);
-  padding: 0.7rem 1.15rem;
+  max-width: 100%;
+  padding: 0.55rem 1rem;
   border: none;
   border-radius: 999px;
   background: var(--pos-primary, #1e3a5f);
@@ -333,5 +340,5 @@
   font-weight: 700;
   font-family: inherit;
   cursor: pointer;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.28);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
 }

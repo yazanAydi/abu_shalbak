@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
 import { useVisiblePoll } from "../../hooks/useVisiblePoll";
 import { playApprovalDecision } from "../../utils/posSounds";
 import "../ShiftModal.css";
+
+const WAITING_CHIP_SLOT_ID = "pos-waiting-chip-slot";
 
 function kindFromApiPath(apiPath) {
   const path = String(apiPath || "");
@@ -97,7 +100,7 @@ export default function PosApprovalWaitingModal({
   const extra = detailLine?.(detail);
 
   if (minimized && !isTerminal) {
-    return (
+    const chip = (
       <button
         type="button"
         className="pos-waiting-chip"
@@ -106,6 +109,8 @@ export default function PosApprovalWaitingModal({
         بانتظار الموافقة — {titlePrefix} #{requestId}
       </button>
     );
+    const slot = typeof document !== "undefined" ? document.getElementById(WAITING_CHIP_SLOT_ID) : null;
+    return slot ? createPortal(chip, slot) : chip;
   }
 
   return (
