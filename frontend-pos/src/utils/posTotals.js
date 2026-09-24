@@ -12,6 +12,26 @@ export function roundScaleSaleTotal(amount) {
   return Math.floor(n + 0.5);
 }
 
+function round2Money(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+/** Same final-payable rule as backend roundPosPayable. */
+export function roundPosPayable(amount) {
+  const calculated = round2Money(amount);
+  if (!Number.isFinite(calculated)) {
+    return { calculated: 0, payable: 0, adjustment: 0 };
+  }
+  const negative = calculated < 0;
+  const agorot = Math.round(Math.abs(calculated) * 100);
+  const remainder = agorot % 100;
+  let payableAgorot = agorot;
+  if (remainder > 0 && remainder < 50) payableAgorot = agorot - remainder;
+  else if (remainder > 50) payableAgorot = agorot + (100 - remainder);
+  const payable = round2Money((negative ? -1 : 1) * (payableAgorot / 100));
+  return { calculated, payable, adjustment: round2Money(payable - calculated) };
+}
+
 function isKgCartLine(item) {
   if (!item) return false;
   if (isKgSoldUnit(item)) return true;
@@ -87,7 +107,7 @@ export function computeDealLineTotal(cartItem, promos) {
  */
 export function estimateCartTotals(cartItems, settings, promos) {
   if (!settings || !cartItems.length) {
-    return { subtotal: 0, tax: 0, discount: 0, total: 0 };
+    return { subtotal: 0, tax: 0, discount: 0, amountBeforeRounding: 0, roundingAdjustment: 0, total: 0 };
   }
   let subtotal = 0;
 
@@ -104,5 +124,13 @@ export function estimateCartTotals(cartItems, settings, promos) {
   if (Array.isArray(promos) && promos.length) {
     discount = Math.min(computeCartDiscount(promos, buildPromoLines(cartItems)).discount, gross);
   }
-  return { subtotal, tax, discount, total: round2(gross - discount) };
+  const payable = roundPosPayable(round2(gross - discount));
+  return {
+    subtotal,
+    tax,
+    discount,
+    amountBeforeRounding: payable.calculated,
+    roundingAdjustment: payable.adjustment,
+    total: payable.payable,
+  };
 }

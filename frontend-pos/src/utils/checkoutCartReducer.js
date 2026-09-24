@@ -1,4 +1,4 @@
-import { applyCartUnit, cartKeyFor, mapLookupToCartProduct } from "./cartProduct.js";
+import { applyCartUnit, cartKeyFor, isKgSoldUnit, mapLookupToCartProduct } from "./cartProduct.js";
 import { round2 } from "./posTotals.js";
 import {
   createScanHistoryEntry,
@@ -25,6 +25,41 @@ export function checkoutReducer(state, action) {
       const mapped = mapLookupToCartProduct(action.product);
       const price = Number(mapped.price);
       const prev = state.cartItems;
+
+      const needsExplicitWeight =
+        !mapped.weighed && (mapped.needsWeight || mapped.awaitingWeight || isKgSoldUnit(mapped));
+      if (needsExplicitWeight) {
+        const idx = prev.findIndex((x) => cartKeyFor(x) === mapped.cartKey);
+        if (idx >= 0) {
+          return {
+            ...state,
+            lastScannedCartKey: mapped.cartKey,
+            error: prev[idx].awaitingWeight ? "أدخل الوزن بالكيلو" : null,
+            blockedScan: null,
+          };
+        }
+        const scanEntry = createScanHistoryEntry(mapped.cartKey, 0, true);
+        return {
+          ...state,
+          cartItems: [
+            ...prev,
+            {
+              ...mapped,
+              weighed: false,
+              awaitingWeight: true,
+              needsWeight: true,
+              quantity: "",
+              subtotal: 0,
+            },
+          ],
+          scanHistory: pushScanHistory(state.scanHistory, scanEntry),
+          lastScannedCartKey: mapped.cartKey,
+          error: "أدخل الوزن بالكيلو",
+          blockedScan: null,
+          receiptData: null,
+          printWarning: null,
+        };
+      }
 
       if (mapped.weighed) {
         const quantity = Number(mapped.quantity ?? mapped.weight);
@@ -115,20 +150,29 @@ export function checkoutReducer(state, action) {
       };
     case "CHANGE_QTY": {
       const { cartKey, newQty } = action;
-      if (!(Number(newQty) > 0)) return state;
+      const cleared = newQty === "" || newQty == null;
+      if (!cleared && !(Number(newQty) > 0)) return state;
       const idx = state.cartItems.findIndex((x) => cartKeyFor(x) === cartKey);
       if (idx < 0) return state;
       const prev = state.cartItems;
       const next = [...prev];
       const row = { ...next[idx] };
-      row.quantity = newQty;
-      row.subtotal = round2(newQty * row.price);
+      if (cleared) {
+        row.quantity = "";
+        row.awaitingWeight = true;
+        row.subtotal = 0;
+        row.weighed = false;
+      } else {
+        row.quantity = newQty;
+        row.awaitingWeight = false;
+        row.subtotal = round2(newQty * row.price);
+      }
       next[idx] = row;
       return {
         ...state,
         cartItems: next,
         scanHistory: [],
-        error: null,
+        error: cleared ? "أدخل الوزن بالكيلو" : null,
         blockedScan: null,
       };
     }

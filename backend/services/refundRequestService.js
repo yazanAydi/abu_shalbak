@@ -2,7 +2,7 @@ import { parseItemsJson } from "../utils/cogs.js";
 import { requireOpenShiftForCashier, getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { computeSaleTotals } from "../utils/tax.js";
-import { round2 } from "../utils/money.js";
+import { allocatePosRefundPayable, round2 } from "../utils/money.js";
 import { recordMovement } from "../utils/inventory.js";
 import { logAuditUser, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import {
@@ -14,6 +14,7 @@ import {
 import { withTransaction } from "../utils/dbTx.js";
 import { computeExpectedBaseCash, loadSalePayments } from "../utils/salePayments.js";
 import { restoreSaleBatches } from "./stockBatchService.js";
+import { businessDayFromTimestamp } from "../utils/businessDay.js";
 
 export function assertRefundPaymentMethod(salePayments, paymentMethod) {
   const hasOnAccount = (salePayments || []).some((l) => l.method === "on_account");
@@ -34,9 +35,26 @@ export function assertRefundPaymentMethod(salePayments, paymentMethod) {
   }
 }
 
+/** True when transaction_items.line_net already equals the amount the customer paid. */
+function saleMerchandiseBasis(tx) {
+  if (tx?.amount_before_rounding != null && tx.amount_before_rounding !== "") {
+    return round2(Number(tx.amount_before_rounding));
+  }
+  return round2(Number(tx?.total) || 0);
+}
+
+function postedLineNetMatchesSaleTotal(tx, storedItems) {
+  if (!storedItems?.length) return false;
+  const net = round2(storedItems.reduce((sum, row) => sum + (Number(row.line_net) || 0), 0));
+  return Math.abs(net - saleMerchandiseBasis(tx)) <= 0.02;
+}
+
 function refundedUnitPrice(orig, tx, origItems) {
   const qty = Number(orig.quantity) || 0;
   if (qty <= 0) return orig.price;
+  if (orig.posted_unit_price != null && Number.isFinite(Number(orig.posted_unit_price))) {
+    return round2(Number(orig.posted_unit_price));
+  }
   const lineDiscount = Number(orig.discount_at_sale ?? orig.discount ?? 0);
   if (lineDiscount > 0) {
     return round2((orig.price * qty - lineDiscount) / qty);
@@ -74,7 +92,7 @@ function mergeItemsIntoMap(map, itemsJson) {
   }
 }
 
-/** Sum returned quantities per product from requests + legacy refunds */
+/** Sum returned quantities: completed refunds plus still-pending requests. */
 export async function refundedQtyByProduct(db, transactionId, excludeRequestId = null) {
   const maps = await refundedQtyByTransactions(db, [transactionId], excludeRequestId);
   return maps.get(Number(transactionId)) || new Map();
@@ -94,9 +112,11 @@ export async function refundedQtyByTransactions(db, transactionIds, excludeReque
   for (const row of refundRows) {
     mergeItemsIntoMap(out.get(Number(row.original_transaction_id)), row.items_json);
   }
+  // Approved requests already have a refund row. Counting both would
+  // consume the quantity twice and block a later partial return.
   const requestRows = await db.all(
     `SELECT id, transaction_id, items_json FROM refund_requests
-     WHERE transaction_id IN (${ph}) AND status IN ('pending', 'approved')`,
+     WHERE transaction_id IN (${ph}) AND status = 'pending'`,
     ids
   );
   for (const row of requestRows) {
@@ -199,15 +219,35 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
     err.status = 500;
     throw err;
   }
+  const storedItems = await db.all(
+    `SELECT product_id, product_unit_id, quantity, line_net
+       FROM transaction_items WHERE transaction_id = ? ORDER BY id`,
+    [transactionId]
+  );
+  const usePostedNet = postedLineNetMatchesSaleTotal(tx, storedItems);
+  const postedByKey = new Map();
+  for (const row of storedItems) {
+    const key = `${Number(row.product_id)}:${Number(row.product_unit_id) || 0}`;
+    const prev = postedByKey.get(key) || { quantity: 0, line_net: 0 };
+    prev.quantity += Number(row.quantity) || 0;
+    prev.line_net = round2(prev.line_net + (Number(row.line_net) || 0));
+    postedByKey.set(key, prev);
+  }
   const origMap = new Map();
   for (const it of origItems || []) {
     const pid = Number(it.product_id);
     if (!pid) continue;
     const key = lineKey(it);
+    const posted = postedByKey.get(key);
+    const postedUnit =
+      usePostedNet && posted && posted.quantity > 0 && Number.isFinite(posted.line_net)
+        ? round2(posted.line_net / posted.quantity)
+        : null;
     origMap.set(key, {
       ...it,
       quantity: Number(it.quantity) || 0,
       price: round2(Number(it.price) || 0),
+      posted_unit_price: postedUnit,
       conversion_to_base: Math.max(0.0001, Number(it.conversion_to_base) || 1),
     });
   }
@@ -295,13 +335,42 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
     unitPrice: L.price,
     taxRate: Number(L.tax_rate ?? 0),
   }));
-  const { subtotal, tax, total } = computeSaleTotals(taxLines, settings);
+  const { subtotal, tax, total: merchandise } = computeSaleTotals(taxLines, settings);
+  const prior = await db.get(
+    `SELECT COALESCE(SUM(total_amount), 0) AS paid
+       FROM refund_requests
+      WHERE transaction_id = ? AND status IN ('pending', 'approved')
+        AND (? IS NULL OR id != ?)`,
+    [tx.id, excludeRequestId, excludeRequestId]
+  );
+  let exhaustsSale = origMap.size > 0;
+  for (const [key, orig] of origMap) {
+    const done = refundedSoFar.get(key) || 0;
+    if (done + 1e-6 < Number(orig.quantity)) {
+      exhaustsSale = false;
+      break;
+    }
+  }
+  const allocated = allocatePosRefundPayable({
+    merchandise,
+    saleMerchandise: saleMerchandiseBasis(tx),
+    saleAdjustment:
+      tx.rounding_adjustment != null && tx.rounding_adjustment !== ""
+        ? Number(tx.rounding_adjustment)
+        : 0,
+    salePayable: Number(tx.total) || 0,
+    alreadyRefunded: Number(prior?.paid) || 0,
+    exhaustsSale,
+  });
+  const total = allocated.payable;
+  const roundingAdjustment = allocated.adjustment;
   return {
     tx,
     refundLines,
     subtotal,
     tax,
     total,
+    roundingAdjustment,
     itemsJson: JSON.stringify(
       refundLines.map((x) => ({
         product_id: x.product_id,
@@ -320,11 +389,14 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
 export async function getTelegramManagerUser(db) {
   const settings = await getAppSettings(db);
   const uid = Number(settings.refund_telegram_manager_user_id);
-  if (uid) {
-    const user = await db.get("SELECT id, username, role FROM users WHERE id = ?", [uid]);
-    if (user) return user;
-  }
-  return db.get("SELECT id, username, role FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1");
+  if (!uid) return null;
+  const user = await db.get(
+    "SELECT id, username, role, permissions_json FROM users WHERE id = ?",
+    [uid]
+  );
+  if (!user) return null;
+  if (user.role !== "admin" && user.role !== "accountant") return null;
+  return user;
 }
 
 /**
@@ -359,12 +431,16 @@ export async function createRefundRequest(db, params) {
   assertRefundPaymentMethod(payments, paymentMethod);
 
   const created = await withTransaction(db, async () => {
-    const { subtotal, tax, total, itemsJson } = await buildRefundLines(db, transactionId, lines);
+    const { subtotal, tax, total, roundingAdjustment, itemsJson } = await buildRefundLines(
+      db,
+      transactionId,
+      lines
+    );
     const ins = await db.run(
       `INSERT INTO refund_requests (
         transaction_id, cashier_id, shift_id, items_json, subtotal, tax, total_amount,
-        payment_method, reason, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        rounding_adjustment, payment_method, reason, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         transactionId,
         cashierId,
@@ -373,6 +449,7 @@ export async function createRefundRequest(db, params) {
         subtotal,
         tax,
         total,
+        roundingAdjustment,
         paymentMethod,
         reason != null ? String(reason) : null,
       ]
@@ -586,17 +663,24 @@ export async function approveRefundRequest(
       "SELECT customer_id FROM transactions WHERE id = ?",
       [request.transaction_id]
     );
+    let refundBusinessDay = null;
+    if (targetShiftId == null) {
+      const settings = await getAppSettings(db);
+      refundBusinessDay = businessDayFromTimestamp(now, settings.business_day_cutoff_hour);
+    }
     const ins = await db.run(
       `INSERT INTO refunds (
-        original_transaction_id, items_json, subtotal, tax, total, payment_method,
-        reason, cashier_id, shift_id, status, approved_at, approved_by_id, review_notes, customer_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
+        original_transaction_id, items_json, subtotal, tax, total, rounding_adjustment, payment_method,
+        reason, cashier_id, shift_id, status, approved_at, approved_by_id, review_notes, customer_id,
+        business_day
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
       [
         request.transaction_id,
         request.items_json,
         request.subtotal,
         request.tax,
         request.total_amount,
+        request.rounding_adjustment,
         request.payment_method,
         request.reason,
         request.cashier_id,
@@ -605,6 +689,7 @@ export async function approveRefundRequest(
         managerUser.id,
         reviewNotes ?? request.review_notes,
         origTx?.customer_id ?? null,
+        refundBusinessDay,
       ]
     );
     const refundId = ins.lastID;

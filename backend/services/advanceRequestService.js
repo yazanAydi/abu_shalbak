@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { logAuditUser, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { getTelegramManagerUser } from "./refundRequestService.js";
 import { computeExpectedBaseCash } from "../utils/salePayments.js";
+import { HttpError, badRequest } from "../utils/httpError.js";
 import { round2 } from "../utils/money.js";
+import { listPosEmployeeDirectory } from "./employeeService.js";
 import {
   isSulafTelegramConfigured,
   sendAdvanceApprovalMessage,
@@ -10,10 +13,12 @@ import {
   sendAdvanceDecisionStatusMessage,
 } from "../utils/telegram.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { shopBusinessDayYmd } from "../utils/businessDay.js";
 import {
   assertCanApproveLinkedSalaryAdvance,
   postPosSalaryAdvanceInTx,
 } from "./employeePaymentService.js";
+import { enqueueOperationPrint } from "./operationPrintService.js";
 
 export { getTelegramManagerUser };
 
@@ -236,7 +241,8 @@ export async function approveAdvanceRequest(
   managerUser,
   reviewNotes,
   req = null,
-  decisionSource = "admin"
+  decisionSource = "admin",
+  occurredOn = null
 ) {
   const updated = await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM advance_requests WHERE id = ?", [requestId]);
@@ -286,9 +292,14 @@ export async function approveAdvanceRequest(
 
     let ledger = null;
     if (employeeId) {
+      const businessDay =
+        occurredOn && /^\d{4}-\d{2}-\d{2}$/.test(String(occurredOn))
+          ? String(occurredOn)
+          : shopBusinessDayYmd({ business_day: shift.business_day, start_time: shift.start_time });
       ledger = await postPosSalaryAdvanceInTx(db, {
         employeeId,
         amount,
+        occurredOn: businessDay,
         advanceRequestId: requestId,
         shiftCashMovementId: movement.lastID,
         createdBy: managerUser.id,
@@ -322,6 +333,30 @@ export async function approveAdvanceRequest(
       manager_id: managerUser.id,
       employee_id: employeeId,
       amount,
+    });
+
+    const cashier = await db.get("SELECT username FROM users WHERE id = ?", [request.cashier_id]);
+    await enqueueOperationPrint(db, {
+      kind: "salary_advance",
+      referenceId: requestId,
+      cashierId: request.cashier_id,
+      shiftId: shift.id,
+      documentNo: `ADV-${requestId}`,
+      snapshot: {
+        title: "سلفة على الراتب",
+        documentNo: `ADV-${requestId}`,
+        timestamp: now,
+        businessDay: shift.business_day,
+        cashierName: cashier?.username || "",
+        shiftId: shift.id,
+        partyLabel: `الموظف: ${request.employee_name || ""}`,
+        lines: ["سلفة على الراتب"],
+        note: request.notes || null,
+        amountLabel: `المبلغ ${amount.toFixed(2)} شيقل`,
+        footer: "سلفة على الراتب",
+        managerName: managerUser.username || "",
+        requestRef: `#${requestId}`,
+      },
     });
 
     return getAdvanceRequestById(db, requestId);
@@ -371,4 +406,256 @@ export async function rejectAdvanceRequest(
   });
   await notifyTelegramAfterDecision(updated, managerUser, "rejected", decisionSource);
   return { request: updated };
+}
+
+export function fingerprintShiftAdvance({ employeeId, amount, notes }) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        employee_id: Number(employeeId) || 0,
+        amount: round2(amount),
+        notes: notes ? String(notes) : null,
+      })
+    )
+    .digest("hex");
+}
+
+function parseShiftAdvanceAmount(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw badRequest("المبلغ يجب أن يكون رقماً موجباً", "INVALID_AMOUNT");
+  }
+  const stored = round2(n);
+  if (Math.abs(n - stored) > 1e-9) {
+    throw badRequest("المبلغ يجب أن يكون حتى خانتين عشريتين", "INVALID_AMOUNT_PRECISION");
+  }
+  return stored;
+}
+
+export async function listEmployeeAdvanceOptions(db, q) {
+  const term = String(q || "").trim();
+  const params = [];
+  let sql = "SELECT id, name FROM employees WHERE active = 1";
+  if (term) {
+    sql += " AND name LIKE ?";
+    params.push(`%${term}%`);
+  }
+  sql += " ORDER BY name COLLATE NOCASE, id LIMIT 200";
+  return listPosEmployeeDirectory(await db.all(sql, params));
+}
+
+export async function listShiftAdvances(db, shiftId) {
+  const rows = await db.all(
+    `SELECT
+        m.id AS movement_id,
+        ar.id AS request_id,
+        COALESCE(ar.amount, ABS(m.amount)) AS amount,
+        COALESCE(m.created_at, ar.approved_at, ar.created_at) AS paid_at,
+        ar.notes,
+        ar.employee_id,
+        COALESCE(ar.employee_name, e.name) AS employee_name,
+        ar.manager_id AS recorded_by_id,
+        u.username AS recorded_by_name
+     FROM shift_cash_movements m
+     LEFT JOIN advance_requests ar ON ar.id = m.advance_request_id
+     LEFT JOIN employees e ON e.id = ar.employee_id
+     LEFT JOIN users u ON u.id = ar.manager_id
+     WHERE m.shift_id = ? AND m.movement_type = 'advance'
+     ORDER BY m.created_at ASC, m.id ASC`,
+    [shiftId]
+  );
+  const total = round2(rows.reduce((sum, row) => sum + Number(row.amount || 0), 0));
+  return { rows, total };
+}
+
+async function loadShiftAdvanceResult(db, requestId, { replayed = false } = {}) {
+  const row = await db.get(
+    `SELECT
+        ar.id AS request_id,
+        ar.shift_id,
+        ar.amount,
+        ar.employee_id,
+        ar.employee_name,
+        ar.manager_id AS recorded_by_id,
+        u.username AS recorded_by_name,
+        m.id AS movement_id,
+        ar.ledger_entry_id,
+        ar.operating_expense_id
+     FROM advance_requests ar
+     LEFT JOIN users u ON u.id = ar.manager_id
+     LEFT JOIN shift_cash_movements m ON m.advance_request_id = ar.id AND m.movement_type = 'advance'
+     WHERE ar.id = ?`,
+    [requestId]
+  );
+  return row ? { ...row, replayed } : null;
+}
+
+async function resolveShiftAdvanceIdempotency(db, { key, fingerprint, userId }) {
+  const row = await db.get(
+    `SELECT id, manager_id, payload_fingerprint FROM advance_requests WHERE idempotency_key = ?`,
+    [key]
+  );
+  if (!row) return null;
+  if (Number(row.manager_id) !== Number(userId)) {
+    throw new HttpError(403, "مفتاح التكرار لا يخص هذا المستخدم", "IDEMPOTENCY_OWNER_MISMATCH");
+  }
+  if (row.payload_fingerprint && row.payload_fingerprint !== fingerprint) {
+    throw new HttpError(
+      409,
+      "تم استخدام مفتاح التكرار مع محتوى مختلف. لا تُعد الإرسال بمحتوى جديد تحت نفس المفتاح.",
+      "IDEMPOTENCY_KEY_REUSE"
+    );
+  }
+  return loadShiftAdvanceResult(db, row.id, { replayed: true });
+}
+
+function isAdvanceIdempotencyConstraint(err) {
+  return (
+    err &&
+    String(err.code || "").startsWith("SQLITE_CONSTRAINT") &&
+    /idempotency/i.test(String(err.message || ""))
+  );
+}
+
+/**
+ * Forgotten cash already handed as سلف during a shift waiting to be counted.
+ * Posts one approved advance request, one negative drawer movement, and the
+ * canonical employee salary-advance ledger row.
+ */
+export async function postShiftSalaryAdvance(db, input) {
+  const shiftId = Number(input.shiftId);
+  if (!Number.isInteger(shiftId) || shiftId <= 0) {
+    throw badRequest("معرّف الوردية غير صالح", "INVALID_SHIFT");
+  }
+  const employeeId = Number(input.employeeId);
+  if (!Number.isInteger(employeeId) || employeeId <= 0) {
+    throw badRequest("اختر الموظف", "EMPLOYEE_REQUIRED");
+  }
+  const amount = parseShiftAdvanceAmount(input.amount);
+  const notes =
+    input.notes != null && String(input.notes).trim() !== "" ? String(input.notes).trim() : null;
+  const key = String(input.idempotencyKey || "").trim();
+  if (key.length < 8 || key.length > 100) {
+    throw badRequest("مفتاح التكرار مطلوب (8–100 حرفاً)", "VALIDATION_ERROR");
+  }
+  const userId = Number(input.userId);
+  const fingerprint = fingerprintShiftAdvance({ employeeId, amount, notes });
+
+  try {
+    return await withTransaction(db, async () => {
+      await assertCanApproveLinkedSalaryAdvance(db, input.user);
+      const existing = await resolveShiftAdvanceIdempotency(db, {
+        key,
+        fingerprint,
+        userId,
+      });
+      if (existing) return existing;
+
+      const locked = await db.run(
+        `UPDATE cashier_shifts SET status = status WHERE id = ? AND status = 'pending_count'`,
+        [shiftId]
+      );
+      const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
+      if (!shift) {
+        const err = new Error("الوردية غير موجودة");
+        err.status = 404;
+        err.code = "NOT_FOUND";
+        throw err;
+      }
+      if (shift.status === "closed") {
+        const err = new Error("لا يمكن تسجيل سلف على وردية مغلقة");
+        err.status = 400;
+        err.code = "SHIFT_CLOSED";
+        throw err;
+      }
+      if (!locked.changes || shift.status !== "pending_count") {
+        const err = new Error("الوردية ليست بانتظار العد");
+        err.status = 400;
+        err.code = "NOT_PENDING";
+        throw err;
+      }
+
+      const employee = await db.get("SELECT id, name, active FROM employees WHERE id = ?", [employeeId]);
+      if (!employee) {
+        throw badRequest("الموظف غير موجود", "EMPLOYEE_NOT_FOUND");
+      }
+      if (!Number(employee.active)) {
+        throw badRequest("لا يمكن تسجيل سلف لموظف غير نشط", "EMPLOYEE_INACTIVE");
+      }
+      const employeeName = String(employee.name || "").trim();
+      const now = new Date().toISOString();
+      const occurredOn = shopBusinessDayYmd({
+        business_day: shift.business_day,
+        start_time: shift.start_time,
+      });
+
+      const ins = await db.run(
+        `INSERT INTO advance_requests
+           (cashier_id, manager_id, shift_id, employee_id, employee_name, amount, notes,
+            status, decision_source, approved_at, idempotency_key, payload_fingerprint)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', 'shift_count', ?, ?, ?)`,
+        [
+          shift.cashier_id,
+          userId,
+          shift.id,
+          employee.id,
+          employeeName,
+          amount,
+          notes,
+          now,
+          key,
+          fingerprint,
+        ]
+      );
+      const requestId = ins.lastID;
+      const desc = `سلفة على الراتب — ${employeeName} #${requestId}`;
+      const movement = await db.run(
+        `INSERT INTO shift_cash_movements (shift_id, movement_type, amount, description, advance_request_id)
+         VALUES (?, 'advance', ?, ?, ?)`,
+        [shift.id, -amount, desc, requestId]
+      );
+
+      const ledger = await postPosSalaryAdvanceInTx(db, {
+        employeeId: employee.id,
+        amount,
+        occurredOn,
+        advanceRequestId: requestId,
+        shiftCashMovementId: movement.lastID,
+        createdBy: userId,
+        note: notes ? `${desc} — ${notes}` : desc,
+      });
+
+      await db.run(
+        `UPDATE advance_requests SET ledger_entry_id = ?, operating_expense_id = ? WHERE id = ?`,
+        [ledger?.id ?? null, ledger?.operating_expense_id ?? null, requestId]
+      );
+
+      if (input.req?.user || input.user) {
+        await logAuditUser(
+          db,
+          input.req?.user || input.user,
+          AUDIT_ACTIONS.ADVANCE_REQUEST_APPROVE,
+          "advance_requests",
+          requestId,
+          null,
+          {
+            manager_id: userId,
+            employee_id: employee.id,
+            amount,
+            shift_id: shift.id,
+            movement_id: movement.lastID,
+            decision_source: "shift_count",
+          }
+        );
+      }
+
+      return loadShiftAdvanceResult(db, requestId, { replayed: false });
+    });
+  } catch (err) {
+    if (isAdvanceIdempotencyConstraint(err)) {
+      const replay = await resolveShiftAdvanceIdempotency(db, { key, fingerprint, userId });
+      if (replay) return replay;
+    }
+    throw err;
+  }
 }

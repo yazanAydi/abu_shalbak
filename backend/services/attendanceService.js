@@ -12,6 +12,7 @@ import {
   parseTimestampMs,
 } from "./cashierPayrollService.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { listHourlySessionsForReport } from "./attendanceSessionService.js";
 const ROLE_LABELS_AR = {
   cashier: "كاشير",
   bakery_employee: "موظف مخبز",
@@ -461,16 +462,19 @@ export async function buildEmployeeAttendanceReport(db, { dateFrom, dateTo, user
   }
 
   const placeholders = attendanceRolePlaceholders();
-  let userSql = `SELECT id, username, role, hourly_rate FROM users WHERE role IN (${placeholders})`;
+  let userSql = `SELECT u.id, u.username, u.role, u.hourly_rate, e.wage_basis, e.daily_rate
+     FROM users u
+     LEFT JOIN employees e ON e.user_id = u.id
+     WHERE u.role IN (${placeholders})`;
   const userParams = [...ATTENDANCE_ROLES];
 
   const uid =
     userId != null && String(userId).trim() !== "" ? Number(userId) : null;
   if (uid && !Number.isNaN(uid)) {
-    userSql += " AND id = ?";
+    userSql += " AND u.id = ?";
     userParams.push(uid);
   }
-  userSql += " ORDER BY username COLLATE NOCASE";
+  userSql += " ORDER BY u.username COLLATE NOCASE";
 
   const users = await db.all(userSql, userParams);
   const employees = [];
@@ -478,8 +482,28 @@ export async function buildEmployeeAttendanceReport(db, { dateFrom, dateTo, user
   for (const user of users) {
     let sessions = [];
     let punches = [];
+    const hourlyBasis = user.role !== "cashier" && user.wage_basis === "hourly";
+    const dailyBasis = user.role !== "cashier" && user.wage_basis === "daily";
     if (user.role === "cashier") {
       sessions = await buildCashierShiftSessions(db, user.id, from, to);
+    } else if (hourlyBasis) {
+      const hourlySessions = await listHourlySessionsForReport(db, user.id, from, to);
+      sessions = hourlySessions.map((s) => ({
+        session_id: s.id,
+        source: "hourly_session",
+        start_time: s.check_in_at,
+        end_time: s.check_out_at,
+        status: s.status,
+        hours: s.hours,
+        pay: s.earned_pay,
+        hourly_rate: s.hourly_rate_snapshot,
+        incomplete: s.stored_status === "open" && s.status === "open",
+        auto_checkout_label: s.auto_checkout_label,
+        corrected: s.corrected,
+        payroll_discrepancy: s.payroll_discrepancy,
+        payroll_discrepancy_note: s.payroll_discrepancy_note,
+        recorded_at: s.recorded_at,
+      }));
     } else if (PUNCH_ROLES.includes(user.role)) {
       const punchData = await buildPunchSessions(db, user.id, from, to);
       sessions = punchData.sessions;
@@ -490,7 +514,8 @@ export async function buildEmployeeAttendanceReport(db, { dateFrom, dateTo, user
     let totalPay = 0;
     for (const s of sessions) {
       totalHours = round2(totalHours + (s.hours || 0));
-      totalPay = round2(totalPay + shiftPay(user.hourly_rate, s.hours || 0));
+      if (hourlyBasis) totalPay = round2(totalPay + (Number(s.pay) || 0));
+      else if (!dailyBasis) totalPay = round2(totalPay + shiftPay(user.hourly_rate, s.hours || 0));
     }
 
     employees.push({
@@ -499,10 +524,17 @@ export async function buildEmployeeAttendanceReport(db, { dateFrom, dateTo, user
       role: user.role,
       role_label: ROLE_LABELS_AR[user.role] || user.role,
       hourly_rate: user.hourly_rate,
-      hours_source: user.role === "cashier" ? "shift" : "punch",
+      wage_basis: user.wage_basis || null,
+      daily_rate: user.daily_rate == null ? null : Number(user.daily_rate),
+      daily_accrual: false,
+      hours_source: user.role === "cashier" ? "shift" : hourlyBasis ? "hourly_session" : "punch",
       total_hours: totalHours,
-      total_pay: totalPay,
-      missing_rate: user.hourly_rate == null || Number(user.hourly_rate) <= 0,
+      total_pay: dailyBasis ? null : totalPay,
+      missing_rate: hourlyBasis
+        ? user.hourly_rate == null || Number(user.hourly_rate) <= 0
+        : dailyBasis
+          ? user.daily_rate == null || Number(user.daily_rate) <= 0
+          : user.hourly_rate == null || Number(user.hourly_rate) <= 0,
       sessions,
       punches,
     });

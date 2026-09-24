@@ -72,8 +72,8 @@ export function computePurchaseLineVat(listGross, discountPct, vatRateField, def
   if (rate <= 0) {
     return { listTotal, lineGross, lineNet: lineGross, lineVat: 0, lineTotal: lineGross, rate };
   }
-  const lineVat = round2(lineGross * rate);
-  const lineNet = round2(lineGross - lineVat);
+  const lineNet = round2(lineGross / (1 + rate));
+  const lineVat = round2(lineGross - lineNet);
   return { listTotal, lineGross, lineNet, lineVat, lineTotal: lineGross, rate };
 }
 

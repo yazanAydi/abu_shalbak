@@ -2,6 +2,7 @@ import { round2, sumMoney } from "../utils/money.js";
 import { badRequest } from "../utils/httpError.js";
 import { parseYmd, requireEmployee, employeeKind } from "./employeeService.js";
 import { previewCashierHours, mapEntitlement } from "./employeeEntitlementService.js";
+import { previewHourlyAttendance } from "./attendanceSessionService.js";
 import { paymentCorrectionBlock } from "./employeePaymentService.js";
 
 const PAY_METHOD_AR = {
@@ -300,8 +301,11 @@ export async function getEmployeeStatement(db, id, query = {}) {
   const excessPrepaid = closing < 0 ? round2(-closing) : 0;
 
   let cashierPreview = null;
+  let attendanceEarned = null;
   if (employeeKind(emp) === "cashier" && from && to) {
     cashierPreview = await previewCashierHours(db, emp.id, from, to);
+  } else if (emp.wage_basis === "hourly" && from && to) {
+    attendanceEarned = await previewHourlyAttendance(db, emp.id, from, to);
   }
 
   const postedEntitlements = all
@@ -326,5 +330,8 @@ export async function getEmployeeStatement(db, id, query = {}) {
     movements,
     entitlements: postedEntitlements,
     cashier_preview: cashierPreview,
+    attendance_earned: attendanceEarned,
+    daily_rate: emp.wage_basis === "daily" ? (emp.daily_rate == null ? null : Number(emp.daily_rate)) : null,
+    wage_basis: emp.wage_basis || null,
   };
 }

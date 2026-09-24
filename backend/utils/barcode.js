@@ -257,8 +257,20 @@ export function extractBarcodesFromText(text) {
   return [...byCode.entries()].map(([barcode, label]) => ({ barcode, label }));
 }
 
-/** EAN-13 prefix for scale-printed weight-embedded barcodes (prefix + 5-digit item + 5-digit grams + check). */
+/**
+ * Scale-label layout owned by parseWeightBarcode.
+ * prefix + item (the PLU / product code) | grams | check digit.
+ * Callers must validate PLUs by round-tripping this decoder, not a second format.
+ */
 export const WEIGHT_BARCODE_PREFIX = "21";
+export const WEIGHT_LABEL_LENGTH = 13;
+export const WEIGHT_GRAMS_LENGTH = 5;
+export const WEIGHT_CHECK_LENGTH = 1;
+
+/** Product-code width implied by the scale-label layout above. */
+export function scaleProductCodeLength() {
+  return WEIGHT_LABEL_LENGTH - WEIGHT_GRAMS_LENGTH - WEIGHT_CHECK_LENGTH;
+}
 
 /**
  * Parse a scale weight-embedded EAN-13 barcode.
@@ -268,15 +280,52 @@ export const WEIGHT_BARCODE_PREFIX = "21";
  */
 export function parseWeightBarcode(rawCode) {
   const code = digitsOnly(normalizeBarcodeInput(rawCode));
-  if (code.length !== 13) return null;
+  if (code.length !== WEIGHT_LABEL_LENGTH) return null;
   if (!code.startsWith(WEIGHT_BARCODE_PREFIX)) return null;
 
-  const productCode = code.slice(0, 7);
-  const weightGrams = Number(code.slice(7, 12));
-  if (!Number.isFinite(weightGrams) || weightGrams <= 0) return null;
+  const productCodeLength = scaleProductCodeLength();
+  const productCode = code.slice(0, productCodeLength);
+  const gramsText = code.slice(productCodeLength, productCodeLength + WEIGHT_GRAMS_LENGTH);
+  const weightGrams = Number(gramsText);
+  if (!/^\d+$/.test(gramsText) || !Number.isFinite(weightGrams) || weightGrams <= 0) return null;
 
   const weightKg = weightGrams / 1000;
   return { productCode, weightGrams, weightKg };
+}
+
+/**
+ * Scale PLU as text. Leading zeros stay; the value is never coerced through Number.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function normalizeScaleProductCode(raw) {
+  if (raw === null || raw === undefined) return "";
+  if (typeof raw === "number") {
+    if (!Number.isSafeInteger(raw)) return "";
+    return String(raw);
+  }
+  const text = preserveBarcodeString(raw).trim();
+  if (!/^\d+$/.test(text)) return "";
+  return text;
+}
+
+/**
+ * True when `raw` is a product code this decoder can embed in a scale label.
+ * @param {unknown} raw
+ * @returns {boolean}
+ */
+export function isValidScaleProductCode(raw) {
+  const code = normalizeScaleProductCode(raw);
+  if (!code || code.length !== scaleProductCodeLength()) return false;
+  const grams = "1".padStart(WEIGHT_GRAMS_LENGTH, "0");
+  const check = "0".repeat(WEIGHT_CHECK_LENGTH);
+  const parsed = parseWeightBarcode(`${code}${grams}${check}`);
+  return parsed != null && parsed.productCode === code;
+}
+
+/** A scan that is a scale label or a bare PLU, used for not-found copy. */
+export function isScaleIdentityScan(raw) {
+  return parseWeightBarcode(raw) != null || isValidScaleProductCode(raw);
 }
 
 export function barcodeLookupKeys(key) {

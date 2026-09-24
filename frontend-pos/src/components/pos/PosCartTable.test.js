@@ -125,4 +125,34 @@ describe("POS cart quantity buttons", () => {
     });
     expect(onQuantityChange).toHaveBeenCalledWith("3-3", 1.1);
   });
+
+  test("empty KG weight cannot be bumped to 1 kg", () => {
+    const onQuantityChange = jest.fn();
+    const { container } = renderTable(
+      [
+        {
+          cartKey: "4-4",
+          id: 4,
+          unitId: 4,
+          unitName: "كغم",
+          weighed: false,
+          awaitingWeight: true,
+          name: "بندورة ميزان",
+          quantity: "",
+          price: 8,
+          availableUnits: [{ id: 4, unit_name: "كغم", price: 8 }],
+        },
+      ],
+      onQuantityChange
+    );
+
+    const input = container.querySelector('[aria-label="الكمية (كغم)"]');
+    const plus = container.querySelector('[aria-label="زيادة الكمية"]');
+    expect(input).toBeTruthy();
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("الوزن");
+    expect(plus.disabled).toBe(true);
+    expect(container.querySelector(".pos-qty-val--weight")).toBeNull();
+    expect(onQuantityChange).not.toHaveBeenCalled();
+  });
 });

@@ -4,17 +4,22 @@
  *                      for backward compatibility. Stored as plain integer text
  *                      (`1`, `2`, `10`) with no leading zeros. Never a barcode.
  * - products.barcode = الباركود (scannable code, digits-only, 4–14 chars).
- *                      Never derived from sku.
+ *                      Never derived from sku. Optional only when scale_only = 1.
+ * - scale PLU        = كود الميزان, stored on the كغم unit barcode. Not a regular
+ *                      barcode and not the full scale label (code + weight).
  * See docs/PRODUCT_NUMBER_AND_BARCODE.md.
  */
 import { createSafeRouter } from "../utils/asyncHandler.js";
 import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
-import { projectProductForRole } from "../utils/roleProjection.js";
+import { productReadScope, projectProductRead } from "../utils/roleProjection.js";
 import {
   findProductByBarcode,
+  isScaleIdentityScan,
+  isValidScaleProductCode,
   isValidStoredBarcode,
   normalizeBarcodeInput,
+  normalizeScaleProductCode,
   normalizeStoredBarcode,
 } from "../utils/barcode.js";
 import {
@@ -181,10 +186,12 @@ const SCALE_CODE_SQL_P = `CASE WHEN COALESCE(p.is_weighed, 0) = 1 THEN (
 
 const PRODUCT_LIST_SELECT = `id, barcode, name, name_en, price, cost, stock, category, tax_rate, unit, expiry_date, min_price, max_price, sku,
               COALESCE(is_active, 1) AS is_active, COALESCE(needs_review, 0) AS needs_review, COALESCE(is_weighed, 0) AS is_weighed,
+              COALESCE(scale_only, 0) AS scale_only,
               COALESCE(inventory_scope, 'retail') AS inventory_scope, min_stock, ${SCALE_CODE_SQL}`;
 
 const PRODUCT_LIST_SELECT_P = `p.id, p.barcode, p.name, p.name_en, p.price, p.cost, p.stock, p.category, p.tax_rate, p.unit, p.expiry_date, p.min_price, p.max_price, p.sku,
               COALESCE(p.is_active, 1) AS is_active, COALESCE(p.needs_review, 0) AS needs_review, COALESCE(p.is_weighed, 0) AS is_weighed,
+              COALESCE(p.scale_only, 0) AS scale_only,
               COALESCE(p.inventory_scope, 'retail') AS inventory_scope, p.min_stock, ${SCALE_CODE_SQL_P}`;
 
 const VALID_INVENTORY_SCOPES = ["retail", "bakery"];
@@ -200,12 +207,16 @@ function httpError(status, message) {
   return err;
 }
 
+function isScaleOnlyFlag(raw) {
+  return raw === 1 || raw === true || raw === "1";
+}
+
 function parseScaleCodeInput(raw) {
   if (raw === undefined) return { provided: false, value: undefined };
   if (raw === null || String(raw).trim() === "") return { provided: true, value: null };
-  const code = normalizeStoredBarcode(raw);
-  if (!isValidStoredBarcode(code)) {
-    return { provided: true, error: "رمز الميزان غير صالح" };
+  const code = normalizeScaleProductCode(raw);
+  if (!isValidScaleProductCode(code)) {
+    return { provided: true, error: "كود الميزان غير صالح" };
   }
   return { provided: true, value: code };
 }
@@ -286,12 +297,31 @@ async function applyProductMetadataPatch(db, req, id, body) {
       params.push(value);
     };
 
+    let isWeighed = Number(live.is_weighed) || 0;
+    let scaleOnly = Number(live.scale_only) === 1;
+    if (b.scale_only !== undefined) {
+      scaleOnly = isScaleOnlyFlag(b.scale_only);
+    }
+    if (b.is_weighed !== undefined) {
+      isWeighed = b.is_weighed === 1 || b.is_weighed === true ? 1 : 0;
+    }
+    if (scaleOnly) isWeighed = 1;
+    if (b.scale_only !== undefined || (b.is_weighed !== undefined && !isWeighed)) {
+      if (!isWeighed) scaleOnly = false;
+      setCol("scale_only", scaleOnly ? 1 : 0);
+    } else if (scaleOnly !== (Number(live.scale_only) === 1)) {
+      setCol("scale_only", scaleOnly ? 1 : 0);
+    }
+    if (b.is_weighed !== undefined || scaleOnly) {
+      setCol("is_weighed", isWeighed);
+    }
+
     let barcode = live.barcode;
     if (b.barcode !== undefined) {
       barcode = String(b.barcode ?? "").trim() ? normalizeStoredBarcode(b.barcode) : null;
-      if (!barcode) throw httpError(400, "الباركود مطلوب");
-      if (!isValidStoredBarcode(barcode)) throw httpError(400, "باركود غير صالح");
-      if (barcode !== live.barcode) {
+      if (!barcode && !scaleOnly) throw httpError(400, "الباركود مطلوب");
+      if (barcode && !isValidStoredBarcode(barcode)) throw httpError(400, "باركود غير صالح");
+      if (barcode && barcode !== live.barcode) {
         const dup = await db.get("SELECT id FROM products WHERE barcode = ? AND id != ?", [barcode, id]);
         if (dup) throw httpError(409, "الباركود موجود مسبقاً");
         const pbDup = await db.get(
@@ -299,9 +329,15 @@ async function applyProductMetadataPatch(db, req, id, body) {
           [barcode, id]
         );
         if (pbDup) throw httpError(409, "هذا الباركود مرتبط بمنتج آخر");
+        const unitDup = await db.get(
+          "SELECT product_id FROM product_units WHERE barcode = ? AND product_id != ?",
+          [barcode, id]
+        );
+        if (unitDup) throw httpError(409, "هذا الباركود مرتبط بمنتج آخر");
       }
       setCol("barcode", barcode);
     }
+    if (!scaleOnly && !barcode) throw httpError(400, "الباركود مطلوب");
 
     let price = live.price;
     if (b.price !== undefined) {
@@ -336,13 +372,8 @@ async function applyProductMetadataPatch(db, req, id, body) {
       unit = b.unit || null;
       if (unit) await ensureUnitName(db, unit);
     }
-    let isWeighed = Number(live.is_weighed) || 0;
-    if (b.is_weighed !== undefined) {
-      isWeighed = b.is_weighed === 1 || b.is_weighed === true ? 1 : 0;
-      setCol("is_weighed", isWeighed);
-    }
     const unitForWeighed = isWeighed ? "كغم" : unit;
-    if (b.unit !== undefined || (b.is_weighed !== undefined && isWeighed)) {
+    if (b.unit !== undefined || ((b.is_weighed !== undefined || b.scale_only !== undefined) && isWeighed)) {
       if (unitForWeighed) await ensureUnitName(db, unitForWeighed);
       setCol("unit", unitForWeighed);
     }
@@ -423,7 +454,7 @@ async function applyProductMetadataPatch(db, req, id, body) {
       }
       await syncProductsPrimaryBarcode(db, Number(id));
       const units = await loadUnitsForProduct(db, Number(id));
-      if (isWeighed) {
+      if (isWeighed && !scaleOnly) {
         const oldDigits = normalizeStoredBarcode(live.barcode);
         const packUnit = units.find((u) => {
           const ub = u.barcode ? normalizeStoredBarcode(u.barcode) : "";
@@ -447,7 +478,7 @@ async function applyProductMetadataPatch(db, req, id, body) {
             ]);
           }
         }
-      } else {
+      } else if (!isWeighed) {
         const defaultUnit = units.find((u) => u.is_default) || units[0];
         if (
           defaultUnit &&
@@ -460,6 +491,13 @@ async function applyProductMetadataPatch(db, req, id, body) {
           ]);
         }
       }
+    }
+
+    if (b.barcode !== undefined && !barcode && live.barcode) {
+      await db.run("DELETE FROM product_barcodes WHERE product_id = ? AND barcode = ?", [
+        id,
+        live.barcode,
+      ]);
     }
 
     const priceChanged = b.price !== undefined && round2(live.price) !== round2(price);
@@ -487,35 +525,52 @@ async function applyProductMetadataPatch(db, req, id, body) {
     const packPair = parseWeighedPackagePair(b);
     if (packPair.error) throw httpError(400, packPair.error);
 
+    if (scaleOnly && packPair.mode === "both") {
+      throw httpError(400, "البيع بالحبة غير متاح لمنتج يباع بالميزان فقط");
+    }
+    if (
+      scaleParsed.provided &&
+      scaleParsed.value &&
+      barcode &&
+      scaleParsed.value === barcode
+    ) {
+      throw httpError(400, "كود الميزان يجب أن يختلف عن الباركود");
+    }
+
     if (isWeighed) {
       const kgRow = await db.get(
-        `SELECT id FROM product_units WHERE product_id = ? AND unit_name = ?`,
+        `SELECT id, barcode FROM product_units WHERE product_id = ? AND unit_name = ?`,
         [Number(id), WEIGHED_BASE_UNIT_NAME]
       );
-      if (scaleParsed.provided && scaleParsed.value) {
-        await assertScaleCodeAvailable(db, scaleParsed.value, Number(id), kgRow?.id ?? null);
+      let resolvedScale = scaleParsed.provided ? scaleParsed.value : undefined;
+      if (scaleOnly) {
+        if (scaleParsed.provided && !scaleParsed.value) {
+          throw httpError(400, "كود الميزان مطلوب");
+        }
+        if (!scaleParsed.provided) {
+          const existing = kgRow?.barcode ? normalizeScaleProductCode(kgRow.barcode) : "";
+          if (!isValidScaleProductCode(existing)) {
+            throw httpError(400, "كود الميزان مطلوب");
+          }
+          resolvedScale = existing;
+        }
       }
-      if (
-        scaleParsed.provided &&
-        scaleParsed.value &&
-        barcode &&
-        scaleParsed.value === barcode &&
-        packPair.mode === "both"
-      ) {
-        throw httpError(400, "رمز الميزان يجب أن يختلف عن باركود الحبة");
+      if (resolvedScale) {
+        await assertScaleCodeAvailable(db, resolvedScale, Number(id), kgRow?.id ?? null);
       }
       const turnedOn = b.is_weighed !== undefined && isWeighed && Number(live.is_weighed) !== 1;
-      if (turnedOn || scaleParsed.provided || packPair.mode !== "omit") {
+      const scaleOnlyOn = scaleOnly && (b.scale_only !== undefined || turnedOn || scaleParsed.provided);
+      if (turnedOn || scaleParsed.provided || packPair.mode !== "omit" || scaleOnlyOn) {
         await ensureWeighedProductUnits(db, Number(id), {
           productBarcode: barcode,
-          scaleCode: scaleParsed.provided ? scaleParsed.value : undefined,
+          scaleCode: resolvedScale,
           kgPrice: price,
           kgCost: cost,
-          packageConversion: packPair.mode === "both" ? packPair.conversion : undefined,
+          packageConversion: scaleOnly ? undefined : packPair.mode === "both" ? packPair.conversion : undefined,
           packageUnitName: b.package_unit_name,
-          packagePrice: packPair.mode === "both" ? packPair.price : undefined,
+          packagePrice: scaleOnly ? undefined : packPair.mode === "both" ? packPair.price : undefined,
         });
-        if (packPair.mode === "none") {
+        if (scaleOnly || packPair.mode === "none") {
           await disableWeighedPackageUnit(db, Number(id));
         }
       }
@@ -595,6 +650,10 @@ function adminCatalogFilters(query, alias = "") {
       searchParams.push(like);
     }
     parts.push("pb.barcode LIKE ?");
+    searchParams.push(like);
+    parts.push(
+      `EXISTS (SELECT 1 FROM product_units pu_scale WHERE pu_scale.product_id = ${col("id")} AND pu_scale.barcode LIKE ?)`
+    );
     searchParams.push(like);
     sql += ` AND (${parts.join(" OR ")})`;
     params.push(...searchParams);
@@ -697,10 +756,14 @@ export async function searchProducts(db, rawQuery, options = {}) {
        LEFT JOIN product_barcodes pb ON pb.product_id = p.id
        WHERE (p.name LIKE ?
           OR CAST(p.barcode AS TEXT) LIKE ?
-          OR pb.barcode LIKE ?)${scopedSql}
+          OR pb.barcode LIKE ?
+          OR EXISTS (
+            SELECT 1 FROM product_units pu_scale
+            WHERE pu_scale.product_id = p.id AND pu_scale.barcode LIKE ?
+          ))${scopedSql}
        ORDER BY p.name ASC
        LIMIT ?`,
-      [likeLower, like, like, ...scopedParams, limit]
+      [likeLower, like, like, like, ...scopedParams, limit]
     );
 
     for (const row of likeRows) {
@@ -848,6 +911,8 @@ export function createProductsRouter(db) {
   router.get("/", requireAuth, async (req, res, next) => {
     const searchTerm = String(req.query.search ?? req.query.q ?? "").trim();
     if (searchTerm) {
+      const visibility = await productReadScope(db, req.user);
+      if (!visibility.allow) return res.status(403).json(PRODUCT_FORBIDDEN);
       const scope = req.query.scope ? parseInventoryScope(req.query.scope) : null;
       const searchLimit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
       const membership = await bakeryMembershipFromQuery(req, "p");
@@ -859,7 +924,7 @@ export function createProductsRouter(db) {
         membershipPlain,
         posOnly: req.user?.role === "cashier",
       });
-      return res.json(projectProductForRole(rows ?? [], req.user?.role));
+      return res.json(projectProductRead(rows ?? [], visibility));
     }
 
     return requireCatalogList(req, res, (err) => {
@@ -893,7 +958,8 @@ export function createProductsRouter(db) {
          FROM products WHERE id IN (${placeholders})${scopeSql}${membership.sql}`,
         [...ids, ...scopeParams, ...membership.params]
       );
-      return res.json(projectProductForRole(rows, req.user?.role));
+      const visibility = await productReadScope(db, req.user);
+      return res.json(projectProductRead(rows, visibility));
     }
 
     if (String(req.query.fields || "") === "id") {
@@ -938,8 +1004,9 @@ export function createProductsRouter(db) {
       : `SELECT ${selectCols} ${fromSql} ${whereSql} ORDER BY CAST(${skuCol} AS INTEGER) ASC, ${idCol} ASC LIMIT ? OFFSET ?`;
     const countRow = await db.get(countSql, params);
     const rows = await db.all(selectSql, [...params, limit, offset]);
+    const visibility = await productReadScope(db, req.user);
     return res.json({
-      items: projectProductForRole(rows, req.user?.role),
+      items: projectProductRead(rows, visibility),
       total: Number(countRow?.total) || 0,
       limit,
       offset,
@@ -947,17 +1014,25 @@ export function createProductsRouter(db) {
   }
 
   router.get("/by-barcode/:barcode", requireAuth, async (req, res) => {
+    const visibility = await productReadScope(db, req.user);
+    if (!visibility.allow) return res.status(403).json(PRODUCT_FORBIDDEN);
     const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
     const payload = await buildBarcodeLookupResponse(db, barcode, {
       forPos: req.user?.role === "cashier",
     });
+    if (payload?.conflict) {
+      return res.status(409).json({ error: payload.error, code: "IDENTIFIER_CONFLICT" });
+    }
     if (!payload) {
+      if (isScaleIdentityScan(barcode)) {
+        return res.status(404).json({ error: "كود الميزان غير معروف" });
+      }
       return res.status(404).json({ error: "المنتج غير موجود" });
     }
     if (payload.inactive) {
       return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
     }
-    return res.json(projectProductForRole(payload, req.user?.role));
+    return res.json(projectProductRead(payload, visibility));
   });
 
   function sendCategoryError(res, e) {
@@ -1086,6 +1161,8 @@ export function createProductsRouter(db) {
    * POS / checkout still use GET /:barcode and GET /by-barcode/:barcode (404).
    */
   router.get("/lookup", requireAuth, async (req, res) => {
+    const visibility = await productReadScope(db, req.user);
+    if (!visibility.allow) return res.status(403).json(PRODUCT_FORBIDDEN);
     const barcode = normalizeBarcodeInput(String(req.query.barcode || ""));
     if (!barcode) {
       return res.json({ found: false });
@@ -1093,17 +1170,24 @@ export function createProductsRouter(db) {
     const forPos = req.user?.role === "cashier" || req.query.pos === "1" || req.query.pos === "true";
 
     const payload = await buildBarcodeLookupResponse(db, barcode, { forPos });
+    if (payload?.conflict) {
+      return res.json({ found: false, error: payload.error, code: "IDENTIFIER_CONFLICT" });
+    }
     if (payload) {
       return res.json(
-        projectProductForRole(
+        projectProductRead(
           {
             found: true,
             inactive: Boolean(payload.inactive),
             ...payload,
           },
-          req.user?.role
+          visibility
         )
       );
+    }
+
+    if (isScaleIdentityScan(barcode)) {
+      return res.json({ found: false, error: "كود الميزان غير معروف" });
     }
 
     if (forPos) {
@@ -1116,22 +1200,30 @@ export function createProductsRouter(db) {
     }
 
     return res.json(
-      projectProductForRole(
+      projectProductRead(
         {
           found: true,
           inactive: Number(found.product.is_active) === 0,
           ...flatBarcodeLookupFields(found),
         },
-        req.user?.role
+        visibility
       )
     );
   });
 
   router.get("/:barcode", requireAuth, async (req, res) => {
+    const visibility = await productReadScope(db, req.user);
+    if (!visibility.allow) return res.status(403).json(PRODUCT_FORBIDDEN);
     const barcode = normalizeBarcodeInput(decodeURIComponent(req.params.barcode));
     const forPos = req.user?.role === "cashier";
     const payload = await buildBarcodeLookupResponse(db, barcode, { forPos });
+    if (payload?.conflict) {
+      return res.status(409).json({ error: payload.error, code: "IDENTIFIER_CONFLICT" });
+    }
     if (!payload) {
+      if (isScaleIdentityScan(barcode)) {
+        return res.status(404).json({ error: "كود الميزان غير معروف" });
+      }
       if (forPos) {
         return res.status(404).json({ error: "المنتج غير موجود" });
       }
@@ -1142,28 +1234,32 @@ export function createProductsRouter(db) {
       if (Number(found.product.is_active) === 0) {
         return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
       }
-      return res.json(projectProductForRole(flatBarcodeLookupFields(found), req.user?.role));
+      return res.json(projectProductRead(flatBarcodeLookupFields(found), visibility));
     }
     if (payload.inactive) {
       return res.status(404).json({ error: "المنتج غير متاح", code: "PRODUCT_INACTIVE" });
     }
-    res.json(projectProductForRole(payload, req.user?.role));
+    res.json(projectProductRead(payload, visibility));
   });
 
   router.post("/", requireAuth, requireProductCreate, async (req, res) => {
     const { barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, min_stock } = req.body || {};
     const inventoryScope = parseInventoryScope(req.body?.inventory_scope, "retail");
     const isBakery = inventoryScope === "bakery";
-    const isWeighed = req.body?.is_weighed === 1 || req.body?.is_weighed === true ? 1 : 0;
-    const resolvedBarcode = normalizeStoredBarcode(barcode);
-    if (!resolvedBarcode) {
+    const scaleOnly = isScaleOnlyFlag(req.body?.scale_only);
+    let isWeighed = req.body?.is_weighed === 1 || req.body?.is_weighed === true ? 1 : 0;
+    if (scaleOnly) isWeighed = 1;
+    const resolvedBarcode = String(barcode ?? "").trim() ? normalizeStoredBarcode(barcode) : "";
+    if (!scaleOnly && !resolvedBarcode) {
       return res.status(400).json({ error: "الباركود مطلوب" });
     }
-    if (!isValidStoredBarcode(resolvedBarcode)) {
+    if (resolvedBarcode && !isValidStoredBarcode(resolvedBarcode)) {
       return res.status(400).json({ error: "باركود غير صالح" });
     }
     if (!name || stock === undefined) {
-      return res.status(400).json({ error: "الباركود والاسم والمخزون مطلوبة" });
+      return res.status(400).json({
+        error: scaleOnly ? "الاسم والمخزون مطلوبان" : "الباركود والاسم والمخزون مطلوبة",
+      });
     }
     if (!isBakery && price === undefined) {
       return res.status(400).json({ error: "الباركود والاسم والسعر والمخزون مطلوبة" });
@@ -1172,17 +1268,19 @@ export function createProductsRouter(db) {
     if (!Number.isFinite(finalPrice) || finalPrice < 0) {
       return res.status(400).json({ error: "السعر غير صالح" });
     }
-    const barcodeDup = await db.get(
-      `SELECT id FROM products WHERE barcode = ?
-       UNION
-       SELECT product_id AS id FROM product_units WHERE barcode = ?
-       UNION
-       SELECT product_id AS id FROM product_barcodes WHERE barcode = ?
-       LIMIT 1`,
-      [resolvedBarcode, resolvedBarcode, resolvedBarcode]
-    );
-    if (barcodeDup) {
-      return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
+    if (resolvedBarcode) {
+      const barcodeDup = await db.get(
+        `SELECT id FROM products WHERE barcode = ?
+         UNION
+         SELECT product_id AS id FROM product_units WHERE barcode = ?
+         UNION
+         SELECT product_id AS id FROM product_barcodes WHERE barcode = ?
+         LIMIT 1`,
+        [resolvedBarcode, resolvedBarcode, resolvedBarcode]
+      );
+      if (barcodeDup) {
+        return res.status(409).json({ error: "هذا الباركود مرتبط بمنتج آخر" });
+      }
     }
     if (sku) {
       const skuDup = await findSkuConflict(db, sku);
@@ -1203,13 +1301,14 @@ export function createProductsRouter(db) {
     if (isWeighed && packPair.error) {
       return res.status(400).json({ error: packPair.error });
     }
-    if (
-      isWeighed &&
-      scaleParsed.value &&
-      scaleParsed.value === resolvedBarcode &&
-      packPair.mode === "both"
-    ) {
-      return res.status(400).json({ error: "رمز الميزان يجب أن يختلف عن باركود الحبة" });
+    if (scaleOnly && !scaleParsed.value) {
+      return res.status(400).json({ error: "كود الميزان مطلوب" });
+    }
+    if (scaleOnly && packPair.mode === "both") {
+      return res.status(400).json({ error: "البيع بالحبة غير متاح لمنتج يباع بالميزان فقط" });
+    }
+    if (scaleParsed.value && resolvedBarcode && scaleParsed.value === resolvedBarcode) {
+      return res.status(400).json({ error: "كود الميزان يجب أن يختلف عن الباركود" });
     }
     if (isWeighed && scaleParsed.value && scaleParsed.value !== resolvedBarcode) {
       const scaleDup = await db.get(
@@ -1246,10 +1345,10 @@ export function createProductsRouter(db) {
             : null;
         const openingStock = parseProductStock(stock);
         const info = await db.run(
-          `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, is_weighed, inventory_scope, min_stock, needs_review)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO products (barcode, name, name_en, price, cost, category, stock, tax_rate, unit, expiry_date, min_price, max_price, sku, image_url, is_weighed, scale_only, inventory_scope, min_stock, needs_review)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            resolvedBarcode,
+            resolvedBarcode || null,
             String(name).trim(),
             name_en ? String(name_en).trim() : null,
             finalPrice,
@@ -1264,6 +1363,7 @@ export function createProductsRouter(db) {
             skuCode,
             image_url ? String(image_url).trim() : null,
             isWeighed,
+            scaleOnly ? 1 : 0,
             inventoryScope,
             Number.isFinite(minStockVal) ? minStockVal : null,
             needsReview,
@@ -1280,16 +1380,18 @@ export function createProductsRouter(db) {
             notes: "رصيد افتتاحي",
           });
         }
-        await ensureProductBarcodeOnCreate(db, info.lastID, resolvedBarcode);
+        if (resolvedBarcode) {
+          await ensureProductBarcodeOnCreate(db, info.lastID, resolvedBarcode);
+        }
         if (isWeighed) {
           await ensureWeighedProductUnits(db, info.lastID, {
-            productBarcode: resolvedBarcode,
-            scaleCode: scaleParsed.provided ? scaleParsed.value : undefined,
+            productBarcode: resolvedBarcode || null,
+            scaleCode: scaleParsed.value || undefined,
             kgPrice: finalPrice,
             kgCost: c,
-            packageConversion: packPair.mode === "both" ? packPair.conversion : undefined,
+            packageConversion: scaleOnly ? undefined : packPair.mode === "both" ? packPair.conversion : undefined,
             packageUnitName: req.body?.package_unit_name || DEFAULT_PACKAGE_UNIT_NAME,
-            packagePrice: packPair.mode === "both" ? packPair.price : undefined,
+            packagePrice: scaleOnly ? undefined : packPair.mode === "both" ? packPair.price : undefined,
           });
         } else {
           await upsertProductUnit(db, info.lastID, {
@@ -1658,6 +1760,7 @@ export function createProductsRouter(db) {
         unit: product.unit ?? null,
         is_active: Number(product.is_active ?? 1),
         is_weighed: Number(product.is_weighed) === 1 ? 1 : 0,
+        scale_only: Number(product.scale_only) === 1 ? 1 : 0,
         scale_code: withScale.scale_code ?? null,
         package_price: withScale.package_price ?? null,
         package_conversion: withScale.package_conversion ?? null,
@@ -1716,6 +1819,7 @@ export function createProductsRouter(db) {
         unit: product.unit ?? null,
         tax_rate: product.tax_rate ?? null,
         is_weighed: Number(product.is_weighed) === 1 ? 1 : 0,
+        scale_only: Number(product.scale_only) === 1 ? 1 : 0,
         scale_code: withScale.scale_code ?? null,
         package_price: withScale.package_price ?? null,
         package_conversion: withScale.package_conversion ?? null,

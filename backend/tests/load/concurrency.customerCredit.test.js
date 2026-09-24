@@ -179,7 +179,7 @@ describe("C3 concurrent customer credit", () => {
     });
     const over = await approve(overId);
     expect(isCreditLimitRejection(over)).toBe(true);
-    expect(over.body.error).toBe("العميل تجاوز حد الائتمان");
+    expect(over.body.error).toBe("البيع يتجاوز حد الائتمان. أكّد الاستثناء صراحة للموافقة فوق الحد.");
 
     const after = await h.db.get("SELECT balance FROM customers WHERE id = ?", [h.customer.id]);
     expect(Number(after.balance)).toBe(1000);

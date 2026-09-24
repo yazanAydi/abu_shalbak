@@ -329,8 +329,8 @@ describe("GET /finance/overview — unknown and zero cost", () => {
     return unwrap(res.body);
   }
 
-  test("zero snapshot cost is known 0; later live cost does not change it", async () => {
-    await ctx.db.run("UPDATE products SET cost = 0, price = 10, stock = 100 WHERE id = ?", [
+  test("unmarked zero cost leaves COGS unknown; a later cost does not fill it", async () => {
+    await ctx.db.run("UPDATE products SET cost = 0, cost_known = NULL, price = 10, stock = 100 WHERE id = ?", [
       ctx.productId,
     ]);
     const sale = await request(ctx.app)
@@ -345,15 +345,49 @@ describe("GET /finance/overview — unknown and zero cost", () => {
     expect(sale.status).toBe(201);
 
     const before = await overview();
-    expect(before.profit.cogs).toBe(0);
-    expect(before.cogs_unknown).toBe(false);
-    expect(before.profit.grossProfit).toBe(10);
+    expect(before.profit.cogs).toBeNull();
+    expect(before.cogs_unknown).toBe(true);
+    expect(before.profit.grossProfit).toBeNull();
 
     await ctx.db.run("UPDATE products SET cost = 8 WHERE id = ?", [ctx.productId]);
     const after = await overview();
-    expect(after.profit.cogs).toBe(0);
-    expect(after.profit.grossProfit).toBe(10);
-    expect(after.profit.operatingNetProfit).toBe(10);
+    expect(after.cogs_unknown).toBe(true);
+    expect(after.profit.grossProfit).toBeNull();
+    const item = await ctx.db.get(
+      "SELECT unit_cost_at_sale FROM transaction_items ORDER BY id DESC LIMIT 1"
+    );
+    expect(item.unit_cost_at_sale).toBeNull();
+  });
+
+  test("explicit free cost is known zero and is not rewritten by a later cost", async () => {
+    await ctx.db.run("UPDATE products SET cost = 0, cost_known = 1, price = 10, stock = 100 WHERE id = ?", [
+      ctx.productId,
+    ]);
+    const sale = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send(
+        withCheckoutKey({
+          items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+          payment_method: "cash",
+        })
+      );
+    expect(sale.status).toBe(201);
+    const txId = sale.body.data?.transaction_id ?? sale.body.transaction_id;
+    const before = await ctx.db.get(
+      "SELECT unit_cost_at_sale, gross_profit FROM transaction_items WHERE transaction_id = ?",
+      [txId]
+    );
+    expect(Number(before.unit_cost_at_sale)).toBe(0);
+    expect(Number(before.gross_profit)).toBe(10);
+
+    await ctx.db.run("UPDATE products SET cost = 8 WHERE id = ?", [ctx.productId]);
+    const after = await ctx.db.get(
+      "SELECT unit_cost_at_sale, gross_profit FROM transaction_items WHERE transaction_id = ?",
+      [txId]
+    );
+    expect(Number(after.unit_cost_at_sale)).toBe(0);
+    expect(Number(after.gross_profit)).toBe(10);
   });
 
   test("NULL snapshot cost marks profit fields null, not zero", async () => {

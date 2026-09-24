@@ -49,7 +49,13 @@ describe("bakery supplies inventory", () => {
         min_stock: 5,
       });
     expect(create.status).toBe(201);
-    bakeryProductId = unwrapData(create.body).id;
+    const created = unwrapData(create.body);
+    bakeryProductId = created.id;
+    const nextSku = await request(ctx.app)
+      .get("/api/v1/products/next-sku")
+      .set(authHeader(adminToken));
+    expect(created.sku).toBeTruthy();
+    expect(Number(nextSku.body?.data?.sku ?? nextSku.body?.sku)).toBeGreaterThan(Number(created.sku));
 
     const unit = await ctx.db.get(
       "SELECT sale_enabled, purchase_enabled FROM product_units WHERE product_id = ? AND is_default = 1",
@@ -264,6 +270,7 @@ describe("bakery supplies inventory", () => {
     expect(bakeryRes.status).toBe(200);
     const bakeryRows = unwrapList(bakeryRes.body);
     expect(bakeryRows.some((p) => p.id === bakeryProductId)).toBe(true);
+    expect(bakeryRows.find((p) => p.id === bakeryProductId).sku).toBeTruthy();
     expect(bakeryRows.some((p) => p.id === ctx.productId)).toBe(false);
 
     const retailRes = await request(ctx.app)

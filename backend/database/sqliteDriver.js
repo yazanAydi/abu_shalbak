@@ -177,13 +177,12 @@ export function wrapBetterSqlite(writeRaw, readRaw) {
   }
 
   function target(sql) {
-    // Concurrent GET/HEAD reads keep using the readonly WAL snapshot even
-    // while a writer transaction is open. Only the writer-side async work
-    // (no readonly preference) must stay on writeRaw so it sees its own
-    // uncommitted changes and never a cached readonly statement.
-    if (writerTxDepth > 0) {
-      return writeRaw;
-    }
+    // A SELECT made under the readonly preference stays on the read
+    // connection, including while a writer transaction is open on this
+    // process. That read sees the last commit, not the writer's uncommitted
+    // row, and it must not reuse a statement prepared on the writer.
+    // Writer-side work does not set the preference, so it stays on writeRaw
+    // and can see its own uncommitted changes.
     if (readRaw && preferReadonlyReads() && isSelect(sql)) {
       return readRaw;
     }

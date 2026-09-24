@@ -39,10 +39,13 @@ describe("cashier payroll", () => {
   });
 
   async function insertClosedShift(startIso, endIso, status = "closed") {
+    const user = await ctx.db.get("SELECT hourly_rate FROM users WHERE id = ?", [cashierId]);
+    const rate = Number(user?.hourly_rate);
+    const snapshot = Number.isFinite(rate) && rate > 0 ? rate : null;
     const res = await ctx.db.run(
-      `INSERT INTO cashier_shifts (cashier_id, start_time, end_time, opening_cash, status)
-       VALUES (?, ?, ?, 100, ?)`,
-      [cashierId, startIso, endIso, status]
+      `INSERT INTO cashier_shifts (cashier_id, start_time, end_time, opening_cash, status, hourly_rate_snapshot)
+       VALUES (?, ?, ?, 100, ?, ?)`,
+      [cashierId, startIso, endIso, status, snapshot]
     );
     return res.lastID;
   }
@@ -150,7 +153,7 @@ describe("cashier payroll", () => {
     expect(report.employees[0].total_hours).toBe(4);
   });
 
-  test("null hourly_rate yields zero pay but counts hours", async () => {
+  test("a closed shift with no captured rate is incomplete, not zero and not today's rate", async () => {
     await ctx.db.run("UPDATE users SET hourly_rate = NULL WHERE id = ?", [cashierId]);
     await ctx.db.run("DELETE FROM cashier_shifts WHERE cashier_id = ?", [cashierId]);
     await insertClosedShift("2026-07-15T08:00:00.000Z", "2026-07-15T10:00:00.000Z");
@@ -162,8 +165,10 @@ describe("cashier payroll", () => {
     expect(res.status).toBe(200);
     const report = res.body.data ?? res.body;
     expect(report.employees[0].total_hours).toBe(2);
-    expect(report.employees[0].total_pay).toBe(0);
+    expect(report.employees[0].total_pay).toBeNull();
     expect(report.employees[0].missing_rate).toBe(true);
+    expect(report.grand_total_pay).toBeNull();
+    expect(report.pay_incomplete).toBe(true);
 
     await ctx.db.run("UPDATE users SET hourly_rate = 30 WHERE id = ?", [cashierId]);
   });
@@ -260,7 +265,7 @@ describe("cashier payroll", () => {
     expect(res.status).toBe(400);
   });
 
-  test("fill-missing-snapshots copies live rate onto closed shifts without snapshot only", async () => {
+  test("fill-missing-snapshots does not copy today's rate onto a closed shift", async () => {
     const created = await request(ctx.app)
       .post("/api/v1/admin/users")
       .set(authHeader(adminToken))
@@ -293,10 +298,7 @@ describe("cashier payroll", () => {
       .post(`/api/v1/payroll/cashiers/${userId}/fill-missing-snapshots`)
       .set(authHeader(adminToken))
       .send({});
-    expect(res.status).toBe(200);
-    const body = res.body.data ?? res.body;
-    expect(body.hourly_rate).toBe(25);
-    expect(body.updated_count).toBe(1);
+    expect(res.status).toBe(409);
 
     const missingAfter = await ctx.db.get(
       "SELECT hourly_rate_snapshot FROM cashier_shifts WHERE id = ?",
@@ -310,7 +312,7 @@ describe("cashier payroll", () => {
       "SELECT hourly_rate_snapshot FROM cashier_shifts WHERE id = ?",
       [open.lastID]
     );
-    expect(Number(missingAfter.hourly_rate_snapshot)).toBe(25);
+    expect(missingAfter.hourly_rate_snapshot).toBeNull();
     expect(Number(keptAfter.hourly_rate_snapshot)).toBe(12);
     expect(openAfter.hourly_rate_snapshot).toBeNull();
   });
@@ -326,6 +328,6 @@ describe("cashier payroll", () => {
       .post(`/api/v1/payroll/cashiers/${userId}/fill-missing-snapshots`)
       .set(authHeader(adminToken))
       .send({});
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
   });
 });

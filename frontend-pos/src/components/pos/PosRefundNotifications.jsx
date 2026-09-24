@@ -13,6 +13,7 @@ const ACK_PATH = {
   refund: "/api/refund-requests",
   advance: "/api/advance-requests",
   on_account: "/api/on-account-requests",
+  cash_debt: "/api/customer-cash-debt-requests",
 };
 
 /** Oldest terminal decision first so the cashier clears the queue in order. */
@@ -40,6 +41,7 @@ function mergeSnapshot(snapshot) {
     ...tagKind("refund", src.refunds),
     ...tagKind("advance", src.advances),
     ...tagKind("on_account", src.on_account),
+    ...tagKind("cash_debt", src.cash_debts),
   ]);
 }
 
@@ -64,12 +66,16 @@ function titleFor(item) {
   if (item.kind === "on_account") {
     return approved ? "تمت الموافقة — اكتمل البيع" : "تم رفض البيع على الذمة";
   }
+  if (item.kind === "cash_debt") {
+    return approved ? "تمت الموافقة على الذمة النقدية" : "تم رفض طلب الذمة النقدية";
+  }
   return approved ? "تمت الموافقة على الاسترجاع" : "تم رفض طلب الاسترجاع";
 }
 
 function headingFor(item) {
   if (item.kind === "advance") return `طلب سلف #${item.id}`;
   if (item.kind === "on_account") return `طلب ذمة #${item.id}`;
+  if (item.kind === "cash_debt") return `طلب ذمة نقدية #${item.id}`;
   return `طلب استرجاع #${item.id}`;
 }
 
@@ -77,6 +83,10 @@ function detailFor(item) {
   if (item.kind === "advance") {
     const name = item.employee_name ? `${item.employee_name} — ` : "";
     return `${name}${ils(item.amount ?? 0)}`;
+  }
+  if (item.kind === "cash_debt") {
+    const name = item.customer_name ? `${item.customer_name} — ` : "";
+    return `${name}${ils(item.amount ?? item.on_account_amount ?? 0)}`;
   }
   if (item.kind === "on_account") {
     const name = item.customer_name ? `${item.customer_name} — ` : "";
@@ -106,12 +116,14 @@ export default function PosRefundNotifications({
         api.get("/api/refund-requests/mine/unread", { headers: getAuthHeaders() }),
         api.get("/api/advance-requests/mine/unread", { headers: getAuthHeaders() }),
         api.get("/api/on-account-requests/mine/unread", { headers: getAuthHeaders() }),
+        api.get("/api/customer-cash-debt-requests/mine/unread", { headers: getAuthHeaders() }),
       ]);
       setUnread(
         mergeSnapshot({
           refunds: settledList(results[0]),
           advances: settledList(results[1]),
           on_account: settledList(results[2]),
+          cash_debts: settledList(results[3]),
         })
       );
     } catch {

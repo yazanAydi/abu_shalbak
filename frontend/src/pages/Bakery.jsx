@@ -26,6 +26,7 @@ import {
 import { apiErrorMessage } from "../utils/apiError";
 import { useRegisterPageRefresh } from "../components/layout/PageRefreshContext";
 import { ils } from "../utils/format";
+import { displayProductSku } from "../utils/entityCodeDisplay";
 import { getDatePresets, todayYmd, firstOfCurrentMonthYmd } from "../utils/reportDates";
 import useAuthUser from "../hooks/useAuthUser";
 import { userHasOfficePermission } from "../utils/accountantPermissions";
@@ -230,6 +231,7 @@ export default function Bakery({ variant = "sales" }) {
 
   const tableColumns = useMemo(
     () => [
+      { key: "sku", header: "الرقم", render: (r) => displayProductSku(r.sku) },
       { key: "name", header: "المنتج" },
       {
         key: "revenue_kind",

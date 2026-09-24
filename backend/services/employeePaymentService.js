@@ -17,7 +17,7 @@ const CORRECTION_MODES = new Set(["reverse", "replace", "annotate_recipient"]);
  * row. Office salary payments and advances use the same writer without a
  * drawer line. Later allocation must not insert another expense.
  *
- * Must be called inside an existing withTransaction / BEGIN IMMEDIATE.
+ * Must be called inside an existing withTransaction.
  */
 
 export async function assertCanApproveLinkedSalaryAdvance(db, user) {
@@ -390,6 +390,13 @@ export function mapLedger(row, extras = {}) {
 export async function assertExpenseNotLinked(db, expenseId) {
   const row = await db.get("SELECT id, source FROM operating_expenses WHERE id = ?", [expenseId]);
   if (!row) return;
+  if (row.source === "shop_consumption") {
+    throw new HttpError(
+      409,
+      "لا يمكن حذف مصروف استهلاك المحل لأنه مربوط بخصم مخزون",
+      "LINKED_EXPENSE"
+    );
+  }
   if (row.source) {
     throw new HttpError(409, "لا يمكن حذف مصروف مربوط بدفعة موظف", "LINKED_EXPENSE");
   }

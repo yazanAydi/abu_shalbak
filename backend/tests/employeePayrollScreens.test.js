@@ -762,4 +762,102 @@ describe("employee statement and salary screens", () => {
     );
     expect(hist.salaries.items.some((row) => row.amount === 250)).toBe(true);
   });
+
+  test("backdated salary sees debt effective on the shift day and skips a later one", async () => {
+    const emp = await createRegular("ذمة حسب يوم العمل");
+    const customerId = await insertCustomer("ذمة يوم العمل", `EMP-DAY-${emp.id}`, 16);
+    await request(ctx.app)
+      .post(`/api/v1/employees/${emp.id}/link-customer`)
+      .set(authHeader(adminToken))
+      .send({ customer_id: customerId });
+    const earlyShift = await ctx.db.run(
+      "INSERT INTO cashier_shifts (cashier_id, opening_cash, status, start_time) VALUES (?, 0, 'closed', ?)",
+      [cashierUserId, "2026-09-15 08:00:00"]
+    );
+    const laterShift = await ctx.db.run(
+      "INSERT INTO cashier_shifts (cashier_id, opening_cash, status, start_time) VALUES (?, 0, 'closed', ?)",
+      [cashierUserId, "2026-09-22 08:00:00"]
+    );
+    const early = await insertOnAccountSale({
+      customerId,
+      employeeId: emp.id,
+      total: 8,
+      createdAt: "2026-09-22 12:00:00",
+      name: "ذمة سابقة",
+      receipt: `DAY-EARLY-${emp.id}`,
+    });
+    const later = await insertOnAccountSale({
+      customerId,
+      employeeId: emp.id,
+      total: 8,
+      createdAt: "2026-09-22 12:05:00",
+      name: "ذمة لاحقة",
+      receipt: `DAY-LATER-${emp.id}`,
+    });
+    await ctx.db.run("UPDATE transactions SET shift_id = ? WHERE id = ?", [earlyShift.lastID, early]);
+    await ctx.db.run("UPDATE transactions SET shift_id = ? WHERE id = ?", [laterShift.lastID, later]);
+
+    const preview = unwrap(
+      (
+        await request(ctx.app)
+          .get(`/api/v1/employees/${emp.id}/payroll-preview`)
+          .query({ period_from: "2026-09-15", period_to: "2026-09-15", as_of: "2026-09-15" })
+          .set(authHeader(adminToken))
+      ).body
+    );
+    const ids = (preview.debts || []).map((row) => row.source_id);
+    expect(ids).toContain(early);
+    expect(ids).not.toContain(later);
+  });
+
+  test("paying the remaining salary twice does not post a second expense", async () => {
+    const emp = await createRegular("راتب مسدد");
+    const first = await request(ctx.app)
+      .post(`/api/v1/employees/${emp.id}/payroll-payouts`)
+      .set(authHeader(adminToken))
+      .send({
+        period_from: "2026-07-01",
+        period_to: "2026-07-31",
+        occurred_on: "2026-07-31",
+        salary_before_deductions: 100,
+        cash_paid: 40,
+        payment_method: "cash",
+      });
+    expect(first.status).toBe(201);
+    const rest = await request(ctx.app)
+      .post(`/api/v1/employees/${emp.id}/payroll-payouts`)
+      .set(authHeader(adminToken))
+      .send({
+        period_from: "2026-07-01",
+        period_to: "2026-07-31",
+        occurred_on: "2026-07-31",
+        cash_paid: 60,
+        payment_method: "cash",
+      });
+    expect(rest.status).toBe(201);
+    expect(unwrap(rest.body).breakdown.remaining_salary).toBe(0);
+    const paid = await ctx.db.get(
+      `SELECT COUNT(*) AS n FROM employee_ledger_entries
+        WHERE employee_id = ? AND purpose = 'salary_payment'`,
+      [emp.id]
+    );
+    const again = await request(ctx.app)
+      .post(`/api/v1/employees/${emp.id}/payroll-payouts`)
+      .set(authHeader(adminToken))
+      .send({
+        period_from: "2026-07-01",
+        period_to: "2026-07-31",
+        occurred_on: "2026-07-31",
+        cash_paid: 60,
+        payment_method: "cash",
+      });
+    expect(again.status).toBe(400);
+    expect(again.body.code || unwrap(again.body).code).toBe("CASH_EXCEEDS_NET");
+    const paidAfter = await ctx.db.get(
+      `SELECT COUNT(*) AS n FROM employee_ledger_entries
+        WHERE employee_id = ? AND purpose = 'salary_payment'`,
+      [emp.id]
+    );
+    expect(Number(paidAfter.n)).toBe(Number(paid.n));
+  });
 });

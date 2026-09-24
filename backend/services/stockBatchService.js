@@ -142,27 +142,81 @@ async function findDatedBatch(db, productId, expiryDate) {
 /**
  * Increase a dated lot. Unknown-expiry inbound is represented only via products.stock.
  */
-export async function receiveDatedBatch(db, { productId, expiryDate, quantity, cost = null }) {
+export async function receiveDatedBatch(db, { productId, expiryDate, quantity, cost = null, batchNo = null, notes = null }) {
   const ymd = normalizeExpiryDate(expiryDate);
   const qty = round6(quantity);
   if (!ymd || !qty) return null;
+  const costValue = cost != null && Number.isFinite(Number(cost)) ? Number(cost) : null;
+  const batchLabel = batchNo != null && String(batchNo).trim() !== "" ? String(batchNo).trim() : null;
+  const noteValue = notes != null && String(notes).trim() !== "" ? String(notes).trim() : null;
 
   const existing = await findDatedBatch(db, productId, ymd);
   if (existing) {
-    await db.run("UPDATE product_batches SET quantity = quantity + ?, cost = COALESCE(?, cost) WHERE id = ?", [
-      qty,
-      cost != null && Number.isFinite(Number(cost)) ? Number(cost) : null,
-      existing.id,
-    ]);
-    return { id: existing.id, expiry_date: ymd, quantity: qty };
+    await db.run(
+      `UPDATE product_batches
+          SET quantity = quantity + ?,
+              cost = COALESCE(?, cost),
+              batch_no = COALESCE(?, batch_no),
+              notes = COALESCE(?, notes)
+        WHERE id = ?`,
+      [qty, costValue, batchLabel, noteValue, existing.id]
+    );
+    return db.get("SELECT * FROM product_batches WHERE id = ?", [existing.id]);
   }
 
   const ins = await db.run(
     `INSERT INTO product_batches (product_id, batch_no, expiry_date, quantity, cost, notes)
-     VALUES (?, NULL, ?, ?, ?, NULL)`,
-    [Number(productId), ymd, qty, cost != null && Number.isFinite(Number(cost)) ? Number(cost) : null]
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [Number(productId), batchLabel, ymd, qty, costValue, noteValue]
   );
-  return { id: ins.lastID, expiry_date: ymd, quantity: qty };
+  return db.get("SELECT * FROM product_batches WHERE id = ?", [ins.lastID]);
+}
+
+/**
+ * Assign an expiry to stock that is not already on a dated lot.
+ * Does not receive new goods and does not write inventory_ledger.
+ * Caller must be inside withTransaction so two requests cannot assign the same units.
+ */
+export async function assignDatedQuantityFromUnknown(db, { productId, expiryDate, quantity, cost = null, batchNo = null, notes = null }) {
+  const ymd = normalizeExpiryDate(expiryDate);
+  if (!ymd) {
+    const err = new Error("تاريخ الصلاحية مطلوب لتعيين دفعة من المخزون القائم");
+    err.status = 400;
+    err.code = "EXPIRY_REQUIRED";
+    throw err;
+  }
+  const qty = round6(quantity);
+  if (!(qty > 0)) {
+    const err = new Error("الكمية يجب أن تكون أكبر من صفر");
+    err.status = 400;
+    err.code = "INVALID_QTY";
+    throw err;
+  }
+  const product = await db.get("SELECT id, stock FROM products WHERE id = ?", [Number(productId)]);
+  if (!product) {
+    const err = new Error("المنتج غير موجود");
+    err.status = 404;
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+  const dated = await listDatedBatches(db, productId);
+  const unknown = unknownQuantityFromStock(product.stock, datedQuantitySum(dated));
+  if (qty > unknown + 1e-9) {
+    const available = round6(Math.max(0, unknown));
+    const err = new Error(`الكمية أكبر من المخزون غير المخصص للصلاحية (المتاح ${available})`);
+    err.status = 400;
+    err.code = "BATCH_EXCEEDS_UNASSIGNED";
+    err.available = available;
+    throw err;
+  }
+  return receiveDatedBatch(db, {
+    productId,
+    expiryDate: ymd,
+    quantity: qty,
+    cost,
+    batchNo,
+    notes,
+  });
 }
 
 async function decrementDatedBatch(db, productId, expiryDate, quantity) {

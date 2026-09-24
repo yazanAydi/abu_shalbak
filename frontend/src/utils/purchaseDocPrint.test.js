@@ -52,7 +52,7 @@ function itemHeaders(doc) {
 }
 
 beforeEach(() => {
-  localStorage.setItem("user", JSON.stringify({ username: "admin" }));
+  localStorage.setItem("office.user", JSON.stringify({ username: "admin" }));
 });
 
 describe("purchase document print layout", () => {

@@ -17,6 +17,7 @@ import {
 import { useRegisterPageRefresh, usePageRefresh } from "../components/layout/PageRefreshContext";
 import { ils, num, formatStockWithUnit } from "../utils/format";
 import { displayProductBarcode, displayProductSku } from "../utils/entityCodeDisplay";
+import { productPriceLabel } from "../utils/scaleProductForm";
 import { NO_UNIT_LABEL, UNCATEGORIZED_LABEL } from "../utils/productCatalogLabels";
 import ChangePriceModal from "./productDashboard/ChangePriceModal";
 import EditProductModal from "./productDashboard/EditProductModal";
@@ -119,7 +120,7 @@ export default function ProductDashboard() {
       { label: "المخزون الحالي", value: formatStockWithUnit(s.current_stock, product), icon: "inventory", tone: "teal" },
       { label: "مبيعات اليوم", value: ils(s.today_sales), icon: "finance", tone: "green" },
       { label: "مبيعات هذا الشهر", value: ils(s.month_sales), icon: "finance", tone: "green" },
-      { label: weighed ? "سعر الكغم" : "سعر البيع الحالي", value: ils(s.current_price), icon: "finance", tone: "teal" },
+      { label: productPriceLabel(product) === "سعر البيع" ? "سعر البيع الحالي" : productPriceLabel(product), value: ils(s.current_price), icon: "finance", tone: "teal" },
     ];
     if (weighed && product?.package_price != null) {
       cards.push({ label: "سعر الحبة", value: ils(product.package_price), icon: "finance", tone: "teal" });
@@ -204,13 +205,17 @@ export default function ProductDashboard() {
               {Number(product?.is_weighed) === 1 && product?.package_conversion != null ? (
                 <span className="pd-chip">وزن الحبة: {product.package_conversion} كغم</span>
               ) : null}
-              {Number(product?.is_weighed) === 1 ? <span className="pd-chip">يُباع بالوزن (ميزان)</span> : null}
+              {Number(product?.scale_only) === 1 ? (
+                <span className="pd-chip">يباع بالميزان فقط</span>
+              ) : Number(product?.is_weighed) === 1 ? (
+                <span className="pd-chip">يُباع بالوزن (ميزان)</span>
+              ) : null}
             </div>
             <div className="pd-keyfigures">
               <div className="pd-kf"><span>المخزون</span><strong>{formatStockWithUnit(product?.stock, product)}</strong></div>
               {Number(product?.is_weighed) === 1 ? (
                 <>
-                  <div className="pd-kf"><span>سعر الكغم</span><strong>{ils(product?.price)}</strong></div>
+                  <div className="pd-kf"><span>{productPriceLabel(product)}</span><strong>{ils(product?.price)}</strong></div>
                   {product?.package_price != null ? (
                     <div className="pd-kf"><span>سعر الحبة</span><strong>{ils(product.package_price)}</strong></div>
                   ) : null}
@@ -228,7 +233,7 @@ export default function ProductDashboard() {
         <div className="pd-actions">
           <PageRefreshButton onClick={refreshPage} refreshing={loading || refreshing} />
           <PrimaryButton type="button" onClick={() => setPriceOpen(true)}>
-            <Icon name="finance" size={16} /> {Number(product?.is_weighed) === 1 ? "تغيير سعر الكغم" : "تغيير سعر البيع"}
+            <Icon name="finance" size={16} /> تغيير {productPriceLabel(product)}
           </PrimaryButton>
           <SecondaryButton type="button" onClick={() => setEditOpen(true)}>
             <Icon name="edit" size={16} /> تعديل المنتج

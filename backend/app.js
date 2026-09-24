@@ -16,6 +16,7 @@ import { createRefundsRouter } from "./routes/refunds.js";
 import { createRefundRequestsRouter } from "./routes/refundRequests.js";
 import { createAdvanceRequestsRouter } from "./routes/advanceRequests.js";
 import { createOnAccountRequestsRouter } from "./routes/onAccountRequests.js";
+import { createCustomerCashDebtRequestsRouter } from "./routes/customerCashDebtRequests.js";
 import { createTelegramRouter } from "./routes/telegram.js";
 import { createShiftsRouter } from "./routes/shifts.js";
 import { createSettingsRouter } from "./routes/settings.js";
@@ -29,6 +30,7 @@ import { createSuppliersRouter } from "./routes/suppliers.js";
 import { createPurchasesRouter } from "./routes/purchases.js";
 import { createSalesRouter } from "./routes/sales.js";
 import { createExpensesRouter } from "./routes/expenses.js";
+import { createExpenseApprovalRouter, createSupplierPaymentApprovalRouter, createShopConsumptionApprovalRouter } from "./routes/groupApprovals.js";
 import { createDeliveriesRouter } from "./routes/deliveries.js";
 import { createMarketingRouter } from "./routes/marketing.js";
 import { createWarehousesRouter } from "./routes/warehouses.js";
@@ -75,6 +77,7 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/refund-requests", createRefundRequestsRouter(db));
   router.use("/advance-requests", createAdvanceRequestsRouter(db));
   router.use("/on-account-requests", createOnAccountRequestsRouter(db));
+  router.use("/customer-cash-debt-requests", createCustomerCashDebtRequestsRouter(db));
   router.use("/shifts", createShiftsRouter(db));
   router.use("/settings", createSettingsRouter(db));
   router.use("/inventory", createInventoryRouter(db));
@@ -89,6 +92,9 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
   router.use("/purchases", createPurchasesRouter(db));
   router.use("/sales", createSalesRouter(db));
   router.use("/expenses", createExpensesRouter(db));
+  router.use("/expense-requests", createExpenseApprovalRouter(db));
+  router.use("/supplier-payment-requests", createSupplierPaymentApprovalRouter(db));
+  router.use("/shop-consumption-requests", createShopConsumptionApprovalRouter(db));
   router.use("/deliveries", createDeliveriesRouter(db));
   router.use("/marketing", createMarketingRouter(db));
   router.use("/warehouses", createWarehousesRouter(db));
@@ -111,6 +117,7 @@ export function createApp(db, dbPath, options = {}) {
     );
   }
   const app = express();
+  app.set("db", db);
   app.set("trust proxy", process.env.TRUST_PROXY === "1" ? 1 : false);
 
   // The app is served over plain HTTP on the store LAN. Helmet's default CSP
@@ -237,9 +244,11 @@ export function createApp(db, dbPath, options = {}) {
   app.use((err, req, res, _next) => {
     console.error(`[${req.requestId || "no-id"}]`, err);
     const status = err.status || err.statusCode || 500;
-    const code = err.code || "INTERNAL_ERROR";
-    const message =
-      err instanceof HttpError
+    const tooLarge = status === 413 || err.type === "entity.too.large";
+    const code = tooLarge ? "PAYLOAD_TOO_LARGE" : err.code || "INTERNAL_ERROR";
+    const message = tooLarge
+      ? "حجم الطلب أكبر من المسموح. قلّل البيانات ثم أعد المحاولة."
+      : err instanceof HttpError
         ? err.message || "خطأ في الخادم"
         : "خطأ في الخادم";
     res.status(status).json({

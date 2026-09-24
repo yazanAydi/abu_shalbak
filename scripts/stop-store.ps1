@@ -12,5 +12,5 @@ if (Test-Path $agentScript) {
 }
 
 Write-Host "Stopping STORE (Docker)..." -ForegroundColor Green
-docker compose down
+docker compose --env-file .env.store down
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

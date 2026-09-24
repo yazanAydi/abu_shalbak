@@ -1,6 +1,9 @@
 const KEYS = {
   onAccount: "pos.waiting.onAccountId",
   advance: "pos.waiting.advanceId",
+  cashDebt: "pos.waiting.cashDebtId",
+  supplierPayment: "pos.waiting.supplierPaymentId",
+  shopExpense: "pos.waiting.shopExpenseId",
 };
 
 function storage() {

@@ -359,7 +359,8 @@ describe("purchase inventory policy (returns, discount, fractional)", () => {
       [invoiceId]
     );
     expect(Number(line.line_total)).toBeCloseTo(100, 2);
-    expect(Number(line.line_net)).toBeCloseTo(84, 2);
+    expect(Number(line.line_net)).toBeCloseTo(86.21, 2);
+    expect(Number(line.line_vat)).toBeCloseTo(13.79, 2);
     expect((await productState(p.id)).cost).toBeCloseTo(10, 2);
     await ctx.db.run(
       "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('default_tax_rate', '0')"

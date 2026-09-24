@@ -380,6 +380,7 @@ describe("bakery report", () => {
     expect(byId.has(milk.id)).toBe(false);
 
     const breadRow = byId.get(bread.id);
+    expect(breadRow.sku).toBe(bread.sku);
     expect(breadRow.sold_quantity).toBe(9);
     expect(breadRow.refunded_quantity).toBe(1);
     expect(breadRow.net_quantity).toBe(8);

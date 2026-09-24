@@ -37,6 +37,8 @@ const emptyForm = {
   password: "",
   role: "cashier",
   hourly_rate: "",
+  wage_basis: "",
+  daily_rate: "",
 };
 
 export default function UserManagement() {
@@ -53,6 +55,8 @@ export default function UserManagement() {
   const [editRole, setEditRole] = useState("cashier");
   const [editPassword, setEditPassword] = useState("");
   const [editHourlyRate, setEditHourlyRate] = useState("");
+  const [editWageBasis, setEditWageBasis] = useState("");
+  const [editDailyRate, setEditDailyRate] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -93,7 +97,28 @@ export default function UserManagement() {
         role: form.role,
       };
       if (form.password) body.password = form.password;
-      if (isAttendanceRole(form.role) && form.hourly_rate !== "") {
+      if (isKioskOnlyRole(form.role)) {
+        if (form.wage_basis !== "daily" && form.wage_basis !== "hourly") {
+          toast.error("اختر طريقة احتساب الأجر");
+          setSaving(false);
+          return;
+        }
+        body.wage_basis = form.wage_basis;
+        if (form.wage_basis === "daily") {
+          if (!(Number(form.daily_rate) > 0)) {
+            toast.error("أجر اليوم مطلوب");
+            setSaving(false);
+            return;
+          }
+          body.daily_rate = Number(form.daily_rate);
+        } else if (!(Number(form.hourly_rate) > 0)) {
+          toast.error("أجر الساعة مطلوب");
+          setSaving(false);
+          return;
+        } else {
+          body.hourly_rate = Number(form.hourly_rate);
+        }
+      } else if (form.role === "cashier" && form.hourly_rate !== "") {
         body.hourly_rate = Number(form.hourly_rate);
       }
       await api.post("/api/admin/users", body, {
@@ -115,6 +140,8 @@ export default function UserManagement() {
     setEditRole(u.role);
     setEditPassword("");
     setEditHourlyRate(u.hourly_rate != null && u.hourly_rate > 0 ? String(u.hourly_rate) : "");
+    setEditWageBasis(u.wage_basis || "");
+    setEditDailyRate(u.daily_rate != null ? String(u.daily_rate) : "");
   }
 
   function cancelEdit() {
@@ -128,7 +155,13 @@ export default function UserManagement() {
     try {
       const body = { role: editRole };
       if (editPassword.trim()) body.password = editPassword;
-      if (isAttendanceRole(editRole) && editHourlyRate !== "") {
+      if (isKioskOnlyRole(editRole)) {
+        if (editWageBasis === "daily" || editWageBasis === "hourly") {
+          body.wage_basis = editWageBasis;
+          if (editWageBasis === "daily") body.daily_rate = Number(editDailyRate);
+          else if (editHourlyRate !== "") body.hourly_rate = Number(editHourlyRate);
+        }
+      } else if (editRole === "cashier" && editHourlyRate !== "") {
         body.hourly_rate = Number(editHourlyRate);
       }
       await api.patch(`/api/admin/users/${id}`, body, {
@@ -194,10 +227,15 @@ export default function UserManagement() {
     },
     {
       key: "hourly_rate",
-      header: "أجر الساعة",
-      value: (u) => (isAttendanceRole(u.role) && u.hourly_rate > 0 ? ils(u.hourly_rate) : "—"),
+      header: "الأجر",
+      value: (u) => {
+        if (u.role === "cashier" && u.hourly_rate > 0) return ils(u.hourly_rate);
+        if (u.wage_basis === "daily" && u.daily_rate > 0) return `يومي ${ils(u.daily_rate)}`;
+        if (u.wage_basis === "hourly" && u.hourly_rate > 0) return `ساعة ${ils(u.hourly_rate)}`;
+        return "—";
+      },
       render: (u) =>
-        editing === u.id && isAttendanceRole(editRole) ? (
+        editing === u.id && editRole === "cashier" ? (
           <Input
             type="number"
             min="0"
@@ -207,8 +245,40 @@ export default function UserManagement() {
             onClick={(e) => e.stopPropagation()}
             style={{ maxWidth: 120 }}
           />
-        ) : isAttendanceRole(u.role) && u.hourly_rate != null && u.hourly_rate > 0 ? (
+        ) : editing === u.id && isKioskOnlyRole(editRole) ? (
+          <div onClick={(e) => e.stopPropagation()} style={{ display: "grid", gap: 6 }}>
+            <Select value={editWageBasis} onChange={(e) => setEditWageBasis(e.target.value)}>
+              <option value="">— دون تغيير —</option>
+              <option value="daily">أجر يومي</option>
+              <option value="hourly">أجر بالساعة</option>
+            </Select>
+            {editWageBasis === "daily" ? (
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={editDailyRate}
+                onChange={(e) => setEditDailyRate(e.target.value)}
+                style={{ maxWidth: 120 }}
+              />
+            ) : null}
+            {editWageBasis === "hourly" ? (
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={editHourlyRate}
+                onChange={(e) => setEditHourlyRate(e.target.value)}
+                style={{ maxWidth: 120 }}
+              />
+            ) : null}
+          </div>
+        ) : u.role === "cashier" && u.hourly_rate > 0 ? (
           <span className="num">{ils(u.hourly_rate)}</span>
+        ) : u.wage_basis === "daily" ? (
+          <span className="num">يومي {u.daily_rate > 0 ? ils(u.daily_rate) : "—"}</span>
+        ) : u.wage_basis === "hourly" && u.hourly_rate > 0 ? (
+          <span className="num">ساعة {ils(u.hourly_rate)}</span>
         ) : (
           "—"
         ),
@@ -323,6 +393,8 @@ export default function UserManagement() {
                     role,
                     password: isKioskOnlyRole(role) ? "" : f.password,
                     hourly_rate: isAttendanceRole(role) ? f.hourly_rate : "",
+                    wage_basis: isKioskOnlyRole(role) ? f.wage_basis : "",
+                    daily_rate: isKioskOnlyRole(role) ? f.daily_rate : "",
                   }));
                 }}
               >
@@ -333,8 +405,42 @@ export default function UserManagement() {
                 ))}
               </Select>
             </FormField>
-            {isAttendanceRole(form.role) ? (
-              <FormField label="أجر الساعة (₪)" hint="لكاشير نقطة البيع وموظفي الكشك — يُنسخ عند فتح الوردية">
+            {form.role === "cashier" ? (
+              <FormField label="أجر الساعة (₪)" hint="يُنسخ عند فتح وردية نقطة البيع">
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.hourly_rate}
+                  onChange={(e) => setForm((f) => ({ ...f, hourly_rate: e.target.value }))}
+                />
+              </FormField>
+            ) : null}
+            {isKioskOnlyRole(form.role) ? (
+              <FormField label="طريقة احتساب الأجر" hint="كيف يُكتسب الأجر، وليس موعد صرفه">
+                <Select
+                  value={form.wage_basis}
+                  onChange={(e) => setForm((f) => ({ ...f, wage_basis: e.target.value }))}
+                >
+                  <option value="">— اختر —</option>
+                  <option value="daily">أجر يومي</option>
+                  <option value="hourly">أجر بالساعة</option>
+                </Select>
+              </FormField>
+            ) : null}
+            {isKioskOnlyRole(form.role) && form.wage_basis === "daily" ? (
+              <FormField label="أجر اليوم (₪)">
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.daily_rate}
+                  onChange={(e) => setForm((f) => ({ ...f, daily_rate: e.target.value }))}
+                />
+              </FormField>
+            ) : null}
+            {isKioskOnlyRole(form.role) && form.wage_basis === "hourly" ? (
+              <FormField label="أجر الساعة (₪)">
                 <Input
                   type="number"
                   min="0"

@@ -643,6 +643,42 @@ a,
   width: 100%;
   box-sizing: border-box;
   padding-inline-end: 2.4rem;
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
+}
+.ui-time {
+  display: block;
+  width: 100%;
+}
+.ui-time__input {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
+}
+.attendance-entry {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+.attendance-stamp__fields {
+  display: grid;
+  grid-template-columns: minmax(9.5rem, 1.4fr) minmax(6.5rem, 0.8fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+.attendance-stamp__actions,
+.attendance-stamp__dst {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.45rem;
+}
+.attendance-duration {
+  margin: 0.75rem 0 0;
+  font-weight: 700;
 }
 .ui-date__cal {
   position: absolute;

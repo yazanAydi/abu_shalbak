@@ -4,6 +4,7 @@ import { createSafeRouter } from "../utils/asyncHandler.js";
 import {
   employeeCreateSchema,
   employeeCompensationSchema,
+  employeeWageBasisSchema,
   employeeOpeningBalanceSchema,
   employeePatchSchema,
   employeeStatementQuerySchema,
@@ -22,6 +23,7 @@ import {
 } from "../middleware/schemas.js";
 import {
   addCompensation,
+  setEmployeeWageBasis,
   addOpeningBalance,
   createEmployee,
   createEmployeeDebtAccount,
@@ -202,6 +204,16 @@ export function createEmployeesRouter(db) {
     async (req, res) => {
       const { employee } = await linkEmployeeToCashierUser(db, req.params.id, req.body, req);
       res.json(employee);
+    }
+  );
+
+  router.post(
+    "/:id/wage-basis",
+    requireAuth,
+    requirePayroll,
+    validate(employeeWageBasisSchema),
+    async (req, res) => {
+      res.json(await setEmployeeWageBasis(db, req.params.id, req.body, req));
     }
   );
 

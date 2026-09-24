@@ -7,11 +7,25 @@ import { getAppSettings } from "../utils/settings.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { buildSaleSummaries } from "../utils/saleSummary.js";
 import {
-  sumShiftCardPayments,
   loadSalePayments,
   computeExpectedCash,
   computeExpectedDrawer,
   computeExpectedDrawers,
+  computeShiftVisa,
+  computeShiftVisaMap,
+  emptyShiftVisa,
+  SHIFT_VISA_LABELS,
+  SHIFT_CASH_SALES_LABEL,
+  SHIFT_MIXED_CASH_LABEL,
+  SHIFT_MIXED_CASH_INCLUDED_NOTE,
+  SHIFT_VISA_AMOUNT_LABEL,
+  SHIFT_TENDER_TOTAL_LABEL,
+  SHIFT_CASH_REFUNDS_LABEL,
+  SHIFT_CASH_NET_LABEL,
+  SHIFT_EXPECTED_CASH_LABEL,
+  CASH_SALES_INCOMPLETE_NOTE,
+  VISA_RECORDED_NOTE,
+  VISA_INCOMPLETE_NOTE,
   resolveCountedCash,
 } from "../utils/salePayments.js";
 import { listLimitSql } from "../utils/listQuery.js";
@@ -20,6 +34,21 @@ import { buildReceiptPayload, mapSaleItemsToReceiptLines, RECEIPT_STORED_ITEMS_S
 import { partyBalanceForSale } from "../utils/partyBalanceAroundMove.js";
 import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
+import { businessDayFromTimestamp } from "../utils/businessDay.js";
+import { listShiftCustomerCollections } from "../services/posCustomerCollectionService.js";
+import { listShiftCustomerCashDebts } from "../services/customerCashDebtRequestService.js";
+import {
+  listShiftSupplierPayments,
+  listSupplierPaymentOptions,
+  postShiftSupplierPayment,
+} from "../services/posSupplierPaymentService.js";
+import { validate } from "../middleware/validate.js";
+import { posSupplierPaymentSchema, shiftCountAdvanceSchema } from "../middleware/schemas.js";
+import {
+  listEmployeeAdvanceOptions,
+  listShiftAdvances,
+  postShiftSalaryAdvance,
+} from "../services/advanceRequestService.js";
 
 function parseDate(s) {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return null;
@@ -38,15 +67,42 @@ function isOpenShiftUniqueViolation(err) {
 }
 
 async function computeShiftTotals(db, shiftId) {
-  const card_total = await sumShiftCardPayments(db, shiftId);
+  const visa = await computeShiftVisa(db, shiftId);
   const refundRow = await db.get(
     `SELECT COALESCE(SUM(total), 0) AS s FROM refunds WHERE shift_id = ? AND status = 'approved'`,
     [shiftId]
   );
   return {
-    card_total,
+    card_total: visa.visa_sales,
     refund_total: round2(Number(refundRow?.s) || 0),
+    visa,
   };
+}
+
+function applyVisa(row, visa) {
+  const source = visa || emptyShiftVisa();
+  row.visa_sales = source.visa_sales;
+  row.visa_refunds = source.visa_refunds;
+  row.visa_net = source.visa_net;
+  row.visa_incomplete = source.visa_incomplete;
+  row.visa_note = source.visa_note;
+  row.visa_incomplete_note = source.visa_incomplete_note;
+  row.visa_labels = source.visa_labels;
+  row.cash_sales_incomplete = !!source.cash_sales_incomplete;
+  row.cash_sales_incomplete_note = source.cash_sales_incomplete_note || CASH_SALES_INCOMPLETE_NOTE;
+  applyTenderTotal(row);
+  return row;
+}
+
+async function attachVisas(db, rows) {
+  const map = await computeShiftVisaMap(
+    db,
+    rows.map((row) => row.id)
+  );
+  for (const row of rows) {
+    applyVisa(row, map.get(Number(row.id)));
+  }
+  return rows;
 }
 
 async function canViewShiftDetail(db, user, shift) {
@@ -73,6 +129,25 @@ function applyDrawer(row, drawer) {
   }
   row.expected_by_currency = drawer.by_currency;
   row.counted_cash = parseCountedCashJson(row.counted_cash_json);
+  row.cash_sales = round2(Number(drawer?.sales_cash_nis) || 0);
+  row.cash_only_sales = round2(Number(drawer?.cash_only_nis) || 0);
+  row.mixed_cash_sales = round2(Number(drawer?.mixed_cash_nis) || 0);
+  row.cash_refunds = round2(Number(drawer?.cash_refunds_nis) || 0);
+  row.cash_net = round2(row.cash_sales - row.cash_refunds);
+  row.cash_sales_label = SHIFT_CASH_SALES_LABEL;
+  row.mixed_cash_label = SHIFT_MIXED_CASH_LABEL;
+  row.mixed_cash_included_note = SHIFT_MIXED_CASH_INCLUDED_NOTE;
+  row.visa_amount_label = SHIFT_VISA_AMOUNT_LABEL;
+  row.tender_total_label = SHIFT_TENDER_TOTAL_LABEL;
+  row.cash_refunds_label = SHIFT_CASH_REFUNDS_LABEL;
+  row.cash_net_label = SHIFT_CASH_NET_LABEL;
+  row.expected_cash_label = SHIFT_EXPECTED_CASH_LABEL;
+  applyTenderTotal(row);
+  return row;
+}
+
+function applyTenderTotal(row) {
+  row.tender_total = round2((Number(row.cash_sales) || 0) + (Number(row.visa_sales) || 0));
   return row;
 }
 
@@ -106,7 +181,7 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
     }
     const expected_cash = await computeExpectedCash(db, shiftId, live.opening_cash);
     const variance = round2(closing_cash - expected_cash);
-    const { card_total, refund_total } = await computeShiftTotals(db, shiftId);
+    const { card_total, refund_total, visa } = await computeShiftTotals(db, shiftId);
     const needsApproval = Math.abs(variance) > varianceThreshold;
     const endTime = live.end_time || new Date().toISOString();
     const upd = await db.run(
@@ -147,13 +222,14 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
       variance,
       card_total,
       refund_total,
+      visa,
       needsApproval,
       opening_cash: live.opening_cash,
       priorStatus: live.status,
     };
   });
 
-  const { expected_cash, variance, card_total, refund_total, needsApproval, opening_cash, priorStatus } = closed;
+  const { expected_cash, variance, card_total, refund_total, visa, needsApproval, opening_cash, priorStatus } = closed;
   shift.status = priorStatus;
 
   const auditAction =
@@ -164,6 +240,9 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
     variance,
     card_total,
     refund_total,
+    visa_sales: visa.visa_sales,
+    visa_refunds: visa.visa_refunds,
+    visa_net: visa.visa_net,
     requires_approval: needsApproval,
   });
 
@@ -176,6 +255,7 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
     variance,
     card_total,
     refund_total,
+    ...visa,
     variance_threshold: varianceThreshold,
     requires_approval: needsApproval,
     counted_cash: counted_cash || null,
@@ -201,10 +281,12 @@ export function createShiftsRouter(db) {
           err.status = 409;
           throw err;
         }
+        const openedAt = new Date().toISOString();
+        const businessDay = businessDayFromTimestamp(openedAt, settings.business_day_cutoff_hour);
         const ins = await db.run(
-          `INSERT INTO cashier_shifts (cashier_id, opening_cash, status, hourly_rate_snapshot)
-           VALUES (?, ?, 'open', (SELECT hourly_rate FROM users WHERE id = ?))`,
-          [req.user.id, opening_cash, req.user.id]
+          `INSERT INTO cashier_shifts (cashier_id, opening_cash, status, hourly_rate_snapshot, start_time, business_day)
+           VALUES (?, ?, 'open', (SELECT hourly_rate FROM users WHERE id = ?), ?, ?)`,
+          [req.user.id, opening_cash, req.user.id, openedAt, businessDay]
         );
         const shiftId = ins.lastID;
         await db.run(
@@ -220,6 +302,7 @@ export function createShiftsRouter(db) {
         shift_id: shiftId,
         status: row.status,
         opened_at: row.start_time,
+        business_day: row.business_day,
         opening_cash,
       });
     } catch (e) {
@@ -243,6 +326,10 @@ export function createShiftsRouter(db) {
       [shift.id]
     );
     const suspendedSummary = await getSuspendedSalesSummary(db, shift.id);
+    const visa = await computeShiftVisa(db, shift.id);
+    const drawer = await computeExpectedDrawer(db, shift.id, shift.opening_cash);
+    const collections = await listShiftCustomerCollections(db, shift.id);
+    const cashDebts = await listShiftCustomerCashDebts(db, shift.id);
     res.json({
       shift: {
         id: shift.id,
@@ -250,8 +337,39 @@ export function createShiftsRouter(db) {
         start_time: shift.start_time,
         opening_cash: shift.opening_cash,
         status: shift.status,
+        expected_cash: drawer.expected_cash,
+        cash_sales: drawer.sales_cash_nis,
+        cash_only_sales: drawer.cash_only_nis,
+        mixed_cash_sales: drawer.mixed_cash_nis,
+        cash_refunds: drawer.cash_refunds_nis,
+        cash_net: round2((drawer.sales_cash_nis || 0) - (drawer.cash_refunds_nis || 0)),
+        tender_total: round2((drawer.sales_cash_nis || 0) + (visa.visa_sales || 0)),
+        cash_sales_label: SHIFT_CASH_SALES_LABEL,
+        mixed_cash_label: SHIFT_MIXED_CASH_LABEL,
+        mixed_cash_included_note: SHIFT_MIXED_CASH_INCLUDED_NOTE,
+        visa_amount_label: SHIFT_VISA_AMOUNT_LABEL,
+        tender_total_label: SHIFT_TENDER_TOTAL_LABEL,
+        cash_refunds_label: SHIFT_CASH_REFUNDS_LABEL,
+        cash_net_label: SHIFT_CASH_NET_LABEL,
+        expected_cash_label: SHIFT_EXPECTED_CASH_LABEL,
+        cash_sales_incomplete: visa.cash_sales_incomplete,
+        cash_sales_incomplete_note: visa.cash_sales_incomplete_note,
+        ...visa,
       },
       transactions_count: Number(cnt?.c) || 0,
+      summary: {
+        visa,
+        cash_sales: drawer.sales_cash_nis,
+        cash_only_sales: drawer.cash_only_nis,
+        mixed_cash_sales: drawer.mixed_cash_nis,
+        cash_refunds: drawer.cash_refunds_nis,
+        cash_net: round2((drawer.sales_cash_nis || 0) - (drawer.cash_refunds_nis || 0)),
+        tender_total: round2((drawer.sales_cash_nis || 0) + (visa.visa_sales || 0)),
+        cash_sales_incomplete: visa.cash_sales_incomplete,
+        expected: drawer.expected_cash,
+        customer_collections_total: collections.total,
+        customer_cash_debts_total: cashDebts.total,
+      },
       ...suspendedSummary,
     });
   });
@@ -296,8 +414,104 @@ export function createShiftsRouter(db) {
        ORDER BY datetime(s.end_time) ASC, s.id ASC`
     );
     await attachDrawers(db, rows);
+    await attachVisas(db, rows);
     res.json(rows);
   });
+
+  router.get("/supplier-options", requireAuth, requireShiftAudit, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(await listSupplierPaymentOptions(db, req.query.q));
+  });
+
+  router.get("/employee-options", requireAuth, requireShiftAudit, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(await listEmployeeAdvanceOptions(db, req.query.q));
+  });
+
+  router.post(
+    "/:shiftId/supplier-payments",
+    requireAuth,
+    requireShiftAudit,
+    validate(posSupplierPaymentSchema),
+    async (req, res, next) => {
+      const shiftId = Number(req.params.shiftId);
+      if (!Number.isInteger(shiftId) || shiftId <= 0) {
+        return res.status(400).json({ error: "معرّف الوردية غير صالح", code: "INVALID_SHIFT" });
+      }
+      try {
+        const result = await postShiftSupplierPayment(db, {
+          shiftId,
+          userId: req.user.id,
+          supplierId: req.body.supplier_id,
+          amount: req.body.amount,
+          notes: req.body.notes,
+          idempotencyKey: req.body.idempotency_key,
+          req,
+        });
+        const live = await db.get("SELECT id, opening_cash, status FROM cashier_shifts WHERE id = ?", [
+          shiftId,
+        ]);
+        const drawer = live
+          ? await computeExpectedDrawer(db, live.id, live.opening_cash)
+          : { expected_cash: null, by_currency: [], sales_cash_nis: 0 };
+        const payments = await listShiftSupplierPayments(db, shiftId);
+        res.status(result.replayed ? 200 : 201).json({
+          ...result,
+          expected_cash: drawer.expected_cash,
+          expected_by_currency: drawer.by_currency,
+          cash_sales: drawer.sales_cash_nis,
+          supplier_payments: payments.rows,
+          supplier_payments_total: payments.total,
+        });
+      } catch (e) {
+        if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+        next(e);
+      }
+    }
+  );
+
+  router.post(
+    "/:shiftId/advances",
+    requireAuth,
+    requireShiftAudit,
+    validate(shiftCountAdvanceSchema),
+    async (req, res, next) => {
+      const shiftId = Number(req.params.shiftId);
+      if (!Number.isInteger(shiftId) || shiftId <= 0) {
+        return res.status(400).json({ error: "معرّف الوردية غير صالح", code: "INVALID_SHIFT" });
+      }
+      try {
+        const result = await postShiftSalaryAdvance(db, {
+          shiftId,
+          userId: req.user.id,
+          user: req.user,
+          employeeId: req.body.employee_id,
+          amount: req.body.amount,
+          notes: req.body.notes,
+          idempotencyKey: req.body.idempotency_key,
+          req,
+        });
+        const live = await db.get("SELECT id, opening_cash, status FROM cashier_shifts WHERE id = ?", [
+          shiftId,
+        ]);
+        const drawer = live
+          ? await computeExpectedDrawer(db, live.id, live.opening_cash)
+          : { expected_cash: null, by_currency: [], sales_cash_nis: 0 };
+        const advances = await listShiftAdvances(db, shiftId);
+        res.status(result.replayed ? 200 : 201).json({
+          ...result,
+          expected_cash: drawer.expected_cash,
+          expected_by_currency: drawer.by_currency,
+          cash_sales: drawer.sales_cash_nis,
+          advances: advances.rows,
+          advances_total: advances.total,
+        });
+      } catch (e) {
+        if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+        next(e);
+      }
+    }
+  );
 
   router.get("/", requireAuth, requireShiftAudit, async (req, res) => {
     const status =
@@ -314,7 +528,7 @@ export function createShiftsRouter(db) {
 
     let sql = `
       SELECT s.id, s.cashier_id, u.username AS cashier_name, s.start_time, s.end_time,
-             s.opening_cash, s.closing_cash, s.expected_cash, s.variance, s.status,
+             s.business_day, s.opening_cash, s.closing_cash, s.expected_cash, s.variance, s.status,
              (SELECT COUNT(*) FROM transactions t WHERE t.shift_id = s.id) AS sale_count
       FROM cashier_shifts s
       JOIN users u ON u.id = s.cashier_id
@@ -329,12 +543,18 @@ export function createShiftsRouter(db) {
       params.push(cashierId);
     }
     if (dateFrom) {
-      sql += " AND date(s.start_time) >= ?";
-      params.push(dateFrom);
+      sql += ` AND (
+        (s.business_day IS NOT NULL AND s.business_day >= ?)
+        OR (s.business_day IS NULL AND date(s.start_time) >= ?)
+      )`;
+      params.push(dateFrom, dateFrom);
     }
     if (dateTo) {
-      sql += " AND date(s.start_time) <= ?";
-      params.push(dateTo);
+      sql += ` AND (
+        (s.business_day IS NOT NULL AND s.business_day <= ?)
+        OR (s.business_day IS NULL AND date(s.start_time) <= ?)
+      )`;
+      params.push(dateTo, dateTo);
     }
     sql += " ORDER BY datetime(COALESCE(s.end_time, s.start_time)) DESC, s.id DESC";
     sql += listLimitSql(req.query, 100, req.user?.role).sql;
@@ -343,6 +563,7 @@ export function createShiftsRouter(db) {
       row.sale_count = Number(row.sale_count) || 0;
     }
     await attachDrawers(db, rows);
+    await attachVisas(db, rows);
     res.json(rows);
   });
 
@@ -378,6 +599,18 @@ export function createShiftsRouter(db) {
        FROM shift_cash_movements WHERE shift_id = ? ORDER BY created_at ASC, id ASC`,
       [shiftId]
     );
+    await attachDrawer(db, shift);
+    const visa = await computeShiftVisa(db, shiftId);
+    applyVisa(shift, visa);
+    const visaRefunds = await db.all(
+      `SELECT r.id, r.original_transaction_id, r.total, t.receipt_number AS original_receipt,
+              t.shift_id AS original_shift_id
+       FROM refunds r
+       LEFT JOIN transactions t ON t.id = r.original_transaction_id
+       WHERE r.shift_id = ? AND r.status = 'approved' AND r.payment_method = 'visa'
+       ORDER BY r.id ASC`,
+      [shiftId]
+    );
     const esc = (v) => {
       let s = v == null ? "" : String(v);
       // Formula-injection guard for Excel/Sheets.
@@ -386,9 +619,23 @@ export function createShiftsRouter(db) {
       return s;
     };
     const lines = [
-      ["shift_id", "cashier", "start_time", "end_time", "opening_cash", "closing_cash", "expected_cash", "variance", "status"].join(
-        ","
-      ),
+      [
+        "shift_id",
+        "cashier",
+        "start_time",
+        "end_time",
+        "opening_cash",
+        "closing_cash",
+        "expected_cash",
+        "variance",
+        "status",
+        "cash_sales",
+        "cash_sales_incomplete",
+        "visa_sales",
+        "visa_refunds",
+        "visa_net",
+        "visa_incomplete",
+      ].join(","),
       [
         shift.id,
         shift.cashier_name,
@@ -399,12 +646,63 @@ export function createShiftsRouter(db) {
         shift.expected_cash ?? "",
         shift.variance ?? "",
         shift.status,
+        shift.cash_sales,
+        shift.cash_sales_incomplete ? 1 : 0,
+        visa.visa_sales,
+        visa.visa_refunds,
+        visa.visa_net,
+        visa.visa_incomplete ? 1 : 0,
       ]
         .map(esc)
         .join(","),
       "",
-      "movement_id,type,amount,description,created_at,transaction_id,refund_id",
+      [SHIFT_CASH_SALES_LABEL, shift.cash_sales].map(esc).join(","),
+      [SHIFT_MIXED_CASH_LABEL, shift.mixed_cash_sales].map(esc).join(","),
+      [SHIFT_MIXED_CASH_INCLUDED_NOTE, ""].map(esc).join(","),
+      [SHIFT_VISA_LABELS.sales, visa.visa_sales].map(esc).join(","),
+      [SHIFT_TENDER_TOTAL_LABEL, shift.tender_total].map(esc).join(","),
+      [SHIFT_CASH_REFUNDS_LABEL, shift.cash_refunds].map(esc).join(","),
+      [SHIFT_VISA_LABELS.refunds, visa.visa_refunds].map(esc).join(","),
+      [SHIFT_CASH_NET_LABEL, shift.cash_net].map(esc).join(","),
+      [SHIFT_VISA_LABELS.net, visa.visa_net].map(esc).join(","),
+      [SHIFT_EXPECTED_CASH_LABEL, shift.expected_cash ?? ""].map(esc).join(","),
+      ["دفعات الموردين", (await listShiftSupplierPayments(db, shiftId)).total].map(esc).join(","),
+      ["ذمم نقدية للعملاء", (await listShiftCustomerCashDebts(db, shiftId)).total].map(esc).join(","),
+      ["قبض ذمم سابق — للمراجعة", (await listShiftCustomerCollections(db, shiftId)).total].map(esc).join(","),
+      ["سلف", (await listShiftAdvances(db, shiftId)).total].map(esc).join(","),
+      ["البيان", VISA_RECORDED_NOTE].map(esc).join(","),
+      [
+        "اكتمال السجل",
+        visa.visa_incomplete ? VISA_INCOMPLETE_NOTE : "مكتمل",
+      ]
+        .map(esc)
+        .join(","),
+      [
+        "اكتمال المبيعات النقدية",
+        shift.cash_sales_incomplete ? CASH_SALES_INCOMPLETE_NOTE : "مكتمل",
+      ]
+        .map(esc)
+        .join(","),
+      "",
+      "visa_refund_id,original_transaction_id,original_receipt,original_shift_id,amount",
     ];
+    for (const refund of visaRefunds) {
+      lines.push(
+        [
+          refund.id,
+          refund.original_transaction_id,
+          refund.original_receipt ?? "",
+          refund.original_shift_id ?? "",
+          refund.total,
+        ]
+          .map(esc)
+          .join(",")
+      );
+    }
+    lines.push(
+      "",
+      "movement_id,type,amount,description,created_at,transaction_id,refund_id"
+    );
     for (const m of movements) {
       lines.push(
         [m.id, m.movement_type, m.amount, m.description ?? "", m.created_at, m.transaction_id ?? "", m.refund_id ?? ""]
@@ -550,7 +848,7 @@ export function createShiftsRouter(db) {
             throw err;
           }
           const expected_cash = await computeExpectedCash(db, shiftId, live.opening_cash);
-          const { card_total, refund_total } = await computeShiftTotals(db, shiftId);
+          const { card_total, refund_total, visa } = await computeShiftTotals(db, shiftId);
           const endTime = new Date().toISOString();
           const upd = await db.run(
             `UPDATE cashier_shifts SET
@@ -564,12 +862,15 @@ export function createShiftsRouter(db) {
             err.status = 400;
             throw err;
           }
-          return { expected_cash, card_total, refund_total };
+          return { expected_cash, card_total, refund_total, visa };
         });
         await logAudit(db, req, AUDIT_ACTIONS.SHIFT_CLOSE, "cashier_shifts", shiftId, { status: "open" }, {
           expected_cash: pending.expected_cash,
           card_total: pending.card_total,
           refund_total: pending.refund_total,
+          visa_sales: pending.visa.visa_sales,
+          visa_refunds: pending.visa.visa_refunds,
+          visa_net: pending.visa.visa_net,
           pending_count: true,
         });
         return res.json({
@@ -578,6 +879,7 @@ export function createShiftsRouter(db) {
           expected_cash: pending.expected_cash,
           card_total: pending.card_total,
           refund_total: pending.refund_total,
+          ...pending.visa,
           message: "تم إرسال الوردية للمراجعة — سيقوم المدير بعد النقد",
         });
       } catch (e) {
@@ -658,7 +960,9 @@ export function createShiftsRouter(db) {
         lines,
         subtotal: Number(tx.subtotal),
         tax: Number(tx.tax),
+        discount: Number(tx.discount) || 0,
         total: Number(tx.total),
+        roundingAdjustment: tx.rounding_adjustment,
         paymentMethod: tx.payment_method,
         payments,
         changeNis: tx.change_amount,
@@ -702,15 +1006,23 @@ export function createShiftsRouter(db) {
       [shiftId]
     );
     const refunds = await db.all(
-      `SELECT id, original_transaction_id, items_json, subtotal, tax, total, payment_method, reason, cashier_id, created_at, shift_id
-       FROM refunds WHERE shift_id = ? ORDER BY created_at ASC, id ASC${detailLimit.sql}`,
+      `SELECT r.id, r.original_transaction_id, r.items_json, r.subtotal, r.tax, r.total,
+              r.payment_method, r.reason, r.cashier_id, r.created_at, r.shift_id, r.status,
+              t.receipt_number AS original_receipt_number, t.shift_id AS original_shift_id
+       FROM refunds r
+       LEFT JOIN transactions t ON t.id = r.original_transaction_id
+       WHERE r.shift_id = ? ORDER BY r.created_at ASC, r.id ASC${detailLimit.sql}`,
       [shiftId]
     );
     const cash_movements = await db.all(
-      `SELECT id, movement_type, amount, description, created_at, transaction_id, refund_id
+      `SELECT id, movement_type, amount, description, created_at, transaction_id, refund_id, voucher_id
        FROM shift_cash_movements WHERE shift_id = ? ORDER BY created_at ASC, id ASC${detailLimit.sql}`,
       [shiftId]
     );
+    const supplierPayments = await listShiftSupplierPayments(db, shiftId);
+    const customerCollections = await listShiftCustomerCollections(db, shiftId);
+    const customerCashDebts = await listShiftCustomerCashDebts(db, shiftId);
+    const advances = await listShiftAdvances(db, shiftId);
     const counts = await db.get(
       `SELECT (SELECT COUNT(*) FROM transactions WHERE shift_id = ?) AS transactions,
               (SELECT COUNT(*) FROM refunds WHERE shift_id = ?) AS refunds,
@@ -719,7 +1031,26 @@ export function createShiftsRouter(db) {
     );
 
     await attachDrawer(db, shift);
+    const visa = await computeShiftVisa(db, shiftId);
+    applyVisa(shift, visa);
 
+    const cashSummary = {
+      cash_sales: shift.cash_sales,
+      cash_only_sales: shift.cash_only_sales,
+      mixed_cash_sales: shift.mixed_cash_sales,
+      cash_refunds: shift.cash_refunds,
+      cash_net: shift.cash_net,
+      tender_total: shift.tender_total,
+      cash_sales_incomplete: !!shift.cash_sales_incomplete,
+      cash_sales_label: SHIFT_CASH_SALES_LABEL,
+      mixed_cash_label: SHIFT_MIXED_CASH_LABEL,
+      mixed_cash_included_note: SHIFT_MIXED_CASH_INCLUDED_NOTE,
+      visa_amount_label: SHIFT_VISA_AMOUNT_LABEL,
+      tender_total_label: SHIFT_TENDER_TOTAL_LABEL,
+      cash_refunds_label: SHIFT_CASH_REFUNDS_LABEL,
+      cash_net_label: SHIFT_CASH_NET_LABEL,
+      expected_cash_label: SHIFT_EXPECTED_CASH_LABEL,
+    };
     const summary =
       shift.status === "closed"
         ? {
@@ -728,6 +1059,12 @@ export function createShiftsRouter(db) {
             actual: round2(Number(shift.closing_cash)),
             counted_cash: shift.counted_cash,
             variance: round2(Number(shift.variance)),
+            visa,
+            ...cashSummary,
+            supplier_payments_total: supplierPayments.total,
+            customer_collections_total: customerCollections.total,
+            customer_cash_debts_total: customerCashDebts.total,
+            advances_total: advances.total,
           }
         : {
             expected: round2(Number(shift.expected_cash)),
@@ -735,6 +1072,12 @@ export function createShiftsRouter(db) {
             actual: null,
             counted_cash: null,
             variance: null,
+            visa,
+            ...cashSummary,
+            supplier_payments_total: supplierPayments.total,
+            customer_collections_total: customerCollections.total,
+            customer_cash_debts_total: customerCashDebts.total,
+            advances_total: advances.total,
           };
 
     const suspended_summary = await getSuspendedSalesSummary(db, shiftId);
@@ -744,10 +1087,18 @@ export function createShiftsRouter(db) {
       transactions,
       refunds,
       cash_movements,
+      supplier_payments: supplierPayments.rows,
+      customer_collections: customerCollections.rows,
+      customer_cash_debts: customerCashDebts.rows,
+      advances: advances.rows,
       totals: {
         transactions: Number(counts?.transactions) || 0,
         refunds: Number(counts?.refunds) || 0,
         cash_movements: Number(counts?.cash_movements) || 0,
+        supplier_payments: supplierPayments.rows.length,
+        customer_collections: customerCollections.rows.length,
+        customer_cash_debts: customerCashDebts.rows.length,
+        advances: advances.rows.length,
       },
       summary,
       suspended_summary,

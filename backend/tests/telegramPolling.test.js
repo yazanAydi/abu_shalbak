@@ -14,6 +14,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  configureTelegramApprover,
 } from "./helpers.js";
 
 describe("Telegram poll loops", () => {
@@ -105,6 +106,7 @@ describe("Telegram poll recoverability", () => {
 
   beforeAll(async () => {
     ctx = await createTestContext();
+    await configureTelegramApprover(ctx.db);
     const adminLogin = await login(ctx.app, "testadmin", "adminpass123", "office");
     adminToken = adminLogin.body.token;
     const cashierLogin = await login(ctx.app, "testcashier", "cashpass123", "pos");

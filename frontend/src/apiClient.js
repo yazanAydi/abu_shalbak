@@ -58,7 +58,7 @@ api.interceptors.response.use(
       const onKiosk =
         window.location.pathname.endsWith("/kiosk") ||
         window.location.pathname.includes("/kiosk");
-      if (!url.includes("/auth/login") && !onKiosk) {
+      if (!url.includes("/auth/login") && !url.includes("/auth/change-password") && !onKiosk) {
         removeToken();
         const loginPath = `${process.env.PUBLIC_URL || ""}/login`;
         const onLogin = window.location.pathname === loginPath || window.location.pathname.endsWith("/login");

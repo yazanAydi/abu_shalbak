@@ -66,7 +66,7 @@ async function loadItemsByTransaction(db, transactionIds) {
     const chunk = transactionIds.slice(i, i + CHUNK);
     const placeholders = chunk.map(() => "?").join(",");
     const itemRows = await db.all(
-      `SELECT transaction_id, name, product_id, quantity, line_gross
+      `SELECT transaction_id, name, product_id, quantity, line_gross, line_net, line_tax
        FROM transaction_items
        WHERE transaction_id IN (${placeholders})`,
       chunk
@@ -78,6 +78,14 @@ async function loadItemsByTransaction(db, transactionIds) {
     }
   }
   return itemsByTx;
+}
+
+/** Billed line amount. line_gross is the pre-discount charge; line_net is what was posted. */
+function billedLineRevenue(it) {
+  if (it.line_net != null && it.line_net !== "" && Number.isFinite(Number(it.line_net))) {
+    return round2(Number(it.line_net) + (Number(it.line_tax) || 0));
+  }
+  return round2(Number(it.line_gross) || 0);
 }
 
 async function aggregateDay(db, dateStr) {
@@ -93,11 +101,14 @@ async function aggregateDay(db, dateStr) {
   let total_tax = 0;
   let total_net = 0;
   let change_total = 0;
+  let rounding_adjustment = 0;
+  let item_revenue = 0;
   let total_transactions = rows.length;
   const productMap = new Map();
 
   for (const r of rows) {
     total_sales = round2(total_sales + Number(r.total));
+    rounding_adjustment = round2(rounding_adjustment + (Number(r.rounding_adjustment) || 0));
     change_total = round2(change_total + Number(r.change_amount || 0));
     total_tax = round2(total_tax + Number(r.tax || 0));
     total_net = round2(total_net + Number(r.subtotal || r.total));
@@ -109,7 +120,9 @@ async function aggregateDay(db, dateStr) {
         const qty = Number(it.quantity) || 0;
         const prev = productMap.get(name) || { name, quantity: 0, revenue: 0 };
         prev.quantity += qty;
-        prev.revenue = round2(prev.revenue + Number(it.line_gross));
+        const lineRevenue = billedLineRevenue(it);
+        item_revenue = round2(item_revenue + lineRevenue);
+        prev.revenue = round2(prev.revenue + lineRevenue);
         productMap.set(name, prev);
       }
     } else {
@@ -122,8 +135,10 @@ async function aggregateDay(db, dateStr) {
         const qty = Number(it.quantity) || 0;
         const price = Number(it.price) || 0;
         const prev = productMap.get(name) || { name, quantity: 0, revenue: 0 };
+        const lineRevenue = round2(qty * price);
+        item_revenue = round2(item_revenue + lineRevenue);
         prev.quantity += qty;
-        prev.revenue = round2(prev.revenue + qty * price);
+        prev.revenue = round2(prev.revenue + lineRevenue);
         productMap.set(name, prev);
       }
     }
@@ -161,6 +176,8 @@ async function aggregateDay(db, dateStr) {
     success: true,
     date: dateStr,
     total_sales: round2(total_sales),
+    rounding_adjustment: round2(rounding_adjustment),
+    item_revenue: round2(item_revenue),
     total_tax: round2(total_tax),
     total_net: round2(total_net),
     total_transactions,
@@ -239,7 +256,7 @@ async function aggregateProfitRange(db, fromYmd, toYmd) {
   );
 
   for (const t of txs) {
-    const ymd = shopBusinessDayYmd({ start_time: t.shift_start_time, created_at: t.created_at });
+    const ymd = shopBusinessDayYmd(t);
     const bucket = days.get(ymd);
     if (!bucket) continue;
     bucket.total_transactions += 1;
@@ -260,7 +277,7 @@ async function aggregateProfitRange(db, fromYmd, toYmd) {
   }
 
   for (const r of refunds) {
-    const ymd = shopBusinessDayYmd({ start_time: r.shift_start_time, created_at: r.created_at });
+    const ymd = shopBusinessDayYmd(r);
     const bucket = days.get(ymd);
     if (!bucket) continue;
     bucket.refund_count += 1;

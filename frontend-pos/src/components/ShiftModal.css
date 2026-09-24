@@ -95,6 +95,42 @@
   margin-bottom: 0.35rem;
 }
 
+.shift-modal-tabs {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.35rem 0 0.85rem;
+}
+
+.shift-modal-tab {
+  flex: 1;
+  min-height: 44px;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--pos-border-strong, #c5cdd6);
+  background: var(--pos-bg, #f5f6f8);
+  color: var(--pos-text, #1f2937);
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.shift-modal-tab.is-active {
+  background: var(--pos-primary, #1e3a5f);
+  color: #fff;
+  border-color: var(--pos-primary, #1e3a5f);
+}
+
+.shift-modal-tab:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.shift-modal-tab:focus-visible {
+  outline: 2px solid var(--pos-primary, #1e3a5f);
+  outline-offset: 2px;
+}
+
 .shift-modal-panel--form .shift-modal-lead {
   margin: 0 0 1rem;
 }
@@ -261,6 +297,24 @@
   position: relative;
   z-index: 1;
   width: min(440px, 100%);
+}
+
+.shift-modal-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.92rem;
+}
+
+.shift-modal-table th,
+.shift-modal-table td {
+  text-align: right;
+  padding: 0.4rem 0.35rem;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+.shift-modal-table th {
+  font-weight: 700;
 }
 
 .pos-waiting-chip {

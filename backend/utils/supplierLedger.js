@@ -141,6 +141,21 @@ export async function buildSupplierLedger(db, supplier, from, to, options = {}) 
   const events = await fetchSupplierLedgerEvents(db, supplier.id, from, to);
   const { rows, closing } = applySupplierRunning(events, openingBalance);
   const excelApplied = applyExcelRunning(events, excelOpening);
+  const legacy = await db.get(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total
+       FROM supplier_payments WHERE supplier_id = ?`,
+    [supplier.id]
+  );
+  const legacyCount = Number(legacy?.n) || 0;
+  const legacyPayments = {
+    count: legacyCount,
+    total: round2(Number(legacy?.total) || 0),
+    linked: false,
+    note:
+      legacyCount > 0
+        ? "دفعات supplier_payments بلا رابط بسند. لا يمكن إثبات أنها تكرار لسند، لذلك تبقى في الكشف ولا يُعدَّل رصيد المورد تاريخياً."
+        : null,
+  };
 
   const opening = {
     ev_type: "opening",
@@ -167,6 +182,7 @@ export async function buildSupplierLedger(db, supplier, from, to, options = {}) 
     total_events: rows.length,
     truncated: windowed.length < rows.length,
     closing_balance: closing,
+    legacy_payments: legacyPayments,
     excel_closing_balance: excelApplied.closing,
     opening_balance: openingBalance,
     excel_opening_balance: excelOpening,

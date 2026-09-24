@@ -156,6 +156,11 @@ async function migrateProductsExtendedColumns(db) {
     // at checkout, but never hard-deleted (history/reports stay intact).
     ["is_active", "INTEGER NOT NULL DEFAULT 1"],
     ["is_weighed", "INTEGER NOT NULL DEFAULT 0"],
+    // Sold from the scale only: regular barcode may be empty; PLU lives on the كغم unit.
+    ["scale_only", "INTEGER NOT NULL DEFAULT 0"],
+    // NULL: legacy. Positive cost is known; zero is not evidence of free goods.
+    // 1: cost is known, including an explicit zero. 0: cost is unknown.
+    ["cost_known", "INTEGER"],
   ];
   for (const [col, type] of cols) {
     if (!(await tableHasColumn(db, "products", col))) {
@@ -1653,6 +1658,226 @@ async function migrateReceiptSequencesTable(db) {
   );
 }
 
+/**
+ * Final POS payable rounding. NULL on existing rows means no recorded adjustment.
+ * New checkouts store the pre-round total and the signed adjustment.
+ */
+async function migratePosSupplierShiftPayments(db) {
+  if (!(await tableHasColumn(db, "vouchers", "shift_id"))) {
+    await db.run("ALTER TABLE vouchers ADD COLUMN shift_id INTEGER REFERENCES cashier_shifts(id)");
+  }
+  if (!(await tableHasColumn(db, "vouchers", "idempotency_key"))) {
+    await db.run("ALTER TABLE vouchers ADD COLUMN idempotency_key TEXT");
+  }
+  if (!(await tableHasColumn(db, "vouchers", "payload_fingerprint"))) {
+    await db.run("ALTER TABLE vouchers ADD COLUMN payload_fingerprint TEXT");
+  }
+  await db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_vouchers_idempotency_key
+     ON vouchers(idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
+  await db.run("CREATE INDEX IF NOT EXISTS idx_vouchers_shift_id ON vouchers(shift_id)");
+
+  const row = await db.get(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shift_cash_movements'`
+  );
+  if (row?.sql && !String(row.sql).includes("'supplier_payment'")) {
+    await migrateOrphanReferenceCleanup(db);
+    const hasAdvanceCol = await tableHasColumn(db, "shift_cash_movements", "advance_request_id");
+    await db.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE shift_cash_movements_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+        movement_type TEXT NOT NULL CHECK (movement_type IN ('opening', 'payment', 'refund', 'adjustment', 'closing', 'advance', 'supplier_payment', 'customer_collection')),
+        amount REAL NOT NULL,
+        description TEXT,
+        transaction_id INTEGER REFERENCES transactions(id),
+        refund_id INTEGER REFERENCES refunds(id),
+        advance_request_id INTEGER REFERENCES advance_requests(id),
+        voucher_id INTEGER REFERENCES vouchers(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO shift_cash_movements_new (
+        id, shift_id, movement_type, amount, description, transaction_id, refund_id, advance_request_id, created_at
+      )
+      SELECT id, shift_id, movement_type, amount, description, transaction_id, refund_id,
+             ${hasAdvanceCol ? "advance_request_id" : "NULL"}, created_at
+      FROM shift_cash_movements;
+      DROP TABLE shift_cash_movements;
+      ALTER TABLE shift_cash_movements_new RENAME TO shift_cash_movements;
+      CREATE INDEX IF NOT EXISTS idx_shift_movements_shift_time ON shift_cash_movements(shift_id, created_at);
+      PRAGMA foreign_keys = ON;
+    `);
+  } else if (!(await tableHasColumn(db, "shift_cash_movements", "voucher_id"))) {
+    await db.run("ALTER TABLE shift_cash_movements ADD COLUMN voucher_id INTEGER REFERENCES vouchers(id)");
+  }
+  await db.run(
+    "CREATE INDEX IF NOT EXISTS idx_shift_movements_voucher ON shift_cash_movements(voucher_id)"
+  );
+}
+
+async function migrateShiftCustomerCollections(db) {
+  const row = await db.get(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shift_cash_movements'`
+  );
+  if (!row?.sql || String(row.sql).includes("'customer_collection'")) return;
+
+  await migrateOrphanReferenceCleanup(db);
+  const hasAdvanceCol = await tableHasColumn(db, "shift_cash_movements", "advance_request_id");
+  const hasVoucherCol = await tableHasColumn(db, "shift_cash_movements", "voucher_id");
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE shift_cash_movements_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      movement_type TEXT NOT NULL CHECK (movement_type IN ('opening', 'payment', 'refund', 'adjustment', 'closing', 'advance', 'supplier_payment', 'customer_collection')),
+      amount REAL NOT NULL,
+      description TEXT,
+      transaction_id INTEGER REFERENCES transactions(id),
+      refund_id INTEGER REFERENCES refunds(id),
+      advance_request_id INTEGER REFERENCES advance_requests(id),
+      voucher_id INTEGER REFERENCES vouchers(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO shift_cash_movements_new (
+      id, shift_id, movement_type, amount, description, transaction_id, refund_id, advance_request_id, voucher_id, created_at
+    )
+    SELECT id, shift_id, movement_type, amount, description, transaction_id, refund_id,
+           ${hasAdvanceCol ? "advance_request_id" : "NULL"},
+           ${hasVoucherCol ? "voucher_id" : "NULL"},
+           created_at
+    FROM shift_cash_movements;
+    DROP TABLE shift_cash_movements;
+    ALTER TABLE shift_cash_movements_new RENAME TO shift_cash_movements;
+    CREATE INDEX IF NOT EXISTS idx_shift_movements_shift_time ON shift_cash_movements(shift_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_shift_movements_voucher ON shift_cash_movements(voucher_id);
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+async function migrateCustomerCashDebtRequests(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS customer_cash_debt_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      manager_id INTEGER REFERENCES users(id),
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      customer_id INTEGER NOT NULL REFERENCES customers(id),
+      customer_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      debt_before REAL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      telegram_message_id TEXT,
+      voucher_id INTEGER REFERENCES vouchers(id),
+      review_notes TEXT,
+      decision_source TEXT,
+      cashier_acknowledged_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      approved_at TEXT,
+      rejected_at TEXT,
+      idempotency_key TEXT,
+      payload_fingerprint TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_cash_debt_requests_idempotency
+      ON customer_cash_debt_requests(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_customer_cash_debt_requests_cashier
+      ON customer_cash_debt_requests(cashier_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_customer_cash_debt_requests_status
+      ON customer_cash_debt_requests(status, created_at);
+  `);
+}
+
+async function migrateShiftCustomerCashDebts(db) {
+  const row = await db.get(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shift_cash_movements'`
+  );
+  if (!row?.sql || String(row.sql).includes("'customer_cash_debt'")) return;
+
+  await migrateOrphanReferenceCleanup(db);
+  const hasAdvanceCol = await tableHasColumn(db, "shift_cash_movements", "advance_request_id");
+  const hasVoucherCol = await tableHasColumn(db, "shift_cash_movements", "voucher_id");
+  await db.exec(`
+    PRAGMA foreign_keys = OFF;
+    CREATE TABLE shift_cash_movements_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      movement_type TEXT NOT NULL CHECK (movement_type IN ('opening', 'payment', 'refund', 'adjustment', 'closing', 'advance', 'supplier_payment', 'customer_collection', 'customer_cash_debt')),
+      amount REAL NOT NULL,
+      description TEXT,
+      transaction_id INTEGER REFERENCES transactions(id),
+      refund_id INTEGER REFERENCES refunds(id),
+      advance_request_id INTEGER REFERENCES advance_requests(id),
+      voucher_id INTEGER REFERENCES vouchers(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO shift_cash_movements_new (
+      id, shift_id, movement_type, amount, description, transaction_id, refund_id, advance_request_id, voucher_id, created_at
+    )
+    SELECT id, shift_id, movement_type, amount, description, transaction_id, refund_id,
+           ${hasAdvanceCol ? "advance_request_id" : "NULL"},
+           ${hasVoucherCol ? "voucher_id" : "NULL"},
+           created_at
+    FROM shift_cash_movements;
+    DROP TABLE shift_cash_movements;
+    ALTER TABLE shift_cash_movements_new RENAME TO shift_cash_movements;
+    CREATE INDEX IF NOT EXISTS idx_shift_movements_shift_time ON shift_cash_movements(shift_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_shift_movements_voucher ON shift_cash_movements(voucher_id);
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+async function migrateShiftCountAdvanceIdempotency(db) {
+  if (!(await tableHasColumn(db, "advance_requests", "idempotency_key"))) {
+    await db.run("ALTER TABLE advance_requests ADD COLUMN idempotency_key TEXT");
+  }
+  if (!(await tableHasColumn(db, "advance_requests", "payload_fingerprint"))) {
+    await db.run("ALTER TABLE advance_requests ADD COLUMN payload_fingerprint TEXT");
+  }
+  await db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_advance_requests_idempotency_key
+     ON advance_requests(idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
+}
+
+async function migratePosPayableRounding(db) {
+  const columns = [
+    ["transactions", "amount_before_rounding"],
+    ["transactions", "rounding_adjustment"],
+    ["refunds", "rounding_adjustment"],
+    ["refund_requests", "rounding_adjustment"],
+  ];
+  for (const [table, column] of columns) {
+    if (!(await tableHasColumn(db, table, column))) {
+      await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} REAL`);
+    }
+  }
+}
+
+/**
+ * Persist the business day assigned at shift open, and the day assigned to a
+ * shiftless sale or refund at insert. Existing rows stay NULL: readers fall
+ * back to the pre-cutoff calendar date and do not rewrite history.
+ */
+async function migrateBusinessDayColumns(db) {
+  if (!(await tableHasColumn(db, "cashier_shifts", "business_day"))) {
+    await db.run("ALTER TABLE cashier_shifts ADD COLUMN business_day TEXT");
+  }
+  if (!(await tableHasColumn(db, "transactions", "business_day"))) {
+    await db.run("ALTER TABLE transactions ADD COLUMN business_day TEXT");
+  }
+  if (!(await tableHasColumn(db, "refunds", "business_day"))) {
+    await db.run("ALTER TABLE refunds ADD COLUMN business_day TEXT");
+  }
+  await db.run(
+    "CREATE INDEX IF NOT EXISTS idx_cashier_shifts_business_day ON cashier_shifts(business_day)"
+  );
+  await db.run(
+    "CREATE INDEX IF NOT EXISTS idx_transactions_business_day ON transactions(business_day)"
+  );
+}
+
 async function migrateShiftReconciliationExtended(db) {
   const cols = [
     ["actual_cash", "REAL"],
@@ -1940,6 +2165,68 @@ async function migrateOperatingExpenseSource(db) {
   }
 }
 
+async function migrateShopConsumption(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS shop_consumptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      business_day TEXT NOT NULL,
+      reason TEXT,
+      total_cost REAL NOT NULL,
+      operating_expense_id INTEGER UNIQUE REFERENCES operating_expenses(id),
+      idempotency_key TEXT UNIQUE,
+      payload_fingerprint TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS shop_consumption_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      consumption_id INTEGER NOT NULL REFERENCES shop_consumptions(id),
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      product_unit_id INTEGER,
+      barcode TEXT,
+      name TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit_name TEXT,
+      conversion_to_base REAL NOT NULL,
+      base_quantity REAL NOT NULL,
+      unit_cost REAL NOT NULL,
+      line_cost REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_shop_consumptions_shift ON shop_consumptions(shift_id);
+    CREATE INDEX IF NOT EXISTS idx_shop_consumption_items_consumption
+      ON shop_consumption_items(consumption_id);
+  `);
+  const existing = await db.get("SELECT id FROM expense_categories WHERE name = 'shop_consumption'");
+  if (!existing) {
+    await db.run(
+      "INSERT INTO expense_categories (name, name_ar, active) VALUES ('shop_consumption', 'مصاريف محل', 1)"
+    );
+  }
+}
+
+async function migrateOperationPrintJobs(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS operation_print_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      reference_id INTEGER NOT NULL,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      shift_id INTEGER REFERENCES cashier_shifts(id),
+      document_no TEXT,
+      snapshot_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'claimed', 'accepted', 'failed')),
+      claimed_at TEXT,
+      finished_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (kind, reference_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_operation_print_jobs_cashier
+      ON operation_print_jobs(cashier_id, status, id);
+  `);
+}
+
 async function migrateOnAccountRequestsTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS on_account_requests (
@@ -2163,12 +2450,13 @@ async function migrateShiftCashMovementsAdvanceType(db) {
     CREATE TABLE shift_cash_movements_new (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
-      movement_type TEXT NOT NULL CHECK (movement_type IN ('opening', 'payment', 'refund', 'adjustment', 'closing', 'advance')),
+      movement_type TEXT NOT NULL CHECK (movement_type IN ('opening', 'payment', 'refund', 'adjustment', 'closing', 'advance', 'supplier_payment', 'customer_collection')),
       amount REAL NOT NULL,
       description TEXT,
       transaction_id INTEGER REFERENCES transactions(id),
       refund_id INTEGER REFERENCES refunds(id),
       advance_request_id INTEGER REFERENCES advance_requests(id),
+      voucher_id INTEGER REFERENCES vouchers(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -2221,6 +2509,125 @@ async function migrateUserPermissionsColumn(db) {
   if (!(await tableHasColumn(db, "users", "permissions_json"))) {
     await db.run("ALTER TABLE users ADD COLUMN permissions_json TEXT");
   }
+}
+
+async function migrateUserSessions(db) {
+  if (!(await tableHasColumn(db, "users", "session_version"))) {
+    await db.run("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0");
+  }
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS revoked_tokens (
+      jti TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
+  `);
+}
+
+async function migrateGroupApprovalRequests(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS expense_approval_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      requester_id INTEGER NOT NULL REFERENCES users(id),
+      manager_id INTEGER REFERENCES users(id),
+      category_id INTEGER NOT NULL REFERENCES expense_categories(id),
+      category_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      paid_on TEXT NOT NULL,
+      payment_method TEXT NOT NULL,
+      reference_note TEXT,
+      idempotency_key TEXT UNIQUE,
+      payload_fingerprint TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      telegram_message_id TEXT,
+      operating_expense_id INTEGER UNIQUE REFERENCES operating_expenses(id),
+      decision_source TEXT,
+      review_notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      approved_at TEXT,
+      rejected_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_expense_approval_requests_status
+      ON expense_approval_requests(status, created_at);
+
+    CREATE TABLE IF NOT EXISTS supplier_payment_approval_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      manager_id INTEGER REFERENCES users(id),
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+      supplier_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      notes TEXT,
+      idempotency_key TEXT UNIQUE,
+      payload_fingerprint TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      telegram_message_id TEXT,
+      voucher_id INTEGER UNIQUE,
+      decision_source TEXT,
+      review_notes TEXT,
+      cashier_acknowledged_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      approved_at TEXT,
+      rejected_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_supplier_payment_approval_status
+      ON supplier_payment_approval_requests(status, created_at);
+
+    CREATE TABLE IF NOT EXISTS shop_consumption_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_id INTEGER NOT NULL REFERENCES users(id),
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      items_json TEXT NOT NULL,
+      reason TEXT,
+      idempotency_key TEXT UNIQUE,
+      payload_fingerprint TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      telegram_message_id TEXT,
+      consumption_id INTEGER UNIQUE,
+      manager_id INTEGER REFERENCES users(id),
+      telegram_actor_id TEXT,
+      telegram_actor_username TEXT,
+      decision_source TEXT,
+      cashier_acknowledged_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      approved_at TEXT,
+      rejected_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_shop_consumption_requests_status
+      ON shop_consumption_requests(status, created_at);
+  `);
+  if (!(await tableHasColumn(db, "supplier_payment_approval_requests", "telegram_actor_id"))) {
+    await db.run("ALTER TABLE supplier_payment_approval_requests ADD COLUMN telegram_actor_id TEXT");
+    await db.run("ALTER TABLE supplier_payment_approval_requests ADD COLUMN telegram_actor_username TEXT");
+  }
+  if (!(await tableHasColumn(db, "expense_approval_requests", "telegram_actor_id"))) {
+    await db.run("ALTER TABLE expense_approval_requests ADD COLUMN telegram_actor_id TEXT");
+    await db.run("ALTER TABLE expense_approval_requests ADD COLUMN telegram_actor_username TEXT");
+  }
+}
+
+async function migrateApprovalsTelegram(db) {
+  if (!(await tableHasColumn(db, "users", "telegram_user_id"))) {
+    await db.run("ALTER TABLE users ADD COLUMN telegram_user_id TEXT");
+  }
+  await db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_user_id
+      ON users(telegram_user_id) WHERE telegram_user_id IS NOT NULL AND telegram_user_id != '';
+    CREATE TABLE IF NOT EXISTS telegram_approval_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL CHECK (kind IN ('expense', 'supplier')),
+      request_id INTEGER NOT NULL,
+      telegram_message_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      bot_kind TEXT NOT NULL DEFAULT 'approvals',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      decided_by_user_id INTEGER REFERENCES users(id),
+      decided_telegram_user_id TEXT,
+      UNIQUE (kind, request_id)
+    );
+  `);
 }
 
 async function migrateHourlyRateColumn(db) {
@@ -2548,6 +2955,56 @@ async function migrateAttendanceTables(db) {
   `);
 }
 
+async function migrateAttendanceSessions(db) {
+  if (!(await tableHasColumn(db, "employees", "wage_basis"))) {
+    await db.run("ALTER TABLE employees ADD COLUMN wage_basis TEXT");
+  }
+  if (!(await tableHasColumn(db, "employees", "daily_rate"))) {
+    await db.run("ALTER TABLE employees ADD COLUMN daily_rate REAL");
+  }
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS attendance_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      employee_id INTEGER REFERENCES employees(id),
+      check_in_at TEXT NOT NULL,
+      check_out_at TEXT,
+      recorded_at TEXT NOT NULL,
+      recorded_check_out_at TEXT,
+      hourly_rate_snapshot REAL,
+      earned_pay REAL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+      close_source TEXT,
+      corrected INTEGER NOT NULL DEFAULT 0,
+      correction_reason TEXT,
+      corrected_at TEXT,
+      payroll_discrepancy INTEGER NOT NULL DEFAULT 0,
+      payroll_discrepancy_note TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_attendance_sessions_user_in
+      ON attendance_sessions(user_id, check_in_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_sessions_one_open
+      ON attendance_sessions(user_id) WHERE status = 'open';
+
+    CREATE TABLE IF NOT EXISTS employee_period_attendance (
+      period_id INTEGER NOT NULL REFERENCES employee_salary_periods(id),
+      session_id INTEGER NOT NULL REFERENCES attendance_sessions(id),
+      hours REAL NOT NULL,
+      hourly_rate REAL,
+      pay REAL NOT NULL,
+      PRIMARY KEY (period_id, session_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS attendance_reminder_dismissals (
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      business_day TEXT NOT NULL,
+      dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, business_day)
+    );
+  `);
+}
+
 async function migrateStoresTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS stores (
@@ -2827,7 +3284,10 @@ export async function initDatabase(dbPath) {
   await migrateShiftCashMovementsAdvanceType(db);
   await migrateMustChangePasswordColumn(db);
   await migrateUserPermissionsColumn(db);
+  await migrateUserSessions(db);
   await migrateHourlyRateColumn(db);
+  await migrateApprovalsTelegram(db);
+  await migrateGroupApprovalRequests(db);
   await migrateEmployeeHrTables(db);
   await migrateEmployeeSalaryEntitlements(db);
   await migrateSalaryAdvanceExpenseCategory(db);
@@ -2835,7 +3295,10 @@ export async function initDatabase(dbPath) {
   await migrateEmployeePayrollScreens(db);
   await migrateAdvanceRequestEmployeeLink(db);
   await migrateOperatingExpenseSource(db);
+  await migrateShopConsumption(db);
+  await migrateOperationPrintJobs(db);
   await migrateAttendanceTables(db);
+  await migrateAttendanceSessions(db);
   await migrateStoresTable(db);
   await migrateStoreIdColumns(db);
   await migrateProductBarcodesTable(db);
@@ -2885,6 +3348,13 @@ export async function initDatabase(dbPath) {
   await migrateSkuBarcodeSeparation(db);
   await backfillMissingEntityCodes(db);
   await migratePerfIndexes(db);
+  await migrateBusinessDayColumns(db);
+  await migratePosPayableRounding(db);
+  await migratePosSupplierShiftPayments(db);
+  await migrateShiftCustomerCollections(db);
+  await migrateShiftCustomerCashDebts(db);
+  await migrateCustomerCashDebtRequests(db);
+  await migrateShiftCountAdvanceIdempotency(db);
   await db.exec("PRAGMA optimize;");
 
   await recordSchemaVersion(db);
@@ -2897,7 +3367,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.09-on-account-checkout-notes";
+const SCHEMA_VERSION = "2026.09-pos-customer-cash-debt";
 
 async function migratePerfIndexes(db) {
   await db.exec(`

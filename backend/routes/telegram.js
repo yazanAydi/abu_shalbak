@@ -4,6 +4,7 @@ import {
   getRefundWebhookSecret,
   getZimmaWebhookSecret,
   getSulafWebhookSecret,
+  getApprovalsWebhookSecret,
 } from "../utils/telegram.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 import { sendExpiryAlert } from "../services/expiryAlertService.js";
@@ -51,6 +52,15 @@ export function createTelegramRouter(db) {
       return res.status(403).json({ error: "Forbidden" });
     }
     await handleTelegramUpdate(db, req.body || {});
+    return res.json({ ok: true });
+  });
+
+  router.post("/webhook/approvals/:secret", webhookLimiter, async (req, res) => {
+    const expected = getApprovalsWebhookSecret();
+    if (!telegramSecretOk(expected, req)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    await handleTelegramUpdate(db, req.body || {}, { sourceBot: "approvals" });
     return res.json({ ok: true });
   });
 

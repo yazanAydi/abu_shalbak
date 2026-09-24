@@ -1,9 +1,10 @@
 import { round2, applyPurchaseDiscount, computeSaleTotals, productTaxRate } from "../utils/tax.js";
 import { getAppSettings } from "../utils/settings.js";
-import { getDefaultUnit, derivedUnitCost } from "../utils/productUnits.js";
+import { getDefaultUnit, derivedUnitCost, isProductCostKnown, isKgUnit } from "../utils/productUnits.js";
 import { nextReceiptNumber } from "../utils/receiptNumber.js";
 import { resolveInvoicePayments, insertSalePayments } from "../utils/salePayments.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { businessDayFromTimestamp } from "../utils/businessDay.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { partyBalanceForSalesInvoice } from "../utils/partyBalanceAroundMove.js";
 import { parsePreferredExpiry, PREFERRED_AUTO } from "../utils/expiryDate.js";
@@ -82,6 +83,7 @@ export async function normalizeSaleItems(db, items) {
 
     const rawUnitId = it.unit_id != null ? Number(it.unit_id) : it.product_unit_id != null ? Number(it.product_unit_id) : null;
     const unit = await resolveSaleUnit(db, pid, rawUnitId);
+    if (!isKgUnit(unit) && Math.abs(qty - Math.round(qty)) > 1e-9) return null;
 
     const listGross = round2((Number(unit.unit_price) || Number(product.price) || 0) * qty);
 
@@ -110,7 +112,9 @@ export async function normalizeSaleItems(db, items) {
       name: product.name,
       // Sold-unit cost derived from base cost × conversion (never stale unit.cost).
       // This is what gets written to transaction_items.unit_cost_at_sale.
-      cost: derivedUnitCost(Number(product.cost) || 0, unit.conversion),
+      cost: isProductCostKnown(product)
+        ? derivedUnitCost(Number(product.cost) || 0, unit.conversion)
+        : null,
       preferred_expiry_date:
         parsePreferredExpiry(it.preferred_expiry_date ?? it.preferred_expiry) === PREFERRED_AUTO
           ? null
@@ -298,10 +302,13 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
       return null;
     }
     const receiptNumber = await nextReceiptNumber(db, 1);
+    const postedAt = new Date().toISOString();
+    const settings = await getAppSettings(db);
+    const businessDay = businessDayFromTimestamp(postedAt, settings.business_day_cutoff_hour);
     const ins = await db.run(
       `INSERT INTO transactions
-         (cashier_id, items_json, subtotal, tax, total, discount, change_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id)
-       VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, ?, 'completed', 1)`,
+         (cashier_id, items_json, subtotal, tax, total, discount, change_amount, payment_method, shift_id, customer_id, receipt_number, status, store_id, created_at, business_day)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, ?, 'completed', 1, ?, ?)`,
       [
         userId,
         JSON.stringify(itemsForJson),
@@ -312,6 +319,8 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
         summaryMethod,
         inv.customer_id,
         receiptNumber,
+        postedAt,
+        businessDay,
       ]
     );
     const transactionId = ins.lastID;
@@ -320,7 +329,11 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
       const stockDelta = it.base_quantity != null ? Number(it.base_quantity) : Number(it.quantity) || 0;
       // it.cost = sold-unit cost (products.cost × conversion_to_base).
       // gross_profit = line revenue - (sold-unit cost × sold-unit quantity).
-      const grossProfit = round2((Number(it.line_net) || 0) - (Number(it.cost) || 0) * Number(it.quantity));
+      const costKnown = it.cost != null && Number.isFinite(Number(it.cost));
+      const unitCost = costKnown ? Number(it.cost) : null;
+      const grossProfit = costKnown
+        ? round2((Number(it.line_net) || 0) - unitCost * Number(it.quantity))
+        : null;
       const itemIns = await db.run(
         `INSERT INTO transaction_items
            (transaction_id, product_id, barcode, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,
@@ -337,9 +350,9 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
           it.line_tax,
           it.line_total,
           it.vat_rate,
-          it.cost,
+          unitCost,
           grossProfit,
-          it.discount_pct || 0,
+          round2(Math.max(0, (Number(it.total_price) || 0) - (Number(it.line_total) || 0))),
           it.product_unit_id,
           it.unit_name,
           it.conversion_used,

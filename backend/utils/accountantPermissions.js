@@ -1,4 +1,18 @@
 import { CACHE_KEYS, cacheGet, cacheSet } from "./cache.js";
+import { HttpError } from "./httpError.js";
+
+export const PERMISSIONS_CORRUPT_MESSAGE =
+  "صلاحيات هذا الحساب تالفة ولا يمكن الاعتماد عليها. صحّح خريطة الصلاحيات من حساب مدير.";
+
+const CORRUPT_PERMISSIONS = Symbol("corrupt-permissions");
+
+export function isCorruptPermissions(value) {
+  return value === CORRUPT_PERMISSIONS;
+}
+
+export function permissionsCorruptError() {
+  return new HttpError(403, PERMISSIONS_CORRUPT_MESSAGE, "PERMISSIONS_CORRUPT");
+}
 
 /**
  * Accountant permission catalog — topics are UI grouping only; leaf keys are enforced.
@@ -101,30 +115,19 @@ export function normalizeAccountantPermissions(raw) {
   return out;
 }
 
-function permissionFlag(value) {
-  return value === true || value === "true" || value === 1 || value === "1";
-}
-
 /**
  * @param {string} role
  * @param {Record<string, boolean>|undefined|null} permissions
  * @param {string} key
  */
 export function hasAccountantPermission(role, permissions, key) {
-  if (role === "admin") {
-    if (
-      permissions &&
-      typeof permissions === "object" &&
-      !Array.isArray(permissions) &&
-      Object.prototype.hasOwnProperty.call(permissions, key)
-    ) {
-      return permissionFlag(permissions[key]);
-    }
-    return true;
+  if (!isOfficePermissionRole(role)) return false;
+  if (permissions == null) return role === "admin";
+  try {
+    return explicitPermissionMap(permissions)[key] === true;
+  } catch {
+    return false;
   }
-  if (role !== "accountant") return false;
-  const normalized = normalizeAccountantPermissions(permissions);
-  return normalized[key] === true;
 }
 
 /**
@@ -138,28 +141,86 @@ export function hasAccountantPermission(role, permissions, key) {
 export function getEffectivePermissions(role, storedPermissions) {
   if (!isOfficePermissionRole(role)) return defaultAccountantPermissions();
   const parsed = parseUserPermissionsJson(storedPermissions);
-  if (parsed) return normalizeAccountantPermissions(parsed);
+  if (isCorruptPermissions(parsed)) throw permissionsCorruptError();
+  if (parsed) return explicitPermissionMap(parsed);
   if (role === "admin") return allAccountantPermissionsEnabled();
-  return normalizeAccountantPermissions(storedPermissions);
+  return defaultAccountantPermissions();
 }
 
-/** Parse users.permissions_json. Returns a plain object or null (use global defaults). */
+/**
+ * A stored custom map: omitted known keys are off. Unknown keys are ignored.
+ * A non-boolean known value is corrupt and must not grant access.
+ * @param {unknown} raw
+ * @returns {Record<string, boolean>}
+ */
+export function explicitPermissionMap(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw permissionsCorruptError();
+  const known = new Set(allAccountantPermissionKeys());
+  const out = allAccountantPermissionsDisabled();
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) continue;
+    if (typeof value !== "boolean") throw permissionsCorruptError();
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Full replacement body. Rejects unknown keys and non-booleans without writing.
+ * Omitted known keys are off.
+ * @param {unknown} raw
+ */
+export function assertPermissionReplacement(raw) {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new HttpError(400, "خريطة الصلاحيات غير صالحة", "INVALID_PERMISSIONS");
+  }
+  const known = new Set(allAccountantPermissionKeys());
+  for (const [key, value] of Object.entries(raw)) {
+    if (!known.has(key)) {
+      throw new HttpError(400, "تحتوي الصلاحيات على مفتاح غير معروف", "INVALID_PERMISSIONS");
+    }
+    if (typeof value !== "boolean") {
+      throw new HttpError(400, "قيم الصلاحيات يجب أن تكون true أو false", "INVALID_PERMISSIONS");
+    }
+  }
+  return explicitPermissionMap(raw);
+}
+
+/** True when every granted target key is also granted to the actor. */
+export function permissionMapCovers(actorMap, targetMap) {
+  for (const key of allAccountantPermissionKeys()) {
+    if (targetMap?.[key] === true && actorMap?.[key] !== true) return false;
+  }
+  return true;
+}
+
+/**
+ * Parse users.permissions_json.
+ * null means no custom map. A plain object is a custom map.
+ * Invalid JSON is corrupt and must not fall back to a broader template.
+ * @param {unknown} raw
+ * @returns {Record<string, unknown>|null|typeof CORRUPT_PERMISSIONS}
+ */
 export function parseUserPermissionsJson(raw) {
   if (raw == null) return null;
-  if (typeof raw === "object" && !Array.isArray(raw)) return raw;
+  if (typeof raw === "object") {
+    if (Array.isArray(raw)) return CORRUPT_PERMISSIONS;
+    return raw;
+  }
   const text = String(raw).trim();
   if (!text) return null;
   try {
     const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (parsed == null) return null;
+    if (typeof parsed !== "object" || Array.isArray(parsed)) return CORRUPT_PERMISSIONS;
     return parsed;
   } catch {
-    return null;
+    return CORRUPT_PERMISSIONS;
   }
 }
 
 const USER_PERMISSION_ROW_SQL =
-  "SELECT username, role, must_change_password, permissions_json FROM users WHERE id = ?";
+  "SELECT id, username, role, must_change_password, permissions_json, COALESCE(session_version, 0) AS session_version FROM users WHERE id = ?";
 
 /**
  * Shared per-user row used by password-change checks and permission resolution.
@@ -197,7 +258,8 @@ export async function resolveUserPermissions(db, user) {
     stored = row?.permissions_json;
   }
   const parsed = parseUserPermissionsJson(stored);
-  if (parsed) return normalizeAccountantPermissions(parsed);
+  if (isCorruptPermissions(parsed)) throw permissionsCorruptError();
+  if (parsed) return explicitPermissionMap(parsed);
   if (role === "admin") return allAccountantPermissionsEnabled();
   const { getAppSettings } = await import("./settings.js");
   const settings = await getAppSettings(db);
@@ -262,6 +324,7 @@ export const NAV_PATH_PERMISSION_KEYS = {
   "/employee-statements": "employee_payroll",
   "/employee-salaries": "employee_payroll",
   "/cashier-payroll": "employee_payroll",
+  "/employee-attendance": "employee_payroll",
   "/settings": "store_settings",
   "/settings/currency": "currencies",
   "/permissions": "permissions",

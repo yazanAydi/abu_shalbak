@@ -12,6 +12,7 @@ import {
   useToast,
 } from "../../components/ui";
 import { ils } from "../../utils/format";
+import { productPriceLabel } from "../../utils/scaleProductForm";
 
 export default function ChangePriceModal({ open, onClose, product, onSaved }) {
   const toast = useToast();
@@ -54,12 +55,13 @@ export default function ChangePriceModal({ open, onClose, product, onSaved }) {
   }
 
   const weighed = Number(product?.is_weighed) === 1;
+  const priceLabel = productPriceLabel(product);
 
   return (
     <Modal
       open={open}
       onClose={close}
-      title={weighed ? "تغيير سعر الكغم" : "تغيير سعر البيع"}
+      title={weighed ? `تغيير ${priceLabel}` : "تغيير سعر البيع"}
       footer={
         <>
           <PrimaryButton type="button" onClick={submit} disabled={saving}>
@@ -72,7 +74,7 @@ export default function ChangePriceModal({ open, onClose, product, onSaved }) {
       }
     >
       <p style={{ marginTop: 0, color: "var(--office-panel-muted, #64748b)" }}>
-        {weighed ? "سعر الكغم الحالي" : "السعر الحالي"}: <strong>{ils(product?.price)}</strong>
+        {weighed ? `${priceLabel} الحالي` : "السعر الحالي"}: <strong>{ils(product?.price)}</strong>
         {weighed && product?.package_price != null ? (
           <span>
             {"  "}— سعر الحبة {ils(product.package_price)} (مستقل، لا يتغير من هنا)

@@ -42,6 +42,52 @@ describe("Authorization", () => {
       .get("/api/v1/finance/overview")
       .set(authHeader(cashierToken));
     expect(res.status).toBe(403);
+    expect(res.body.code).toBe("FORBIDDEN");
+  });
+
+  test("cashier token is rejected by office-only APIs when submitted directly", async () => {
+    const officeOnly = [
+      "/api/v1/admin/users",
+      "/api/v1/reports/today",
+      "/api/v1/finance/overview",
+      "/api/v1/purchases/invoices",
+      "/api/v1/office/nav-badges",
+    ];
+    for (const path of officeOnly) {
+      const res = await request(ctx.app).get(path).set(authHeader(cashierToken));
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("FORBIDDEN");
+    }
+
+    const patch = await request(ctx.app)
+      .patch("/api/v1/settings")
+      .set(authHeader(cashierToken))
+      .send({ store_name: "should-not-apply" });
+    expect(patch.status).toBe(403);
+    expect(patch.body.code).toBe("FORBIDDEN");
+  });
+
+  test("the same cashier token is still a valid POS session", async () => {
+    const me = await request(ctx.app).get("/api/v1/auth/me").set(authHeader(cashierToken));
+    expect(me.status).toBe(200);
+    expect(me.body.data.user.role).toBe("cashier");
+    expect(me.body.data.user.username).toBe("testcashier");
+
+    const shift = await request(ctx.app).get("/api/v1/shifts/current").set(authHeader(cashierToken));
+    expect(shift.status).toBe(200);
+  });
+
+  test("admin token can call the same office-only APIs", async () => {
+    const officeOnly = [
+      "/api/v1/admin/users",
+      "/api/v1/reports/today",
+      "/api/v1/purchases/invoices",
+      "/api/v1/office/nav-badges",
+    ];
+    for (const path of officeOnly) {
+      const res = await request(ctx.app).get(path).set(authHeader(adminToken));
+      expect(res.status).toBe(200);
+    }
   });
 
   test("transaction mutation endpoint returns 405", async () => {

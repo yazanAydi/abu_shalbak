@@ -7,7 +7,9 @@ import {
   withCheckoutKey,
 } from "./helpers.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { fetchRefundsForShopDate, fetchTransactionsForShopDate } from "../utils/businessDay.js";
 import { deriveStockFromLedger } from "../utils/inventoryLedger.js";
+import { round2 } from "../utils/money.js";
 
 /**
  * Batch 2 — data integrity.
@@ -21,7 +23,6 @@ describe("Reporting reconciliation and inventory source of truth", () => {
   let ctx;
   let adminToken;
   let cashierToken;
-  const today = shopTodayYmd();
 
   beforeAll(async () => {
     ctx = await createTestContext();
@@ -55,16 +56,12 @@ describe("Reporting reconciliation and inventory source of truth", () => {
     await sell(3);
     await sell(1);
 
-    const sums = await ctx.db.get(
-      `SELECT COALESCE(SUM(total), 0) AS sales FROM transactions
-       WHERE date(created_at) = ? AND COALESCE(status,'completed') = 'completed'`,
-      [today]
-    );
-    const refSums = await ctx.db.get(
-      `SELECT COALESCE(SUM(total), 0) AS refunds FROM refunds WHERE date(created_at) = ?`,
-      [today]
-    );
-    const expectedNet = Math.round((sums.sales - refSums.refunds) * 100) / 100;
+    const day = shopTodayYmd();
+    const salesRows = await fetchTransactionsForShopDate(ctx.db, day);
+    const refundRows = await fetchRefundsForShopDate(ctx.db, day);
+    const sales = round2(salesRows.reduce((sum, row) => sum + Number(row.total), 0));
+    const refunds = round2(refundRows.reduce((sum, row) => sum + Number(row.total), 0));
+    const expectedNet = round2(sales - refunds);
 
     const todayRes = await request(ctx.app)
       .get("/api/v1/reports/today")
@@ -77,8 +74,8 @@ describe("Reporting reconciliation and inventory source of truth", () => {
       .get("/api/v1/reports/last-7-days")
       .set(authHeader(adminToken));
     const weekDays = (weekRes.body.data || weekRes.body).days;
-    const todayRow = weekDays.find((d) => d.date === today);
-    expect(todayRow.total_sales).toBe(Math.round(sums.sales * 100) / 100);
+    const todayRow = weekDays.find((d) => d.date === day);
+    expect(todayRow.total_sales).toBe(sales);
   });
 
   test("daily_reports is never written (non-authoritative)", async () => {

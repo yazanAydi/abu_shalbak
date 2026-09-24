@@ -51,7 +51,12 @@ describe("POS login password-change recovery", () => {
         user: { id: 1, username: "c1", role: "cashier", must_change_password: true },
       },
     });
-    mockPost.mockResolvedValueOnce({ data: { success: true } });
+    mockPost.mockResolvedValueOnce({
+      data: {
+        token: "tok-next",
+        user: { id: 1, username: "c1", role: "cashier", must_change_password: false },
+      },
+    });
 
     const setInput = (el, value) => {
       const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
@@ -86,6 +91,8 @@ describe("POS login password-change recovery", () => {
 
     expect(mockPost).toHaveBeenCalledTimes(2);
     expect(mockPost.mock.calls[1][0]).toBe("/api/auth/change-password");
+    expect(localStorage.getItem("pos.token")).toBe("tok-next");
+    expect(localStorage.getItem("office.token")).toBeNull();
     expect(mockNavigate).toHaveBeenCalledWith("/checkout", { replace: true });
   });
 });

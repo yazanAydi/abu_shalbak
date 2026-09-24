@@ -82,7 +82,9 @@ export function createOnAccountRequestsRouter(db) {
     try {
       const result =
         status === "approved"
-          ? await approveOnAccountRequest(db, id, req.user, note, req, "admin")
+          ? await approveOnAccountRequest(db, id, req.user, note, req, "admin", {
+              overrideCreditLimit: req.body.override_credit_limit === true,
+            })
           : await rejectOnAccountRequest(db, id, req.user, note, req, "admin");
       res.json({ success: true, ...result });
     } catch (e) {

@@ -12,6 +12,14 @@ import {
   updatePunch,
 } from "../services/attendanceService.js";
 import { HttpError } from "../utils/httpError.js";
+import {
+  checkInAttendance,
+  checkOutAttendance,
+  correctAttendanceCheckout,
+  listHourlyAttendanceBoard,
+  attendanceReminderForUser,
+  dismissAttendanceReminder,
+} from "../services/attendanceSessionService.js";
 import { signKioskToken, timingSafeStringEqual, verifyKioskToken } from "../utils/kioskToken.js";
 
 function getKioskApiKey() {
@@ -123,6 +131,60 @@ export function createAttendanceRouter(db) {
         userId: req.query.user_id,
       });
       res.json(report);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get("/sessions", requireAuth, requirePayroll, async (_req, res, next) => {
+    try {
+      res.json(await listHourlyAttendanceBoard(db));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get("/reminder", requireAuth, requirePayroll, async (req, res, next) => {
+    try {
+      res.json(await attendanceReminderForUser(db, req.user.id));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/reminder/dismiss", requireAuth, requirePayroll, async (req, res, next) => {
+    try {
+      res.json(await dismissAttendanceReminder(db, req.user.id));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/sessions/check-in", requireAuth, requirePayroll, async (req, res, next) => {
+    try {
+      const { user_id, check_in_at, check_out_at } = req.body || {};
+      const row = await checkInAttendance(db, { userId: user_id, checkInAt: check_in_at, checkOutAt: check_out_at }, req);
+      res.status(201).json(row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/sessions/check-out", requireAuth, requirePayroll, async (req, res, next) => {
+    try {
+      const { user_id, check_out_at } = req.body || {};
+      const row = await checkOutAttendance(db, { userId: user_id, checkOutAt: check_out_at }, req);
+      res.status(201).json(row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/sessions/:id/correct", requireAuth, requirePayroll, async (req, res, next) => {
+    try {
+      const { check_out_at, reason } = req.body || {};
+      const row = await correctAttendanceCheckout(db, req.params.id, { checkOutAt: check_out_at, reason }, req);
+      res.json(row);
     } catch (e) {
       next(e);
     }

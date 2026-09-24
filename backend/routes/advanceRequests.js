@@ -114,7 +114,7 @@ export function createAdvanceRequestsRouter(db) {
     try {
       const result =
         status === "approved"
-          ? await approveAdvanceRequest(db, id, req.user, note, req, "admin")
+          ? await approveAdvanceRequest(db, id, req.user, note, req, "admin", req.body.occurred_on)
           : await rejectAdvanceRequest(db, id, req.user, note, req, "admin");
       res.json({ success: true, ...result });
     } catch (e) {

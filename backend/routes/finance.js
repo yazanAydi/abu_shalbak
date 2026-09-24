@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { postSupplierPaymentVoucher } from "./vouchers.js";
 import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/money.js";
 import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
@@ -46,6 +47,10 @@ export function createFinanceRouter(db) {
   const router = Router();
 
   router.use(requireAuth, requireReportsPermission(db, "finance"));
+  const requireSupplierWrites = requireReportsPermission(db, "suppliers");
+  const requireVoucherWrites = requireReportsPermission(db, "vouchers");
+  const requireExpenseWrites = requireReportsPermission(db, "expenses");
+  const requirePurchaseWrites = requireReportsPermission(db, "purchases");
 
   /** Period financial dashboard (sales / profit) plus current snapshots. */
   router.get("/overview", async (req, res) => {
@@ -64,7 +69,7 @@ export function createFinanceRouter(db) {
     res.json(rows);
   });
 
-  router.post("/suppliers", async (req, res) => {
+  router.post("/suppliers", requireSupplierWrites, async (req, res) => {
     const { name, contact_phone, contact_email, notes } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ error: "الاسم مطلوب" });
@@ -83,7 +88,7 @@ export function createFinanceRouter(db) {
     res.status(201).json(row);
   });
 
-  router.put("/suppliers/:id", async (req, res) => {
+  router.put("/suppliers/:id", requireSupplierWrites, async (req, res) => {
     const id = Number(req.params.id);
     const ex = await db.get("SELECT * FROM suppliers WHERE id = ?", [id]);
     if (!ex) return res.status(404).json({ error: "المورد غير موجود" });
@@ -116,7 +121,7 @@ export function createFinanceRouter(db) {
     res.json(row);
   });
 
-  router.delete("/suppliers/:id", async (req, res) => {
+  router.delete("/suppliers/:id", requireSupplierWrites, async (req, res) => {
     const id = Number(req.params.id);
     const ex = await db.get("SELECT * FROM suppliers WHERE id = ?", [id]);
     if (!ex) return res.status(404).json({ error: "المورد غير موجود" });
@@ -174,7 +179,7 @@ export function createFinanceRouter(db) {
     res.json(rows);
   });
 
-  router.post("/payments", async (req, res) => {
+  router.post("/payments", requireVoucherWrites, async (req, res) => {
     const { supplier_id, amount, paid_on, payment_method, reference_note, invoice_id } =
       req.body || {};
     const sid = Number(supplier_id);
@@ -198,20 +203,14 @@ export function createFinanceRouter(db) {
     const methods = ["cash", "transfer", "check", "other"];
     const pm = methods.includes(payment_method) ? payment_method : "transfer";
     const uid = req.user.id;
-    const info = await db.run(
-      `INSERT INTO supplier_payments
-        (supplier_id, amount, paid_on, payment_method, reference_note, recorded_by_id, invoice_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        sid,
-        amt,
-        day,
-        pm,
-        reference_note != null ? String(reference_note) : null,
-        uid,
-        invId,
-      ]
-    );
+    const voucher = await postSupplierPaymentVoucher(db, {
+      supplierId: sid,
+      amount: amt,
+      paidOn: day,
+      method: pm,
+      note: reference_note != null ? String(reference_note) : null,
+      userId: uid,
+    });
     if (invId) {
       const inv = await db.get("SELECT * FROM supplier_invoices WHERE id = ?", [invId]);
       const newPaid = round2(Number(inv.amount_paid) + amt);
@@ -224,20 +223,22 @@ export function createFinanceRouter(db) {
         invId,
       ]);
     }
-    const row = await db.get(
-      `SELECT
-        p.id, p.supplier_id, s.name AS supplier_name, p.amount, p.paid_on,
-        p.payment_method, p.reference_note, p.recorded_by_id, u.username AS recorded_by_username, p.created_at
-       FROM supplier_payments p
-       JOIN suppliers s ON s.id = p.supplier_id
-       LEFT JOIN users u ON u.id = p.recorded_by_id
-       WHERE p.id = ?`,
-      [info.lastID]
-    );
-    res.status(201).json(row);
+    const supplier = await db.get("SELECT name FROM suppliers WHERE id = ?", [sid]);
+    res.status(201).json({
+      id: voucher.id,
+      voucher_id: voucher.id,
+      supplier_id: sid,
+      supplier_name: supplier?.name || null,
+      amount: amt,
+      paid_on: day,
+      payment_method: pm,
+      reference_note: reference_note != null ? String(reference_note) : null,
+      recorded_by_id: uid,
+      representation: "voucher",
+    });
   });
 
-  router.delete("/payments/:id", async (req, res) => {
+  router.delete("/payments/:id", requireVoucherWrites, async (req, res) => {
     const id = Number(req.params.id);
     const info = await db.run("DELETE FROM supplier_payments WHERE id = ?", [id]);
     if (info.changes === 0) return res.status(404).json({ error: "غير موجود" });
@@ -280,7 +281,7 @@ export function createFinanceRouter(db) {
     res.json(rows);
   });
 
-  router.post("/operating-expenses", async (req, res, next) => {
+  router.post("/operating-expenses", requireExpenseWrites, async (req, res, next) => {
     try {
       const { category, amount, paid_on, payment_method, reference_note, employee_id, purpose } = req.body || {};
       const cat = OPEX_CATS.includes(String(category)) ? String(category) : "other";
@@ -336,7 +337,7 @@ export function createFinanceRouter(db) {
     }
   });
 
-  router.delete("/operating-expenses/:id", async (req, res, next) => {
+  router.delete("/operating-expenses/:id", requireExpenseWrites, async (req, res, next) => {
     try {
       await assertExpenseNotLinked(db, req.params.id);
       const id = Number(req.params.id);
@@ -410,7 +411,7 @@ export function createFinanceRouter(db) {
     res.json(rows);
   });
 
-  router.post("/invoices", async (req, res) => {
+  router.post("/invoices", requirePurchaseWrites, async (req, res) => {
     const { supplier_id, ref_text, amount_total, amount_paid, due_on } = req.body || {};
     const sid = Number(supplier_id);
     const at = round2(Number(amount_total));
@@ -433,7 +434,7 @@ export function createFinanceRouter(db) {
     res.status(201).json(row);
   });
 
-  router.put("/invoices/:id", async (req, res) => {
+  router.put("/invoices/:id", requirePurchaseWrites, async (req, res) => {
     const id = Number(req.params.id);
     const ex = await db.get("SELECT * FROM supplier_invoices WHERE id = ?", [id]);
     if (!ex) return res.status(404).json({ error: "غير موجود" });

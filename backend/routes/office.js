@@ -115,6 +115,25 @@ export function createOfficeRouter(db) {
   const router = Router();
 
   router.get("/nav-badges", requireAuth, requireOfficeRole(), async (req, res) => {
+    let permissions;
+    try {
+      permissions = await resolveUserPermissions(db, req.user);
+    } catch (err) {
+      if (err?.code === "PERMISSIONS_CORRUPT") {
+        return res.status(403).json({ success: false, error: err.message, code: err.code });
+      }
+      throw err;
+    }
+    const allowed = (key) => permissions?.[key] === true;
+    const showStock = allowed("stock_count") || allowed("products") || allowed("expiry");
+    const showBakery = allowed("bakery_supplies");
+    const showExpiry = allowed("expiry");
+    const showNegative = allowed("stock_count");
+    const showRefunds = allowed("refund_approvals");
+    const showOnAccount = allowed("on_account_approvals");
+    const showAdvances = allowed("advance_approvals");
+    const showShifts = allowed("shift_audit");
+
     const [
       retailLowStock,
       bakeryLowStock,
@@ -125,14 +144,14 @@ export function createOfficeRouter(db) {
       pendingAdvances,
       pendingShiftCount,
     ] = await Promise.all([
-      countLowStockByScope(db, "retail"),
-      countLowStockByScope(db, "bakery"),
-      loadExpiryCounts(db),
-      countNegativeStockRetail(db),
-      countPendingRefunds(db),
-      countPendingOnAccountRequests(db),
-      countPendingAdvanceRequests(db),
-      countPendingShiftCount(db),
+      showStock ? countLowStockByScope(db, "retail") : 0,
+      showBakery ? countLowStockByScope(db, "bakery") : 0,
+      showExpiry ? loadExpiryCounts(db) : { nearExpiry: 0, expiryPageAlerts: 0 },
+      showNegative ? countNegativeStockRetail(db) : 0,
+      showRefunds ? countPendingRefunds(db) : 0,
+      showOnAccount ? countPendingOnAccountRequests(db) : 0,
+      showAdvances ? countPendingAdvanceRequests(db) : 0,
+      showShifts ? countPendingShiftCount(db) : 0,
     ]);
     const nearExpiry = expiryCounts.nearExpiry;
     const expiryPageAlerts = expiryCounts.expiryPageAlerts;
@@ -147,34 +166,34 @@ export function createOfficeRouter(db) {
       "/shift-audit": pendingShiftCount,
     };
 
-    const permissions = await resolveUserPermissions(db, req.user);
     const byPath = filterBadgesForUser(req.user?.role, permissions, rawByPath);
     const total = Object.values(byPath).reduce((sum, n) => sum + n, 0);
-
-    const preview = await db.all(
-      `SELECT id, name, stock, min_stock, barcode
-       FROM products
-       WHERE (
-         (min_stock IS NOT NULL AND stock <= min_stock)
-         OR (min_stock IS NULL AND stock <= ?)
-       )
-       AND COALESCE(inventory_scope, 'retail') = 'retail'
-       ORDER BY stock ASC, name ASC
-       LIMIT 10`,
-      [LOW_STOCK_THRESHOLD]
-    );
+    const preview = showStock
+      ? await db.all(
+          `SELECT id, name, stock, min_stock, barcode
+           FROM products
+           WHERE (
+             (min_stock IS NOT NULL AND stock <= min_stock)
+             OR (min_stock IS NULL AND stock <= ?)
+           )
+           AND COALESCE(inventory_scope, 'retail') = 'retail'
+           ORDER BY stock ASC, name ASC
+           LIMIT 10`,
+          [LOW_STOCK_THRESHOLD]
+        )
+      : [];
 
     res.json({
-      retail_low_stock: retailLowStock,
+      retail_low_stock: showStock ? retailLowStock : 0,
       low_stock_preview: preview,
-      bakery_low_stock: bakeryLowStock,
-      near_expiry: nearExpiry,
-      expiry_page_alerts: expiryPageAlerts,
-      negative_stock: negativeStock,
-      pending_refunds: pendingRefunds,
-      pending_on_account: pendingOnAccount,
-      pending_advances: pendingAdvances,
-      pending_shift_count: pendingShiftCount,
+      bakery_low_stock: allowed("bakery_supplies") ? bakeryLowStock : 0,
+      near_expiry: allowed("expiry") ? nearExpiry : 0,
+      expiry_page_alerts: allowed("expiry") ? expiryPageAlerts : 0,
+      negative_stock: allowed("stock_count") ? negativeStock : 0,
+      pending_refunds: allowed("refund_approvals") ? pendingRefunds : 0,
+      pending_on_account: allowed("on_account_approvals") ? pendingOnAccount : 0,
+      pending_advances: allowed("advance_approvals") ? pendingAdvances : 0,
+      pending_shift_count: allowed("shift_audit") ? pendingShiftCount : 0,
       by_path: byPath,
       total,
     });

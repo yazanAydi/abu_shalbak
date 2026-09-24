@@ -46,7 +46,6 @@ const MAX_POS_FAVORITES = 24;
 const MAX_QUICK_CATEGORIES = 20;
 const MAX_DAIRY_CATEGORIES = 20;
 const MAX_BAKERY_REPORT_CATEGORIES = 20;
-const MAX_POS_QUICK_BUTTONS = 48;
 
 /**
  * Browser-reserved shortcuts that Chromium (Edge/Chrome) handles before
@@ -289,7 +288,6 @@ export function normalizeQuickButtons(raw, categories) {
     const button = { product_id: productId, category };
     if (productUnitId != null) button.product_unit_id = productUnitId;
     clean.push(button);
-    if (clean.length >= MAX_POS_QUICK_BUTTONS) break;
   }
   return clean;
 }
@@ -343,8 +341,10 @@ function parseValue(key, raw, context = {}) {
     case SETTING_KEYS.print_show_license:
       return raw === "1" || raw === "true" || raw === true;
     case SETTING_KEYS.business_day_cutoff_hour: {
-      const h = Math.floor(Number(raw));
-      return Number.isFinite(h) && h >= 0 && h <= 23 ? h : DEFAULTS[key];
+      const text = String(raw).trim();
+      if (!/^\d+$/.test(text)) return DEFAULTS[key];
+      const h = Number(text);
+      return Number.isInteger(h) && h >= 0 && h <= 23 ? h : DEFAULTS[key];
     }
     case SETTING_KEYS.pos_favorite_product_ids:
       return parseFavoriteIds(raw);
@@ -545,9 +545,6 @@ export async function updateAppSettings(db, patch) {
       throw new Error("أزرار الكاشير يجب أن تكون قائمة");
     }
     nextButtons = normalizeQuickButtons(patch[SETTING_KEYS.pos_quick_buttons], nextCategories);
-    if (nextButtons.length > MAX_POS_QUICK_BUTTONS) {
-      throw new Error(`الحد الأقصى ${MAX_POS_QUICK_BUTTONS} منتجاً في أزرار الكاشير`);
-    }
   } else if (patch[SETTING_KEYS.pos_quick_categories] !== undefined) {
     nextButtons = normalizeQuickButtons(nextButtons, nextCategories);
   }
@@ -569,8 +566,14 @@ export async function updateAppSettings(db, patch) {
     },
     [SETTING_KEYS.tax_inclusive]: (v) => (v ? "1" : "0"),
     [SETTING_KEYS.business_day_cutoff_hour]: (v) => {
-      const h = Math.floor(Number(v));
-      if (!Number.isFinite(h) || h < 0 || h > 23) throw new Error("ساعة بداية اليوم يجب أن تكون 0-23");
+      const text = typeof v === "number" && Number.isInteger(v) ? String(v) : String(v ?? "").trim();
+      if (!/^\d+$/.test(text)) {
+        throw new Error("ساعة بداية اليوم يجب أن تكون عدداً صحيحاً من 0 إلى 23");
+      }
+      const h = Number(text);
+      if (!Number.isInteger(h) || h < 0 || h > 23) {
+        throw new Error("ساعة بداية اليوم يجب أن تكون عدداً صحيحاً من 0 إلى 23");
+      }
       return String(h);
     },
     [SETTING_KEYS.receipt_show_tax]: (v) => (v ? "1" : "0"),

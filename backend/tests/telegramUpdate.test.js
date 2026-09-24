@@ -6,7 +6,11 @@ import {
   login,
   authHeader,
   withCheckoutKey,
+  configureTelegramApprover,
+  createAccountantUser,
 } from "./helpers.js";
+import { updateAppSettings, SETTING_KEYS } from "../utils/settings.js";
+import { allAccountantPermissionsDisabled } from "../utils/accountantPermissions.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 
 describe("Telegram refund callback", () => {
@@ -27,6 +31,7 @@ describe("Telegram refund callback", () => {
     }));
 
     ctx = await createTestContext();
+    await configureTelegramApprover(ctx.db);
     const cashierLogin = await login(ctx.app, "testcashier", "cashpass123", "pos");
     cashierToken = cashierLogin.body.token;
 
@@ -230,6 +235,43 @@ describe("Telegram refund callback", () => {
 
     expect(result.handled).toBe(true);
     expect(result.action).toBe("denied");
+    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
+    expect(reqRow.status).toBe("pending");
+  });
+
+  test("an unconfigured approver does not post the refund", async () => {
+    await updateAppSettings(ctx.db, { [SETTING_KEYS.refund_telegram_manager_user_id]: 0 });
+    const requestId = await createPendingRefund();
+    const result = await handleTelegramUpdate(ctx.db, {
+      callback_query: {
+        id: "test-cq-no-manager",
+        data: `refund:approve:${requestId}`,
+        message: { chat: { id: Number(managerChatId) } },
+        from: { id: Number(managerChatId) },
+      },
+    });
+    expect(result.action).toBe("no_manager");
+    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
+    expect(reqRow.status).toBe("pending");
+  });
+
+  test("an approver without refund_approvals does not post the refund", async () => {
+    const limited = await createAccountantUser(ctx.db, {
+      username: "tglimited",
+      password: "tgpass123",
+      permissions: allAccountantPermissionsDisabled(),
+    });
+    await updateAppSettings(ctx.db, { [SETTING_KEYS.refund_telegram_manager_user_id]: limited.id });
+    const requestId = await createPendingRefund();
+    const result = await handleTelegramUpdate(ctx.db, {
+      callback_query: {
+        id: "test-cq-no-perm",
+        data: `refund:approve:${requestId}`,
+        message: { chat: { id: Number(managerChatId) } },
+        from: { id: Number(managerChatId) },
+      },
+    });
+    expect(result.action).toBe("forbidden");
     const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
     expect(reqRow.status).toBe("pending");
   });

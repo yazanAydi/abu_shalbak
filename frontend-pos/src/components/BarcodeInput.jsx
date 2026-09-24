@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { createAbortController } from "../apiClient";
 import { focusBarcodeInput } from "../utils/focusBarcodeInput";
 import { lookupProductByBarcode, normalizeBarcode } from "../utils/barcode";
+import { searchProductsApi } from "../utils/productSearch";
+import { pickSearchProduct } from "./pos/PosProductSearch";
 import {
   playProductNotFound,
   unlockPosAudio,
@@ -36,9 +39,14 @@ export default function BarcodeInput({ onProductFound, onError }) {
   const [err, setErr] = useState("");
   const inputRef = useRef(null);
   const errTimer = useRef(null);
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
   const inFlightRef = useRef(false);
   const inFlightCodeRef = useRef(null);
   const queueRef = useRef([]);
+  const searchReqRef = useRef(0);
+  const pickGenRef = useRef(0);
   const onProductFoundRef = useRef(onProductFound);
   onProductFoundRef.current = onProductFound;
 
@@ -48,16 +56,50 @@ export default function BarcodeInput({ onProductFound, onError }) {
   }, []);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    focusBarcodeInput();
     return () => {
       if (errTimer.current) clearTimeout(errTimer.current);
     };
   }, []);
 
+  useEffect(() => {
+    const q = value.trim();
+    setHighlight(-1);
+    if (q.length < 2 || inFlightRef.current) {
+      setResults([]);
+      setLoading(false);
+      return undefined;
+    }
+    setLoading(true);
+    const ac = createAbortController();
+    const reqId = ++searchReqRef.current;
+    const timer = window.setTimeout(async () => {
+      try {
+        const rows = await searchProductsApi(q, { limit: 15, signal: ac.signal });
+        if (reqId !== searchReqRef.current) return;
+        setResults(rows);
+      } catch (e) {
+        if (e.code === "ERR_CANCELED" || e.name === "CanceledError") return;
+        if (reqId !== searchReqRef.current) return;
+        setResults([]);
+      } finally {
+        if (reqId === searchReqRef.current) setLoading(false);
+      }
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      ac.abort();
+    };
+  }, [value]);
+
   const search = useCallback(
     async (raw) => {
       const code = normalizeBarcode(raw);
       if (!code) return;
+      searchReqRef.current += 1;
+      pickGenRef.current += 1;
+      setResults([]);
+      setHighlight(-1);
       if (inFlightRef.current) {
         if (code === inFlightCodeRef.current || queueRef.current.includes(code)) {
           return;
@@ -105,10 +147,50 @@ export default function BarcodeInput({ onProductFound, onError }) {
     [onError, clearErrLater]
   );
 
+  async function chooseSuggestion(product) {
+    if (!product || inFlightRef.current) return;
+    const gen = pickGenRef.current;
+    const typed = inputRef.current?.value ?? value;
+    searchReqRef.current += 1;
+    setResults([]);
+    setHighlight(-1);
+    await pickSearchProduct(product, typed, (cartProduct) => {
+      if (gen !== pickGenRef.current) return;
+      onProductFoundRef.current?.(cartProduct);
+    });
+    if (gen !== pickGenRef.current) return;
+    setValue("");
+    setErr("");
+    setTimeout(() => focusBarcodeInput(), 0);
+  }
+
   function onKeyDown(ev) {
+    if (ev.key === "ArrowDown" && results.length) {
+      ev.preventDefault();
+      setHighlight((index) => (index + 1) % results.length);
+      return;
+    }
+    if (ev.key === "ArrowUp" && results.length) {
+      ev.preventDefault();
+      setHighlight((index) => (index <= 0 ? results.length - 1 : index - 1));
+      return;
+    }
+    if (ev.key === "Escape") {
+      searchReqRef.current += 1;
+      setResults([]);
+      setHighlight(-1);
+      return;
+    }
     if (ev.key === "Enter") {
       ev.preventDefault();
-      search(ev.currentTarget?.value ?? value);
+      const live = ev.currentTarget?.value ?? value;
+      const code = normalizeBarcode(live);
+      const row = highlight >= 0 ? results[highlight] : null;
+      if (row && !/^\d+$/.test(code)) {
+        chooseSuggestion(row);
+        return;
+      }
+      search(live);
     }
   }
 
@@ -121,9 +203,37 @@ export default function BarcodeInput({ onProductFound, onError }) {
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="امسح الباركود أو اكتب الرقم ثم اضغط إدخال"
+        placeholder="امسح الباركود أو ابحث باسم المنتج أو رقمه"
         autoComplete="off"
+        role="combobox"
+        aria-expanded={results.length > 0 || loading}
+        aria-controls="pos-scan-results"
+        aria-activedescendant={highlight >= 0 ? `pos-scan-opt-${highlight}` : undefined}
       />
+      {value.trim().length >= 2 && (loading || results.length > 0) ? (
+        <ul id="pos-scan-results" className="search-dropdown pos-product-search-dropdown" role="listbox">
+          {loading && results.length === 0 ? (
+            <li className="pos-product-search-status">جاري البحث…</li>
+          ) : (
+            results.map((product, index) => (
+              <li
+                key={product.id}
+                id={`pos-scan-opt-${index}`}
+                role="option"
+                aria-selected={index === highlight}
+                className={index === highlight ? "is-active" : undefined}
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => chooseSuggestion(product)}
+              >
+                {product.name}
+                {" — "}
+                {product.sku || product.barcode || (product.scale_code ? `كود الميزان ${product.scale_code}` : "")}
+                {product.price != null ? ` (₪${Number(product.price).toFixed(2)})` : ""}
+              </li>
+            ))
+          )}
+        </ul>
+      ) : null}
       {err ? <div className="barcode-err">{err}</div> : null}
     </div>
   );

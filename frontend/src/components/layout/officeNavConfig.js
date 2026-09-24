@@ -199,31 +199,6 @@ export const OFFICE_NAV = [
     visible: navVisible("expenses"),
   },
   {
-    path: "/employee-statements",
-    label: "كشف حساب الموظفين",
-    icon: "vouchers",
-    section: "finance",
-    permissionKey: "employee_payroll",
-    visible: navVisible("employee_payroll"),
-  },
-  {
-    path: "/employee-salaries",
-    label: "رواتب الموظفين",
-    icon: "shifts",
-    section: "finance",
-    permissionKey: "employee_payroll",
-    visible: navVisible("employee_payroll"),
-  },
-  {
-    path: "/cashier-payroll",
-    label: "أجور الساعة والدوام",
-    icon: "shifts",
-    section: "finance",
-    permissionKey: "employee_payroll",
-    omitFromPermissionTopics: true,
-    visible: navVisible("employee_payroll"),
-  },
-  {
     path: "/sales-reports",
     label: "تقارير المبيعات",
     icon: "finance",
@@ -270,6 +245,40 @@ export const OFFICE_NAV = [
     icon: "suppliers",
     section: "finance",
     visible: (role) => isAdminRole(role),
+  },
+  {
+    path: "/employee-statements",
+    label: "كشف حساب الموظفين",
+    icon: "vouchers",
+    section: "employees",
+    permissionKey: "employee_payroll",
+    visible: navVisible("employee_payroll"),
+  },
+  {
+    path: "/employee-salaries",
+    label: "رواتب الموظفين",
+    icon: "shifts",
+    section: "employees",
+    permissionKey: "employee_payroll",
+    visible: navVisible("employee_payroll"),
+  },
+  {
+    path: "/cashier-payroll",
+    label: "أجور الساعة والدوام",
+    icon: "shifts",
+    section: "employees",
+    permissionKey: "employee_payroll",
+    omitFromPermissionTopics: true,
+    visible: navVisible("employee_payroll"),
+  },
+  {
+    path: "/employee-attendance",
+    label: "تسجيل الحضور",
+    icon: "shifts",
+    section: "employees",
+    permissionKey: "employee_payroll",
+    omitFromPermissionTopics: true,
+    visible: navVisible("employee_payroll"),
   },
   {
     path: "/vouchers/receipt",
@@ -410,11 +419,12 @@ export const NAV_SECTION_LABELS = {
   catalog: "المخزون والمنتجات",
   invoices: "فواتير",
   finance: "المالية والتقارير",
+  employees: "الموظفون",
   operations: "العمليات",
   admin: "الإدارة",
 };
 
-export const SECTION_ORDER = ["overview", "bakery", "catalog", "invoices", "finance", "operations", "admin"];
+export const SECTION_ORDER = ["overview", "bakery", "catalog", "invoices", "finance", "employees", "operations", "admin"];
 
 export function filterOfficeNav(role, permissions) {
   return OFFICE_NAV.filter((item) => item.visible(role, permissions));
@@ -484,6 +494,7 @@ export const ROUTE_TITLES = {
   "/sales-reports": "تقارير المبيعات",
   "/shift-audit": "تدقيق الورديات",
   "/cashier-payroll": "أجور الساعة والدوام",
+  "/employee-attendance": "تسجيل الحضور",
   "/employee-statements": "كشف حساب الموظفين",
   "/employee-salaries": "رواتب الموظفين",
   "/refunds": "الاسترجاعات",
@@ -551,6 +562,7 @@ export const ROUTE_PERMISSION_KEYS = {
   "/sales-reports": "sales_reports",
   "/shift-audit": "shift_audit",
   "/cashier-payroll": "employee_payroll",
+  "/employee-attendance": "employee_payroll",
   "/employee-statements": "employee_payroll",
   "/employee-salaries": "employee_payroll",
   "/refunds": "refunds",

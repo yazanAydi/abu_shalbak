@@ -12,6 +12,13 @@ import {
 import ProductUnitsSection from "./ProductUnitsSection";
 import CategorySelect from "../../components/CategorySelect";
 import UnitNameSelect from "../../components/UnitNameSelect";
+import WeighedProductFields from "../../components/products/WeighedProductFields";
+import {
+  sellingPriceError,
+  sellingPriceLabel,
+  validateScaleSaleFields,
+  weighedSalePayload,
+} from "../../utils/scaleProductForm";
 import CameraBarcodeButton from "../../components/barcode/CameraBarcodeButton";
 import { normalizeBarcode } from "../../utils/barcode";
 import { productSkuInputValue } from "../../utils/entityCodeDisplay";
@@ -31,6 +38,7 @@ const emptyForm = {
   unit: "",
   expiry_date: "",
   is_weighed: false,
+  scale_only: false,
   scale_code: "",
   package_conversion: "",
   package_price: "",
@@ -49,7 +57,8 @@ function productToForm(product) {
     tax_rate: product.tax_rate != null ? String(product.tax_rate) : "",
     unit: product.unit || "",
     expiry_date: product.expiry_date || "",
-    is_weighed: Number(product.is_weighed) === 1,
+    is_weighed: Number(product.is_weighed) === 1 || Number(product.scale_only) === 1,
+    scale_only: Number(product.scale_only) === 1,
     scale_code: product.scale_code || "",
     package_conversion: product.package_conversion != null ? String(product.package_conversion) : "",
     package_price: product.package_price != null ? String(product.package_price) : "",
@@ -70,18 +79,19 @@ function sameNumber(a, b) {
 
 function dirtyProductPayload(form, product) {
   const payload = {};
-  const barcode = form.barcode.trim();
   const name = form.name.trim();
   const sku = form.sku.trim() || null;
   const price = Number(form.price);
   const cost = form.cost === "" ? 0 : Number(form.cost);
   const category = form.category.trim() || null;
   const tax_rate = form.tax_rate !== "" ? Number(form.tax_rate) : null;
-  const unit = form.is_weighed ? "كغم" : form.unit?.trim() || null;
+  const sale = weighedSalePayload(form);
+  const unit = sale.unit;
   const expiry_date = form.expiry_date?.trim() || null;
-  const is_weighed = form.is_weighed ? 1 : 0;
+  const is_weighed = sale.is_weighed;
+  const scale_only = sale.scale_only;
 
-  if (!sameText(barcode, product.barcode)) payload.barcode = barcode;
+  if (!sameText(sale.barcode, product.barcode || null)) payload.barcode = sale.barcode;
   if (!sameText(sku, productSkuInputValue(product.sku) || null)) payload.sku = sku;
   if (!sameText(name, product.name)) payload.name = name;
   if (!sameNumber(price, product.price)) payload.price = price;
@@ -91,23 +101,31 @@ function dirtyProductPayload(form, product) {
   if (!sameText(unit, product.unit)) payload.unit = unit;
   if (!sameText(expiry_date, product.expiry_date)) payload.expiry_date = expiry_date;
   if (is_weighed !== (Number(product.is_weighed) === 1 ? 1 : 0)) payload.is_weighed = is_weighed;
-  if (form.is_weighed) {
+  if (scale_only !== (Number(product.scale_only) === 1 ? 1 : 0)) payload.scale_only = scale_only;
+  if (form.scale_only || form.is_weighed) {
     const scale = form.scale_code?.trim() || null;
-    if (!sameText(scale, product.scale_code || null)) payload.scale_code = scale;
-    const convEmpty = form.package_conversion === "" || form.package_conversion == null;
-    const priceEmpty = form.package_price === "" || form.package_price == null;
-    const hadPackage = product.package_conversion != null || product.package_price != null;
-    if (convEmpty && priceEmpty) {
-      if (hadPackage) {
+    if (!sameText(scale, product.scale_code || null) || form.scale_only) payload.scale_code = scale;
+    if (form.scale_only) {
+      if (product.package_conversion != null || product.package_price != null) {
         payload.package_conversion = null;
         payload.package_price = null;
       }
-    } else if (!convEmpty && !priceEmpty) {
-      const conv = Number(form.package_conversion);
-      const pkgPrice = Number(form.package_price);
-      if (!sameNumber(conv, product.package_conversion) || !sameNumber(pkgPrice, product.package_price)) {
-        payload.package_conversion = conv;
-        payload.package_price = pkgPrice;
+    } else {
+      const convEmpty = form.package_conversion === "" || form.package_conversion == null;
+      const priceEmpty = form.package_price === "" || form.package_price == null;
+      const hadPackage = product.package_conversion != null || product.package_price != null;
+      if (convEmpty && priceEmpty) {
+        if (hadPackage) {
+          payload.package_conversion = null;
+          payload.package_price = null;
+        }
+      } else if (!convEmpty && !priceEmpty) {
+        const conv = Number(form.package_conversion);
+        const pkgPrice = Number(form.package_price);
+        if (!sameNumber(conv, product.package_conversion) || !sameNumber(pkgPrice, product.package_price)) {
+          payload.package_conversion = conv;
+          payload.package_price = pkgPrice;
+        }
       }
     }
   }
@@ -138,7 +156,7 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
     setErr(null);
 
     const name = form.name.trim();
-    if (!form.barcode.trim()) {
+    if (!form.scale_only && !form.barcode.trim()) {
       setErr("الباركود مطلوب");
       return;
     }
@@ -147,24 +165,13 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
       return;
     }
     if (form.price === "" || !Number.isFinite(Number(form.price)) || Number(form.price) < 0) {
-      setErr(form.is_weighed ? "أدخل سعر الكغم" : "أدخل سعر بيع صالحاً");
+      setErr(sellingPriceError(form));
       return;
     }
-    if (form.is_weighed) {
-      const convEmpty = form.package_conversion === "" || form.package_conversion == null;
-      const priceEmpty = form.package_price === "" || form.package_price == null;
-      if (convEmpty !== priceEmpty) {
-        setErr("أدخل وزن الحبة وسعر الحبة معاً، أو اتركهما فارغين للبيع بالوزن فقط");
-        return;
-      }
-      if (!convEmpty && (!Number.isFinite(Number(form.package_conversion)) || Number(form.package_conversion) <= 0)) {
-        setErr("وزن الحبة غير صالح");
-        return;
-      }
-      if (!priceEmpty && (!Number.isFinite(Number(form.package_price)) || Number(form.package_price) <= 0)) {
-        setErr("سعر الحبة غير صالح");
-        return;
-      }
+    const scaleErr = validateScaleSaleFields(form);
+    if (scaleErr) {
+      setErr(scaleErr);
+      return;
     }
 
     const payload = dirtyProductPayload(form, product);
@@ -204,12 +211,17 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
       }
     >
       <FormGrid>
-        <FormField label="الباركود" required hint="باركود المنتج المخزّن — ليس رقم المنتج">
+        <FormField
+          label="الباركود"
+          required={!form.scale_only}
+          hint={form.scale_only ? "اختياري لمنتج الميزان فقط" : "باركود المنتج المخزّن — ليس رقم المنتج"}
+        >
           <div className="barcode-input-row">
             <Input
               value={form.barcode}
               onChange={(e) => setForm({ ...form, barcode: e.target.value })}
               placeholder="امسح أو أدخل الباركود"
+              required={!form.scale_only}
             />
             <CameraBarcodeButton
               onScan={(code) =>
@@ -237,63 +249,16 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
             autoFocus
           />
         </FormField>
-        <FormField label="يُباع بالوزن (ميزان)">
-          <label style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <input
-              type="checkbox"
-              checked={Boolean(form.is_weighed)}
-              onChange={(e) =>
-                setForm({
-                  ...form,
-                  is_weighed: e.target.checked,
-                  unit: e.target.checked ? "كغم" : form.unit,
-                })
-              }
-            />
-            <span>يُباع بالوزن من الميزان (كغم). اترك وزن الحبة وسعر الحبة فارغين للبيع بالوزن فقط</span>
-          </label>
-        </FormField>
-        {form.is_weighed ? (
-          <FormField label="رمز الميزان" hint="مثل 2100003 — مستقل عن الباركود ورقم المنتج">
-            <Input
-              value={form.scale_code}
-              inputMode="numeric"
-              autoComplete="off"
-              onChange={(e) => setForm({ ...form, scale_code: e.target.value.replace(/\D/g, "") })}
-              placeholder="2100003"
-            />
-          </FormField>
-        ) : null}
-        {form.is_weighed ? (
-          <FormField
-            label="وزن الحبة (كغم)"
-            hint="اختياري مع سعر الحبة — اتركهما فارغين للبيع بالوزن فقط. يحدد خصم المخزون وليس السعر"
-          >
-            <Input
-              type="number"
-              step="0.001"
-              min="0.001"
-              value={form.package_conversion}
-              onChange={(e) => setForm({ ...form, package_conversion: e.target.value })}
-              placeholder="1.000"
-            />
-          </FormField>
-        ) : null}
-        {form.is_weighed ? (
-          <FormField label="سعر الحبة" hint="املأه مع وزن الحبة لإضافة بيع الحبة — مستقل عن سعر الكغم">
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
-              value={form.package_price}
-              onChange={(e) => setForm({ ...form, package_price: e.target.value })}
-              placeholder="0.00"
-            />
-          </FormField>
-        ) : null}
+        <WeighedProductFields form={form} onChange={setForm} />
         <FormField
-          label={form.is_weighed ? "سعر الكغم (ميزان)" : "سعر البيع"}
-          hint={form.is_weighed ? "سعر الميزان لكل كغم — مستقل عن سعر الحبة" : undefined}
+          label={sellingPriceLabel(form)}
+          hint={
+            form.scale_only
+              ? "سعر الكيلو — يُضرب في الوزن. تقريب الفاتورة يبقى منفصلاً"
+              : form.is_weighed
+                ? "سعر الميزان لكل كغم — مستقل عن سعر الحبة"
+                : undefined
+          }
           required
         >
           <Input
@@ -326,8 +291,8 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
         </FormField>
         <FormField label="الوحدة">
           <UnitNameSelect
-            value={form.is_weighed ? "كغم" : form.unit}
-            disabled={form.is_weighed}
+            value={form.is_weighed || form.scale_only ? "كغم" : form.unit}
+            disabled={form.is_weighed || form.scale_only}
             onChange={(e) => setForm({ ...form, unit: e.target.value })}
           />
         </FormField>

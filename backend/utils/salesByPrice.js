@@ -2,16 +2,11 @@ import { parseItemsJson } from "./cogs.js";
 import {
   TX_BUSINESS_DAY_JOIN,
   REFUND_BUSINESS_DAY_JOIN,
-  toSqlUtc,
+  businessDayRangeClause,
+  businessDayRangeParams,
   rowMatchesShopDateRange,
 } from "./businessDay.js";
-import { shopYmdRangeToUtcBounds } from "./shopTime.js";
 import { round2 } from "./money.js";
-
-function rangeUtcParams(from, to) {
-  const { startIso, endIso } = shopYmdRangeToUtcBounds(from, to);
-  return [toSqlUtc(startIso), toSqlUtc(endIso), toSqlUtc(startIso), toSqlUtc(endIso)];
-}
 
 /**
  * Aggregate completed-sale quantities/revenue/profit grouped by the selling price
@@ -24,11 +19,8 @@ export async function aggregateSalesByPrice(db, productId, filters = {}) {
   let where = "ti.product_id = ? AND t.status = 'completed'";
 
   if (dateFrom && dateTo) {
-    where += ` AND (
-      (datetime(t.created_at) >= datetime(?) AND datetime(t.created_at) <= datetime(?))
-      OR (cs.start_time IS NOT NULL AND datetime(cs.start_time) >= datetime(?) AND datetime(cs.start_time) <= datetime(?))
-    )`;
-    params.push(...rangeUtcParams(dateFrom, dateTo));
+    where += ` AND ${businessDayRangeClause("t", "cs")}`;
+    params.push(...businessDayRangeParams(dateFrom, dateTo));
   }
   if (cashierId) {
     where += " AND t.cashier_id = ?";
@@ -50,6 +42,8 @@ export async function aggregateSalesByPrice(db, productId, filters = {}) {
        COALESCE(ti.gross_profit, 0) AS total_profit,
        t.created_at AS first_sale_date,
        t.created_at AS last_sale_date,
+       t.business_day AS business_day,
+       cs.business_day AS shift_business_day,
        cs.start_time AS start_time
      FROM transaction_items ti
      JOIN transactions t ON t.id = ti.transaction_id
@@ -106,11 +100,8 @@ export async function aggregateRefundsByPrice(db, productId, filters = {}) {
      )`;
 
   if (dateFrom && dateTo) {
-    where += ` AND (
-      (datetime(r.created_at) >= datetime(?) AND datetime(r.created_at) <= datetime(?))
-      OR (cs.start_time IS NOT NULL AND datetime(cs.start_time) >= datetime(?) AND datetime(cs.start_time) <= datetime(?))
-    )`;
-    params.push(...rangeUtcParams(dateFrom, dateTo));
+    where += ` AND ${businessDayRangeClause("r", "cs")}`;
+    params.push(...businessDayRangeParams(dateFrom, dateTo));
   }
   if (cashierId) {
     where += " AND r.cashier_id = ?";
@@ -122,7 +113,10 @@ export async function aggregateRefundsByPrice(db, productId, filters = {}) {
   }
 
   const refundRows = await db.all(
-    `SELECT r.items_json, r.original_transaction_id, r.created_at, cs.start_time AS start_time
+    `SELECT r.items_json, r.original_transaction_id, r.created_at,
+            r.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS start_time
      FROM refunds r
      JOIN transactions t ON t.id = r.original_transaction_id
      ${REFUND_BUSINESS_DAY_JOIN}

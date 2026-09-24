@@ -5,6 +5,139 @@ import { shopTodayYmd } from "../utils/shopTime.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { partyBalanceForVoucher } from "../utils/partyBalanceAroundMove.js";
 
+/**
+ * Insert and post one supplier payment voucher. Caller must be in a transaction.
+ * Does not also insert supplier_payments.
+ * @param {object} db
+ * @param {{ supplierId: number, amount: number, paidOn: string, method: string, note?: string|null, userId: number, shiftId?: number|null, idempotencyKey?: string|null, payloadFingerprint?: string|null }} input
+ */
+export async function insertPostedSupplierPaymentVoucher(db, input) {
+  const lineType = input.method === "cash" ? "cash" : input.method === "check" ? "check" : "bank";
+  const ins = await db.run(
+    `INSERT INTO vouchers (
+       voucher_type, voucher_date, notes, total_amount, recorded_by_id,
+       shift_id, idempotency_key, payload_fingerprint
+     ) VALUES ('payment', ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      input.paidOn,
+      input.note || null,
+      input.amount,
+      input.userId,
+      input.shiftId ?? null,
+      input.idempotencyKey ?? null,
+      input.payloadFingerprint ?? null,
+    ]
+  );
+  const voucherId = ins.lastID;
+  const maxNo = await db.get(
+    "SELECT MAX(voucher_no) AS mx FROM vouchers WHERE voucher_type = 'payment'"
+  );
+  const nextNo = (maxNo?.mx || 0) + 1;
+  await db.run("UPDATE vouchers SET voucher_no = ? WHERE id = ?", [nextNo, voucherId]);
+  await db.run(
+    `INSERT INTO voucher_lines
+       (voucher_id, line_type, amount, currency, exchange_rate, amount_nis, supplier_id)
+     VALUES (?, ?, ?, 'NIS', 1, ?, ?)`,
+    [voucherId, lineType, input.amount, input.amount, input.supplierId]
+  );
+  const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [voucherId]);
+  const lines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucherId]);
+  await applyVoucherPostEffects(db, voucher, lines);
+  return db.get("SELECT * FROM vouchers WHERE id = ?", [voucherId]);
+}
+
+/**
+ * One supplier payment: a posted payment voucher, which moves the balance
+ * once. Does not also insert supplier_payments.
+ * @param {object} db
+ * @param {{ supplierId: number, amount: number, paidOn: string, method: string, note?: string|null, userId: number, shiftId?: number|null, idempotencyKey?: string|null, payloadFingerprint?: string|null }} input
+ */
+export async function postSupplierPaymentVoucher(db, input) {
+  return withTransaction(db, async () => insertPostedSupplierPaymentVoucher(db, input));
+}
+
+/**
+ * Insert and post one customer receipt voucher. Caller must be in a transaction.
+ * Balance moves once through applyVoucherPostEffects. Does not touch the drawer.
+ * @param {object} db
+ * @param {{ customerId: number, amount: number, paidOn: string, method: string, note?: string|null, userId: number, shiftId?: number|null, idempotencyKey?: string|null, payloadFingerprint?: string|null }} input
+ */
+export async function insertPostedCustomerReceiptVoucher(db, input) {
+  const lineType = input.method === "cash" ? "cash" : input.method === "check" ? "check" : "bank";
+  const ins = await db.run(
+    `INSERT INTO vouchers (
+       voucher_type, voucher_date, notes, total_amount, recorded_by_id,
+       shift_id, idempotency_key, payload_fingerprint
+     ) VALUES ('receipt', ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      input.paidOn,
+      input.note || null,
+      input.amount,
+      input.userId,
+      input.shiftId ?? null,
+      input.idempotencyKey ?? null,
+      input.payloadFingerprint ?? null,
+    ]
+  );
+  const voucherId = ins.lastID;
+  const maxNo = await db.get(
+    "SELECT MAX(voucher_no) AS mx FROM vouchers WHERE voucher_type = 'receipt'"
+  );
+  const nextNo = (maxNo?.mx || 0) + 1;
+  await db.run("UPDATE vouchers SET voucher_no = ? WHERE id = ?", [nextNo, voucherId]);
+  await db.run(
+    `INSERT INTO voucher_lines
+       (voucher_id, line_type, amount, currency, exchange_rate, amount_nis, customer_id, description)
+     VALUES (?, ?, ?, 'NIS', 1, ?, ?, ?)`,
+    [voucherId, lineType, input.amount, input.amount, input.customerId, "سند قبض"]
+  );
+  const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [voucherId]);
+  const lines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucherId]);
+  await applyVoucherPostEffects(db, voucher, lines);
+  return db.get("SELECT * FROM vouchers WHERE id = ?", [voucherId]);
+}
+
+/**
+ * Cash given to an ordinary customer on account. A posted payment voucher
+ * increases customers.balance once. It is not a receipt, a sale, or an expense.
+ * Caller must be in a transaction. Does not touch the drawer.
+ * @param {object} db
+ * @param {{ customerId: number, amount: number, paidOn: string, note?: string|null, userId: number, shiftId?: number|null, idempotencyKey?: string|null, payloadFingerprint?: string|null }} input
+ */
+export async function insertPostedCustomerCashDebtVoucher(db, input) {
+  const ins = await db.run(
+    `INSERT INTO vouchers (
+       voucher_type, voucher_date, notes, total_amount, recorded_by_id,
+       shift_id, idempotency_key, payload_fingerprint
+     ) VALUES ('payment', ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      input.paidOn,
+      input.note || null,
+      input.amount,
+      input.userId,
+      input.shiftId ?? null,
+      input.idempotencyKey ?? null,
+      input.payloadFingerprint ?? null,
+    ]
+  );
+  const voucherId = ins.lastID;
+  const maxNo = await db.get(
+    "SELECT MAX(voucher_no) AS mx FROM vouchers WHERE voucher_type = 'payment'"
+  );
+  const nextNo = (maxNo?.mx || 0) + 1;
+  await db.run("UPDATE vouchers SET voucher_no = ? WHERE id = ?", [nextNo, voucherId]);
+  await db.run(
+    `INSERT INTO voucher_lines
+       (voucher_id, line_type, amount, currency, exchange_rate, amount_nis, customer_id, description)
+     VALUES (?, 'cash', ?, 'NIS', 1, ?, ?, ?)`,
+    [voucherId, input.amount, input.amount, input.customerId, "ذمة نقدية"]
+  );
+  const voucher = await db.get("SELECT * FROM vouchers WHERE id = ?", [voucherId]);
+  const lines = await db.all("SELECT * FROM voucher_lines WHERE voucher_id = ?", [voucherId]);
+  await applyVoucherPostEffects(db, voucher, lines);
+  return db.get("SELECT * FROM vouchers WHERE id = ?", [voucherId]);
+}
+
 /** Apply party/bank balance effects and mark the voucher posted. Caller must be in a transaction. */
 export async function applyVoucherPostEffects(db, voucher, lines) {
   for (const L of lines) {

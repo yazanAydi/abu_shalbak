@@ -21,6 +21,7 @@ const EV_LABELS = {
     sale: "مبيعات فاتورة",
     refund: "مرتجع",
     payment: "قبض سند",
+    cash_debt: "ذمة نقدية",
   },
 };
 

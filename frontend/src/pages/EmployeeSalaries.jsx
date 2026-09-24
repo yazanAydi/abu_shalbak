@@ -101,7 +101,6 @@ export default function EmployeeSalaries() {
   const [showShifts, setShowShifts] = useState(false);
   const [hourlyRateDraft, setHourlyRateDraft] = useState("");
   const [savingRate, setSavingRate] = useState(false);
-  const [fillingSnapshots, setFillingSnapshots] = useState(false);
 
   const loadEmployees = useCallback(async () => {
     try {
@@ -199,25 +198,6 @@ export default function EmployeeSalaries() {
       toast.error(apiErrorMessage(e, "فشل حفظ أجر الساعة"));
     } finally {
       setSavingRate(false);
-    }
-  }
-
-  async function fillMissingSnapshots() {
-    if (!cashierUserId) return;
-    setFillingSnapshots(true);
-    try {
-      const { data } = await api.post(
-        `/api/payroll/cashiers/${cashierUserId}/fill-missing-snapshots`,
-        {},
-        { headers: getAuthHeaders() }
-      );
-      const updated = data?.updated_count ?? 0;
-      toast.success(updated ? `عُبئت ${updated} وردية مغلقة بلا أجر` : "لا توجد ورديات مغلقة بلا أجر");
-      await loadPreview();
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "فشل تعبئة أجر الورديات"));
-    } finally {
-      setFillingSnapshots(false);
     }
   }
 
@@ -343,7 +323,7 @@ export default function EmployeeSalaries() {
                 {showRateEditor ? (
                   <div className="ui-mt-md">
                     <Notice tone="warning">
-                      أجر الساعة الحالي يُستخدم من الوردية التالية ولا يغيّر ورديات أُغلقت بأجر محفوظ.
+                      أجر الساعة الحالي يُستخدم من الوردية التالية. وردية أُغلقت بلا أجر محفوظ تبقى غير مكتملة ولا يُنسخ عليها أجر اليوم.
                     </Notice>
                     <FormGrid>
                       <FormField label="أجر الساعة (₪)">
@@ -357,18 +337,9 @@ export default function EmployeeSalaries() {
                       </FormField>
                     </FormGrid>
                     <div className="ui-toolbar" style={{ gap: 8, marginTop: 8 }}>
-                      <Button onClick={saveLiveHourlyRate} disabled={savingRate || fillingSnapshots}>
+                      <Button onClick={saveLiveHourlyRate} disabled={savingRate}>
                         حفظ أجر الساعة
                       </Button>
-                      {missingSnapshot && !liveRateMissing ? (
-                        <Button
-                          variant="secondary"
-                          onClick={fillMissingSnapshots}
-                          disabled={savingRate || fillingSnapshots}
-                        >
-                          تعبئة الورديات المغلقة بلا أجر
-                        </Button>
-                      ) : null}
                     </div>
                   </div>
                 ) : null}

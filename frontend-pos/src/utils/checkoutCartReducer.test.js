@@ -152,4 +152,37 @@ describe("POS dual-unit price switching", () => {
     expect(line(state).quantity).toBe(2);
     expect(line(state).subtotal).toBe(12);
   });
+
+  test("KG unit without a scale weight does not assume 1 kg", () => {
+    const mapped = mapLookupToCartProduct(testdliLookup(kg));
+    expect(mapped.weighed).toBe(false);
+    expect(mapped.awaitingWeight).toBe(true);
+    expect(mapped.quantity).toBeUndefined();
+
+    const state = checkoutReducer(checkoutInitialState, {
+      type: "ADD_PRODUCT",
+      product: testdliLookup(kg),
+    });
+    expect(line(state).quantity).toBe("");
+    expect(line(state).awaitingWeight).toBe(true);
+    expect(line(state).weighed).toBe(false);
+    expect(line(state).subtotal).toBe(0);
+    expect(state.error).toBe("أدخل الوزن بالكيلو");
+  });
+
+  test("scale label still adds the decoded weight", () => {
+    const state = checkoutReducer(checkoutInitialState, {
+      type: "ADD_PRODUCT",
+      product: testdliLookup(kg, {
+        weighed: true,
+        weight: 1.55,
+        quantity: 1.55,
+        scanned_barcode: "2100077015504",
+      }),
+    });
+    expect(line(state).weighed).toBe(true);
+    expect(line(state).awaitingWeight).toBe(false);
+    expect(line(state).quantity).toBeCloseTo(1.55);
+    expect(line(state).subtotal).toBeCloseTo(9.3);
+  });
 });

@@ -7,7 +7,10 @@ import "../ShiftModal.css";
 
 function kindFromApiPath(apiPath) {
   const path = String(apiPath || "");
+  if (path.includes("shop-consumption")) return "shop";
+  if (path.includes("supplier-payment")) return "supplier";
   if (path.includes("advance")) return "advance";
+  if (path.includes("customer-cash-debt")) return "cash_debt";
   if (path.includes("on-account")) return "on_account";
   return "refund";
 }

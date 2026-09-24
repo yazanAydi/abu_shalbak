@@ -55,7 +55,12 @@ describe("Office login password-change recovery", () => {
         user: { id: 2, username: "a1", role: "admin", must_change_password: true, permissions: {} },
       },
     });
-    mockPost.mockResolvedValueOnce({ data: { success: true } });
+    mockPost.mockResolvedValueOnce({
+      data: {
+        token: "tok-next",
+        user: { id: 2, username: "a1", role: "admin", must_change_password: false, permissions: {} },
+      },
+    });
 
     const setInput = (el, value) => {
       const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
@@ -90,6 +95,7 @@ describe("Office login password-change recovery", () => {
 
     expect(mockPost).toHaveBeenCalledTimes(2);
     expect(mockPost.mock.calls[1][0]).toBe("/api/auth/change-password");
+    expect(localStorage.getItem("office.token")).toBe("tok-next");
     expect(mockNavigate).toHaveBeenCalled();
   });
 });

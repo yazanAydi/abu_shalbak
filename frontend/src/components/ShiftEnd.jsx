@@ -8,10 +8,12 @@ import CashCountFields, {
   countedNisTotal,
   expectedBreakdownText,
 } from "./CashCountFields";
+import ShiftCountTotals from "./ShiftCountTotals";
 import "./ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 export const SHIFT_VARIANCE_WARNING = 100;
+
 
 /**
  * @param {object} props
@@ -27,6 +29,7 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
   const [expected, setExpected] = useState(null);
   const [expectedByCurrency, setExpectedByCurrency] = useState([]);
   const [opening, setOpening] = useState(null);
+  const [countSummary, setCountSummary] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadErr, setLoadErr] = useState("");
@@ -43,6 +46,33 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
       setExpected(exp != null ? Number(exp) : null);
       setExpectedByCurrency(shiftData.summary?.expected_by_currency || shiftData.shift?.expected_by_currency || []);
       setOpening(shiftData.shift?.opening_cash != null ? Number(shiftData.shift.opening_cash) : null);
+      setCountSummary({
+        ...(shiftData.summary?.visa || shiftData.shift || {}),
+        cash_sales: shiftData.summary?.cash_sales ?? shiftData.shift?.cash_sales,
+        cash_only_sales: shiftData.summary?.cash_only_sales ?? shiftData.shift?.cash_only_sales,
+        mixed_cash_sales: shiftData.summary?.mixed_cash_sales ?? shiftData.shift?.mixed_cash_sales,
+        cash_refunds: shiftData.summary?.cash_refunds ?? shiftData.shift?.cash_refunds,
+        cash_net: shiftData.summary?.cash_net ?? shiftData.shift?.cash_net,
+        tender_total: shiftData.summary?.tender_total ?? shiftData.shift?.tender_total,
+        cash_sales_incomplete:
+          shiftData.summary?.cash_sales_incomplete ?? shiftData.shift?.cash_sales_incomplete,
+        cash_sales_label: shiftData.summary?.cash_sales_label || shiftData.shift?.cash_sales_label,
+        mixed_cash_label: shiftData.summary?.mixed_cash_label || shiftData.shift?.mixed_cash_label,
+        mixed_cash_included_note:
+          shiftData.summary?.mixed_cash_included_note || shiftData.shift?.mixed_cash_included_note,
+        visa_amount_label: shiftData.summary?.visa_amount_label || shiftData.shift?.visa_amount_label,
+        tender_total_label: shiftData.summary?.tender_total_label || shiftData.shift?.tender_total_label,
+        cash_refunds_label: shiftData.summary?.cash_refunds_label || shiftData.shift?.cash_refunds_label,
+        cash_net_label: shiftData.summary?.cash_net_label || shiftData.shift?.cash_net_label,
+        cash_sales_incomplete_note:
+          shiftData.summary?.cash_sales_incomplete_note ||
+          shiftData.shift?.cash_sales_incomplete_note,
+        expected_cash: exp,
+        expected_cash_label:
+          shiftData.summary?.expected_cash_label || shiftData.shift?.expected_cash_label,
+        expected_by_currency:
+          shiftData.summary?.expected_by_currency || shiftData.shift?.expected_by_currency || [],
+      });
       setCountCurrencies(Array.isArray(curData?.currencies) ? curData.currencies : []);
     } catch (e) {
       setLoadErr(apiErrorMessage(e, "تعذّر تحميل ملخص الوردية"));
@@ -101,9 +131,11 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
         <h2 className="shift-modal-title">إغلاق الوردية</h2>
         {loadErr ? <div className="shift-modal-err">{loadErr}</div> : null}
         {opening != null ? <p className="shift-modal-meta">افتتاح: {ils(opening)}</p> : null}
-        {expected != null ? (
+        {countSummary ? (
+          <ShiftCountTotals source={countSummary} breakdown={expectedByCurrency} />
+        ) : expected != null ? (
           <p className="shift-modal-meta">
-            النقد المتوقع حالياً: {ils(expected)}
+            النقد المتوقع في الصندوق: {ils(expected)}
             {breakdown ? ` (${breakdown})` : ""}
           </p>
         ) : null}

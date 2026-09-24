@@ -6,6 +6,7 @@ import {
   authHeader,
   createTestEmployee,
   createAccountantUser,
+  configureTelegramApprover,
 } from "./helpers.js";
 import { defaultAccountantPermissions } from "../utils/accountantPermissions.js";
 import { listPosEmployeeDirectory } from "../services/employeeService.js";
@@ -33,6 +34,7 @@ describe("POS salary advance (employee_id + payment service)", () => {
 
   beforeAll(async () => {
     ctx = await createTestContext();
+    await configureTelegramApprover(ctx.db);
     const adminLogin = await login(ctx.app, "testadmin", "adminpass123");
     const cashierLogin = await login(ctx.app, "testcashier", "cashpass123", "pos");
     adminToken = adminLogin.body.token;

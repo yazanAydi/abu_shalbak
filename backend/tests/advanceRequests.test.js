@@ -5,6 +5,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  configureTelegramApprover,
   createTestEmployee,
 } from "./helpers.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
@@ -26,6 +27,7 @@ describe("Telegram sulaf callback", () => {
     }));
 
     ctx = await createTestContext();
+    await configureTelegramApprover(ctx.db);
     const cashierLogin = await login(ctx.app, "testcashier", "cashpass123", "pos");
     cashierToken = cashierLogin.body.token;
 

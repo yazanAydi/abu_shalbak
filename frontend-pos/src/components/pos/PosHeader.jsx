@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { dateTime } from "../../utils/format";
 import { SHOP_TZ } from "../../utils/shopTime";
 import BarcodeInput from "../BarcodeInput";
-import PosProductSearch from "./PosProductSearch";
 
 function LiveClock() {
   const [now, setNow] = useState(() => new Date());
@@ -33,13 +32,22 @@ export default function PosHeader({
   onProductFound,
   onRefresh,
   refreshing = false,
+  onShopExpense,
+  shopExpenseDisabled = false,
 }) {
   return (
     <header className="pos-header" dir="rtl" lang="ar">
       <div className="pos-header-scan">
         <div className="pos-header-scan-row">
           <BarcodeInput onProductFound={onProductFound} onError={() => {}} />
-          <PosProductSearch onProductFound={onProductFound} />
+          <button
+            type="button"
+            className="pos-header-shop-expense"
+            onClick={onShopExpense}
+            disabled={shopExpenseDisabled}
+          >
+            ترحيل كمصاريف محل
+          </button>
         </div>
       </div>
       <div className="pos-header-meta pos-header-meta--compact">

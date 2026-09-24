@@ -1,5 +1,5 @@
 import { barcodeLookupKeys, digitsOnly, normalizeBarcodeInput, parseWeightBarcode, findProductByBarcode } from "./barcode.js";
-import { formatProductUnit, findKgUnit, loadUnitsForProduct, resolveScaleCode } from "./productUnits.js";
+import { formatProductUnit, findKgUnit, isKgUnit, loadUnitsForProduct, resolveScaleCode } from "./productUnits.js";
 import { isBakeryMaterial, isUnitSaleEnabled } from "./bakeryMembership.js";
 
 /**
@@ -71,6 +71,39 @@ export async function findProductUnitByBarcode(db, rawCode) {
 }
 
 /**
+ * Another product already owns this exact code as a barcode or a scale PLU.
+ * Same-product matches are ignored so a weighed item can keep its own codes.
+ * @param {object} db
+ * @param {string} code
+ * @param {number} productId
+ */
+async function otherProductOwnsCode(db, code, productId) {
+  if (!code) return null;
+  return db.get(
+    `SELECT id, name FROM (
+       SELECT id, name FROM products WHERE barcode = ? AND id != ?
+       UNION ALL
+       SELECT p.id, p.name
+         FROM product_barcodes pb
+         JOIN products p ON p.id = pb.product_id
+        WHERE pb.barcode = ? AND pb.product_id != ?
+       UNION ALL
+       SELECT p.id, p.name
+         FROM product_units pu
+         JOIN products p ON p.id = pu.product_id
+        WHERE pu.barcode = ? AND pu.product_id != ?
+       UNION ALL
+       SELECT p.id, p.name
+         FROM product_unit_barcodes pub
+         JOIN product_units pu ON pu.id = pub.product_unit_id
+         JOIN products p ON p.id = pu.product_id
+        WHERE pub.barcode = ? AND pu.product_id != ?
+     ) AS owners LIMIT 1`,
+    [code, productId, code, productId, code, productId, code, productId]
+  );
+}
+
+/**
  * Build API response for barcode lookup.
  * @param {object} db
  * @param {unknown} rawCode
@@ -125,6 +158,17 @@ export async function buildBarcodeLookupResponse(db, rawCode, options = {}) {
 
   if (!found) return null;
 
+  const identityCode = weightInfo
+    ? weightInfo.productCode
+    : digitsOnly(found.matchedBarcode || scannedBarcode);
+  const otherOwner = await otherProductOwnsCode(db, identityCode, found.product.id);
+  if (otherOwner) {
+    return {
+      conflict: true,
+      error: "هذا الرمز مستخدم لأكثر من منتج",
+    };
+  }
+
   const { product, selectedUnit, availableUnits, matchedBarcode, productBarcodeId } = found;
   if (Number(product.is_active) === 0) {
     return { inactive: true, product };
@@ -161,6 +205,7 @@ export async function buildBarcodeLookupResponse(db, rawCode, options = {}) {
       cost: product.cost,
       needs_review: Number(product.needs_review) === 1,
       is_weighed: Number(product.is_weighed) === 1,
+      scale_only: Number(product.scale_only) === 1,
       scale_code: resolveScaleCode(product, availableUnits),
       inventory_scope: product.inventory_scope || "retail",
     },
@@ -190,8 +235,12 @@ export async function buildBarcodeLookupResponse(db, rawCode, options = {}) {
       weighed: true,
       weight: weightInfo.weightKg,
       quantity: weightInfo.weightKg,
+      needs_weight: false,
     };
   }
 
-  return baseResponse;
+  return {
+    ...baseResponse,
+    needs_weight: isKgUnit(effectiveUnit),
+  };
 }

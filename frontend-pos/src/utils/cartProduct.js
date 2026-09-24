@@ -65,8 +65,14 @@ export function mapLookupToCartProduct(data) {
   };
   const availableUnits = data.availableUnits ?? (selectedUnit?.id ? [selectedUnit] : []);
   const productId = product.id ?? data.id;
-  const fromScale = Boolean(data.weighed);
+  const fromScale = Boolean(data.weighed) && Number(data.weight ?? data.quantity) > 0;
   const weight = fromScale ? Number(data.weight ?? data.quantity) : null;
+  const needsWeight =
+    !fromScale &&
+    (data.needs_weight === true ||
+      data.needsWeight === true ||
+      isKgSoldUnit(selectedUnit) ||
+      isKgSoldUnit(product));
   const scanned = data.scanned_barcode ?? null;
   const resolvedUnitName =
     selectedUnit?.unit_name ?? unitName ?? (fromScale ? WEIGHED_BASE_UNIT_NAME : "حبة");
@@ -88,7 +94,9 @@ export function mapLookupToCartProduct(data) {
     stock: Number(product.stock ?? data.stock),
     tax_rate: product.tax_rate ?? data.tax_rate ?? null,
     weighed: fromScale,
+    needsWeight,
     weight,
+    awaitingWeight: needsWeight,
     quantity: fromScale && Number.isFinite(weight) && weight > 0 ? weight : undefined,
     selectedUnit,
   };

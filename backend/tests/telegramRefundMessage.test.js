@@ -1,4 +1,4 @@
-import { formatRefundTelegramItemLines } from "../utils/telegram.js";
+import { formatRefundTelegramItemLines, onAccountTelegramItems } from "../utils/telegram.js";
 
 describe("formatRefundTelegramItemLines", () => {
   test("formats one product with name, qty, and line amount", () => {
@@ -55,5 +55,38 @@ describe("formatRefundTelegramItemLines", () => {
     expect(tight[0]).toBe("الأصناف:");
     expect(tight.some((line) => line.includes("أصناف أخرى"))).toBe(true);
     expect(tight.join("\n").length).toBeLessThan(full.join("\n").length);
+  });
+});
+
+describe("onAccountTelegramItems", () => {
+  test("reads cart lines and charged totals from the sale snapshot", () => {
+    const items = onAccountTelegramItems({
+      normalized: [
+        { name: "بندورة", quantity: 1.2, unit_name: "كغم", price: 5 },
+        { name: "خبز", quantity: 2, unit_name: "حبة", price: 1 },
+      ],
+      detailed: [{ lineGross: 6 }, { lineGross: 2 }],
+    });
+    const lines = formatRefundTelegramItemLines(items);
+    expect(lines).toEqual([
+      "الأصناف:",
+      "• بندورة × 1.2 كغم — ₪6.00",
+      "• خبز × 2 حبة — ₪2.00",
+    ]);
+  });
+
+  test("parses a JSON snapshot and falls back to itemsForJson", () => {
+    const items = onAccountTelegramItems(
+      JSON.stringify({
+        itemsForJson: [{ name: "حليب", quantity: 1, price: 7.5 }],
+      })
+    );
+    expect(formatRefundTelegramItemLines(items)).toContain("• حليب × 1 — ₪7.50");
+  });
+
+  test("returns no lines when the snapshot is missing or invalid", () => {
+    expect(onAccountTelegramItems(null)).toEqual([]);
+    expect(onAccountTelegramItems("not-json")).toEqual([]);
+    expect(onAccountTelegramItems({})).toEqual([]);
   });
 });

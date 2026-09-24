@@ -4,7 +4,7 @@ import { buildVoucherDocPrintHtml } from "./voucherDocPrint";
 import { buildInventoryDocumentPrintHtml } from "./inventoryDocumentPrint";
 
 beforeEach(() => {
-  localStorage.setItem("user", JSON.stringify({ username: "admin" }));
+  localStorage.setItem("office.user", JSON.stringify({ username: "admin" }));
 });
 
 describe("A4 print templates use compact sheet CSS", () => {

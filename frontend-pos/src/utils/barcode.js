@@ -25,8 +25,8 @@ export async function lookupProductByBarcode(raw) {
     }
     throw new Error(e.response?.data?.error || e.message || "تعذّر البحث");
   }
-  if (!data?.found || data.inactive) {
-    throw new Error(`لم يُعثر على المنتج (${code})`);
+  if (data?.inactive || !data?.found) {
+    throw new Error(data?.error || `لم يُعثر على المنتج (${code})`);
   }
   return data;
 }

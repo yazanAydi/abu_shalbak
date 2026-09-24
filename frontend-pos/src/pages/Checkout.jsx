@@ -16,10 +16,11 @@ import PosQuickGrid from "../components/pos/PosQuickGrid";
 import PosPaymentPanel from "../components/pos/PosPaymentPanel";
 import PosPaymentModal from "../components/pos/PosPaymentModal";
 import PosRefundNotifications from "../components/pos/PosRefundNotifications";
+import PosPrintQueue from "../components/pos/PosPrintQueue";
 import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
 import { requiresShiftForPos } from "../utils/roles";
 import ShiftStart from "../components/ShiftStart";
-import { openReceiptForPrinting, printReceipt, saleSavedPrintFailedMessage } from "../utils/printReceipt";
+import { openReceiptForPrinting, printReceipt } from "../utils/printReceipt";
 import { RECEIPT_PRINT_TAB_NAME } from "../utils/printDocument";
 import { submitCompleteSale } from "../utils/completeSaleSubmit";
 import { estimateCartTotals, buildCartLineDiscounts } from "../utils/posTotals";
@@ -53,6 +54,8 @@ const PosSuspendedDetailModal = lazy(() => import("../components/pos/PosSuspende
 const PosRestoreConflictModal = lazy(() => import("../components/pos/PosRestoreConflictModal"));
 const PosRefundModal = lazy(() => import("../components/pos/PosRefundModal"));
 const PosAdvanceRequestModal = lazy(() => import("../components/pos/PosAdvanceRequestModal"));
+const PosSupplierPaymentModal = lazy(() => import("../components/pos/PosSupplierPaymentModal"));
+const PosShopConsumptionModal = lazy(() => import("../components/pos/PosShopConsumptionModal"));
 const PosApprovalWaitingModal = lazy(() => import("../components/pos/PosApprovalWaitingModal"));
 const ShiftEnd = lazy(() => import("../components/ShiftEnd"));
 
@@ -89,9 +92,20 @@ export default function Checkout() {
   const [endShiftOpen, setEndShiftOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [advanceOpen, setAdvanceOpen] = useState(false);
+  const [supplierPayOpen, setSupplierPayOpen] = useState(false);
+  const [shopExpenseOpen, setShopExpenseOpen] = useState(false);
   const [advanceWaitingId, setAdvanceWaitingId] = useState(() => readWaitingRequestId("advance"));
   const [onAccountWaitingId, setOnAccountWaitingId] = useState(() =>
     readWaitingRequestId("onAccount")
+  );
+  const [cashDebtWaitingId, setCashDebtWaitingId] = useState(() =>
+    readWaitingRequestId("cashDebt")
+  );
+  const [supplierWaitingId, setSupplierWaitingId] = useState(() =>
+    readWaitingRequestId("supplierPayment")
+  );
+  const [shopExpenseWaitingId, setShopExpenseWaitingId] = useState(() =>
+    readWaitingRequestId("shopExpense")
   );
   const finalizedOnAccountRef = useRef(new Set());
   const [holdLoading, setHoldLoading] = useState(false);
@@ -249,7 +263,7 @@ export default function Checkout() {
     [cartItems, activePromos]
   );
 
-  const { tax, discount, total } = estimated;
+  const { tax, discount, total, roundingAdjustment } = estimated;
 
   const addToCart = useCallback((product) => {
     if (isLoading) return;
@@ -263,6 +277,10 @@ export default function Checkout() {
   }, []);
 
   const changeQuantity = useCallback((cartKey, newQty) => {
+    if (newQty === "" || newQty == null) {
+      dispatch({ type: "CHANGE_QTY", cartKey, newQty: "" });
+      return;
+    }
     if (!(Number(newQty) > 0)) return;
     dispatch({ type: "CHANGE_QTY", cartKey, newQty });
   }, []);
@@ -420,16 +438,7 @@ export default function Checkout() {
       loadShift();
       loadSuspendedList();
       focusBarcodeInput();
-      if (checkout.transaction_id) {
-        printReceipt(checkout, { alert: false }).then((printed) => {
-          if (!printed?.ok) {
-            dispatch({
-              type: "CHECKOUT_PRINT_WARNING",
-                message: saleSavedPrintFailedMessage(checkout.receipt_number, printed?.error),
-            });
-          }
-        });
-      }
+      /* Approved ذمة prints once from the cashier print queue, not from this callback. */
     },
     [loadShift, loadSuspendedList]
   );
@@ -456,6 +465,18 @@ export default function Checkout() {
       }
     },
     [ackDecision, finalizeApprovedOnAccountSale, onAccountWaitingId]
+  );
+
+  const handleCashDebtTerminal = useCallback(
+    async (detail) => {
+      const id = detail?.request_id ?? detail?.id ?? cashDebtWaitingId;
+      await ackDecision("/api/customer-cash-debt-requests", id);
+      if (detail?.status === "approved" || detail?.status === "rejected") {
+        writeWaitingRequestId("cashDebt", null);
+        loadShift();
+      }
+    },
+    [ackDecision, cashDebtWaitingId, loadShift]
   );
 
   const handleAdvanceTerminal = useCallback(
@@ -495,6 +516,10 @@ export default function Checkout() {
 
   function handleCompleteClick() {
     if (!cartItems.length || !shiftReady || isLoading) return;
+    if (cartItems.some((it) => !(Number(it.quantity) > 0))) {
+      dispatch({ type: "CHECKOUT_ERROR", fallback: "أدخل الوزن بالكيلو قبل إتمام البيع" });
+      return;
+    }
     dispatch({ type: "CLEAR_SALE_ERR" });
     setSelectedPayment("cash");
     setCustomerId(null);
@@ -504,6 +529,10 @@ export default function Checkout() {
 
   async function holdCartNow() {
     if (!cartItems.length || !shiftReady || holdLoading) return;
+    if (cartItems.some((it) => !(Number(it.quantity) > 0))) {
+      dispatch({ type: "CHECKOUT_ERROR", fallback: "أدخل الوزن بالكيلو قبل تعليق الفاتورة" });
+      return;
+    }
     setHoldLoading(true);
     try {
       await suspendCartItems(cartItems, null);
@@ -601,7 +630,10 @@ export default function Checkout() {
     clearCartOpen ||
     suspendedModalOpen ||
     detailModalOpen ||
-    restoreConflictOpen;
+    restoreConflictOpen ||
+    supplierPayOpen ||
+    !!cashDebtWaitingId ||
+    !!supplierWaitingId;
 
   useEffect(() => {
     function onKeyDown(ev) {
@@ -684,7 +716,8 @@ export default function Checkout() {
     focusBarcodeInput();
   }
 
-  const canComplete = cartItems.length > 0 && !isLoading && shiftReady;
+  const weightMissing = cartItems.some((it) => it.awaitingWeight || !(Number(it.quantity) > 0));
+  const canComplete = cartItems.length > 0 && !weightMissing && !isLoading && shiftReady;
 
   const goToLogin = useCallback(() => {
     removeToken();
@@ -713,12 +746,23 @@ export default function Checkout() {
         onProductFound={addToCart}
         onRefresh={refreshPos}
         refreshing={posRefreshing}
+        shopExpenseDisabled={!cartItems.length}
+        onShopExpense={() => {
+          if (cartItems.some((it) => !(Number(it.quantity) > 0))) {
+            dispatch({ type: "CHECKOUT_ERROR", fallback: "أدخل الوزن بالكيلو قبل ترحيل المصاريف" });
+            return;
+          }
+          setShopExpenseOpen(true);
+        }}
       />
+
+      <PosPrintQueue />
 
       <PosRefundNotifications
         suppressIds={{
           on_account: onAccountWaitingId,
           advance: advanceWaitingId,
+          cash_debt: cashDebtWaitingId,
         }}
         onApprovedOnAccount={finalizeApprovedOnAccountSale}
       />
@@ -765,6 +809,7 @@ export default function Checkout() {
         <PosPaymentPanel
           tax={tax}
           discount={discount}
+          roundingAdjustment={roundingAdjustment}
           total={total}
           error={error}
           printWarning={printWarning}
@@ -802,6 +847,9 @@ export default function Checkout() {
             </button>
             <button type="button" className="pos-toolbar-btn" onClick={() => setAdvanceOpen(true)}>
               سلف
+            </button>
+            <button type="button" className="pos-toolbar-btn" onClick={() => setSupplierPayOpen(true)}>
+              موردين/ذمم
             </button>
           </div>
         </PosPaymentPanel>
@@ -876,6 +924,46 @@ export default function Checkout() {
           />
         ) : null}
 
+        {shopExpenseOpen ? (
+          <PosShopConsumptionModal
+            open
+            cartItems={cartItems}
+            onClose={() => {
+              setShopExpenseOpen(false);
+              focusBarcodeInput();
+            }}
+            onPosted={() => {
+              setShopExpenseOpen(false);
+              resetInvoiceState();
+            }}
+            onWaiting={(id) => {
+              writeWaitingRequestId("shopExpense", id);
+              setShopExpenseWaitingId(id);
+              setShopExpenseOpen(false);
+            }}
+          />
+        ) : null}
+
+        {supplierPayOpen ? (
+          <PosSupplierPaymentModal
+            open
+            onClose={() => setSupplierPayOpen(false)}
+            onPaid={() => {
+              loadShift();
+            }}
+            onSupplierWaiting={(id) => {
+              writeWaitingRequestId("supplierPayment", id);
+              setSupplierWaitingId(id);
+              setSupplierPayOpen(false);
+            }}
+            onCashDebtWaiting={(id) => {
+              writeWaitingRequestId("cashDebt", id);
+              setCashDebtWaitingId(id);
+              setSupplierPayOpen(false);
+            }}
+          />
+        ) : null}
+
         {advanceWaitingId ? (
           <PosApprovalWaitingModal
             open
@@ -893,6 +981,74 @@ export default function Checkout() {
             }
             onClose={handleAdvanceWaitingClose}
             onTerminal={handleAdvanceTerminal}
+          />
+        ) : null}
+
+        {shopExpenseWaitingId ? (
+          <PosApprovalWaitingModal
+            open
+            requestId={shopExpenseWaitingId}
+            apiPath="/api/shop-consumption-requests"
+            titlePrefix="مصاريف محل"
+            statusLabels={{
+              pending: "بانتظار الموافقة — لم يُخصم المخزون",
+              approved: "تمت الموافقة — خُصم المخزون بالتكلفة",
+              rejected: "تم رفض مصاريف المحل",
+            }}
+            onClose={() => {
+              writeWaitingRequestId("shopExpense", null);
+              setShopExpenseWaitingId(null);
+            }}
+            onTerminal={(detail) => {
+              if (detail?.status === "approved") resetInvoiceState();
+            }}
+          />
+        ) : null}
+
+        {supplierWaitingId ? (
+          <PosApprovalWaitingModal
+            open
+            requestId={supplierWaitingId}
+            apiPath="/api/supplier-payment-requests"
+            titlePrefix="طلب دفع لمورد"
+            statusLabels={{
+              pending: "بانتظار الموافقة — لا تسلّم النقد قبل الموافقة",
+              approved: "تمت الموافقة — سُجّلت الدفعة",
+              rejected: "تم رفض طلب الدفع للمورد",
+            }}
+            detailLine={(d) =>
+              d?.supplier_name && d?.amount != null ? `${d.supplier_name} — ${ils(d.amount)}` : null
+            }
+            onClose={() => {
+              writeWaitingRequestId("supplierPayment", null);
+              setSupplierWaitingId(null);
+            }}
+            onTerminal={() => {
+              loadShift();
+            }}
+          />
+        ) : null}
+
+        {cashDebtWaitingId ? (
+          <PosApprovalWaitingModal
+            open
+            requestId={cashDebtWaitingId}
+            apiPath="/api/customer-cash-debt-requests"
+            titlePrefix="طلب ذمة نقدية"
+            statusLabels={{
+              pending: "بانتظار الموافقة — لا تسلّم المبلغ قبل الموافقة",
+              approved: "تمت الموافقة — سلّم المبلغ للعميل",
+              rejected: "تم رفض طلب الذمة النقدية",
+              expired: "انتهت صلاحية الطلب",
+            }}
+            detailLine={(d) =>
+              d?.customer_name && d?.amount != null ? `${d.customer_name} — ${ils(d.amount)}` : null
+            }
+            onClose={() => {
+              writeWaitingRequestId("cashDebt", null);
+              setCashDebtWaitingId(null);
+            }}
+            onTerminal={handleCashDebtTerminal}
           />
         ) : null}
 
@@ -950,6 +1106,7 @@ export default function Checkout() {
       <PosPaymentModal
         open={payModalOpen}
         total={total}
+        roundingAdjustment={roundingAdjustment}
         selectedPayment={selectedPayment}
         onSelectPayment={setSelectedPayment}
         customerId={customerId}

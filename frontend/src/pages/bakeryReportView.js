@@ -1,4 +1,5 @@
 import { ils, qty } from "../utils/format";
+import { displayProductSku } from "../utils/entityCodeDisplay";
 
 export const BAKERY_CLASSIFICATION_NOTE =
   "التصنيف حسب التصنيف الحالي للمنتج (لا يُحفظ التصنيف عند البيع). تغيير تصنيف المنتج يغيّر نتائج تقرير المخبز للفترات السابقة.";
@@ -67,6 +68,7 @@ export function bakerySummaryItems(kpis, options = {}) {
 
 export function bakeryExportColumns() {
   return [
+    { key: "sku", header: "الرقم", value: (r) => displayProductSku(r.sku) },
     { key: "name", header: "المنتج" },
     { key: "revenue_kind", header: "النوع", value: (r) => bakeryRevenueKindLabel(r.revenue_kind) },
     { key: "barcode", header: "الباركود", value: (r) => r.barcode || "" },

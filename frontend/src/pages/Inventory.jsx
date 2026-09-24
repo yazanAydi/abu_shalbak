@@ -358,7 +358,7 @@ function Batches({ membership = null }) {
       <FilterBar
         actions={
           <>
-            <Button icon="plus" onClick={() => setShow(true)}>دفعة جديدة</Button>
+            <Button icon="plus" onClick={() => setShow(true)}>تعيين صلاحية</Button>
             <ReportToolbar title="دفعات المخزون" columns={pickExportColumns(batchColumns)} rows={rows} filename="inventory-batches" disabled={loading} />
           </>
         }
@@ -371,8 +371,11 @@ function Batches({ membership = null }) {
         empty="لا توجد دفعات"
       />
 
-      <Modal open={show} title="دفعة جديدة" onClose={() => setShow(false)}
+      <Modal open={show} title="تعيين صلاحية لمخزون قائم" onClose={() => setShow(false)}
         footer={<><Button onClick={save}>حفظ</Button><Button variant="secondary" onClick={() => setShow(false)}>إلغاء</Button></>}>
+        <p className="ui-text-muted" style={{ marginTop: 0 }}>
+          تُؤخذ الكمية من المخزون بلا تاريخ صلاحية. لا تزيد رصيد الصنف ولا تُسجَّل كشراء.
+        </p>
         <div className="ui-mt-md">
           <ProductPicker
             onPick={(p) => setForm((f) => ({ ...f, product_id: p.id, name: p.name }))}

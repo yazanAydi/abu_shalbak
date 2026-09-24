@@ -1,4 +1,4 @@
-import { round2, sumMoney, roundScaleSaleTotal } from "../utils/money.js";
+import { allocatePosRefundPayable, round2, roundPosPayable, sumMoney, roundScaleSaleTotal } from "../utils/money.js";
 import { computeSaleTotals, computePurchaseInvoiceTotals, applyPurchaseDiscount } from "../utils/tax.js";
 
 /**
@@ -45,26 +45,26 @@ describe("Money precision", () => {
     expect(r.subtotal).toBe(9.99);
   });
 
-  test("purchase invoice supplier total 50 → net 42, VAT 8 at 16%", () => {
+  test("purchase invoice supplier total 50 includes 16% VAT as 43.10 + 6.90", () => {
     const r = computePurchaseInvoiceTotals([{ total_cost: 50, vat_rate: 0.16 }], 0.16);
     expect(r.lines[0].line_total).toBe(50);
-    expect(r.lines[0].line_vat).toBe(8);
-    expect(r.lines[0].line_net).toBe(42);
+    expect(r.lines[0].line_net).toBe(43.1);
+    expect(r.lines[0].line_vat).toBe(6.9);
     expect(r.total).toBe(50);
   });
 
-  test("purchase invoice 10% discount on 50 gross at 16% VAT", () => {
+  test("purchase invoice 10% discount on 50 gross at 16% inclusive VAT", () => {
     const r = computePurchaseInvoiceTotals([{ total_cost: 50, discount_pct: 10, vat_rate: 0.16 }], 0.16);
     expect(r.lines[0].line_total).toBe(45);
-    expect(r.lines[0].line_vat).toBe(7.2);
-    expect(r.lines[0].line_net).toBe(37.8);
+    expect(r.lines[0].line_net).toBe(38.79);
+    expect(r.lines[0].line_vat).toBe(6.21);
     expect(r.total).toBe(45);
   });
 
-  test("purchase invoice gross 116 at 16% → net 97.44, VAT 18.56", () => {
+  test("purchase invoice gross 116 at 16% → net 100, VAT 16, payable 116", () => {
     const r = computePurchaseInvoiceTotals([{ total_cost: 116, vat_rate: 0.16 }], 0.16);
-    expect(r.lines[0].line_vat).toBe(18.56);
-    expect(r.lines[0].line_net).toBe(97.44);
+    expect(r.lines[0].line_net).toBe(100);
+    expect(r.lines[0].line_vat).toBe(16);
     expect(r.lines[0].line_total).toBe(116);
     expect(r.total).toBe(116);
   });
@@ -115,5 +115,54 @@ describe("Money precision", () => {
       { tax_inclusive: false }
     );
     expect(r.total).toBe(12.5);
+  });
+
+  test("final POS payable keeps .50 and rounds other agorot remainders", () => {
+    const cases = [
+      [21.3, 21.3, 21, -0.3],
+      [45.6, 45.6, 46, 0.4],
+      [2.5, 2.5, 2.5, 0],
+      [2.49, 2.49, 2, -0.49],
+      [2.51, 2.51, 3, 0.49],
+      [2, 2, 2, 0],
+      [2.0, 2, 2, 0],
+      [2.01, 2.01, 2, -0.01],
+      [2.99, 2.99, 3, 0.01],
+      [0.49, 0.49, 0, -0.49],
+      [0.5, 0.5, 0.5, 0],
+      [0.51, 0.51, 1, 0.49],
+    ];
+    for (const [raw, calculated, payable, adjustment] of cases) {
+      expect(roundPosPayable(raw)).toEqual({ calculated, payable, adjustment });
+    }
+  });
+
+  test("line totals are not passed through the final payable rule", () => {
+    const r = computeSaleTotals([{ quantity: 1, unitPrice: 2.3, scaleWeighed: false }], {});
+    expect(r.total).toBe(2.3);
+    expect(roundPosPayable(r.total).payable).toBe(2);
+  });
+
+  test("partial refunds share the stored adjustment and the last one takes the remainder", () => {
+    const first = allocatePosRefundPayable({
+      merchandise: 10.3,
+      saleMerchandise: 20.6,
+      saleAdjustment: 0.4,
+      salePayable: 21,
+      alreadyRefunded: 0,
+      exhaustsSale: false,
+    });
+    expect(first.payable).toBe(10.5);
+    expect(first.payable).not.toBe(roundPosPayable(10.3).payable);
+    const last = allocatePosRefundPayable({
+      merchandise: 10.3,
+      saleMerchandise: 20.6,
+      saleAdjustment: 0.4,
+      salePayable: 21,
+      alreadyRefunded: first.payable,
+      exhaustsSale: true,
+    });
+    expect(last.payable).toBe(10.5);
+    expect(round2(first.payable + last.payable)).toBe(21);
   });
 });

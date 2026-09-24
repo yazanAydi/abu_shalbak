@@ -4,7 +4,6 @@ import {
   defaultAccountantPermissions,
   getEffectivePermissions,
   hasAccountantPermission,
-  normalizeAccountantPermissions,
   userHasOfficePermission,
   userHasAccountantPermission,
 } from "../utils/accountantPermissions.js";
@@ -15,7 +14,8 @@ describe("permission helpers", () => {
   test("hasAccountantPermission: admin follows an explicit custom map", () => {
     expect(hasAccountantPermission("admin", noneAllowed, "products")).toBe(false);
     expect(hasAccountantPermission("admin", { products: true }, "products")).toBe(true);
-    expect(hasAccountantPermission("admin", {}, "permissions")).toBe(true);
+    expect(hasAccountantPermission("admin", { products: true }, "finance")).toBe(false);
+    expect(hasAccountantPermission("admin", {}, "permissions")).toBe(false);
     expect(hasAccountantPermission("admin", null, "products")).toBe(true);
   });
 
@@ -35,9 +35,10 @@ describe("permission helpers", () => {
   test("getEffectivePermissions: custom map wins; admin without a map is all-on", () => {
     expect(getEffectivePermissions("admin", noneAllowed)).toEqual(noneAllowed);
     expect(getEffectivePermissions("admin", null)).toEqual(allAccountantPermissionsEnabled());
-    expect(getEffectivePermissions("accountant", { products: true })).toEqual(
-      normalizeAccountantPermissions({ products: true })
-    );
+    const partial = getEffectivePermissions("accountant", { products: true });
+    expect(partial.products).toBe(true);
+    expect(partial.finance).toBe(false);
+    expect(partial.refund_approvals).toBe(false);
     expect(getEffectivePermissions("cashier", allAccountantPermissionsEnabled())).toEqual(
       defaultAccountantPermissions()
     );

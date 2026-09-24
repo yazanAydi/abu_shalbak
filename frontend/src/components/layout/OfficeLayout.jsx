@@ -4,6 +4,7 @@ import api from "../../apiClient";
 import { getToken, setUser } from "../../utils/auth";
 import OfficeSidebar from "./OfficeSidebar";
 import OfficeSideRail from "./OfficeSideRail";
+import AttendanceReminder from "../AttendanceReminder";
 import { PageRefreshProvider, usePageRefresh } from "./PageRefreshContext";
 import "../../styles/office-theme.css";
 import "./OfficeLayout.css";
@@ -53,6 +54,7 @@ export default function OfficeLayout() {
           </main>
           <OfficeSideRail />
         </div>
+        <AttendanceReminder />
       </div>
     </PageRefreshProvider>
   );

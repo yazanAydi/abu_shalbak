@@ -29,6 +29,8 @@ async function executeCheckoutSaleCore(db, params) {
     tax,
     total,
     discount,
+    amountBeforeRounding = null,
+    roundingAdjustment = null,
     paymentLines,
     summaryMethod,
     onAccountTotal,
@@ -88,8 +90,8 @@ async function executeCheckoutSaleCore(db, params) {
   const receiptNumber = await nextReceiptNumber(db, 1);
 
     const ins = await db.run(
-      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, employee_id, receipt_number, status, store_id, idempotency_key, payload_fingerprint, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?, ?, ?)`,
+      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, amount_before_rounding, rounding_adjustment, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, employee_id, receipt_number, status, store_id, idempotency_key, payload_fingerprint, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?, ?, ?)`,
       [
         cashierId,
         JSON.stringify(itemsForJson),
@@ -97,6 +99,8 @@ async function executeCheckoutSaleCore(db, params) {
         tax,
         total,
         discount,
+        amountBeforeRounding,
+        roundingAdjustment,
         round2(changeNis || 0),
         changeCurrencyId ?? null,
         changeOriginalAmount != null ? round2(changeOriginalAmount) : round2(changeNis || 0),
@@ -131,7 +135,9 @@ async function executeCheckoutSaleCore(db, params) {
         }
       }
       const lineNetAfterDiscount = round2(d.lineNet - lineDiscount);
-      const grossProfit = round2(lineNetAfterDiscount - L.cost * L.quantity);
+      const costKnown = L.cost != null && Number.isFinite(Number(L.cost));
+      const unitCost = costKnown ? Number(L.cost) : null;
+      const grossProfit = costKnown ? round2(lineNetAfterDiscount - unitCost * L.quantity) : null;
       const itemIns = await db.run(
         `INSERT INTO transaction_items
            (transaction_id, product_id, barcode, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,
@@ -149,7 +155,7 @@ async function executeCheckoutSaleCore(db, params) {
           d.lineTax,
           d.lineGross,
           L.taxRate,
-          L.cost,
+          unitCost,
           grossProfit,
           lineDiscount,
           L.scanned_barcode,

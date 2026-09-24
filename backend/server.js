@@ -7,6 +7,7 @@ import { createApp } from "./app.js";
 import { createBackup, pruneBackups } from "./utils/backup.js";
 import { sendExpiryAlert } from "./services/expiryAlertService.js";
 import { startTelegramPolling } from "./services/telegramPolling.js";
+import { closeOverdueAttendanceSessions } from "./services/attendanceSessionService.js";
 import { resolveDatabasePath } from "./utils/dbPath.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -103,6 +104,17 @@ if (process.env.NODE_ENV !== "test") {
   }
 
   startTelegramPolling(db);
+
+  const runAttendanceClose = async () => {
+    try {
+      const result = await closeOverdueAttendanceSessions(db);
+      if (result.closed) console.log(`[attendance] auto-closed ${result.closed} session(s)`);
+    } catch (e) {
+      console.error("[attendance] auto-close failed:", e.message);
+    }
+  };
+  await runAttendanceClose();
+  cron.schedule("* * * * *", runAttendanceClose);
 }
 
 export { app, db, dbPath };

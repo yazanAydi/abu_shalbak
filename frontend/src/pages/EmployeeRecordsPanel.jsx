@@ -55,6 +55,8 @@ export default function EmployeeRecordsPanel() {
   const [customerId, setCustomerId] = useState("");
   const [saving, setSaving] = useState(false);
   const [hourlyRateDraft, setHourlyRateDraft] = useState("");
+  const [wageBasis, setWageBasis] = useState("");
+  const [dailyRateDraft, setDailyRateDraft] = useState("");
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -87,6 +89,8 @@ export default function EmployeeRecordsPanel() {
       setHourlyRateDraft(
         data.hourly_rate != null && Number(data.hourly_rate) > 0 ? String(data.hourly_rate) : ""
       );
+      setWageBasis(data.wage_basis || "");
+      setDailyRateDraft(data.daily_rate != null ? String(data.daily_rate) : "");
     } catch (e) {
       toast.error(apiErrorMessage(e, "فشل تحميل بيانات الموظف"));
     }
@@ -216,6 +220,33 @@ export default function EmployeeRecordsPanel() {
     }
   }
 
+  async function saveWageBasis() {
+    if (!detail) return;
+    if (wageBasis !== "daily" && wageBasis !== "hourly") {
+      toast.error("اختر طريقة احتساب الأجر");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post(
+        `/api/employees/${detail.id}/wage-basis`,
+        {
+          wage_basis: wageBasis,
+          daily_rate: wageBasis === "daily" ? Number(dailyRateDraft) : null,
+          hourly_rate: wageBasis === "hourly" ? Number(hourlyRateDraft) : null,
+        },
+        { headers: getAuthHeaders() }
+      );
+      toast.success("حُفظت طريقة احتساب الأجر");
+      await loadDetail(detail.id);
+      await loadList();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "فشل حفظ طريقة الأجر"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveCustomerLink() {
     if (!detail) return;
     setSaving(true);
@@ -339,13 +370,11 @@ export default function EmployeeRecordsPanel() {
               {detail.customer_name ? ` · ذمة: ${detail.customer_name}` : ""}
             </p>
 
-            {detail.user_id && isAttendanceRole(detail.user_role) ? (
+            {detail.kind === "cashier" && detail.user_id ? (
               <>
                 <h3>أجر الساعة</h3>
                 <p className="ui-text-muted">
-                  {detail.kind === "cashier"
-                    ? "راتب الكاشير = أجر الساعة × ساعات ورديات نقطة البيع. يُنسخ الأجر عند فتح الوردية التالية. سجل المعدلات أدناه لموظفي الراتب الشهري وليس لورديات الكاشير."
-                    : "أجر الساعة يُستخدم في تقرير الساعات من الحضور. سجل المعدلات أدناه لراتب شهري وليس لهذا الأجر."}
+                  راتب الكاشير = أجر الساعة × ساعات ورديات نقطة البيع. يُنسخ الأجر عند فتح الوردية التالية.
                 </p>
                 <FormGrid>
                   <FormField label="أجر الساعة (₪)">
@@ -364,7 +393,51 @@ export default function EmployeeRecordsPanel() {
                   </Button>
                 </div>
               </>
-            ) : null}
+            ) : (
+              <>
+                <h3>طريقة احتساب الأجر</h3>
+                <p className="ui-text-muted">
+                  هذا يحدد كيف يُكتسب الأجر. دفعات الراتب اليومية والأسبوعية والجزئية تبقى كما هي.
+                  {detail.wage_basis ? "" : " لم تُحدَّد طريقة بعد — السجل السابق يبقى دون تغيير."}
+                </p>
+                <FormGrid>
+                  <FormField label="طريقة احتساب الأجر">
+                    <Select value={wageBasis} onChange={(e) => setWageBasis(e.target.value)}>
+                      <option value="">— اختر —</option>
+                      <option value="daily">أجر يومي</option>
+                      <option value="hourly">أجر بالساعة</option>
+                    </Select>
+                  </FormField>
+                  {wageBasis === "daily" ? (
+                    <FormField label="أجر اليوم (₪)">
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={dailyRateDraft}
+                        onChange={(e) => setDailyRateDraft(e.target.value)}
+                      />
+                    </FormField>
+                  ) : null}
+                  {wageBasis === "hourly" ? (
+                    <FormField label="أجر الساعة (₪)">
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={hourlyRateDraft}
+                        onChange={(e) => setHourlyRateDraft(e.target.value)}
+                      />
+                    </FormField>
+                  ) : null}
+                </FormGrid>
+                <div className="ui-toolbar" style={{ gap: 8 }}>
+                  <Button onClick={saveWageBasis} disabled={saving}>
+                    حفظ طريقة الأجر
+                  </Button>
+                </div>
+              </>
+            )}
 
             <h3>حساب الذمة (عميل)</h3>
             <p className="ui-text-muted">

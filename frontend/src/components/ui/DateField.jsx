@@ -1,11 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { dmyToYmd, ymdToDmy } from "../../utils/format";
+import { toLatinDigits } from "../../utils/forceLatinDigits";
 
-const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const FULL_YEAR_RE = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/;
 
 function toIso(value) {
   const str = String(value || "").trim();
   return ISO_RE.test(str) ? str : "";
+}
+
+function displayIso(iso, yearDigits) {
+  if (!iso) return "";
+  if (yearDigits === 4) {
+    const match = ISO_RE.exec(iso);
+    return match ? `${match[3]}/${match[2]}/${match[1]}` : "";
+  }
+  return ymdToDmy(iso);
+}
+
+function parseTyped(text, yearDigits) {
+  const str = toLatinDigits(String(text || "").trim());
+  if (!str) return "";
+  if (yearDigits === 4 && !FULL_YEAR_RE.test(str)) return "";
+  return dmyToYmd(str);
 }
 
 function emitChange(onChange, iso, name) {
@@ -16,6 +34,7 @@ export default function DateField({
   value = "",
   onChange,
   onKeyDown,
+  onBlur,
   className = "",
   disabled,
   readOnly,
@@ -23,14 +42,21 @@ export default function DateField({
   name,
   id,
   required,
+  yearDigits = 2,
+  keepInvalid = false,
+  syncToken = 0,
+  invalid,
+  onInvalid,
   ...rest
 }) {
   const isoValue = toIso(value);
-  const [text, setText] = useState(() => (isoValue ? ymdToDmy(isoValue) : ""));
+  const [text, setText] = useState(() => displayIso(isoValue, yearDigits));
+  const focused = useRef(false);
 
   useEffect(() => {
-    setText(isoValue ? ymdToDmy(isoValue) : "");
-  }, [isoValue]);
+    if (focused.current) return;
+    setText(displayIso(isoValue, yearDigits));
+  }, [isoValue, yearDigits, syncToken]);
 
   function handleTextChange(e) {
     const next = e.target.value;
@@ -39,24 +65,37 @@ export default function DateField({
       emitChange(onChange, "", name);
       return;
     }
-    const iso = dmyToYmd(next);
+    const iso = parseTyped(next, yearDigits);
     if (iso) emitChange(onChange, iso, name);
   }
 
-  function handleBlur() {
-    if (!text.trim()) {
+  function handleBlur(e) {
+    const next = e?.currentTarget?.value ?? text;
+    if (!String(next).trim()) {
       setText("");
+      emitChange(onChange, "", name);
+      focused.current = false;
+      onBlur?.(e);
       return;
     }
-    const iso = dmyToYmd(text);
-    if (iso) setText(ymdToDmy(iso));
-    else setText(isoValue ? ymdToDmy(isoValue) : "");
+    const iso = dmyToYmd(toLatinDigits(String(next).trim()));
+    if (iso) {
+      setText(displayIso(iso, yearDigits));
+      emitChange(onChange, iso, name);
+    } else if (keepInvalid) {
+      setText(next);
+      onInvalid?.(next);
+    } else {
+      setText(displayIso(isoValue, yearDigits));
+    }
+    focused.current = false;
+    onBlur?.(e);
   }
 
   function handlePickerChange(e) {
     const iso = e.target.value;
     emitChange(onChange, iso, name);
-    setText(iso ? ymdToDmy(iso) : "");
+    setText(displayIso(iso, yearDigits));
   }
 
   return (
@@ -68,16 +107,21 @@ export default function DateField({
         type="text"
         inputMode="numeric"
         autoComplete="off"
-        placeholder="DD/MM/YY"
+        placeholder={yearDigits === 4 ? "DD/MM/YYYY" : "DD/MM/YY"}
+        dir="ltr"
         className={className}
         value={text}
         disabled={disabled}
         readOnly={readOnly}
         required={required}
+        aria-invalid={invalid || undefined}
+        onFocus={() => {
+          focused.current = true;
+        }}
         onChange={handleTextChange}
         onBlur={handleBlur}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.isComposing) handleBlur();
+          if (e.key === "Enter" && !e.isComposing) handleBlur(e);
           onKeyDown?.(e);
         }}
       />

@@ -1,5 +1,6 @@
 import { round2, sumMoney } from "../utils/money.js";
 import { shopTodayYmd, shopYmdFromTimestamp } from "../utils/shopTime.js";
+import { shopBusinessDayYmd } from "../utils/businessDay.js";
 import { badRequest, notFound } from "../utils/httpError.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { applyVoucherPostEffects } from "../routes/vouchers.js";
@@ -112,12 +113,16 @@ export async function listEmployeeDebts(db, emp, { from = null, to = null, asOf 
 
   const posSales = await db.all(
     `SELECT t.id, t.created_at, t.receipt_number, t.payment_method, t.total, t.customer_id, t.employee_id, t.notes,
+            t.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS start_time,
             COALESCE(
               (SELECT SUM(sp.amount) FROM sale_payments sp
                 WHERE sp.transaction_id = t.id AND sp.payment_method = 'on_account'),
               CASE WHEN t.payment_method = 'on_account' THEN t.total ELSE 0 END
             ) AS original
      FROM transactions t
+     LEFT JOIN cashier_shifts cs ON cs.id = t.shift_id
      WHERE COALESCE(t.status, 'completed') = 'completed'
        AND NOT EXISTS (SELECT 1 FROM sales_invoices si WHERE si.transaction_id = t.id)
        AND t.employee_id = ?
@@ -146,7 +151,7 @@ export async function listEmployeeDebts(db, emp, { from = null, to = null, asOf 
   for (const row of posSales) {
     const original = round2(Number(row.original) || 0);
     if (original <= 0) continue;
-    const ymd = shopYmdFromTimestamp(row.created_at);
+    const ymd = shopBusinessDayYmd(row) || shopYmdFromTimestamp(row.created_at);
     const refund = await db.get(
       `SELECT COALESCE(SUM(total), 0) AS total
        FROM refunds

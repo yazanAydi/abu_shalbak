@@ -39,7 +39,7 @@ export function sortEmployeeEvents(events) {
 }
 
 /**
- * Next seq for an employee. Must run inside withTransaction / BEGIN IMMEDIATE.
+ * Next seq for an employee. Must run inside withTransaction.
  * @param {object} db
  * @param {number} employeeId
  * @returns {Promise<number>}

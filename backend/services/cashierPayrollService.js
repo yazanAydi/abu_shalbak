@@ -123,44 +123,20 @@ export async function updateCashierHourlyRate(db, userId, hourlyRate) {
 }
 
 /**
- * Copy the live hourly rate onto closed (or pending-count) shifts that have no snapshot.
- * Does not touch open shifts or rows that already have a positive snapshot.
+ * Closed shifts without a captured rate stay incomplete. Today's rate is not
+ * copied onto them.
  * @param {object} db
  * @param {number} userId
  */
 export async function fillMissingClosedShiftSnapshots(db, userId) {
   const id = Number(userId);
   if (!id) throw new HttpError(400, "المعرّف غير صالح");
-
-  const user = await db.get("SELECT id, username, role, hourly_rate FROM users WHERE id = ?", [id]);
+  const user = await db.get("SELECT id FROM users WHERE id = ?", [id]);
   if (!user) throw new HttpError(404, "المستخدم غير موجود");
-  if (!ATTENDANCE_ROLES.includes(user.role)) {
-    throw new HttpError(400, "أجر الساعة يُحدَّد لموظفي المتجر فقط");
-  }
-
-  const rate = Number(user.hourly_rate);
-  if (!Number.isFinite(rate) || rate <= 0) {
-    throw new HttpError(400, "حدّد أجر الساعة أولاً");
-  }
-
-  const rounded = round2(rate);
-  const info = await db.run(
-    `UPDATE cashier_shifts
-     SET hourly_rate_snapshot = ?
-     WHERE cashier_id = ?
-       AND status != 'open'
-       AND end_time IS NOT NULL
-       AND (hourly_rate_snapshot IS NULL OR hourly_rate_snapshot <= 0)`,
-    [rounded, id]
+  throw new HttpError(
+    409,
+    "لا يُنسخ أجر اليوم على وردية قديمة بلا أجر محفوظ. الأجر يبقى غير مكتمل."
   );
-
-  return {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    hourly_rate: rounded,
-    updated_count: Number(info?.changes || 0),
-  };
 }
 
 /**
@@ -196,14 +172,20 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
 
   let sql = `
     SELECT s.id AS shift_id, s.cashier_id, u.username,
-           COALESCE(s.hourly_rate_snapshot, u.hourly_rate) AS hourly_rate,
-           s.start_time, s.end_time, s.status
+           s.hourly_rate_snapshot AS hourly_rate,
+           s.business_day, s.start_time, s.end_time, s.status
     FROM cashier_shifts s
     JOIN users u ON u.id = s.cashier_id
     WHERE s.end_time IS NOT NULL
-      AND datetime(s.start_time) >= datetime(?)
-      AND datetime(s.start_time) <= datetime(?)`;
-  const params = [startSql, endSql];
+      AND (
+        (s.business_day IS NOT NULL AND s.business_day >= ? AND s.business_day <= ?)
+        OR (
+          s.business_day IS NULL
+          AND datetime(s.start_time) >= datetime(?)
+          AND datetime(s.start_time) <= datetime(?)
+        )
+      )`;
+  const params = [from, to, startSql, endSql];
 
   const cid =
     cashierId != null && String(cashierId).trim() !== "" ? Number(cashierId) : null;
@@ -214,23 +196,28 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
 
   sql += " ORDER BY u.username COLLATE NOCASE, datetime(s.start_time) ASC, s.id ASC";
 
-  const rows = (await db.all(sql, params)).filter((row) =>
-    shopYmdInRange(row.start_time, from, to)
-  );
+  const rows = (await db.all(sql, params)).filter((row) => {
+    const assigned = typeof row.business_day === "string" ? row.business_day.trim() : "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(assigned)) return assigned >= from && assigned <= to;
+    return shopYmdInRange(row.start_time, from, to);
+  });
 
   /** @type {Map<number, object>} */
   const byCashier = new Map();
 
   for (const row of rows) {
     const hours = shiftHours(row.start_time, row.end_time);
-    const pay = shiftPay(row.hourly_rate, hours);
+    const rateKnown = row.hourly_rate != null && Number(row.hourly_rate) > 0;
+    const pay = rateKnown ? shiftPay(row.hourly_rate, hours) : null;
     const shift = {
       shift_id: row.shift_id,
       start_time: row.start_time,
       end_time: row.end_time,
       status: row.status,
       hours,
+      hourly_rate: rateKnown ? Number(row.hourly_rate) : null,
       pay,
+      rate_known: rateKnown,
     };
 
     let entry = byCashier.get(row.cashier_id);
@@ -238,10 +225,10 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
       entry = {
         cashier_id: row.cashier_id,
         username: row.username,
-        hourly_rate: row.hourly_rate,
+        hourly_rate: rateKnown ? Number(row.hourly_rate) : null,
         total_hours: 0,
-        total_pay: 0,
-        missing_rate: row.hourly_rate == null || Number(row.hourly_rate) <= 0,
+        total_pay: rateKnown ? 0 : null,
+        missing_rate: !rateKnown,
         shifts: [],
       };
       byCashier.set(row.cashier_id, entry);
@@ -249,9 +236,12 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
 
     entry.shifts.push(shift);
     entry.total_hours = round2(entry.total_hours + hours);
-    entry.total_pay = round2(entry.total_pay + pay);
-    if (row.hourly_rate == null || Number(row.hourly_rate) <= 0) {
+    if (!rateKnown) {
       entry.missing_rate = true;
+      entry.total_pay = null;
+    } else if (entry.total_pay != null) {
+      entry.total_pay = round2(entry.total_pay + pay);
+      if (entry.hourly_rate == null) entry.hourly_rate = Number(row.hourly_rate);
     }
   }
 
@@ -261,9 +251,11 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
 
   let grandTotalHours = 0;
   let grandTotalPay = 0;
+  let payIncomplete = false;
   for (const e of employees) {
     grandTotalHours = round2(grandTotalHours + e.total_hours);
-    grandTotalPay = round2(grandTotalPay + e.total_pay);
+    if (e.missing_rate || e.total_pay == null) payIncomplete = true;
+    else grandTotalPay = round2(grandTotalPay + e.total_pay);
   }
 
   return {
@@ -271,6 +263,7 @@ export async function buildPayrollReport(db, { dateFrom, dateTo, cashierId = nul
     date_to: to,
     employees,
     grand_total_hours: grandTotalHours,
-    grand_total_pay: grandTotalPay,
+    grand_total_pay: payIncomplete ? null : grandTotalPay,
+    pay_incomplete: payIncomplete,
   };
 }

@@ -11,12 +11,36 @@ import {
   sendOnAccountApprovalMessage,
   editOnAccountRequestMessage,
   sendOnAccountDecisionStatusMessage,
+  onAccountTelegramItems,
 } from "../utils/telegram.js";
 import { round2 } from "../utils/money.js";
-import { validateCustomerCredit, throwCreditError } from "../utils/customerCredit.js";
+import { validateCustomerCredit, throwCreditError, creditLimitPreview } from "../utils/customerCredit.js";
 import { resolveEmployeeCustomerForPostedSale } from "./employeeService.js";
+import { enqueueOperationPrint } from "./operationPrintService.js";
 
 export { getTelegramManagerUser };
+
+export function presentOnAccountItems(snapshot) {
+  return onAccountTelegramItems(snapshot).map((it) => {
+    const qty = Number(it.quantity);
+    const price = Number(it.price) || 0;
+    const lineTotal =
+      it.lineTotal != null && Number.isFinite(Number(it.lineTotal))
+        ? round2(Number(it.lineTotal))
+        : round2((Number.isFinite(qty) ? qty : 0) * price);
+    return {
+      name: String(it.name || "").trim() || "صنف",
+      quantity: it.quantity,
+      unit_name: it.unit_name ? String(it.unit_name) : null,
+      line_total: lineTotal,
+    };
+  });
+}
+
+function withOnAccountItems(row) {
+  if (!row) return row;
+  return { ...row, items: presentOnAccountItems(row.sale_snapshot_json) };
+}
 
 async function insertOnAccountRequest(db, params) {
   const {
@@ -94,6 +118,7 @@ export async function notifyOnAccountRequestTelegram(db, created, cashierId, cus
         onAccountAmount: created.totals.onAccountTotal,
         total: created.totals.total,
         notes: created.request?.notes || null,
+        items: onAccountTelegramItems(created.request?.sale_snapshot_json),
       });
       await db.run("UPDATE on_account_requests SET telegram_message_id = ? WHERE id = ?", [
         telegramMessageId,
@@ -146,7 +171,7 @@ export async function getOnAccountRequestById(db, id) {
 }
 
 export async function listPendingOnAccountRequests(db) {
-  return db.all(
+  const rows = await db.all(
     `SELECT oar.*, u.username AS cashier_username, c.name AS customer_name, e.name AS employee_name
      FROM on_account_requests oar
      JOIN users u ON u.id = oar.cashier_id
@@ -155,6 +180,7 @@ export async function listPendingOnAccountRequests(db) {
      WHERE oar.status = 'pending'
      ORDER BY oar.created_at ASC, oar.id ASC`
   );
+  return rows.map(withOnAccountItems);
 }
 
 export async function listOnAccountRequestHistory(db, status = "all", limit = 200) {
@@ -174,7 +200,8 @@ export async function listOnAccountRequestHistory(db, status = "all", limit = 20
   }
   sql += " ORDER BY COALESCE(oar.approved_at, oar.rejected_at, oar.created_at) DESC, oar.id DESC LIMIT ?";
   params.push(lim);
-  return db.all(sql, params);
+  const rows = await db.all(sql, params);
+  return rows.map(withOnAccountItems);
 }
 
 export async function listMyOnAccountRequests(db, cashierId, limit = 100) {
@@ -248,6 +275,7 @@ async function notifyTelegramAfterDecision(request, managerUser, status, decisio
     approverName: managerUser?.username || null,
     decisionSource,
     notes: request.notes || null,
+    items: onAccountTelegramItems(request.sale_snapshot_json),
   };
   if (request.telegram_message_id) {
     try {
@@ -284,10 +312,12 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
     notes: row.notes || null,
     review_notes: row.review_notes,
     decision_source: row.decision_source ?? null,
+    credit: await creditLimitPreview(db, row.customer_id, row.on_account_amount),
     cashier_notified_at: row.cashier_notified_at ?? null,
     cashier_acknowledged_at: row.cashier_acknowledged_at ?? null,
     cashier_username: row.cashier_username,
     manager_username: row.manager_username,
+    items: presentOnAccountItems(row.sale_snapshot_json),
     checkout: null,
   };
 
@@ -326,7 +356,9 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
         lines: receiptLines,
         subtotal: txRow.subtotal,
         tax: txRow.tax,
+        discount: txRow.discount,
         total: txRow.total,
+        roundingAdjustment: txRow.rounding_adjustment,
         paymentMethod: txRow.payment_method,
         payments: snapshot.paymentLines,
         cashTendered: snapshot.cashTendered,
@@ -367,7 +399,8 @@ export async function approveOnAccountRequest(
   managerUser,
   reviewNotes,
   req = null,
-  decisionSource = "admin"
+  decisionSource = "admin",
+  options = {}
 ) {
   await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM on_account_requests WHERE id = ?", [requestId]);
@@ -433,8 +466,12 @@ export async function approveOnAccountRequest(
       request.customer_id = custId;
     }
 
-    const creditErr = await validateCustomerCredit(db, custId, onAccountAmount);
+    const overrideCreditLimit = options?.overrideCreditLimit === true && decisionSource !== "telegram";
+    const creditErr = await validateCustomerCredit(db, custId, onAccountAmount, {
+      allowOverLimit: overrideCreditLimit,
+    });
     if (creditErr) throwCreditError(creditErr);
+    const credit = await creditLimitPreview(db, custId, onAccountAmount);
 
     const saleResult = await executeCheckoutSale(
       db,
@@ -449,6 +486,8 @@ export async function approveOnAccountRequest(
         tax: snapshot.tax,
         total: snapshot.total,
         discount: snapshot.discount,
+        amountBeforeRounding: snapshot.amountBeforeRounding ?? null,
+        roundingAdjustment: snapshot.roundingAdjustment ?? null,
         paymentLines: snapshot.paymentLines,
         summaryMethod: snapshot.summaryMethod,
         onAccountTotal: snapshot.onAccountTotal,
@@ -483,9 +522,24 @@ export async function approveOnAccountRequest(
     }
 
     const auditUser = req?.user || managerUser;
+    await enqueueOperationPrint(db, {
+      kind: "sale",
+      referenceId: txId,
+      cashierId: request.cashier_id,
+      shiftId: shift.id,
+      documentNo: String(txId),
+      snapshot: {
+        request_id: requestId,
+        manager_name: managerUser.username || "",
+      },
+    });
+
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.ON_ACCOUNT_REQUEST_APPROVE, "on_account_requests", requestId, { status: "pending" }, {
       transaction_id: txId,
       manager_id: managerUser.id,
+      approved_at: now,
+      credit_limit_override: Boolean(overrideCreditLimit && credit?.exceeds_limit),
+      credit,
     });
 
     return { txId, saleResult };

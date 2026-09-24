@@ -47,11 +47,15 @@ function CartQtyStepper({
   inputClassName,
   inputStep,
   onChange,
+  autoFocus = false,
+  placeholder,
 }) {
   const qty = Number(value);
-  const canMinus = qty > min;
+  const hasQty = Number.isFinite(qty) && qty > 0;
+  const canMinus = hasQty && qty > min;
 
   const applyBump = (delta) => {
+    if (!hasQty) return;
     const next = bumpQty(qty, delta, decimals);
     if (!(next > 0) || next < min) return;
     onChange(next);
@@ -76,9 +80,16 @@ function CartQtyStepper({
         min={min}
         step={inputStep}
         value={value}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
         aria-label={ariaLabel}
         onChange={(e) => {
-          const next = Number(e.target.value);
+          const raw = e.target.value;
+          if (raw === "") {
+            onChange("");
+            return;
+          }
+          const next = Number(raw);
           if (!(next > 0)) return;
           onChange(next);
         }}
@@ -86,6 +97,7 @@ function CartQtyStepper({
       <button
         type="button"
         className="pos-qty-btn"
+        disabled={!hasQty}
         onMouseDown={preventButtonFocus}
         onClick={() => applyBump(step)}
         aria-label="زيادة الكمية"
@@ -215,15 +227,17 @@ function CartTableBody({
                       // Scale-printed weight barcode: qty is fixed by the label — read-only.
                       <span className="pos-qty-val pos-qty-val--weight">{formatQty(it)}</span>
                     ) : kgLine ? (
-                      // KG unit added manually (not from scale label): cashier can type fractional qty.
+                      // KG unit without a scale weight: cashier must type the kilograms.
                       <CartQtyStepper
-                        value={it.quantity}
+                        value={it.quantity === "" || it.quantity == null ? "" : it.quantity}
                         min={0.001}
                         step={0.1}
                         decimals={3}
                         inputStep="0.001"
                         inputClassName="pos-qty-input pos-qty-input--kg"
                         ariaLabel="الكمية (كغم)"
+                        placeholder="الوزن"
+                        autoFocus={Boolean(it.awaitingWeight) && key === scrollToCartKey}
                         onChange={(next) => onQuantityChange(key, next)}
                       />
                     ) : (

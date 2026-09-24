@@ -2,6 +2,7 @@ import { Card, CardBody, StatCard, StatusBadge } from "../../components/ui";
 import { ils, num, dateOnly, formatStockWithUnit } from "../../utils/format";
 import { NO_UNIT_LABEL, UNCATEGORIZED_LABEL } from "../../utils/productCatalogLabels";
 import { displayProductBarcode, displayProductSku } from "../../utils/entityCodeDisplay";
+import { productPriceLabel } from "../../utils/scaleProductForm";
 import { useProductTab } from "./useProductTab";
 import { TabState, expiryBadge } from "./shared";
 
@@ -15,7 +16,7 @@ export default function OverviewTab({ productId }) {
           <div className="ui-stat-grid pd-cards">
             <StatCard label="المخزون الحالي" value={formatStockWithUnit(data.inventory.current_stock, { is_weighed: data.basic.is_weighed, unit: data.basic.unit })} icon="inventory" tone={data.inventory.low_stock ? "orange" : "teal"} alert={data.inventory.out_of_stock} />
             <StatCard label="قيمة المخزون" value={ils(data.inventory.inventory_value)} icon="finance" tone="teal" />
-            <StatCard label={Number(data.basic.is_weighed) === 1 ? "سعر الكغم" : "سعر البيع الحالي"} value={ils(data.pricing.current_price)} icon="finance" tone="green" />
+            <StatCard label={Number(data.basic.is_weighed) === 1 ? productPriceLabel(data.basic) : "سعر البيع الحالي"} value={ils(data.pricing.current_price)} icon="finance" tone="green" />
             {Number(data.basic.is_weighed) === 1 ? (
               <StatCard label="سعر الحبة" value={data.basic.package_price != null ? ils(data.basic.package_price) : "—"} icon="finance" tone="green" />
             ) : null}
@@ -35,7 +36,7 @@ export default function OverviewTab({ productId }) {
                   <div><dt>التصنيف</dt><dd>{data.basic.category || UNCATEGORIZED_LABEL}</dd></div>
                   <div><dt>الوحدة</dt><dd>{data.basic.unit || NO_UNIT_LABEL}</dd></div>
                   {Number(data.basic.is_weighed) === 1 ? (
-                    <div><dt>رمز الميزان</dt><dd>{data.basic.scale_code || "—"}</dd></div>
+                    <div><dt>{Number(data.basic.scale_only) === 1 ? "كود الميزان / PLU" : "رمز الميزان"}</dt><dd>{data.basic.scale_code || "—"}</dd></div>
                   ) : null}
                   {Number(data.basic.is_weighed) === 1 ? (
                     <div><dt>وزن الحبة</dt><dd>{data.basic.package_conversion != null ? `${data.basic.package_conversion} كغم` : "—"}</dd></div>
@@ -50,7 +51,7 @@ export default function OverviewTab({ productId }) {
                 <dl className="pd-defs">
                   {Number(data.basic.is_weighed) === 1 ? (
                     <>
-                      <div><dt>سعر الكغم</dt><dd>{ils(data.pricing.current_price)}</dd></div>
+                      <div><dt>{productPriceLabel(data.basic)}</dt><dd>{ils(data.pricing.current_price)}</dd></div>
                       <div><dt>سعر الحبة</dt><dd>{data.basic.package_price != null ? ils(data.basic.package_price) : "—"}</dd></div>
                     </>
                   ) : (

@@ -7,6 +7,7 @@ import {
   authHeader,
   withCheckoutKey,
   createTestEmployee,
+  configureTelegramApprover,
 } from "./helpers.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 import { buildPosDecisionSnapshot } from "../routes/pos.js";
@@ -35,6 +36,7 @@ describe("POS recovery after Telegram sulaf/zimma decisions", () => {
     }));
 
     ctx = await createTestContext();
+    await configureTelegramApprover(ctx.db);
     const cashierLogin = await login(ctx.app, "testcashier", "cashpass123", "pos");
     cashierToken = cashierLogin.body.token;
 

@@ -11,6 +11,7 @@ import { getZeroAllStockPasswordHash } from "../utils/settings.js";
 import { forbidden } from "../utils/httpError.js";
 import { resolveBakeryReportCategories } from "../services/bakeryReportService.js";
 import { bakeryMembershipSql, parseBakeryKind } from "../utils/bakeryMembership.js";
+import { assignDatedQuantityFromUnknown } from "../services/stockBatchService.js";
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
 // Maps adjustment type -> ledger movement_type and sign of stock change.
 const ADJ_MOVEMENT = {
@@ -188,7 +189,7 @@ export function createInventoryRouter(db) {
 
   // ───── Zero all product stock (from الجرد) ─────
 
-  router.post("/zero-all-stock", requireAuth, requireAdmin, async (req, res, next) => {
+  router.post("/zero-all-stock", requireAuth, requireAdmin, requireStockCount, async (req, res, next) => {
     try {
       const hash = await getZeroAllStockPasswordHash(db);
       if (hash) {
@@ -282,7 +283,7 @@ export function createInventoryRouter(db) {
     );
     if (!adj) return res.status(404).json({ error: "التسوية غير موجودة", code: "NOT_FOUND" });
     const items = await db.all(
-      `SELECT ai.*, p.name, p.barcode, p.unit FROM stock_adjustment_items ai
+      `SELECT ai.*, p.name, p.barcode, p.sku, p.unit FROM stock_adjustment_items ai
        JOIN products p ON p.id = ai.product_id WHERE ai.adjustment_id = ?`,
       [adj.id]
     );
@@ -479,17 +480,28 @@ export function createInventoryRouter(db) {
     }
   });
 
-  router.post("/batches", requireAuth, requireStockOrBakery, async (req, res) => {
+  router.post("/batches", requireAuth, requireStockOrBakery, async (req, res, next) => {
     const { product_id, batch_no, expiry_date, quantity, cost, notes } = req.body || {};
     const pid = Number(product_id);
     if (!pid) return res.status(400).json({ error: "المنتج مطلوب", code: "VALIDATION_ERROR" });
-    const q = Number(quantity) || 0;
-    const ins = await db.run(
-      `INSERT INTO product_batches (product_id, batch_no, expiry_date, quantity, cost, notes)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [pid, batch_no || null, expiry_date || null, q, cost != null ? round2(Number(cost)) : null, notes || null]
-    );
-    res.status(201).json(await db.get("SELECT * FROM product_batches WHERE id = ?", [ins.lastID]));
+    try {
+      const row = await withTransaction(db, () =>
+        assignDatedQuantityFromUnknown(db, {
+          productId: pid,
+          expiryDate: expiry_date,
+          quantity,
+          cost: cost != null && cost !== "" ? round2(Number(cost)) : null,
+          batchNo: batch_no,
+          notes,
+        })
+      );
+      res.status(201).json(row);
+    } catch (e) {
+      if (e?.status) {
+        return res.status(e.status).json({ error: e.message, code: e.code, available: e.available });
+      }
+      next(e);
+    }
   });
 
   router.delete("/batches/:id", requireAuth, requireStockOrBakery, async (req, res) => {
@@ -512,7 +524,7 @@ export function createInventoryRouter(db) {
     const { threshold = 10, scope } = req.query;
     const t = Math.max(0, Number(threshold) || 10);
     const membership = await membershipProductFilter(req, "");
-    let sql = `SELECT id, barcode, name, unit, stock, category, min_stock,
+    let sql = `SELECT id, barcode, sku, name, unit, stock, category, min_stock,
                       COALESCE(inventory_scope, 'retail') AS inventory_scope
                FROM products WHERE (
                  (min_stock IS NOT NULL AND stock <= min_stock)

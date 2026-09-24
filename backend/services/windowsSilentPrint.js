@@ -433,6 +433,29 @@ async function htmlToPdf(html, attempt) {
   return { pdfPath, tmp, widthMm, heightMm };
 }
 
+export function silentPrintErrorFromHelper(err) {
+  const text = String(err?.message || err || "");
+  const missing = /does not exist|doesn't exist|unknown printer|invalid printer/i.test(text);
+  return new SilentPrintError(
+    missing ? "NO_PRINTER" : "PRINT_FAILED",
+    missing
+      ? "تم حفظ البيع وتعذرت الطباعة. الطابعة المحددة غير موجودة."
+      : "تم حفظ البيع وتعذرت الطباعة."
+  );
+}
+
+let pdfPrinterOverride = null;
+
+function printHookAllowed() {
+  return process.env.NODE_ENV === "test" || process.env.RECEIPT_PRINT_FAULT_HOOK === "1";
+}
+
+/** Test and demo-fault hook. Production routes never call this. */
+export function setPdfPrinterForTests(fn) {
+  if (!printHookAllowed()) return;
+  pdfPrinterOverride = typeof fn === "function" ? fn : null;
+}
+
 function loadPdfToPrinter() {
   try {
     return require("pdf-to-printer");
@@ -449,8 +472,8 @@ function receiptPaperSizeOption() {
   return named || undefined;
 }
 
-async function printPdfFile(pdfPath, printerName) {
-  const mod = loadPdfToPrinter();
+export async function printPdfFile(pdfPath, printerName) {
+  const mod = pdfPrinterOverride ? { print: pdfPrinterOverride } : loadPdfToPrinter();
   const print = typeof mod.print === "function" ? mod.print : mod.default;
   if (typeof print !== "function") {
     throw new SilentPrintError("NO_PRINT_HELPER", "تعذّر استدعاء مكتبة الطباعة");
@@ -462,7 +485,11 @@ async function printPdfFile(pdfPath, printerName) {
   };
   const paperSize = receiptPaperSizeOption();
   if (paperSize) options.paperSize = paperSize;
-  await print(pdfPath, options);
+  try {
+    await print(pdfPath, options);
+  } catch (err) {
+    throw silentPrintErrorFromHelper(err);
+  }
 }
 
 const printPipeline = {
@@ -474,7 +501,7 @@ const printPipeline = {
 
 /** Test-only: swap HTML→PDF / printer steps without Windows hardware. */
 export function setPrintPipelineForTests(partial = null) {
-  if (process.env.NODE_ENV !== "test") return;
+  if (!printHookAllowed()) return;
   printPipeline.htmlToPdf = htmlToPdf;
   printPipeline.printPdfFile = printPdfFile;
   printPipeline.resolvePrinter = resolveReceiptPrinterName;
@@ -608,7 +635,7 @@ let testAdapter = null;
 
 /** Test-only hook to simulate printer success/failure without Windows hardware. */
 export function setSilentPrintTestAdapter(fn) {
-  if (process.env.NODE_ENV !== "test") return;
+  if (!printHookAllowed()) return;
   testAdapter = typeof fn === "function" ? fn : null;
 }
 

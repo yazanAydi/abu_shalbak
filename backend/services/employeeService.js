@@ -10,6 +10,7 @@ import {
   customerHasFinancialHistory,
   employeeDebtAccountInUse,
 } from "../utils/employeeCustomer.js";
+import { employeeHasOpenHourlySession } from "./attendanceSessionService.js";
 
 const COMPENSATION_TYPES = new Set(["monthly", "daily", "hourly"]);
 const OPENING_KINDS = new Set(["unpaid_salary", "prepaid_salary"]);
@@ -199,6 +200,8 @@ export function mapUserAccount(row) {
     role: row.role,
     created_at: row.created_at,
     hourly_rate: row.hourly_rate == null ? null : Number(row.hourly_rate),
+    wage_basis: row.wage_basis || null,
+    daily_rate: row.daily_rate == null ? null : Number(row.daily_rate),
     has_custom_permissions: !!row.has_custom_permissions,
     employee_id: row.employee_id ?? null,
     employee_name: row.employee_name || null,
@@ -210,7 +213,8 @@ const USER_ACCOUNT_SELECT = `
   SELECT u.id, u.username, u.role, u.created_at, u.hourly_rate,
          CASE WHEN u.permissions_json IS NOT NULL AND TRIM(u.permissions_json) != '' THEN 1 ELSE 0 END
            AS has_custom_permissions,
-         e.id AS employee_id, e.name AS employee_name, e.active AS employee_active
+         e.id AS employee_id, e.name AS employee_name, e.active AS employee_active,
+         e.wage_basis AS wage_basis, e.daily_rate AS daily_rate
   FROM users u
   LEFT JOIN employees e ON e.user_id = u.id
 `;
@@ -444,6 +448,8 @@ function mapEmployee(row, extras = {}) {
     user_username: row.user_username || null,
     user_role: row.user_role || null,
     hourly_rate: row.hourly_rate == null ? null : Number(row.hourly_rate),
+    wage_basis: row.wage_basis || null,
+    daily_rate: row.daily_rate == null ? null : Number(row.daily_rate),
     customer_id: row.customer_id ?? null,
     customer_name: row.customer_name || null,
     customer_code: row.customer_code || null,
@@ -719,6 +725,45 @@ export async function addCompensation(db, employeeId, body, req) {
     });
   }
   return mapCompensation(row);
+}
+
+const WAGE_BASIS = new Set(["daily", "hourly"]);
+
+export async function setEmployeeWageBasis(db, employeeId, body, req) {
+  const emp = await requireEmployee(db, employeeId);
+  if (employeeKind(emp) === "cashier") {
+    throw badRequest("الكاشير يبقى على أجر الساعة من ورديات نقطة البيع", "CASHIER_WAGE_BASIS");
+  }
+  const basis = String(body?.wage_basis || "").trim();
+  if (!WAGE_BASIS.has(basis)) {
+    throw badRequest("طريقة احتساب الأجر يجب أن تكون أجراً يومياً أو أجراً بالساعة");
+  }
+  if (emp.wage_basis && emp.wage_basis !== basis && emp.user_id) {
+    if (await employeeHasOpenHourlySession(db, emp.user_id)) {
+      throw conflict("أغلق جلسة الحضور المفتوحة قبل تغيير طريقة احتساب الأجر", "OPEN_ATTENDANCE_SESSION");
+    }
+  }
+  let dailyRate = emp.daily_rate == null ? null : round2(Number(emp.daily_rate));
+  if (basis === "daily") {
+    dailyRate = requirePositiveMoney(body?.daily_rate, "أجر اليوم");
+  }
+  if (basis === "hourly") {
+    if (!emp.user_id) throw badRequest("أجر الساعة يحتاج حساب حضور مربوطاً");
+    const rate = requirePositiveMoney(body?.hourly_rate ?? emp.hourly_rate, "أجر الساعة");
+    await db.run("UPDATE users SET hourly_rate = ? WHERE id = ?", [rate, emp.user_id]);
+  }
+  await db.run("UPDATE employees SET wage_basis = ?, daily_rate = ?, updated_at = datetime('now') WHERE id = ?", [
+    basis,
+    basis === "daily" ? dailyRate : emp.daily_rate,
+    emp.id,
+  ]);
+  if (req) {
+    await logAudit(db, req, AUDIT_ACTIONS.EMPLOYEE_WAGE_BASIS, "employees", emp.id, {
+      wage_basis: emp.wage_basis,
+      daily_rate: emp.daily_rate,
+    }, { wage_basis: basis, daily_rate: basis === "daily" ? dailyRate : emp.daily_rate });
+  }
+  return getEmployee(db, emp.id);
 }
 
 async function assertPrepaidCutover(db, employeeId, { amount, asOf, expenseId }) {

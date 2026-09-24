@@ -48,6 +48,7 @@ const AccountStatement = lazy(() => import("./pages/AccountStatement"));
 const SupplierBalanceImport = lazy(() => import("./pages/SupplierBalanceImport"));
 const SalesReports = lazy(() => import("./pages/SalesReports"));
 const CashierPayroll = lazy(() => import("./pages/CashierPayroll"));
+const EmployeeAttendance = lazy(() => import("./pages/EmployeeAttendance"));
 const EmployeeHistoryStatement = lazy(() => import("./pages/EmployeeHistoryStatement"));
 const EmployeeSalaries = lazy(() => import("./pages/EmployeeSalaries"));
 const AttendanceKiosk = lazy(() => import("./pages/AttendanceKiosk"));
@@ -198,6 +199,14 @@ function App() {
             element={
               <OfficeRoute requirePermission="employee_payroll">
                 <CashierPayroll />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/employee-attendance"
+            element={
+              <OfficeRoute requirePermission="employee_payroll">
+                <EmployeeAttendance />
               </OfficeRoute>
             }
           />

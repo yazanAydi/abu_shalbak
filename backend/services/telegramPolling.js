@@ -46,7 +46,7 @@ export function startTelegramBotPollLoops(db, bots, options = {}) {
             {
               offset: offsets[bot.kind] || 0,
               timeout: pollTimeoutSec,
-              allowed_updates: JSON.stringify(["callback_query"]),
+              allowed_updates: JSON.stringify(bot.allowedUpdates || ["callback_query"]),
             },
             bot.token
           );
@@ -55,7 +55,7 @@ export function startTelegramBotPollLoops(db, bots, options = {}) {
 
           for (const update of updates) {
             const outcome = await processPolledUpdate(db, bot.kind, update, {
-              handle,
+              handle: (database, upd) => handle(database, upd, { sourceBot: bot.kind }),
               maxAttempts,
             });
             if (outcome.advanced && update.update_id != null) {

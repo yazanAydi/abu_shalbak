@@ -1,0 +1,165 @@
+{
+  "anchor": {
+    "timezone": "Asia/Hebron",
+    "offset": "+03:00",
+    "purchaseDay": "2026-09-14",
+    "posDay": "2026-09-15",
+    "boundaryDay": "2026-09-14",
+    "uiRange": "2026-09-15 إلى 2026-09-15 للمبيعات والوردية الرئيسية، و2026-09-14 لحركة حد منتصف الليل",
+    "shifts": {
+      "cashier1": { "start": "2026-09-15 07:00:00", "end": "2026-09-15 15:00:00", "hours": "8.00", "rate": "25.00", "pay": "200.00" },
+      "cashier2": { "start": "2026-09-15 08:00:00", "end": "2026-09-15 12:00:00", "hours": "4.00", "rate": "20.00", "pay": "80.00" },
+      "edge": { "start": "2026-09-14 20:30:00", "end": "2026-09-14 21:30:00", "hours": "1.00", "rate": "25.00", "pay": "25.00" }
+    },
+    "clockNote": "Timestamps without a timezone are stored as UTC, matching the application's parser. 2026-09-15 07:00:00 UTC is 10:00 in Asia/Hebron. 2026-09-14 20:30:00 UTC is 23:30 on 14 Sep, while 21:30 UTC is 00:30 on 15 Sep."
+  },
+  "accounts": {
+    "admin": { "username": "admin", "password": "DemoAdmin#2026", "role": "admin", "portal": "office" },
+    "accountant": { "username": "accountant", "password": "DemoAcct#2026", "role": "accountant", "portal": "office" },
+    "finance": { "username": "accountant.fin", "password": "DemoFin#2026", "role": "accountant", "portal": "office" },
+    "cashier1": { "username": "cashier1", "password": "DemoCash1#2026", "role": "cashier", "portal": "pos" },
+    "cashier2": { "username": "cashier2", "password": "DemoCash2#2026", "role": "cashier", "portal": "pos" },
+    "bakery": { "username": "bakery.demo", "password": "DemoBake#2026", "role": "bakery_employee", "portal": "kiosk" },
+    "shelves": { "username": "shelves.demo", "password": "DemoShelf#2026", "role": "shelves_employee", "portal": "kiosk" }
+  },
+  "branding": {
+    "store_name_ar": "محاكاة سوبرماركت أبو شلبك",
+    "store_phone": "000000000",
+    "store_license": "رخصة محاكاة وليست رخصة المتجر",
+    "store_address": "بيانات تجريبية"
+  },
+  "parties": {
+    "suppliers": {
+      "dairy": "مورد الألبان التجريبي",
+      "produce": "مورد الخضار التجريبي",
+      "bakery": "مورد المخبز التجريبي",
+      "vat": "مورد الضريبة التجريبي",
+      "office": "مورد المكتب التجريبي"
+    },
+    "customers": {
+      "ahmad": "أحمد الذمة التجريبي",
+      "layla": "ليلى الحد التجريبي",
+      "reject": "رفض الذمة التجريبي"
+    },
+    "employees": {
+      "laith": "ليث الصندوق التجريبي",
+      "samer": "سامر الرفوف التجريبي",
+      "baker": "خباز الدوام التجريبي"
+    }
+  },
+  "products": {
+    "milk": { "name": "حليب طيرة تجريبي", "barcode": "6281000000001", "price": "8.00", "purchaseQty": "10", "purchaseTotal": "40.00", "cost": "4.00" },
+    "tomato": { "name": "بندورة تجريبية", "barcode": "6281000000018", "scaleCode": "2100001", "weightBarcode": "2100001012500", "pricePerKg": "6.00", "sellKg": "1.250", "charged": "8.00", "purchaseQty": "5", "purchaseTotal": "15.00", "cost": "3.00" },
+    "bread": { "name": "خبز طابون تجريبي", "barcode": "6281000000025", "price": "3.00", "category": "مخبز", "purchaseQty": "20", "purchaseTotal": "20.00", "cost": "1.00" },
+    "yogurt": { "name": "لبن تشكيلة تجريبي", "barcode": "6281000000032", "price": "18.00", "purchaseQty": "10", "purchaseTotal": "130.00", "cost": "13.00", "lotA": { "qty": "4", "total": "40.00", "expiry": "2026-10-01" }, "lotB": { "qty": "6", "total": "90.00", "expiry": "2026-12-01" } },
+    "sugar": { "name": "سكر تجريبي", "barcode": "6281000000049", "price": "4.00", "purchaseQty": "4", "purchaseTotal": "8.00", "cost": "2.00", "counted": "3" },
+    "oil": { "name": "زيت تجريبي", "barcode": "6281000000056", "price": "9.00", "minStock": "5", "purchaseQty": "2", "purchaseTotal": "10.00", "cost": "5.00" },
+    "water": { "name": "مياه مكتب تجريبية", "barcode": "6281000000063", "price": "2.00", "purchaseQty": "6", "purchaseTotal": "3.00", "cost": "0.50", "invoiceQty": "2", "invoiceTotal": "4.00" },
+    "flour": { "name": "طحين تجريبي", "barcode": "6281000000070", "purchaseQty": "5", "purchaseTotal": "10.00", "cost": "2.00" },
+    "vat": { "name": "حافة ضريبة تجريبية", "barcode": "6281000000087", "purchaseQty": "10", "purchaseTotal": "116.00", "vatRate": "0.16", "costFromGross": "11.60", "independentNet": "100.00", "independentVat": "16.00" },
+    "missing": { "name": "حافة تكلفة مفقودة", "barcode": "6281000000094", "price": "7.00", "receiptQty": "2" },
+    "damaged": { "name": "صنف تالف تجريبي", "barcode": "6281000000100", "price": "3.00", "purchaseQty": "2", "purchaseTotal": "4.00", "cost": "2.00", "issueQty": "1" }
+  },
+  "books": {
+    "note": "These signed movements are the hand ledger. The checker sums them before any API call.",
+    "dairy": { "moves": ["40.00", "130.00", "-40.00", "-8.00"], "balance": "122.00" },
+    "produce": { "moves": ["15.00", "4.00", "8.00", "10.00"], "balance": "37.00" },
+    "bakerySupplier": { "moves": ["20.00", "10.00", "-10.00"], "balance": "20.00" },
+    "vatSupplier": { "moves": ["116.00"], "balance": "116.00" },
+    "officeSupplier": { "moves": ["3.00"], "balance": "3.00" },
+    "suppliersTotal": "298.00",
+    "ahmad": { "moves": ["36.00", "3.00", "-15.00"], "balance": "24.00" },
+    "cashier1Cash": { "opening": "200.00", "in": ["24.00", "8.00", "12.00", "3.00", "5.00", "2.00"], "out": ["8.00", "20.00"], "expected": "226.00" },
+    "cashier2Cash": { "opening": "50.00", "in": ["9.00"], "out": [], "expected": "59.00" },
+    "edgeCash": { "opening": "0.00", "in": ["7.00"], "out": [], "expected": "7.00" },
+    "posDay": {
+      "charged": ["24.00", "8.00", "12.00", "36.00", "8.00", "5.00", "36.00", "8.00", "5.00", "9.00"],
+      "gross": "151.00",
+      "roundingNote": "Two 5.40 bread totals (6.00 − 0.60) each lose 0.40, so gross, net, profit, cash, and ذمة move by 0.80 or 0.40 as shown.",
+      "refunds": ["8.00", "36.00"],
+      "refundTotal": "44.00",
+      "net": "107.00",
+      "discounts": ["0.60", "0.60"],
+      "discountTotal": "1.20",
+      "saleCogs": ["12.00", "3.75", "4.00", "26.00", "4.00", "2.00", "26.00", "4.00", "2.00", "5.00"],
+      "saleCogsTotal": "88.75",
+      "refundCogs": ["4.00", "26.00"],
+      "refundCogsTotal": "30.00",
+      "netCogs": "58.75",
+      "grossProfit": "48.25",
+      "cashPayments": "63.00",
+      "visaPayments": "41.00",
+      "onAccountPayments": "47.00"
+    },
+    "opex": { "moves": ["30.00", "20.00", "292.00", "8.00", "180.00", "120.00"], "total": "650.00" },
+    "operatingProfit": "-601.75",
+    "inventoryAtCost": "283.25",
+    "warehouseValuation": "281.25",
+    "bakeryNet": "22.80",
+    "bakeryQty": "8"
+  },
+  "stock": {
+    "حليب طيرة تجريبي": "4.000",
+    "بندورة تجريبية": "3.750",
+    "خبز طابون تجريبي": "11.000",
+    "لبن تشكيلة تجريبي": "8.000",
+    "سكر تجريبي": "3.000",
+    "زيت تجريبي": "1.000",
+    "مياه مكتب تجريبية": "4.000",
+    "طحين تجريبي": "5.000",
+    "حافة ضريبة تجريبية": "10.000",
+    "حافة تكلفة مفقودة": "1.000",
+    "صنف تالف تجريبي": "1.000"
+  },
+  "cost": {
+    "حليب طيرة تجريبي": "4.00",
+    "بندورة تجريبية": "3.00",
+    "خبز طابون تجريبي": "1.00",
+    "لبن تشكيلة تجريبي": "13.00",
+    "سكر تجريبي": "2.00",
+    "زيت تجريبي": "5.00",
+    "مياه مكتب تجريبية": "0.50",
+    "طحين تجريبي": "2.00",
+    "حافة ضريبة تجريبية": "11.60",
+    "حافة تكلفة مفقودة": "0.00",
+    "صنف تالف تجريبي": "2.00"
+  },
+  "milkWarehouses": {
+    "main": "2.000",
+    "store": "2.000",
+    "returns": "2.000",
+    "note": "Catalog milk is 4 and still includes the 2 transferred to the store. The main line shows 4 − 2 = 2 so the transfer is valued once. Returns hold 2 that already left catalog stock. Supermarket valuation is catalog 283.25 minus bakery flour 10.00 plus the returns value 8.00 = 281.25."
+  },
+  "lots": {
+    "لبن تشكيلة تجريبي": [
+      { "expiry": "2026-10-01", "qty": "2.000" },
+      { "expiry": "2026-12-01", "qty": "6.000" }
+    ]
+  },
+  "payroll": {
+    "samerSalary": "300.00",
+    "samerDebtDeduct": "8.00",
+    "samerCash": "292.00",
+    "laithSalary": "200.00",
+    "laithAdvanceDeduct": "20.00",
+    "laithCash": "180.00",
+    "bakerHours": "8.00",
+    "bakerRate": "15.00",
+    "bakerPay": "120.00"
+  },
+  "walkthrough": [
+    { "screen": "الموردون", "record": "مورد الألبان التجريبي", "expect": "رصيد 122.00 شيكل" },
+    { "screen": "الموردون", "record": "مورد الخضار التجريبي", "expect": "رصيد 37.00 شيكل" },
+    { "screen": "الموردون", "record": "مورد المخبز التجريبي", "expect": "رصيد 20.00 شيكل" },
+    { "screen": "الموردون", "record": "مورد الضريبة التجريبي", "expect": "رصيد 116.00 شيكل. افصل ضريبة السطر: الصافي المستقل 100.00 والضريبة 16.00" },
+    { "screen": "المنتجات", "record": "حليب طيرة تجريبي", "expect": "المخزون 4 والتكلفة 4.00" },
+    { "screen": "المنتجات", "record": "بندورة تجريبية", "expect": "المخزون 3.750 كغم" },
+    { "screen": "المنتجات", "record": "زيت تجريبي", "expect": "المخزون 1 وحد الطلب 5، يظهر في النواقص" },
+    { "screen": "الصلاحية", "record": "لبن تشكيلة تجريبي", "expect": "2 بتاريخ 2026-10-01 و6 بتاريخ 2026-12-01" },
+    { "screen": "العملاء", "record": "أحمد الذمة التجريبي", "expect": "ذمة 24.00" },
+    { "screen": "الورديات", "record": "cashier1 افتتاح 200", "expect": "النقد المتوقع 226.00" },
+    { "screen": "الورديات", "record": "cashier2 افتتاح 50", "expect": "النقد المتوقع 59.00" },
+    { "screen": "المراقبة المالية", "record": "من 2026-09-15 إلى 2026-09-15", "expect": "مبيعات نقطة البيع 151.00، المرتجعات 44.00، الصافي 107.00، التكلفة 58.75، مجمل الربح 48.25، المصروفات 650.00" },
+    { "screen": "المخبز / المبيعات", "record": "خبز طابون تجريبي في 2026-09-15", "expect": "صافي 22.80 وكمية 8" }
+  ]
+}

@@ -273,4 +273,59 @@ describe("warehouse supermarket stock and purchase returns", () => {
     );
     expect(Number(mainLoc.quantity)).toBe(35);
   });
+
+  test("transfers out and back keep one company value, including returns and another location", async () => {
+    const hdr = authHeader(adminToken);
+    const warehouses = unwrap(await request(ctx.app).get("/api/v1/warehouses").set(hdr));
+    const store = warehouses.find((w) => w.type === "store");
+    const damaged = warehouses.find((w) => w.type === "damaged");
+    const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [productId]);
+    const stockBefore = Number(product.stock);
+    const before = unwrap(await request(ctx.app).get("/api/v1/warehouses/valuation").set(hdr));
+
+    async function postTransfer(fromId, toId, qty) {
+      const draft = await request(ctx.app)
+        .post("/api/v1/warehouses/transfers")
+        .set(hdr)
+        .send({
+          from_warehouse_id: fromId,
+          to_warehouse_id: toId,
+          items: [{ product_id: productId, quantity: qty }],
+        });
+      expect(draft.status).toBe(201);
+      const posted = await request(ctx.app)
+        .post(`/api/v1/warehouses/transfers/${unwrap(draft).id}/post`)
+        .set(hdr);
+      expect(posted.status).toBe(200);
+    }
+
+    function lineSum(body) {
+      return (body.warehouses || []).reduce(
+        (sum, row) => Math.round((sum + Number(row.total_value || 0)) * 100) / 100,
+        0
+      );
+    }
+
+    function productQty(rows, warehouseId) {
+      return rows
+        .filter((row) => Number(row.product_id) === Number(productId) && Number(row.warehouse_id) === Number(warehouseId))
+        .reduce((sum, row) => sum + Number(row.quantity), 0);
+    }
+
+    await postTransfer(mainWarehouse.id, store.id, 10);
+    await postTransfer(store.id, mainWarehouse.id, 4);
+    await postTransfer(mainWarehouse.id, returnsWarehouse.id, 2);
+    await postTransfer(mainWarehouse.id, damaged.id, 1);
+
+    const after = unwrap(await request(ctx.app).get("/api/v1/warehouses/valuation").set(hdr));
+    const lines = unwrap(await request(ctx.app).get("/api/v1/warehouses/stock").set(hdr));
+    const live = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [productId]);
+    expect(Number(live.stock)).toBeCloseTo(stockBefore, 3);
+    expect(Number(after.grand_total)).toBeCloseTo(Number(before.grand_total), 2);
+    expect(lineSum(after)).toBeCloseTo(Number(after.grand_total), 2);
+    expect(productQty(lines, mainWarehouse.id)).toBeCloseTo(stockBefore - 6 - 2 - 1, 3);
+    expect(productQty(lines, store.id)).toBeCloseTo(6, 3);
+    expect(productQty(lines, returnsWarehouse.id)).toBeCloseTo(8, 3);
+    expect(productQty(lines, damaged.id)).toBeCloseTo(1, 3);
+  });
 });

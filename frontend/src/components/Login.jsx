@@ -83,12 +83,13 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await api.post("/api/auth/change-password", {
+      const { data } = await api.post("/api/auth/change-password", {
         current_password: currentPassword || password,
         new_password: newPassword,
       });
+      if (data?.token) setToken(data.token);
       const prev = getUser() || {};
-      const nextUser = { ...prev, must_change_password: false };
+      const nextUser = { ...prev, ...(data?.user || {}), must_change_password: false };
       setUser(nextUser);
       setMustChange(false);
       navigate(homePathForRole(nextUser.role, nextUser.permissions), { replace: true });

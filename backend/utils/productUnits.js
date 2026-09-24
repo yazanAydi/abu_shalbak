@@ -1,4 +1,4 @@
-import { digitsOnly, normalizeBarcodeInput, normalizeStoredBarcode } from "./barcode.js";
+import { digitsOnly, normalizeBarcodeInput, normalizeScaleProductCode, normalizeStoredBarcode } from "./barcode.js";
 import { resolveUnitPrice, buildSourceRowIndexFromProducts } from "./importPriceResolver.js";
 import { normalizeUnitName } from "./unitNames.js";
 import { ensureUnitName } from "./unitNameCatalog.js";
@@ -81,8 +81,15 @@ export function resolvePackageUnit(units) {
 
 export async function withScaleCode(db, product) {
   if (!product) return product;
+  const scaleOnly = Number(product.scale_only) === 1 ? 1 : 0;
   if (Number(product.is_weighed) !== 1) {
-    return { ...product, scale_code: null, package_price: null, package_conversion: null };
+    return {
+      ...product,
+      scale_only: 0,
+      scale_code: null,
+      package_price: null,
+      package_conversion: null,
+    };
   }
   const units = await loadUnitsForProduct(db, product.id);
   const pack = resolvePackageUnit(units);
@@ -91,6 +98,7 @@ export async function withScaleCode(db, product) {
     : resolveScaleCode(product, units);
   return {
     ...product,
+    scale_only: scaleOnly,
     scale_code: existingScale,
     package_price: pack ? round2(Number(pack.price) || 0) : null,
     package_conversion: pack ? Number(pack.conversion_to_base) || null : null,
@@ -125,6 +133,19 @@ export function resolveSoldUnitCost(unit, product) {
   const baseCost = Number(product?.cost) || 0;
   const conversion = Number(unit?.conversion_to_base) || 1;
   return derivedUnitCost(baseCost, conversion);
+}
+
+/**
+ * Known cost is explicit. A stored 0 is not enough: historical rows with no
+ * cost_known flag and a zero cost stay unknown. cost_known 1 includes free goods.
+ *
+ * @param {object | null | undefined} product
+ */
+export function isProductCostKnown(product) {
+  const flag = product?.cost_known;
+  if (flag === 1 || flag === true || flag === "1") return true;
+  if (flag === 0 || flag === false || flag === "0") return false;
+  return Number(product?.cost) > 0;
 }
 
 /**
@@ -490,10 +511,13 @@ export async function syncProductFromDefaultUnit(db, productId) {
     : null;
 
   const product = await db.get(
-    "SELECT id, barcode, is_weighed, cost FROM products WHERE id = ?",
+    "SELECT id, barcode, is_weighed, scale_only, cost FROM products WHERE id = ?",
     [productId]
   );
   const productBarcode = product?.barcode != null ? String(product.barcode).trim() : "";
+  const scaleOnlyKg =
+    Number(product?.scale_only) === 1 &&
+    String(unit.unit_name || "") === WEIGHED_BASE_UNIT_NAME;
   const keepProductBarcode =
     Number(product?.is_weighed) === 1 &&
     Boolean(productBarcode) &&
@@ -505,7 +529,8 @@ export async function syncProductFromDefaultUnit(db, productId) {
   // base cost, and product_units.cost is only a display cache derived from it.
   // Writing unit.cost back to products.cost would corrupt WAC with a stale value.
 
-  if (keepProductBarcode) {
+  if (scaleOnlyKg || keepProductBarcode) {
+    // Scale-only: the كغم barcode is the PLU. It must not become products.barcode.
     await db.run(
       `UPDATE products SET price = ?, updated_at = datetime('now') WHERE id = ?`,
       [round2(unit.price), productId]
@@ -741,7 +766,7 @@ export async function ensureWeighedProductUnits(db, productId, opts = {}) {
 
   let kgBarcode;
   if (opts.scaleCode !== undefined) {
-    kgBarcode = opts.scaleCode ? normalizeStoredBarcode(opts.scaleCode) : null;
+    kgBarcode = opts.scaleCode ? normalizeScaleProductCode(opts.scaleCode) : null;
   } else if (existingKg?.barcode) {
     kgBarcode = String(existingKg.barcode).trim() || null;
   } else if (hasPackage) {

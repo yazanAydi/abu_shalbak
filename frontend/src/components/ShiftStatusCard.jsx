@@ -53,7 +53,45 @@ export default function ShiftStatusCard({ listRow, detail }) {
           <span className="shift-status-v">{txCount}</span>
         </li>
         <li>
-          <span className="shift-status-k">💰 نقد متوقع (درج)</span>
+          <span className="shift-status-k">مبيعات نقدية</span>
+          <span className="shift-status-v">
+            {listRow.cash_sales != null ? ils(listRow.cash_sales) : "—"}
+            {listRow.cash_sales_incomplete ? " (غير مكتمل)" : ""}
+          </span>
+        </li>
+        {Number(listRow.mixed_cash_sales) ? (
+          <li>
+            <span className="shift-status-k">منها نقد من دفعات مختلطة</span>
+            <span className="shift-status-v">{ils(listRow.mixed_cash_sales)}</span>
+          </li>
+        ) : null}
+        <li>
+          <span className="shift-status-k">مبيعات فيزا</span>
+          <span className="shift-status-v">
+            {listRow.visa_sales != null ? ils(listRow.visa_sales) : "—"}
+            {listRow.visa_incomplete ? " (غير مكتمل)" : ""}
+          </span>
+        </li>
+        <li>
+          <span className="shift-status-k">إجمالي المبيعات النقدية والفيزا</span>
+          <span className="shift-status-v">
+            {listRow.tender_total != null ? ils(listRow.tender_total) : "—"}
+          </span>
+        </li>
+        <li>
+          <span className="shift-status-k">مرتجعات نقدية</span>
+          <span className="shift-status-v">
+            {listRow.cash_refunds != null ? ils(listRow.cash_refunds) : "—"}
+          </span>
+        </li>
+        <li>
+          <span className="shift-status-k">مرتجعات الفيزا</span>
+          <span className="shift-status-v">
+            {listRow.visa_refunds != null ? ils(listRow.visa_refunds) : "—"}
+          </span>
+        </li>
+        <li>
+          <span className="shift-status-k">النقد المتوقع في الصندوق</span>
           <span className="shift-status-v">{expected != null ? ils(expected) : "—"}</span>
         </li>
         <li>

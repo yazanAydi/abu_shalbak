@@ -79,6 +79,14 @@ export function withCheckoutKey(body = {}, key) {
  * Office accountant used by permission tests. Pass `permissions` to store a
  * custom users.permissions_json map; omit it to follow the global template.
  */
+export async function configureTelegramApprover(db, username = "testadmin") {
+  const { updateAppSettings, SETTING_KEYS } = await import("../utils/settings.js");
+  const user = await db.get("SELECT id FROM users WHERE username = ?", [username]);
+  if (!user?.id) throw new Error(`missing telegram approver ${username}`);
+  await updateAppSettings(db, { [SETTING_KEYS.refund_telegram_manager_user_id]: user.id });
+  return user.id;
+}
+
 export async function createAccountantUser(
   db,
   { username = "testaccountant", password = "acctpass123", permissions = null } = {}

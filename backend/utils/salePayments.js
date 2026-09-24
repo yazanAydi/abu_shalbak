@@ -9,9 +9,9 @@ import {
 } from "./currencies.js";
 import {
   TX_BUSINESS_DAY_JOIN,
-  shopDateUtcPrefilter,
+  businessDayRangeClause,
+  businessDayRangeParams,
   txMatchesShopDate,
-  toSqlUtc,
 } from "./businessDay.js";
 
 const ALLOWED = ["cash", "visa", "on_account"];
@@ -326,7 +326,7 @@ const DEFAULT_BASE_CURRENCY = {
 };
 
 const DRAWER_PAY_SELECT = `sp.original_amount, sp.nis_equivalent, sp.amount, sp.currency_id, sp.exchange_rate_used,
-            t.change_amount, t.change_original_amount, t.change_currency_id,
+            t.payment_method AS tx_method, t.change_amount, t.change_original_amount, t.change_currency_id,
             c.code AS currency_code, c.symbol, c.name, c.is_base, c.exchange_rate_to_nis,
             cc.code AS change_currency_code, cc.symbol AS change_symbol, cc.name AS change_name,
             cc.exchange_rate_to_nis AS change_rate, cc.is_base AS change_is_base`;
@@ -340,7 +340,17 @@ const DRAWER_PAY_FROM = `FROM sale_payments sp
  * Pure bucketing step, shared by the single-shift and batch paths so both
  * produce byte-identical drawers.
  */
-function drawerFromRows({ base, openingCash, payRows, refundsTotal, adjTotal, advanceTotal }) {
+function drawerFromRows({
+  base,
+  openingCash,
+  payRows,
+  refundsTotal,
+  adjTotal,
+  advanceTotal,
+  supplierPaymentTotal,
+  customerCollectionTotal,
+  customerCashDebtTotal,
+}) {
   const open = round2(Number(openingCash) || 0);
   const baseCode = normalizeCurrencyCode(base.code);
   const buckets = new Map();
@@ -374,6 +384,8 @@ function drawerFromRows({ base, openingCash, payRows, refundsTotal, adjTotal, ad
 
   const txMap = new Map();
   let salesCashNis = 0;
+  let cashOnlyNis = 0;
+  let mixedCashNis = 0;
   for (const r of payRows) {
     const code = r.currency_code || baseCode;
     const original = round2(Number(r.original_amount != null ? r.original_amount : r.amount) || 0);
@@ -387,6 +399,8 @@ function drawerFromRows({ base, openingCash, payRows, refundsTotal, adjTotal, ad
       is_base: !!r.is_base,
     });
     salesCashNis = round2(salesCashNis + nis);
+    if (r.tx_method === "mixed") mixedCashNis = round2(mixedCashNis + nis);
+    else cashOnlyNis = round2(cashOnlyNis + nis);
     if (!txMap.has(r.tx_id)) {
       const changeNis = round2(Number(r.change_amount) || 0);
       const changeOriginal =
@@ -394,6 +408,7 @@ function drawerFromRows({ base, openingCash, payRows, refundsTotal, adjTotal, ad
           ? round2(Number(r.change_original_amount) || 0)
           : changeNis;
       txMap.set(r.tx_id, {
+        txMethod: r.tx_method,
         changeNis,
         changeOriginal,
         changeCode: r.change_currency_code || baseCode,
@@ -414,6 +429,8 @@ function drawerFromRows({ base, openingCash, payRows, refundsTotal, adjTotal, ad
       const meta = tx.changeCode === baseCode || !tx.changeMeta?.id ? base : tx.changeMeta;
       add(tx.changeCode || baseCode, -tx.changeOriginal, -tx.changeNis, meta);
       salesCashNis = round2(salesCashNis - tx.changeNis);
+      if (tx.txMethod === "mixed") mixedCashNis = round2(mixedCashNis - tx.changeNis);
+      else cashOnlyNis = round2(cashOnlyNis - tx.changeNis);
     }
   }
 
@@ -422,8 +439,14 @@ function drawerFromRows({ base, openingCash, payRows, refundsTotal, adjTotal, ad
 
   const adj = round2(Number(adjTotal) || 0);
   const advances = round2(Number(advanceTotal) || 0);
+  const supplierPays = round2(Number(supplierPaymentTotal) || 0);
+  const collections = round2(Number(customerCollectionTotal) || 0);
+  const cashDebts = round2(Number(customerCashDebtTotal) || 0);
   if (adj) add(baseCode, adj, adj, base);
   if (advances) add(baseCode, advances, advances, base);
+  if (supplierPays) add(baseCode, supplierPays, supplierPays, base);
+  if (collections) add(baseCode, collections, collections, base);
+  if (cashDebts) add(baseCode, cashDebts, cashDebts, base);
 
   const by_currency = Array.from(buckets.values())
     .map((b) => {
@@ -445,6 +468,9 @@ function drawerFromRows({ base, openingCash, payRows, refundsTotal, adjTotal, ad
     expected_cash,
     expected_base_cash: round2(baseBucket?.original || 0),
     sales_cash_nis: salesCashNis,
+    cash_only_nis: cashOnlyNis,
+    mixed_cash_nis: mixedCashNis,
+    cash_refunds_nis: refunds,
     by_currency,
   };
 }
@@ -475,6 +501,20 @@ export async function computeExpectedDrawer(db, shiftId, openingCash) {
     `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'advance'`,
     [sid]
   );
+  const supplierPayRow = await db.get(
+    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'supplier_payment'`,
+    [sid]
+  );
+  // Receipt vouchers are not added here. A POS collection is counted once,
+  // through its customer_collection movement.
+  const collectionRow = await db.get(
+    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'customer_collection'`,
+    [sid]
+  );
+  const cashDebtRow = await db.get(
+    `SELECT COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'customer_cash_debt'`,
+    [sid]
+  );
 
   return drawerFromRows({
     base,
@@ -483,6 +523,9 @@ export async function computeExpectedDrawer(db, shiftId, openingCash) {
     refundsTotal: cashRefundsRow?.s,
     adjTotal: adjRow?.s,
     advanceTotal: advancesRow?.s,
+    supplierPaymentTotal: supplierPayRow?.s,
+    customerCollectionTotal: collectionRow?.s,
+    customerCashDebtTotal: cashDebtRow?.s,
   });
 }
 
@@ -519,7 +562,7 @@ export async function computeExpectedDrawers(db, shifts) {
   );
   const movementRows = await db.all(
     `SELECT shift_id, movement_type, COALESCE(SUM(amount), 0) AS s FROM shift_cash_movements
-     WHERE shift_id IN (${placeholders}) AND movement_type IN ('adjustment', 'advance')
+     WHERE shift_id IN (${placeholders}) AND movement_type IN ('adjustment', 'advance', 'supplier_payment', 'customer_collection', 'customer_cash_debt')
      GROUP BY shift_id, movement_type`,
     ids
   );
@@ -535,8 +578,20 @@ export async function computeExpectedDrawers(db, shifts) {
   );
   const adjByShift = new Map();
   const advanceByShift = new Map();
+  const supplierPayByShift = new Map();
+  const collectionByShift = new Map();
+  const cashDebtByShift = new Map();
   for (const row of movementRows) {
-    const target = row.movement_type === "adjustment" ? adjByShift : advanceByShift;
+    const target =
+      row.movement_type === "adjustment"
+        ? adjByShift
+        : row.movement_type === "advance"
+          ? advanceByShift
+          : row.movement_type === "customer_collection"
+            ? collectionByShift
+            : row.movement_type === "customer_cash_debt"
+              ? cashDebtByShift
+              : supplierPayByShift;
     target.set(Number(row.shift_id), Number(row.s) || 0);
   }
 
@@ -551,6 +606,9 @@ export async function computeExpectedDrawers(db, shifts) {
         refundsTotal: refundByShift.get(id) || 0,
         adjTotal: adjByShift.get(id) || 0,
         advanceTotal: advanceByShift.get(id) || 0,
+        supplierPaymentTotal: supplierPayByShift.get(id) || 0,
+        customerCollectionTotal: collectionByShift.get(id) || 0,
+        customerCashDebtTotal: cashDebtByShift.get(id) || 0,
       })
     );
   }
@@ -563,7 +621,7 @@ export async function sumShiftCashPayments(db, shiftId) {
   return drawer.sales_cash_nis;
 }
 
-/** Expected drawer cash: opening + cash sales - cash refunds + adjustments + advances. */
+/** Expected drawer cash: opening + cash sales - cash refunds + adjustments + advances + supplier payments + customer collections. */
 export async function computeExpectedCash(db, shiftId, openingCash) {
   const drawer = await computeExpectedDrawer(db, shiftId, openingCash);
   return drawer.expected_cash;
@@ -667,42 +725,219 @@ export async function resolveCountedCash(db, body, drawer = null) {
   return { closing_cash, counted_cash: null };
 }
 
-/** Sum visa payment lines for transactions in a shift. */
-export async function sumShiftCardPayments(db, shiftId) {
-  const row = await db.get(
-    `SELECT COALESCE(SUM(sp.amount), 0) AS s
-     FROM sale_payments sp
-     INNER JOIN transactions t ON t.id = sp.transaction_id
-     WHERE t.shift_id = ? AND sp.payment_method = 'visa'`,
-    [shiftId]
+/** Recorded Visa payments. Not a bank settlement and not a card-terminal match. */
+export const VISA_RECORDED_NOTE =
+  "مدفوعات فيزا مسجّلة في النظام. ليست تسوية بنكية ولا مطابقة لجهاز البطاقة.";
+
+export const VISA_INCOMPLETE_NOTE =
+  "سجل الفيزا غير مكتمل: توجد عمليات بلا توزيع دفع موثوق، ولم يُخمَّن المبلغ الناقص.";
+
+export const SHIFT_VISA_LABELS = Object.freeze({
+  sales: "مبيعات فيزا",
+  refunds: "مرتجعات الفيزا",
+  net: "صافي المبيعات الفيزا",
+});
+
+export const SHIFT_CASH_SALES_LABEL = "مبيعات نقدية";
+export const SHIFT_MIXED_CASH_LABEL = "منها نقد من دفعات مختلطة";
+export const SHIFT_MIXED_CASH_INCLUDED_NOTE = "مشمول في المبيعات النقدية";
+export const SHIFT_VISA_AMOUNT_LABEL = SHIFT_VISA_LABELS.sales;
+export const SHIFT_TENDER_TOTAL_LABEL = "إجمالي المبيعات النقدية والفيزا";
+export const SHIFT_CASH_REFUNDS_LABEL = "مرتجعات نقدية";
+export const SHIFT_CASH_NET_LABEL = "صافي المبيعات النقدية";
+export const SHIFT_EXPECTED_CASH_LABEL = "النقد المتوقع في الصندوق";
+
+export const CASH_SALES_INCOMPLETE_NOTE =
+  "سجل المبيعات النقدية غير مكتمل: توجد عمليات بلا توزيع دفع موثوق، ولم يُخمَّن المبلغ الناقص.";
+
+/** Agorot slack for historical REAL sums. Larger gaps are incomplete, not filled in. */
+const ALLOCATION_TOLERANCE = 0.02;
+
+export function emptyShiftVisa() {
+  return {
+    visa_sales: 0,
+    visa_refunds: 0,
+    visa_net: 0,
+    visa_incomplete: false,
+    visa_note: VISA_RECORDED_NOTE,
+    visa_incomplete_note: VISA_INCOMPLETE_NOTE,
+    visa_labels: SHIFT_VISA_LABELS,
+    cash_sales_incomplete: false,
+    cash_sales_incomplete_note: CASH_SALES_INCOMPLETE_NOTE,
+  };
+}
+
+/**
+ * A visa/mixed sale lacks a reliable allocation when there is no payment split,
+ * a mixed sale was stored as a single guessed line, a visa sale has no visa line,
+ * or the visa lines do not match the invoice (including a retry that inserted
+ * the same visa line twice). Callers still sum the rows that exist; they do not
+ * invent the missing portion from the invoice total.
+ */
+export function saleAllocationIncomplete(row) {
+  const method = row?.payment_method;
+  if (method !== "visa" && method !== "mixed") return false;
+  const payCount = Number(row.pay_count) || 0;
+  const visaCount = Number(row.visa_count) || 0;
+  const visaPaid = round2(Number(row.visa_paid) || 0);
+  const total = round2(Number(row.total) || 0);
+  if (payCount === 0) return true;
+  if (method === "mixed" && payCount < 2) return true;
+  if (method === "visa" && visaCount === 0) return true;
+  if (method === "visa" && Math.abs(visaPaid - total) > ALLOCATION_TOLERANCE) return true;
+  if (visaPaid > round2(total + ALLOCATION_TOLERANCE)) return true;
+  return false;
+}
+
+/** Approved refunds with no cash/visa/on-account method cannot be split by guesswork. */
+export function refundAllocationIncomplete(row) {
+  if (String(row?.status || "") !== "approved") return false;
+  const method = row?.payment_method;
+  return method !== "cash" && method !== "visa" && method !== "on_account";
+}
+
+/**
+ * A cash/mixed sale lacks a reliable cash allocation when there is no payment
+ * split, a cash sale has no cash line, or the cash lines exceed the invoice.
+ * Callers still sum recorded cash lines; they do not invent the missing portion.
+ */
+export function saleCashAllocationIncomplete(row) {
+  const method = row?.payment_method;
+  if (method !== "cash" && method !== "mixed") return false;
+  const payCount = Number(row.pay_count) || 0;
+  const cashCount = Number(row.cash_count) || 0;
+  const cashPaid = round2(Number(row.cash_paid) || 0);
+  const total = round2(Number(row.total) || 0);
+  if (payCount === 0) return true;
+  if (method === "mixed" && payCount < 2) return true;
+  if (method === "cash" && cashCount === 0) return true;
+  if (method === "cash" && Math.abs(cashPaid - total) > ALLOCATION_TOLERANCE) return true;
+  if (cashPaid > round2(total + ALLOCATION_TOLERANCE)) return true;
+  return false;
+}
+
+function shiftIdList(shiftIds) {
+  return [
+    ...new Set(
+      (shiftIds || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    ),
+  ];
+}
+
+/**
+ * Recorded Visa for each shift.
+ * Sales: visa lines on sale_payments for transactions posted on that shift.
+ * Refunds: approved visa refunds whose shift_id is the shift that processed them.
+ * Shiftless rows (office invoices) are absent from both sets.
+ * Each sale_payments.id is summed once so a join cannot double-count a line.
+ */
+export async function computeShiftVisaMap(db, shiftIds) {
+  const ids = shiftIdList(shiftIds);
+  const out = new Map(ids.map((id) => [id, emptyShiftVisa()]));
+  if (ids.length === 0) return out;
+  const ph = ids.map(() => "?").join(",");
+
+  const salesRows = await db.all(
+    `SELECT shift_id, COALESCE(SUM(line_nis), 0) AS visa_sales
+     FROM (
+       SELECT sp.id AS payment_id,
+              t.shift_id AS shift_id,
+              COALESCE(sp.nis_equivalent, sp.amount) AS line_nis
+       FROM sale_payments sp
+       INNER JOIN transactions t ON t.id = sp.transaction_id
+       WHERE t.shift_id IN (${ph}) AND sp.payment_method = 'visa'
+       GROUP BY sp.id
+     ) AS visa_lines
+     GROUP BY shift_id`,
+    ids
   );
-  return round2(Number(row?.s) || 0);
+  const refundRows = await db.all(
+    `SELECT shift_id, COALESCE(SUM(total), 0) AS visa_refunds
+     FROM refunds
+     WHERE shift_id IN (${ph}) AND status = 'approved' AND payment_method = 'visa'
+     GROUP BY shift_id`,
+    ids
+  );
+  const suspectSales = await db.all(
+    `SELECT t.shift_id AS shift_id,
+            t.payment_method AS payment_method,
+            t.total AS total,
+            COUNT(sp.id) AS pay_count,
+            COALESCE(SUM(CASE WHEN sp.payment_method = 'visa' THEN 1 ELSE 0 END), 0) AS visa_count,
+            COALESCE(SUM(CASE WHEN sp.payment_method = 'visa' THEN COALESCE(sp.nis_equivalent, sp.amount) ELSE 0 END), 0) AS visa_paid,
+            COALESCE(SUM(CASE WHEN sp.payment_method = 'cash' THEN 1 ELSE 0 END), 0) AS cash_count,
+            COALESCE(SUM(CASE WHEN sp.payment_method = 'cash' THEN COALESCE(sp.nis_equivalent, sp.amount) ELSE 0 END), 0) AS cash_paid
+     FROM transactions t
+     LEFT JOIN sale_payments sp ON sp.transaction_id = t.id
+     WHERE t.shift_id IN (${ph})
+       AND t.payment_method IN ('visa', 'mixed', 'cash')
+     GROUP BY t.id`,
+    ids
+  );
+  const suspectRefunds = await db.all(
+    `SELECT shift_id, status, payment_method
+     FROM refunds
+     WHERE shift_id IN (${ph})
+       AND status = 'approved'
+       AND COALESCE(payment_method, '') NOT IN ('cash', 'visa', 'on_account')`,
+    ids
+  );
+
+  for (const row of salesRows) {
+    const visa = out.get(Number(row.shift_id));
+    if (visa) visa.visa_sales = round2(Number(row.visa_sales) || 0);
+  }
+  for (const row of refundRows) {
+    const visa = out.get(Number(row.shift_id));
+    if (visa) visa.visa_refunds = round2(Number(row.visa_refunds) || 0);
+  }
+  for (const row of suspectSales) {
+    const visa = out.get(Number(row.shift_id));
+    if (!visa) continue;
+    if (saleAllocationIncomplete(row)) visa.visa_incomplete = true;
+    if (saleCashAllocationIncomplete(row)) visa.cash_sales_incomplete = true;
+  }
+  for (const row of suspectRefunds) {
+    if (!refundAllocationIncomplete(row)) continue;
+    const visa = out.get(Number(row.shift_id));
+    if (visa) visa.visa_incomplete = true;
+  }
+  for (const visa of out.values()) {
+    visa.visa_net = round2(visa.visa_sales - visa.visa_refunds);
+  }
+  return out;
+}
+
+export async function computeShiftVisa(db, shiftId) {
+  const map = await computeShiftVisaMap(db, [shiftId]);
+  return map.get(Number(shiftId)) || emptyShiftVisa();
+}
+
+/** Sum visa payment lines for transactions posted on a shift. */
+export async function sumShiftCardPayments(db, shiftId) {
+  const visa = await computeShiftVisa(db, shiftId);
+  return visa.visa_sales;
 }
 
 /** Aggregate payment lines for transactions on a given shop calendar date. */
 export async function aggregatePaymentLinesForDate(db, dateStr) {
-  const { startIso, endIso } = shopDateUtcPrefilter(dateStr);
-  const startSql = toSqlUtc(startIso);
-  const endSql = toSqlUtc(endIso);
   const rows = await db.all(
     `SELECT sp.payment_method, sp.amount, sp.transaction_id, t.payment_method AS tx_method,
             sp.currency_id, sp.original_amount, sp.nis_equivalent,
             c.code AS currency_code, c.symbol AS currency_symbol, c.name AS currency_name,
-            t.created_at, cs.start_time AS shift_start_time
+            t.created_at, t.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS shift_start_time
      FROM sale_payments sp
      INNER JOIN transactions t ON t.id = sp.transaction_id
      ${TX_BUSINESS_DAY_JOIN}
      LEFT JOIN currencies c ON c.id = sp.currency_id
-     WHERE (datetime(t.created_at) >= datetime(?)
-       AND datetime(t.created_at) <= datetime(?))
-        OR (cs.start_time IS NOT NULL
-            AND datetime(cs.start_time) >= datetime(?)
-            AND datetime(cs.start_time) <= datetime(?))`,
-    [startSql, endSql, startSql, endSql]
+     WHERE ${businessDayRangeClause("t", "cs")}`,
+    businessDayRangeParams(dateStr, dateStr)
   );
-  const matched = rows.filter((r) =>
-    txMatchesShopDate({ start_time: r.shift_start_time, created_at: r.created_at }, dateStr)
-  );
+  const matched = rows.filter((r) => txMatchesShopDate(r, dateStr));
 
   let cash_total = 0;
   let card_total = 0;

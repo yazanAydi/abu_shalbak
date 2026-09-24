@@ -6,6 +6,7 @@ import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { employeeKind, parseYmd, requireEmployee } from "./employeeService.js";
 import { previewCashierHours, rangesOverlap } from "./employeeEntitlementService.js";
+import { linkPostedAttendanceSessions, previewHourlyAttendance } from "./attendanceSessionService.js";
 import { listEmployeeAdvances } from "./employeeHistoryStatementService.js";
 import { applyCustomerDebtDeltaInTx, listEmployeeDebts, withEmployeeDebtLock } from "./employeeDebtService.js";
 import { postEmployeePaymentInTx } from "./employeePaymentService.js";
@@ -220,6 +221,21 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
   let hours = { applicable: false };
   if (kind === "cashier") {
     hours = decorateHoursReview(await previewCashierHours(db, emp.id, periodFrom, periodTo));
+  } else if (emp.wage_basis === "hourly") {
+    const attendance = await previewHourlyAttendance(db, emp.id, periodFrom, periodTo);
+    hours = {
+      applicable: attendance.applicable,
+      ...attendance,
+      calculation_final: attendance.final === true,
+      review_required: attendance.final !== true,
+    };
+  } else if (emp.wage_basis === "daily") {
+    hours = {
+      applicable: false,
+      wage_basis: "daily",
+      daily_rate: emp.daily_rate == null ? null : Number(emp.daily_rate),
+      daily_accrual: false,
+    };
   }
 
   const [advances, debts] = await Promise.all([
@@ -236,7 +252,9 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
   const progress = samePeriod ? await periodProgress(db, samePeriod) : null;
 
   const calculatedSalary =
-    kind === "cashier" && hours.calculation_final ? round2(Number(hours.posted_pay) || 0) : null;
+    hours.calculation_final && (kind === "cashier" || emp.wage_basis === "hourly")
+      ? round2(Number(hours.posted_pay) || 0)
+      : null;
 
   return {
     employee_id: emp.id,
@@ -250,7 +268,7 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
     live_hourly_rate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
     calculated_salary: calculatedSalary,
     salary_known: calculatedSalary != null || (progress && samePeriod?.salary_before_deductions != null),
-    calculation_final: kind === "cashier" ? hours.calculation_final === true : false,
+    calculation_final: hours.calculation_final === true,
     advances: advances.items.filter((row) => row.remaining > 0),
     advances_outstanding_total: advances.outstanding_as_of,
     debts: (debts.invoices || []).filter((row) => row.remaining > 0),
@@ -477,6 +495,10 @@ export async function confirmPayrollPayout(db, employeeId, body, req) {
       period = await db.get("SELECT * FROM employee_salary_periods WHERE id = ?", [period.id]);
     } else if (period.salary_before_deductions != null) {
       salaryBefore = round2(Number(period.salary_before_deductions));
+    }
+
+    if (emp.wage_basis === "hourly") {
+      await linkPostedAttendanceSessions(db, period.id, preview.hours?.sessions);
     }
 
     const liveEmp = await requireEmployee(db, emp.id);

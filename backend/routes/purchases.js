@@ -181,7 +181,9 @@ async function applyPurchaseInvoicePost(db, inv, items, userId) {
     const lineGross = purchaseLineGross(it);
     const baseUnitCost = addQty > 0 ? round6(lineGross / addQty) : Number(it.unit_cost) || 0;
     const newCost = wacAfterInbound(oldStock, oldCost, addQty, baseUnitCost);
-    await db.run("UPDATE products SET cost = ? WHERE id = ?", [newCost, it.product_id]);
+    // The purchase establishes the cost of the units received, including an explicit zero.
+    // Previously sold rows keep their own unit_cost_at_sale snapshots.
+    await db.run("UPDATE products SET cost = ?, cost_known = 1 WHERE id = ?", [newCost, it.product_id]);
     await refreshUnitCostCache(db, it.product_id);
     await applyPurchaseReceiveBatches(db, {
       productId: it.product_id,

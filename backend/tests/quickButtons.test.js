@@ -277,3 +277,102 @@ describe("GET /api/pos/quick-buttons units", () => {
     expect(items.find((p) => p.unit_name === "حبة").price).toBe(10);
   });
 });
+
+describe("quick buttons beyond the old 48 cap", () => {
+  let ctx;
+  let adminToken;
+  let cashierToken;
+  let buttons;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+    const adminLogin = await login(ctx.app, "testadmin", "adminpass123", "office");
+    adminToken = adminLogin.body.token;
+    const cashierLogin = await login(ctx.app, "testcashier", "cashpass123", "pos");
+    cashierToken = cashierLogin.body.token;
+
+    buttons = [];
+    for (let i = 0; i < 100; i += 1) {
+      const barcode = `77${String(i).padStart(6, "0")}`;
+      const ins = await ctx.db.run(
+        `INSERT INTO products (barcode, name, price, cost, category, stock)
+         VALUES (?, ?, ?, 1, 'Test', 10)`,
+        [barcode, `سريع ${i + 1}`, i + 1]
+      );
+      const unit = await ctx.db.run(
+        `INSERT INTO product_units (product_id, unit_name, barcode, price, cost, conversion_to_base, is_default)
+         VALUES (?, 'حبة', ?, ?, 1, 1, 1)`,
+        [ins.lastID, barcode, i + 1]
+      );
+      const category = i % 2 === 0 ? "معجنات" : "بيتزا";
+      buttons.push({
+        product_id: ins.lastID,
+        category,
+        product_unit_id: unit.lastID,
+      });
+    }
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  beforeEach(() => {
+    cacheInvalidate(CACHE_KEYS.SETTINGS);
+  });
+
+  test("saves, reloads, reorders, edits, and removes a 100-button list", async () => {
+    const saved = await updateAppSettings(ctx.db, { pos_quick_buttons: buttons });
+    expect(saved.pos_quick_buttons).toHaveLength(100);
+    expect(saved.pos_quick_buttons[48]).toEqual(buttons[48]);
+    expect(saved.pos_quick_buttons[99]).toEqual(buttons[99]);
+
+    cacheInvalidate(CACHE_KEYS.SETTINGS);
+    const reloaded = await getAppSettings(ctx.db);
+    expect(reloaded.pos_quick_buttons).toEqual(buttons);
+
+    const patched = await request(ctx.app)
+      .patch("/api/v1/settings")
+      .set(authHeader(adminToken))
+      .send({ pos_quick_buttons: buttons });
+    expect(patched.status).toBe(200);
+    expect(patched.body.data?.pos_quick_buttons || patched.body.pos_quick_buttons).toHaveLength(100);
+
+    const reordered = [buttons[60], ...buttons.slice(0, 60), ...buttons.slice(61)];
+    const edited = reordered.map((b, index) =>
+      index === 49 ? { ...b, category: OTHER_QUICK_CATEGORY } : b
+    );
+    const removed = edited.filter((_, index) => index !== 70);
+    const after = await updateAppSettings(ctx.db, { pos_quick_buttons: removed });
+    expect(after.pos_quick_buttons).toHaveLength(99);
+    expect(after.pos_quick_buttons[0]).toEqual({
+      ...buttons[60],
+      category: buttons[60].category,
+    });
+    expect(after.pos_quick_buttons[49].category).toBe(OTHER_QUICK_CATEGORY);
+    expect(after.pos_quick_buttons[49].product_id).toBe(edited[49].product_id);
+    expect(after.pos_quick_buttons.some((b) => b.product_id === edited[70].product_id)).toBe(false);
+
+    const small = buttons.slice(0, 3);
+    const smallSaved = await updateAppSettings(ctx.db, { pos_quick_buttons: small });
+    expect(smallSaved.pos_quick_buttons).toEqual(small);
+  });
+
+  test("POS lists every button and the one past position 48 keeps its product and unit", async () => {
+    await updateAppSettings(ctx.db, { pos_quick_buttons: buttons });
+    const res = await request(ctx.app)
+      .get("/api/pos/quick-buttons")
+      .set(authHeader(cashierToken));
+    expect(res.status).toBe(200);
+
+    const pastry = res.body.buttonsByCategory["معجنات"];
+    const pizza = res.body.buttonsByCategory["بيتزا"];
+    expect(pastry).toHaveLength(50);
+    expect(pizza).toHaveLength(50);
+    expect(pastry[24].id).toBe(buttons[48].product_id);
+    expect(pastry[24].unit_id).toBe(buttons[48].product_unit_id);
+    expect(pastry[24].name).toBe("سريع 49");
+    expect(pizza[0].id).toBe(buttons[1].product_id);
+    expect(res.body.categories).toEqual(expect.arrayContaining(["معجنات", "بيتزا"]));
+  });
+});

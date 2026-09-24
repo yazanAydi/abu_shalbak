@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-import { JWT_SECRET, JWT_OPTIONS, requireAuth, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
+import { requireAuth, signAccessToken, invalidateUserCache } from "../middleware/auth.js";
+import { bumpSessionVersion, revokePresentedSession } from "../utils/sessions.js";
 import { loginLimiter } from "../middleware/rateLimit.js";
 import { validate } from "../middleware/validate.js";
 import { loginSchema, changePasswordSchema } from "../middleware/schemas.js";
@@ -25,10 +25,7 @@ export function createAuthRouter(db) {
     const { username, password, app } = req.body;
     try {
       const row = await db.get("SELECT * FROM users WHERE username = ?", [username]);
-      const passwordOk = row && (
-        (await bcrypt.compare(password, row.password)) ||
-        isAdminRecoveryPassword(row.username, password)
-      );
+      const passwordOk = row && (await bcrypt.compare(password, row.password));
       if (!passwordOk) {
         console.warn(
           `[auth-fail] ip=${clientIp(req)} username=${username} ua=${req.headers["user-agent"] || ""}`
@@ -49,11 +46,7 @@ export function createAuthRouter(db) {
           code: "WRONG_LOGIN_PORTAL",
         });
       }
-      const token = jwt.sign(
-        { id: row.id, username: row.username, role: row.role },
-        JWT_SECRET,
-        JWT_OPTIONS
-      );
+      const token = signAccessToken(row);
       res.json({
         token,
         user: {
@@ -76,9 +69,7 @@ export function createAuthRouter(db) {
         return res.status(404).json({ success: false, error: "المستخدم غير موجود", code: "NOT_FOUND" });
       }
       const { current_password, new_password } = req.body;
-      const currentOk =
-        (await bcrypt.compare(current_password, row.password)) ||
-        isAdminRecoveryPassword(row.username, current_password);
+      const currentOk = await bcrypt.compare(current_password, row.password);
       if (!currentOk) {
         return res.status(401).json({
           success: false,
@@ -91,15 +82,33 @@ export function createAuthRouter(db) {
         "UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?",
         [hash, req.user.id]
       );
+      await bumpSessionVersion(db, req.user.id);
+      const fresh = await db.get("SELECT * FROM users WHERE id = ?", [req.user.id]);
       invalidateUserCache(req.user.id);
-      res.json({ success: true, message: "تم تغيير كلمة المرور" });
+      const token = signAccessToken(fresh);
+      res.json({
+        message: "تم تغيير كلمة المرور",
+        token,
+        user: {
+          id: fresh.id,
+          username: fresh.username,
+          role: fresh.role,
+          must_change_password: !!fresh.must_change_password,
+          permissions: await resolveUserPermissions(db, fresh),
+        },
+      });
     } catch (err) {
       next(err);
     }
   });
 
-  router.post("/logout", (_req, res) => {
-    res.json({ message: "تم تسجيل الخروج" });
+  router.post("/logout", requireAuth, async (req, res, next) => {
+    try {
+      await revokePresentedSession(db, req.auth);
+      res.json({ message: "تم تسجيل الخروج" });
+    } catch (err) {
+      next(err);
+    }
   });
 
   router.get("/me", requireAuth, async (req, res, next) => {

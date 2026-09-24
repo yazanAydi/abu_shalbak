@@ -11,6 +11,11 @@ import { apiErrorMessage } from "../utils/apiError";
 
 const PAY_LABELS = { cash: "نقد", transfer: "تحويل", check: "شيك", other: "أخرى" };
 
+function paymentLabel(row) {
+  if (row?.source === "shop_consumption") return "غير نقدي — استهلاك محل";
+  return PAY_LABELS[row?.payment_method] || row?.payment_method;
+}
+
 function isSalaryCategory(c) {
   if (!c) return false;
   const name = String(c.name || "").toLowerCase();
@@ -145,7 +150,7 @@ export default function Expenses() {
     { key: "category", header: "الفئة", value: (r) => r.category_name_ar || r.category_name || r.category || "—", render: (r) => r.category_name_ar || r.category_name || r.category || "—" },
     { key: "employee", header: "الموظف", value: (r) => r.employee_name || "—", render: (r) => r.employee_name || (r.source ? "—" : "بدون موظف") },
     { key: "amount", header: "المبلغ", align: "left", className: "num", value: (r) => ils(r.amount), render: (r) => ils(r.amount) },
-    { key: "payment_method", header: "طريقة الدفع", value: (r) => PAY_LABELS[r.payment_method] || r.payment_method, render: (r) => <StatusPill tone="neutral" noDot>{PAY_LABELS[r.payment_method] || r.payment_method}</StatusPill> },
+    { key: "payment_method", header: "طريقة الدفع", value: (r) => paymentLabel(r), render: (r) => <StatusPill tone="neutral" noDot>{paymentLabel(r)}</StatusPill> },
     { key: "reference_note", header: "ملاحظة", value: (r) => r.reference_note || "—", render: (r) => r.reference_note || "—" },
     { key: "actions", header: "", render: (r) => r.source || r.employee_ledger_id ? null : <Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => remove(r.id)} /> },
   ];

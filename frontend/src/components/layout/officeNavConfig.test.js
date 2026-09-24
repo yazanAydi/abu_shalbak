@@ -159,28 +159,41 @@ describe("permission settings topics", () => {
     ]);
   });
 
-  test("أجور الساعة والدوام sits in finance after salaries", () => {
-    const adminFinance = pathsIn(navFor("admin", ALL), "finance");
-    expect(adminFinance).toContain("/cashier-payroll");
-    expect(adminFinance.indexOf("/cashier-payroll")).toBe(
-      adminFinance.indexOf("/employee-salaries") + 1
-    );
-
-    const accountantFinance = pathsIn(navFor("accountant", { ...NONE, employee_payroll: true }), "finance");
-    expect(accountantFinance).toEqual([
+  test("الموظفون lists the employee pages and hides when none are allowed", () => {
+    const adminEmployees = pathsIn(navFor("admin", ALL), "employees");
+    expect(adminEmployees).toEqual([
       "/employee-statements",
       "/employee-salaries",
       "/cashier-payroll",
+      "/employee-attendance",
     ]);
+    expect(pathsIn(navFor("admin", ALL), "finance")).not.toEqual(
+      expect.arrayContaining(adminEmployees)
+    );
+
+    const payrollOnly = navFor("accountant", { ...NONE, employee_payroll: true });
+    expect(sectionsOf(payrollOnly)).toEqual(["employees"]);
+    expect(pathsIn(payrollOnly, "employees")).toEqual([
+      "/employee-statements",
+      "/employee-salaries",
+      "/cashier-payroll",
+      "/employee-attendance",
+    ]);
+    expect(sectionsOf(payrollOnly)).not.toContain("finance");
+
+    const financeOnly = navFor("accountant", { ...NONE, finance: true, expenses: true });
+    expect(sectionsOf(financeOnly)).toEqual(["finance"]);
+    expect(pathsIn(financeOnly, "finance")).not.toContain("/employee-statements");
+    expect(sectionsOf(navFor("accountant", NONE))).not.toContain("employees");
   });
 
-  test("كشف حساب ورواتب الموظفين sits in المالية after المصروفات", () => {
-    const finance = topics.find((t) => t.id === "finance");
-    const keys = finance.features.map((f) => f.key);
-    expect(keys).toContain("employee_payroll");
-    expect(keys.indexOf("employee_payroll")).toBe(keys.indexOf("expenses") + 1);
-    expect(finance.features.find((f) => f.key === "employee_payroll").labelAr).toBe(
-      "كشف حساب ورواتب الموظفين"
+  test("كشف حساب ورواتب الموظفين is grouped under الموظفون", () => {
+    const employees = topics.find((t) => t.id === "employees");
+    expect(employees.labelAr).toBe("الموظفون");
+    expect(employees.features.map((f) => f.key)).toEqual(["employee_payroll"]);
+    expect(employees.features[0].labelAr).toBe("كشف حساب ورواتب الموظفين");
+    expect(topics.find((t) => t.id === "finance").features.map((f) => f.key)).not.toContain(
+      "employee_payroll"
     );
   });
 

@@ -25,6 +25,42 @@ function formatDt(v) {
   return dateTime(v);
 }
 
+function formatQty(qty) {
+  const n = Number(qty);
+  if (!Number.isFinite(n)) return String(qty ?? "");
+  return String(n);
+}
+
+function requestItems(row) {
+  return Array.isArray(row?.items) ? row.items.filter((it) => it && it.name) : [];
+}
+
+function itemsText(row) {
+  const items = requestItems(row);
+  if (!items.length) return "—";
+  return items
+    .map((it) => {
+      const unit = it.unit_name ? ` ${it.unit_name}` : "";
+      return `${it.name} × ${formatQty(it.quantity)}${unit} — ${ils(it.line_total)}`;
+    })
+    .join("\n");
+}
+
+function ItemsList({ row }) {
+  const items = requestItems(row);
+  if (!items.length) return "—";
+  return (
+    <ul style={{ margin: "0.2rem 0 0", padding: 0, listStyle: "none", lineHeight: 1.5 }}>
+      {items.map((it, i) => (
+        <li key={`${it.name}-${i}`}>
+          {it.name} × {formatQty(it.quantity)}
+          {it.unit_name ? ` ${it.unit_name}` : ""} — {ils(it.line_total)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function statusLabel(status) {
   if (status === "approved") return "موافَق";
   if (status === "rejected") return "مرفوض";
@@ -41,6 +77,7 @@ export default function OnAccountApprovals() {
   const [reviewNotes, setReviewNotes] = useState("");
   const [reviewLoading, setReviewLoading] = useState(false);
   const [staleMessage, setStaleMessage] = useState(null);
+  const [overrideCredit, setOverrideCredit] = useState(false);
   const pollBusy = useRef(false);
 
   const load = useCallback(async (silent = false) => {
@@ -48,13 +85,30 @@ export default function OnAccountApprovals() {
     pollBusy.current = true;
     if (!silent) setLoading(true);
     try {
-      const path =
+      const salePath =
         tab === "pending"
           ? "/api/on-account-requests/pending"
           : `/api/on-account-requests/history?status=${tab === "all" ? "all" : tab}`;
-      const { data } = await api.get(path, { headers: getAuthHeaders() });
-      const payload = data?.data ?? data;
-      setRows(Array.isArray(payload) ? payload : []);
+      const cashPath =
+        tab === "pending"
+          ? "/api/customer-cash-debt-requests/pending"
+          : `/api/customer-cash-debt-requests/history?status=${tab === "all" ? "all" : tab}`;
+      const [salesRes, cashRes] = await Promise.all([
+        api.get(salePath, { headers: getAuthHeaders() }),
+        api.get(cashPath, { headers: getAuthHeaders() }),
+      ]);
+      const sales = salesRes.data?.data ?? salesRes.data;
+      const cash = cashRes.data?.data ?? cashRes.data;
+      const tagged = [
+        ...(Array.isArray(sales) ? sales : []).map((row) => ({ ...row, request_kind: "sale" })),
+        ...(Array.isArray(cash) ? cash : []).map((row) => ({
+          ...row,
+          request_kind: "cash_debt",
+          on_account_amount: row.on_account_amount ?? row.amount,
+        })),
+      ];
+      tagged.sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+      setRows(tagged);
     } catch (e) {
       if (!silent) toast.error(apiErrorMessage(e, "تعذّر التحميل"));
       if (!silent) setRows([]);
@@ -78,7 +132,11 @@ export default function OnAccountApprovals() {
   async function openReview(row, action) {
     setStaleMessage(null);
     try {
-      const { data } = await api.get(`/api/on-account-requests/${row.id}`, {
+      const base =
+        row.request_kind === "cash_debt"
+          ? "/api/customer-cash-debt-requests"
+          : "/api/on-account-requests";
+      const { data } = await api.get(`${base}/${row.id}`, {
         headers: getAuthHeaders(),
       });
       const fresh = data?.data ?? data;
@@ -90,6 +148,7 @@ export default function OnAccountApprovals() {
       }
       setReviewTarget({ ...row, ...fresh, action, readOnly: false });
       setReviewNotes("");
+      setOverrideCredit(false);
     } catch (e) {
       toast.error(apiErrorMessage(e, "تعذّر فتح الطلب"));
     }
@@ -98,6 +157,7 @@ export default function OnAccountApprovals() {
   function closeReview() {
     setReviewTarget(null);
     setReviewNotes("");
+    setOverrideCredit(false);
     setStaleMessage(null);
   }
 
@@ -106,9 +166,18 @@ export default function OnAccountApprovals() {
     if (!reviewTarget || reviewTarget.readOnly) return;
     setReviewLoading(true);
     try {
+      const base =
+        reviewTarget.request_kind === "cash_debt"
+          ? "/api/customer-cash-debt-requests"
+          : "/api/on-account-requests";
       await api.put(
-        `/api/on-account-requests/${reviewTarget.id}`,
-        { status: reviewTarget.action, review_notes: reviewNotes.trim() || null },
+        `${base}/${reviewTarget.id}`,
+        {
+          status: reviewTarget.action,
+          review_notes: reviewNotes.trim() || null,
+          override_credit_limit:
+            reviewTarget.action === "approved" && overrideCredit ? true : undefined,
+        },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       toast.success(reviewTarget.action === "approved" ? "تمت الموافقة" : "تم الرفض");
@@ -130,6 +199,12 @@ export default function OnAccountApprovals() {
 
   const baseColumns = [
     { key: "id", header: "#", value: (r) => r.id, render: (r) => r.id },
+    {
+      key: "kind",
+      header: "النوع",
+      value: (r) => (r.request_kind === "cash_debt" ? "ذمة نقدية" : "بيع على الذمة"),
+      render: (r) => (r.request_kind === "cash_debt" ? "ذمة نقدية" : "بيع على الذمة"),
+    },
     {
       key: "cashier",
       header: "الكاشير",
@@ -167,6 +242,13 @@ export default function OnAccountApprovals() {
       header: "التاريخ",
       value: (r) => formatDt(r.created_at),
       render: (r) => formatDt(r.created_at),
+    },
+    {
+      key: "items",
+      header: "الأصناف",
+      wrap: true,
+      value: (r) => itemsText(r),
+      render: (r) => <ItemsList row={r} />,
     },
     {
       key: "notes",
@@ -246,7 +328,7 @@ export default function OnAccountApprovals() {
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
         title="موافقات الذمة"
-        subtitle="مبيعات على الذمة بانتظار الموافقة — تتحدّث تلقائياً كل 7 ثوانٍ"
+        subtitle="مبيعات على الذمة وطلبات الذمة النقدية — تتحدّث تلقائياً كل 7 ثوانٍ"
         icon="vouchers"
         actions={
           <ReportToolbar
@@ -292,10 +374,10 @@ export default function OnAccountApprovals() {
         title={
           reviewTarget
             ? reviewTarget.readOnly
-              ? `طلب ذمة #${reviewTarget.id} — للقراءة فقط`
+              ? `${reviewTarget.request_kind === "cash_debt" ? "ذمة نقدية" : "طلب ذمة"} #${reviewTarget.id} — للقراءة فقط`
               : reviewTarget.action === "approved"
-                ? `موافقة على ذمة #${reviewTarget.id}`
-                : `رفض ذمة #${reviewTarget.id}`
+                ? `موافقة على ${reviewTarget.request_kind === "cash_debt" ? "ذمة نقدية" : "ذمة"} #${reviewTarget.id}`
+                : `رفض ${reviewTarget.request_kind === "cash_debt" ? "ذمة نقدية" : "ذمة"} #${reviewTarget.id}`
             : ""
         }
         footer={
@@ -305,7 +387,16 @@ export default function OnAccountApprovals() {
             </SecondaryButton>
           ) : (
             <>
-              <PrimaryButton type="submit" form="on-account-review-form" disabled={reviewLoading}>
+              <PrimaryButton
+                type="submit"
+                form="on-account-review-form"
+                disabled={
+                  reviewLoading ||
+                  (reviewTarget?.action === "approved" &&
+                    reviewTarget?.credit?.exceeds_limit &&
+                    !overrideCredit)
+                }
+              >
                 {reviewLoading ? "جاري الحفظ…" : "تأكيد"}
               </PrimaryButton>
               <SecondaryButton type="button" onClick={closeReview}>
@@ -327,6 +418,30 @@ export default function OnAccountApprovals() {
                 {ils(reviewTarget.total_amount ?? 0)}
                 {reviewTarget.readOnly ? ` — ${statusLabel(reviewTarget.status)}` : null}
               </p>
+              {reviewTarget.credit ? (
+                <p className="ui-mt-md">
+                  الرصيد الحالي {ils(reviewTarget.credit.current_balance)} — المطلوب{" "}
+                  {ils(reviewTarget.credit.requested_amount)} — الحد{" "}
+                  {ils(reviewTarget.credit.credit_limit)} — بعد الموافقة{" "}
+                  {ils(reviewTarget.credit.projected_balance)}
+                </p>
+              ) : null}
+              {reviewTarget.action === "approved" && reviewTarget.credit?.exceeds_limit && !reviewTarget.readOnly ? (
+                <FormField label="استثناء فوق حد الائتمان">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={overrideCredit}
+                      onChange={(e) => setOverrideCredit(e.target.checked)}
+                    />{" "}
+                    أوافق على هذه العملية فوق الحد. حد العميل لا يتغير.
+                  </label>
+                </FormField>
+              ) : null}
+              <div className="ui-mt-md">
+                <strong>الأصناف:</strong>
+                <ItemsList row={reviewTarget} />
+              </div>
               {reviewTarget.notes ? (
                 <p className="ui-mt-md">
                   <strong>ملاحظات العملية:</strong> {reviewTarget.notes}

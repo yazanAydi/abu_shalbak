@@ -18,6 +18,11 @@ services:
       DATABASE_PATH: /app/data/supermarket.db
       BACKUP_DIR: /app/backups
       RECEIPT_PRINT_AGENT_URL: ${RECEIPT_PRINT_AGENT_URL:-http://host.docker.internal:17891}
+      # Compose ${} substitution is not inside the container unless listed here.
+      # start-store.ps1 passes --env-file .env.store so these match that file.
+      TELEGRAM_APPROVALS_BOT_TOKEN: ${TELEGRAM_APPROVALS_BOT_TOKEN:-}
+      TELEGRAM_APPROVALS_CHAT_ID: ${TELEGRAM_APPROVALS_CHAT_ID:-}
+      TELEGRAM_APPROVALS_WEBHOOK_SECRET: ${TELEGRAM_APPROVALS_WEBHOOK_SECRET:-}
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups

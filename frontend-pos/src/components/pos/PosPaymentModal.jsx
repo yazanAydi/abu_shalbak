@@ -25,42 +25,66 @@ function fmtCurrency(symbol, amount) {
   return `${symbol || "\u20AA"}${Number(amount || 0).toFixed(2)}`;
 }
 
-function computeMixedPaidNis(lines, getCurrency, excludeLast = false) {
-  const end = excludeLast && lines.length > 1 ? lines.length - 1 : lines.length;
-  let paidNis = 0;
-  for (let i = 0; i < end; i++) {
-    const line = lines[i];
-    const amt = parseAmount(line.amount);
-    if (amt == null || amt <= 0) continue;
-    const cur = getCurrency(line.currencyId);
-    const rate = cur ? Number(cur.exchange_rate_to_nis) : 1;
-    paidNis = round2(paidNis + round2(amt * rate));
-  }
-  return paidNis;
+function defaultMixedPair(currencyId) {
+  return [
+    { method: "visa", currencyId, amount: "" },
+    { method: "cash", currencyId, amount: "" },
+  ];
 }
 
-function remainderAmountForLine(remainingNis, currencyId, getCurrency) {
+function complementMethod(method) {
+  return method === "visa" ? "cash" : "visa";
+}
+
+function lineRate(currencyId, getCurrency) {
   const cur = getCurrency(currencyId);
   const rate = cur ? Number(cur.exchange_rate_to_nis) : 1;
-  if (rate <= 0) return "";
-  const amount = round2(Math.max(0, remainingNis) / rate);
-  return remainingNis > TOLERANCE ? String(amount) : "";
+  return rate > 0 ? rate : null;
 }
 
-function withSyncedMixedRemainder(lines, total, getCurrency) {
-  if (lines.length <= 1) return lines;
-  const paidExceptLast = computeMixedPaidNis(lines, getCurrency, true);
-  const remainingNis = Math.max(0, round2(total - paidExceptLast));
-  const lastIdx = lines.length - 1;
-  const last = lines[lastIdx];
-  const amountStr = remainderAmountForLine(remainingNis, last.currencyId, getCurrency);
-  if (last.amount === amountStr) return lines;
-  return lines.map((l, i) => (i === lastIdx ? { ...l, amount: amountStr } : l));
+function toNis(amount, currencyId, getCurrency) {
+  const rate = lineRate(currencyId, getCurrency);
+  if (rate == null) return null;
+  return round2(amount * rate);
+}
+
+function formatInCurrency(nis, currencyId, getCurrency) {
+  const rate = lineRate(currencyId, getCurrency);
+  if (rate == null) return "";
+  return round2(nis / rate).toFixed(2);
+}
+
+/** Empty is not an error. Negative values and amounts above the payable total are rejected as typed. */
+function mixedAmountProblem(raw, currencyId, total, getCurrency) {
+  if (raw === "" || raw == null) return "";
+  const n = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(n)) return "أدخل مبلغاً صالحاً";
+  if (n < 0) return "لا يمكن إدخال مبلغ سالب";
+  const nis = toNis(round2(n), currencyId, getCurrency);
+  if (nis == null) return "أدخل مبلغاً صالحاً";
+  if (nis > round2(total) + TOLERANCE) return "المبلغ أكبر من إجمالي الفاتورة";
+  return "";
+}
+
+function withOppositeRemainder(lines, editedIdx, total, getCurrency) {
+  if (lines.length !== 2 || (editedIdx !== 0 && editedIdx !== 1)) return lines;
+  const edited = lines[editedIdx];
+  if (mixedAmountProblem(edited.amount, edited.currencyId, total, getCurrency)) return lines;
+  const entered =
+    edited.amount === "" || edited.amount == null ? 0 : parseAmount(edited.amount);
+  if (entered == null || entered < 0) return lines;
+  const nis = toNis(entered, edited.currencyId, getCurrency);
+  if (nis == null || nis > round2(total) + TOLERANCE) return lines;
+  const otherIdx = editedIdx === 0 ? 1 : 0;
+  const formatted = formatInCurrency(round2(total - nis), lines[otherIdx].currencyId, getCurrency);
+  if (lines[otherIdx].amount === formatted) return lines;
+  return lines.map((l, i) => (i === otherIdx ? { ...l, amount: formatted } : l));
 }
 
 export default function PosPaymentModal({
   open,
   total,
+  roundingAdjustment = 0,
   selectedPayment,
   onSelectPayment,
   customerId,
@@ -76,7 +100,7 @@ export default function PosPaymentModal({
   const [cashCurrencyId, setCashCurrencyId] = useState(null);
   const [changeCurrencyId, setChangeCurrencyId] = useState(null);
   const [amountTendered, setAmountTendered] = useState("");
-  const [mixedLines, setMixedLines] = useState([]);
+  const [mixedLines, setMixedLines] = useState(() => defaultMixedPair(null));
   const [cashErr, setCashErr] = useState("");
   const [mixedErr, setMixedErr] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
@@ -93,6 +117,14 @@ export default function PosPaymentModal({
     () => currencies.find((c) => c.is_base) || currencies[0] || null,
     [currencies]
   );
+  const [seenOpen, setSeenOpen] = useState(open);
+  if (open !== seenOpen) {
+    setSeenOpen(open);
+    if (open) {
+      setMixedLines(defaultMixedPair(baseCurrency?.id ?? null));
+      setMixedErr("");
+    }
+  }
 
   const getCurrency = useCallback(
     (id) => currencies.find((c) => Number(c.id) === Number(id)) || baseCurrency,
@@ -102,6 +134,7 @@ export default function PosPaymentModal({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    setMixedLines(() => defaultMixedPair(baseCurrency?.id ?? null));
     api
       .get("/api/currencies")
       .then(({ data }) => {
@@ -111,9 +144,13 @@ export default function PosPaymentModal({
         const base = list.find((c) => c.is_base) || list[0] || null;
         setCashCurrencyId(base ? base.id : null);
         setChangeCurrencyId(base ? base.id : null);
-        setMixedLines([
-          { method: "cash", currencyId: base ? base.id : null, amount: "" },
-        ]);
+        setMixedLines((prev) => {
+          const rows = prev.length >= 2 ? prev : defaultMixedPair(base ? base.id : null);
+          if (!base) return rows;
+          return rows.map((line) =>
+            line.currencyId == null ? { ...line, currencyId: base.id } : line
+          );
+        });
       })
       .catch(() => {
         if (!cancelled) setCurrencies([]);
@@ -251,38 +288,49 @@ export default function PosPaymentModal({
         : mixedComputed.change
       : null;
 
-  const mixedValid = selectedPayment !== "mixed" || mixedComputed.valid;
+  const mixedInputError = useMemo(() => {
+    if (selectedPayment !== "mixed") return "";
+    for (const line of mixedLines) {
+      const problem = mixedAmountProblem(line.amount, line.currencyId, total, getCurrency);
+      if (problem) return problem;
+    }
+    return "";
+  }, [selectedPayment, mixedLines, total, getCurrency]);
+
+  const mixedValid =
+    selectedPayment !== "mixed" || (mixedComputed.valid && !mixedInputError);
 
   function updateMixedLine(idx, key, value) {
     setMixedErr("");
     setMixedLines((prev) => {
       const next = prev.map((l, i) => (i === idx ? { ...l, [key]: value } : l));
-      const isLast = idx === prev.length - 1;
-      const shouldSync = prev.length > 1 && (!isLast || key === "currencyId");
-      return shouldSync ? withSyncedMixedRemainder(next, total, getCurrency) : next;
+      if (key === "method" && (idx === 0 || idx === 1) && next.length >= 2) {
+        const other = idx === 0 ? 1 : 0;
+        next[other] = { ...next[other], method: complementMethod(value) };
+        return next;
+      }
+      const pair = prev.length === 2 && (idx === 0 || idx === 1);
+      if (key === "amount" && pair) return withOppositeRemainder(next, idx, total, getCurrency);
+      if (key === "currencyId" && pair && String(next[idx].amount ?? "") !== "") {
+        return withOppositeRemainder(next, idx, total, getCurrency);
+      }
+      return next;
     });
   }
 
   function addMixedLine() {
-    setMixedLines((prev) => {
-      const next = [
-        ...prev,
-        {
-          method: "cash",
-          currencyId: baseCurrency ? baseCurrency.id : null,
-          amount: "",
-        },
-      ];
-      return withSyncedMixedRemainder(next, total, getCurrency);
-    });
+    setMixedLines((prev) => [
+      ...prev,
+      {
+        method: "cash",
+        currencyId: baseCurrency ? baseCurrency.id : null,
+        amount: "",
+      },
+    ]);
   }
 
   function removeMixedLine(idx) {
-    setMixedLines((prev) => {
-      if (prev.length <= 1) return prev;
-      const next = prev.filter((_, i) => i !== idx);
-      return withSyncedMixedRemainder(next, total, getCurrency);
-    });
+    setMixedLines((prev) => (prev.length <= 2 ? prev : prev.filter((_, i) => i !== idx)));
   }
 
   const canTarhil =
@@ -444,6 +492,12 @@ export default function PosPaymentModal({
           <div className="pos-payment-modal-total">
             <span className="pos-payment-modal-total-label">الإجمالي</span>
             <span className="pos-payment-modal-total-amount">{ils(total)}</span>
+            {Number(roundingAdjustment) ? (
+              <span className="pos-payment-modal-total-label">
+                تقريب {Number(roundingAdjustment) > 0 ? "+" : ""}
+                {Number(roundingAdjustment).toFixed(2)}
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -541,11 +595,10 @@ export default function PosPaymentModal({
               const amt = parseAmount(line.amount);
               const nis =
                 amt != null && cur ? round2(amt * Number(cur.exchange_rate_to_nis)) : null;
-              const isAutoRemainder =
-                mixedLines.length > 1 && idx === mixedLines.length - 1;
               return (
                 <div className="pos-mixed-line" key={idx}>
                   <select
+                    aria-label={`طريقة الدفع ${idx + 1}`}
                     value={line.method}
                     onChange={(e) => updateMixedLine(idx, "method", e.target.value)}
                   >
@@ -553,6 +606,7 @@ export default function PosPaymentModal({
                     <option value="visa">فيزا</option>
                   </select>
                   <select
+                    aria-label={`عملة الدفع ${idx + 1}`}
                     value={line.currencyId ?? ""}
                     onChange={(e) =>
                       updateMixedLine(idx, "currencyId", Number(e.target.value))
@@ -561,14 +615,11 @@ export default function PosPaymentModal({
                     {currencyOptions}
                   </select>
                   <QtyStepper
-                    min={0}
                     precision={2}
                     value={line.amount}
                     onChange={(e) => updateMixedLine(idx, "amount", e.target.value)}
                     placeholder="0.00"
-                    readOnly={isAutoRemainder}
-                    title={isAutoRemainder ? "يُحسب تلقائياً من المتبقي" : undefined}
-                    className={isAutoRemainder ? "pos-mixed-line-amount--auto" : undefined}
+                    aria-label={`مبلغ الدفع ${idx + 1}`}
                   />
                   <span className="pos-mixed-line-nis">
                     {nis != null && cur && !cur.is_base ? ils(nis) : ""}
@@ -577,7 +628,7 @@ export default function PosPaymentModal({
                     type="button"
                     className="pos-mixed-line-remove"
                     onClick={() => removeMixedLine(idx)}
-                    disabled={mixedLines.length <= 1}
+                    disabled={mixedLines.length <= 2}
                     aria-label="حذف"
                   >
                     ×
@@ -723,7 +774,9 @@ export default function PosPaymentModal({
         ) : null}
 
         {cashErr ? <div className="shift-modal-err">{cashErr}</div> : null}
-        {mixedErr ? <div className="shift-modal-err">{mixedErr}</div> : null}
+        {mixedInputError || mixedErr ? (
+          <div className="shift-modal-err">{mixedInputError || mixedErr}</div>
+        ) : null}
         {notesErr ? <div className="shift-modal-err">{notesErr}</div> : null}
         {error ? <p className="pos-err">{error}</p> : null}
 

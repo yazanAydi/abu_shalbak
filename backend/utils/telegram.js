@@ -39,6 +39,14 @@ function sulafBotConfig() {
   };
 }
 
+function approvalsBotConfig() {
+  return {
+    token: env("TELEGRAM_APPROVALS_BOT_TOKEN"),
+    chatId: env("TELEGRAM_APPROVALS_CHAT_ID"),
+    webhookSecret: env("TELEGRAM_APPROVALS_WEBHOOK_SECRET"),
+  };
+}
+
 export function getRefundWebhookSecret() {
   return refundBotConfig().webhookSecret;
 }
@@ -101,6 +109,29 @@ export function isSulafWebhookConfigured() {
   return !!(isSulafTelegramConfigured() && webhookSecret);
 }
 
+export function getApprovalsWebhookSecret() {
+  return approvalsBotConfig().webhookSecret;
+}
+
+export function getApprovalsBotToken() {
+  return approvalsBotConfig().token;
+}
+
+export function getApprovalsChatId() {
+  return approvalsBotConfig().chatId;
+}
+
+/** Token only — enough to poll /start while the group id is still empty. */
+export function isApprovalsBotTokenConfigured() {
+  return !!approvalsBotConfig().token;
+}
+
+/** Token + destination group. Required before any outbound approvals message. */
+export function isApprovalsTelegramConfigured() {
+  const { token, chatId } = approvalsBotConfig();
+  return !!(token && chatId);
+}
+
 /** Bots with inline approve/reject buttons (for polling). */
 export function getApprovalBotPollConfigs() {
   /** @type {{ kind: string, token: string, getUpdates: typeof refundTelegramGet }[]} */
@@ -113,6 +144,13 @@ export function getApprovalBotPollConfigs() {
   }
   if (getSulafBotToken() && isSulafWebhookConfigured()) {
     bots.push({ kind: "sulaf", token: getSulafBotToken() });
+  }
+  if (isApprovalsBotTokenConfigured()) {
+    bots.push({
+      kind: "approvals",
+      token: getApprovalsBotToken(),
+      allowedUpdates: ["message", "callback_query"],
+    });
   }
   return bots;
 }
@@ -551,12 +589,15 @@ export async function editRefundMessageAlreadyHandled({ messageId, requestId, cu
 }
 
 export async function answerCallbackQuery(callbackQueryId, text, botKind = "refund") {
+  const kind = approvalBotKind(botKind);
   const token =
-    botKind === "zimma"
-      ? getZimmaBotToken()
-      : botKind === "sulaf"
-        ? getSulafBotToken()
-        : getRefundBotToken();
+    kind === "approvals"
+      ? getApprovalsBotToken()
+      : kind === "zimma"
+        ? getZimmaBotToken()
+        : kind === "sulaf"
+          ? getSulafBotToken()
+          : getRefundBotToken();
   await telegramRequest(
     "answerCallbackQuery",
     {
@@ -589,21 +630,234 @@ export function parseSulafCallbackData(data) {
   return { kind: "sulaf", action: m[1], requestId: Number(m[2]) };
 }
 
+export function parseCashDebtCallbackData(data) {
+  if (typeof data !== "string") return null;
+  const m = data.match(/^cashdebt:(approve|reject):(\d+)$/);
+  if (!m) return null;
+  return { kind: "cashdebt", action: m[1], requestId: Number(m[2]) };
+}
+
 export function parseApprovalCallbackData(data) {
   return (
     parseRefundCallbackData(data) ||
     parseZimmaCallbackData(data) ||
-    parseSulafCallbackData(data)
+    parseCashDebtCallbackData(data) ||
+    parseSulafCallbackData(data) ||
+    parseApprovalsCallbackData(data)
+  );
+}
+
+function approvalBotKind(botKind) {
+  if (botKind === "expense" || botKind === "supplier" || botKind === "approvals") return "approvals";
+  if (botKind === "zimma" || botKind === "cashdebt") return "zimma";
+  if (botKind === "sulaf") return "sulaf";
+  return "refund";
+}
+
+const APPROVALS_START_RE = /^\/start@AbuShalbakApprovalsBot(?:\s|$)/i;
+
+/**
+ * Notice a group /start for @AbuShalbakApprovalsBot.
+ * Returns the chat id to copy into TELEGRAM_APPROVALS_CHAT_ID.
+ * Does not write configuration and does not authorize the sender.
+ */
+export function observeApprovalsSetupCommand(message) {
+  const text = String(message?.text || "").trim();
+  if (!APPROVALS_START_RE.test(text)) return null;
+  const chat = message?.chat || {};
+  if (chat.type !== "group" && chat.type !== "supergroup") {
+    return { ignored: true, reason: "not_group", authorized: false };
+  }
+  return {
+    ignored: false,
+    chatId: chat.id == null ? "" : String(chat.id),
+    fromId: message?.from?.id == null ? "" : String(message.from.id),
+    username: message?.from?.username || null,
+    authorized: false,
+  };
+}
+
+export function parseApprovalsCallbackData(data) {
+  if (typeof data !== "string") return null;
+  const m = data.match(/^(expense|supplier|consumption):(approve|reject):(\d+)$/);
+  if (!m) return null;
+  return { kind: m[1], action: m[2], requestId: Number(m[3]) };
+}
+
+export function parseApprovalsApproverIds() {
+  return env("TELEGRAM_APPROVALS_USER_IDS")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Telegram guarantees getChatMember only when the bot is a group administrator.
+ * No extra admin rights are required. Privacy mode can stay enabled.
+ * Current members: creator, administrator, member, or restricted with is_member.
+ */
+export function isActiveChatMember(member) {
+  if (!member || typeof member !== "object") return false;
+  if (member.status === "creator" || member.status === "administrator" || member.status === "member") {
+    return true;
+  }
+  if (member.status === "restricted") return member.is_member === true;
+  return false;
+}
+
+export async function fetchApprovalsChatMember(userId, get = telegramGet) {
+  const { token, chatId } = approvalsBotConfig();
+  if (!token || !chatId || userId == null || String(userId).trim() === "") return null;
+  return get("getChatMember", { chat_id: chatId, user_id: String(userId) }, token);
+}
+
+export function isApprovalsGroupChat(chatId) {
+  const expected = approvalsBotConfig().chatId;
+  return !!expected && String(chatId) === expected;
+}
+
+export function approvalsPermissionKey(kind) {
+  if (kind === "expense") return "expenses";
+  if (kind === "supplier") return "suppliers";
+  return null;
+}
+
+export function approvalsCallbackMatchesTarget(parsed, callbackQuery, target) {
+  if (!parsed || !target) return false;
+  const message = callbackQuery?.message;
+  return (
+    String(target.kind) === parsed.kind &&
+    Number(target.request_id) === Number(parsed.requestId) &&
+    String(target.telegram_message_id) === String(message?.message_id) &&
+    String(target.chat_id) === String(message?.chat?.id) &&
+    String(target.bot_kind || "approvals") === "approvals"
+  );
+}
+
+export async function sendApprovalsConnectionTest(send = telegramRequest) {
+  const { token, chatId } = approvalsBotConfig();
+  if (!token || !chatId) {
+    const err = new Error("Approvals bot token or group chat id is not configured");
+    err.code = "APPROVALS_NOT_CONFIGURED";
+    throw err;
+  }
+  const text = [
+    "اختبار اتصال — AbuShalbakApprovalsBot",
+    "هذه رسالة فحص للبوت فقط.",
+    "لم يُنشأ أي مصروف أو دفعة مورد أو حركة مالية.",
+  ].join("\n");
+  return send("sendMessage", { chat_id: chatId, text }, token);
+}
+
+function approvalsButtons(prefix, requestId) {
+  return buildApprovalKeyboard(prefix, requestId, isApprovalsTelegramConfigured());
+}
+
+export async function sendExpenseApprovalMessage({
+  requestId,
+  requesterName,
+  categoryName,
+  amount,
+  paidOn,
+  paymentMethod,
+  note,
+}) {
+  const { token, chatId } = approvalsBotConfig();
+  const text = [
+    `طلب مصروف #${requestId}`,
+    `مقدم الطلب: ${requesterName}`,
+    `الفئة: ${categoryName}`,
+    `المبلغ: ${ils(amount)}`,
+    `التاريخ: ${paidOn}`,
+    `الدفع: ${paymentMethod}`,
+    note ? `ملاحظة: ${note}` : null,
+    "",
+    "اختر موافقة أو رفض:",
+  ]
+    .filter((line) => line != null)
+    .join("\n");
+  const body = { chat_id: chatId, text };
+  const markup = approvalsButtons("expense", requestId);
+  if (markup) body.reply_markup = markup;
+  const result = await telegramRequest("sendMessage", body, token);
+  return String(result.message_id);
+}
+
+export async function sendSupplierPaymentApprovalMessage({
+  requestId,
+  cashierName,
+  supplierName,
+  amount,
+  shiftId,
+  notes,
+}) {
+  const { token, chatId } = approvalsBotConfig();
+  const text = [
+    `طلب دفع لمورد #${requestId}`,
+    `الكاشير: ${cashierName}`,
+    `المورد: ${supplierName}`,
+    `المبلغ: ${ils(amount)}`,
+    `الوردية: #${shiftId}`,
+    notes ? `ملاحظة: ${notes}` : null,
+    "",
+    "اختر موافقة أو رفض. لا يُصرف النقد قبل الموافقة.",
+  ]
+    .filter((line) => line != null)
+    .join("\n");
+  const body = { chat_id: chatId, text };
+  const markup = approvalsButtons("supplier", requestId);
+  if (markup) body.reply_markup = markup;
+  const result = await telegramRequest("sendMessage", body, token);
+  return String(result.message_id);
+}
+
+export async function sendShopConsumptionApprovalMessage({
+  requestId,
+  cashierName,
+  totalCost,
+  lineCount,
+  reason,
+}) {
+  const { token, chatId } = approvalsBotConfig();
+  const text = [
+    `طلب مصاريف محل #${requestId}`,
+    `الكاشير: ${cashierName}`,
+    `عدد الأصناف: ${lineCount}`,
+    `التكلفة: ${ils(totalCost)}`,
+    reason ? `السبب: ${reason}` : null,
+    "",
+    "الموافقة تخصم المخزون بالتكلفة وتسجّل مصروفاً بلا حركة صندوق.",
+  ]
+    .filter((line) => line != null)
+    .join("\n");
+  const body = { chat_id: chatId, text };
+  const markup = approvalsButtons("consumption", requestId);
+  if (markup) body.reply_markup = markup;
+  const result = await telegramRequest("sendMessage", body, token);
+  return String(result.message_id);
+}
+
+export async function editGroupApprovalMessage({ kind, messageId, requestId, status, approverName }) {
+  const { token, chatId } = approvalsBotConfig();
+  const title =
+    kind === "expense" ? "طلب مصروف" : kind === "consumption" ? "طلب مصاريف محل" : "طلب دفع لمورد";
+  const statusAr = status === "approved" ? "✅ تمت الموافقة" : "❌ مرفوض";
+  await telegramRequest(
+    "editMessageText",
+    {
+      chat_id: chatId,
+      message_id: Number(messageId),
+      text: `${title} #${requestId}\n\n${statusAr}${approverName ? `\nبواسطة: ${approverName}` : ""}`,
+      reply_markup: { inline_keyboard: [] },
+    },
+    token
   );
 }
 
 export function isManagerChat(chatId, botKind = "refund") {
+  const kind = approvalBotKind(botKind);
   const config =
-    botKind === "zimma"
-      ? zimmaBotConfig()
-      : botKind === "sulaf"
-        ? sulafBotConfig()
-        : refundBotConfig();
+    kind === "zimma" ? zimmaBotConfig() : kind === "sulaf" ? sulafBotConfig() : refundBotConfig();
   return String(chatId) === config.chatId;
 }
 
@@ -651,6 +905,51 @@ function zimmaNotesLine(notes) {
   return text ? `ملاحظات: ${text}` : null;
 }
 
+/** Cart lines stored on an on-account request, shaped for Telegram item formatting. */
+export function onAccountTelegramItems(snapshot) {
+  let parsed = snapshot;
+  if (typeof snapshot === "string") {
+    try {
+      parsed = JSON.parse(snapshot);
+    } catch {
+      return [];
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return [];
+  const normalized = Array.isArray(parsed.normalized) ? parsed.normalized : [];
+  const detailed = Array.isArray(parsed.detailed) ? parsed.detailed : [];
+  if (normalized.length) {
+    return normalized.map((line, i) => ({
+      name: line?.name,
+      quantity: line?.quantity,
+      unit_name: line?.unit_name,
+      price: line?.price,
+      lineTotal: detailed[i]?.lineGross,
+    }));
+  }
+  const items = Array.isArray(parsed.itemsForJson) ? parsed.itemsForJson : [];
+  return items.map((line) => ({
+    name: line?.name,
+    quantity: line?.quantity,
+    unit_name: line?.unit_name,
+    price: line?.price,
+  }));
+}
+
+function composeZimmaText(head, items, tail) {
+  const headLines = head.filter((line) => line != null && line !== "");
+  const tailLines = tail.filter((line) => line != null && line !== "");
+  const reserved = [...headLines, "", ...tailLines].join("\n").length + 1;
+  const itemLines = refundItemLinesForBudget(items, reserved);
+  const lines = [...headLines];
+  if (itemLines.length) lines.push(...itemLines);
+  if (tailLines.length) {
+    if (itemLines.length || headLines.length) lines.push("");
+    lines.push(...tailLines);
+  }
+  return lines;
+}
+
 export async function sendOnAccountApprovalMessage({
   requestId,
   cashierName,
@@ -659,26 +958,135 @@ export async function sendOnAccountApprovalMessage({
   onAccountAmount,
   total,
   notes = null,
+  items = null,
+}) {
+  const { token, chatId } = zimmaBotConfig();
+  const withButtons = isZimmaWebhookConfigured();
+  const text = composeZimmaText(
+    [
+      `طلب بيع على الذمة #${requestId}`,
+      `الكاشير: ${cashierName}`,
+      ...zimmaPartyLines({ customerName, employeeName }),
+      `مبلغ الذمة: ${ils(onAccountAmount)}`,
+      `إجمالي الفاتورة: ${ils(total)}`,
+      zimmaNotesLine(notes),
+    ],
+    items,
+    [withButtons ? "اختر موافقة أو رفض:" : "للموافقة أو الرفض: لوحة الإدارة → موافقات الذمة"]
+  ).join("\n");
+  const body = { chat_id: chatId, text };
+  const markup = buildApprovalKeyboard("zimma", requestId, withButtons);
+  if (markup) body.reply_markup = markup;
+  const result = await telegramRequest("sendMessage", body, token);
+  return String(result.message_id);
+}
+
+export async function sendCashDebtApprovalMessage({
+  requestId,
+  cashierName,
+  shiftId,
+  customerName,
+  amount,
+  debtBefore,
+  projectedDebt,
+  notes = null,
 }) {
   const { token, chatId } = zimmaBotConfig();
   const withButtons = isZimmaWebhookConfigured();
   const text = [
-    `طلب بيع على الذمة #${requestId}`,
+    `طلب ذمة نقدية لعميل #${requestId}`,
+    `العميل: ${customerName}`,
+    `المبلغ: ${ils(amount)}`,
     `الكاشير: ${cashierName}`,
-    ...zimmaPartyLines({ customerName, employeeName }),
-    `مبلغ الذمة: ${ils(onAccountAmount)}`,
-    `إجمالي الفاتورة: ${ils(total)}`,
-    zimmaNotesLine(notes),
+    `الوردية: #${shiftId}`,
+    debtBefore != null ? `الذمة الحالية: ${ils(debtBefore)}` : null,
+    projectedDebt != null ? `الذمة بعد الموافقة: ${ils(projectedDebt)}` : null,
+    notes ? `ملاحظات: ${notes}` : null,
     "",
     withButtons ? "اختر موافقة أو رفض:" : "للموافقة أو الرفض: لوحة الإدارة → موافقات الذمة",
   ]
     .filter((line) => line != null)
     .join("\n");
   const body = { chat_id: chatId, text };
-  const markup = buildApprovalKeyboard("zimma", requestId, withButtons);
+  const markup = buildApprovalKeyboard("cashdebt", requestId, withButtons);
   if (markup) body.reply_markup = markup;
   const result = await telegramRequest("sendMessage", body, token);
   return String(result.message_id);
+}
+
+export async function editCashDebtRequestMessage({
+  messageId,
+  requestId,
+  status,
+  customerName,
+  amount,
+  approverName = null,
+  decisionSource = null,
+  notes = null,
+}) {
+  const statusAr =
+    status === "approved" ? "✅ تمت الموافقة" : status === "rejected" ? "❌ مرفوض" : status;
+  const sourceAr =
+    decisionSource === "telegram" ? "تيليجرام" : decisionSource === "admin" ? "لوحة الإدارة" : null;
+  const lines = [
+    `طلب ذمة نقدية لعميل #${requestId}`,
+    `العميل: ${customerName}`,
+    `المبلغ: ${ils(amount)}`,
+    notes ? `ملاحظات: ${notes}` : null,
+    "",
+    statusAr,
+  ].filter((line) => line != null);
+  if (approverName) lines.push(`بواسطة: ${approverName}`);
+  if (sourceAr) lines.push(`المصدر: ${sourceAr}`);
+  await editApprovalMessage({ botKind: "cashdebt", messageId, lines });
+}
+
+export async function sendCashDebtDecisionStatusMessage({
+  requestId,
+  status,
+  customerName,
+  amount,
+  approverName,
+  decisionSource = "admin",
+  notes = null,
+}) {
+  if (!isZimmaTelegramConfigured()) return null;
+  const { token, chatId } = zimmaBotConfig();
+  const statusAr = status === "approved" ? "✅ تمت الموافقة" : "❌ مرفوض";
+  const sourceAr = decisionSource === "telegram" ? "تيليجرام" : "لوحة الإدارة";
+  const text = [
+    `تحديث طلب ذمة نقدية لعميل #${requestId}`,
+    `العميل: ${customerName}`,
+    `المبلغ: ${ils(amount)}`,
+    notes ? `ملاحظات: ${notes}` : null,
+    statusAr,
+    approverName ? `بواسطة: ${approverName}` : null,
+    `المصدر: ${sourceAr}`,
+  ]
+    .filter((line) => line != null)
+    .join("\n");
+  const result = await telegramRequest("sendMessage", { chat_id: chatId, text }, token);
+  return result?.message_id ?? null;
+}
+
+export async function editCashDebtMessageAlreadyHandled({ messageId, requestId, currentStatus }) {
+  const { token, chatId } = zimmaBotConfig();
+  const statusAr =
+    currentStatus === "approved"
+      ? "✅ موافَق عليه مسبقاً"
+      : currentStatus === "rejected"
+        ? "❌ مرفوض مسبقاً"
+        : "تمت المعالجة مسبقاً";
+  await telegramRequest(
+    "editMessageText",
+    {
+      chat_id: chatId,
+      message_id: Number(messageId),
+      text: `طلب ذمة نقدية لعميل #${requestId}\n\n${statusAr}`,
+      reply_markup: { inline_keyboard: [] },
+    },
+    token
+  );
 }
 
 export async function sendAdvanceApprovalMessage({
@@ -709,8 +1117,9 @@ export async function sendAdvanceApprovalMessage({
 }
 
 async function editApprovalMessage({ botKind, messageId, lines }) {
+  const kind = approvalBotKind(botKind);
   const config =
-    botKind === "zimma" ? zimmaBotConfig() : botKind === "sulaf" ? sulafBotConfig() : refundBotConfig();
+    kind === "zimma" ? zimmaBotConfig() : kind === "sulaf" ? sulafBotConfig() : refundBotConfig();
   await telegramRequest(
     "editMessageText",
     {
@@ -735,23 +1144,27 @@ export async function editOnAccountRequestMessage({
   approverName = null,
   decisionSource = null,
   notes = null,
+  items = null,
 }) {
   const statusAr =
     status === "approved" ? "✅ تمت الموافقة" : status === "rejected" ? "❌ مرفوض" : status;
   const sourceAr =
     decisionSource === "telegram" ? "تيليجرام" : decisionSource === "admin" ? "لوحة الإدارة" : null;
-  const lines = [
-    `طلب بيع على الذمة #${requestId}`,
-    ...zimmaPartyLines({ customerName, employeeName }),
-    `مبلغ الذمة: ${ils(onAccountAmount)}`,
-    `إجمالي الفاتورة: ${ils(total)}`,
-    zimmaNotesLine(notes),
-    transactionId ? `الفاتورة: #${transactionId}` : null,
-    "",
-    statusAr,
-  ].filter((line) => line != null);
-  if (approverName) lines.push(`بواسطة: ${approverName}`);
-  if (sourceAr) lines.push(`المصدر: ${sourceAr}`);
+  const tail = [statusAr];
+  if (approverName) tail.push(`بواسطة: ${approverName}`);
+  if (sourceAr) tail.push(`المصدر: ${sourceAr}`);
+  const lines = composeZimmaText(
+    [
+      `طلب بيع على الذمة #${requestId}`,
+      ...zimmaPartyLines({ customerName, employeeName }),
+      `مبلغ الذمة: ${ils(onAccountAmount)}`,
+      `إجمالي الفاتورة: ${ils(total)}`,
+      zimmaNotesLine(notes),
+      transactionId ? `الفاتورة: #${transactionId}` : null,
+    ],
+    items,
+    tail
+  );
   await editApprovalMessage({ botKind: "zimma", messageId, lines });
 }
 
@@ -791,23 +1204,23 @@ export async function sendOnAccountDecisionStatusMessage({
   approverName,
   decisionSource = "admin",
   notes = null,
+  items = null,
 }) {
   if (!isZimmaTelegramConfigured()) return null;
   const { token, chatId } = zimmaBotConfig();
   const statusAr = status === "approved" ? "✅ تمت الموافقة" : "❌ مرفوض";
   const sourceAr = decisionSource === "telegram" ? "تيليجرام" : "لوحة الإدارة";
-  const text = [
-    `تحديث طلب ذمة #${requestId}`,
-    ...zimmaPartyLines({ customerName, employeeName }),
-    `مبلغ الذمة: ${ils(onAccountAmount)}`,
-    zimmaNotesLine(notes),
-    transactionId ? `الفاتورة: #${transactionId}` : null,
-    statusAr,
-    approverName ? `بواسطة: ${approverName}` : null,
-    `المصدر: ${sourceAr}`,
-  ]
-    .filter((line) => line != null)
-    .join("\n");
+  const text = composeZimmaText(
+    [
+      `تحديث طلب ذمة #${requestId}`,
+      ...zimmaPartyLines({ customerName, employeeName }),
+      `مبلغ الذمة: ${ils(onAccountAmount)}`,
+      zimmaNotesLine(notes),
+      transactionId ? `الفاتورة: #${transactionId}` : null,
+    ],
+    items,
+    [statusAr, approverName ? `بواسطة: ${approverName}` : null, `المصدر: ${sourceAr}`]
+  ).join("\n");
   const result = await telegramRequest("sendMessage", { chat_id: chatId, text }, token);
   return result?.message_id ?? null;
 }

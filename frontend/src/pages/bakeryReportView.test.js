@@ -37,6 +37,7 @@ function fixtureReport() {
       {
         product_id: 1,
         name: "خبز عربي",
+        sku: "12",
         barcode: "8802000001",
         unit: "حبة",
         stock: 11,
@@ -50,6 +51,7 @@ function fixtureReport() {
       {
         product_id: 2,
         name: "خبز كغم",
+        sku: "13",
         barcode: "8802000004",
         unit: "كغم",
         stock: 4.75,
@@ -63,6 +65,7 @@ function fixtureReport() {
       {
         product_id: 3,
         name: "كعك يابس",
+        sku: "14",
         barcode: "8802000003",
         unit: "حبة",
         stock: -4,
@@ -129,6 +132,8 @@ describe("bakery report view helpers", () => {
     expect(written).toHaveLength(1);
     const html = written[0];
     expect(html).toContain("المخبز");
+    expect(html).toContain("الرقم");
+    expect(html).toContain(">12<");
     expect(html).toContain("خبز عربي");
     expect(html).toContain("خبز كغم");
     expect(html).toContain("كعك يابس");

@@ -50,9 +50,17 @@ import {
   Skeleton,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
+import { displayProductSku } from "../utils/entityCodeDisplay";
 import { handleEnterNavKeyDown } from "../utils/focusNavigation";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
+import WeighedProductFields from "../components/products/WeighedProductFields";
 import { normalizeBarcode } from "../utils/barcode";
+import {
+  sellingPriceError,
+  sellingPriceLabel,
+  validateScaleSaleFields,
+  weighedSalePayload,
+} from "../utils/scaleProductForm";
 
 const BAKERY_SCOPE = "bakery";
 
@@ -64,6 +72,11 @@ const emptyForm = {
   unit: "",
   stock: "",
   min_stock: "",
+  is_weighed: false,
+  scale_only: false,
+  scale_code: "",
+  package_conversion: "",
+  package_price: "",
 };
 
 function unwrapList(data) {
@@ -202,7 +215,7 @@ function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProduc
   async function addSupply(ev) {
     ev.preventDefault();
     setFormErr(null);
-    if (!form.barcode.trim()) { setFormErr("الباركود مطلوب"); return; }
+    if (!form.scale_only && !form.barcode.trim()) { setFormErr("الباركود مطلوب"); return; }
     if (!form.name.trim()) { setFormErr("الاسم مطلوب"); return; }
     if (form.stock === "" || !Number.isFinite(Number(form.stock))) {
       setFormErr("أدخل مخزوناً صالحاً");
@@ -210,19 +223,21 @@ function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProduc
     }
     const price = form.price === "" ? 0 : Number(form.price);
     if (!Number.isFinite(price) || price < 0) {
-      setFormErr("أدخل سعر بيع صالحاً");
+      setFormErr(sellingPriceError(form));
       return;
     }
+    const scaleErr = validateScaleSaleFields(form);
+    if (scaleErr) { setFormErr(scaleErr); return; }
+    const sale = weighedSalePayload(form);
     try {
       const { data } = await api.post(
         "/api/products",
         {
-          barcode: form.barcode.trim(),
+          ...sale,
           name: form.name.trim(),
           price,
           cost: form.cost === "" ? 0 : Number(form.cost),
           stock: Number(form.stock),
-          unit: form.unit.trim() || null,
           min_stock: form.min_stock === "" ? null : Number(form.min_stock),
           inventory_scope: kind === "finished" ? "retail" : BAKERY_SCOPE,
         },
@@ -317,6 +332,7 @@ function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProduc
   }
 
   const columns = [
+    { key: "sku", header: "الرقم", render: (p) => displayProductSku(p.sku) },
     { key: "barcode", header: "الباركود" },
     {
       key: "name",
@@ -384,10 +400,11 @@ function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProduc
         <CardBody>
           <form onSubmit={addSupply}>
             <FormGrid>
-              <FormField label="الباركود" required>
+              <FormField label="الباركود" required={!form.scale_only} hint={form.scale_only ? "اختياري لمنتج الميزان فقط" : undefined}>
                 <div className="barcode-input-row">
                   <Input
                     value={form.barcode}
+                    required={!form.scale_only}
                     onChange={(e) => setForm((f) => ({ ...f, barcode: e.target.value }))}
                   />
                   <CameraBarcodeButton
@@ -398,13 +415,15 @@ function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProduc
               <FormField label="الاسم" required>
                 <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
               </FormField>
+              <WeighedProductFields form={form} onChange={setForm} />
               <FormField label="الوحدة">
                 <UnitNameSelect
-                  value={form.unit}
+                  value={form.scale_only || form.is_weighed ? "كغم" : form.unit}
+                  disabled={form.scale_only || form.is_weighed}
                   onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))}
                 />
               </FormField>
-              <FormField label="سعر البيع" hint="سعر الكاشير لهذه المادة — يمكن إبقاؤه صفراً إذا لم تُباع">
+              <FormField label={sellingPriceLabel(form)} hint={form.scale_only ? "سعر الكيلو" : "سعر الكاشير لهذه المادة — يمكن إبقاؤه صفراً إذا لم تُباع"}>
                 <Input
                   type="number"
                   step="0.01"
@@ -417,7 +436,7 @@ function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProduc
                 <Input type="number" step="0.01" min="0" value={form.cost} onChange={(e) => setForm((f) => ({ ...f, cost: e.target.value }))} />
               </FormField>
               <FormField label="المخزون الافتتاحي" required>
-                <Input type="number" min="0" value={form.stock} onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))} />
+                <Input type="number" min="0" step={form.scale_only || form.is_weighed ? "0.001" : "1"} value={form.stock} onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))} />
               </FormField>
               <FormField label="حد التنبيه (اختياري)">
                 <Input type="number" min="0" value={form.min_stock} onChange={(e) => setForm((f) => ({ ...f, min_stock: e.target.value }))} />
@@ -671,6 +690,7 @@ function BakeryConsumption() {
             <h3 className="ui-section">الأصناف والكميات</h3>
             <DataTable
               columns={[
+                { key: "sku", header: "الرقم", render: (it) => displayProductSku(it.sku) },
                 { key: "name", header: "الصنف", nameColumn: true, wrap: true },
                 { key: "barcode", header: "الباركود", render: (it) => it.barcode || "—" },
                 {
@@ -713,6 +733,7 @@ function BakeryLowStock() {
   useEffect(() => { load(); }, [load]);
 
   const columns = useMemo(() => [
+    { key: "sku", header: "الرقم", render: (r) => displayProductSku(r.sku) },
     { key: "name", header: "المادة" },
     { key: "barcode", header: "الباركود" },
     { key: "unit", header: "الوحدة", render: (r) => r.unit || "—" },
@@ -801,6 +822,7 @@ function BakeryMaterialSales() {
   const rows = report?.products || [];
   const columns = useMemo(
     () => [
+      { key: "sku", header: "الرقم", render: (r) => displayProductSku(r.sku) },
       { key: "name", header: "المنتج" },
       {
         key: "revenue_kind",

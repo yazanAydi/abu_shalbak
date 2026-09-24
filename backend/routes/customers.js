@@ -1,7 +1,7 @@
 import { createSafeRouter } from "../utils/asyncHandler.js";
 
 import { requireAuth, requireAdmin, requireReportsPermission } from "../middleware/auth.js";
-import { projectCustomerForRole } from "../utils/roleProjection.js";
+import { customerReadScope, projectCustomerRead } from "../utils/roleProjection.js";
 
 import { round2 } from "../utils/tax.js";
 
@@ -195,11 +195,12 @@ export function createCustomersRouter(db) {
 
     sql += q ? " ORDER BY c.id ASC LIMIT 100" : " ORDER BY c.id ASC LIMIT 500";
 
-
-
+    const visibility = await customerReadScope(db, req.user);
+    if (!visibility.allow) {
+      return res.status(403).json({ success: false, error: "صلاحيات غير كافية", code: "FORBIDDEN" });
+    }
     const rows = await db.all(sql, params);
-
-    res.json(projectCustomerForRole(rows, req.user?.role));
+    res.json(projectCustomerRead(rows, visibility));
 
   });
 
@@ -483,7 +484,7 @@ export function createCustomersRouter(db) {
 
 
 
-  router.post("/upload", requireAuth, requireAdmin, importUploadMiddleware(), async (req, res) => {
+  router.post("/upload", requireAuth, requireAdmin, requireCustomers, importUploadMiddleware(), async (req, res) => {
 
     await handleCustomerBalanceUpload(db, req, res);
 
@@ -493,11 +494,13 @@ export function createCustomersRouter(db) {
 
   router.get("/:id", requireAuth, async (req, res) => {
 
+    const visibility = await customerReadScope(db, req.user);
+    if (!visibility.allow) {
+      return res.status(403).json({ success: false, error: "صلاحيات غير كافية", code: "FORBIDDEN" });
+    }
     const row = await db.get(`${CUSTOMER_SELECT} WHERE c.id = ?`, [req.params.id]);
-
     if (!row) return res.status(404).json({ error: "العميل غير موجود", code: "NOT_FOUND" });
-
-    res.json(projectCustomerForRole(row, req.user?.role));
+    res.json(projectCustomerRead(row, visibility));
 
   });
 

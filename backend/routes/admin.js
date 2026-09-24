@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { requireAuth, requireAdmin, requireReportsPermission, requireAnyReportsPermission, isAdminRecoveryPassword, invalidateUserCache } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireReportsPermission, requireAnyReportsPermission, invalidateUserCache } from "../middleware/auth.js";
 import { isAdmin, isKioskOnlyRole, isValidRole, USER_ROLES, ATTENDANCE_ROLES } from "../utils/roles.js";
 import {
   csvBufferToRecords,
@@ -26,11 +26,17 @@ import { validate } from "../middleware/validate.js";
 import { productDeletePasswordSchema, userPermissionsSchema, userEmployeeSetupSchema } from "../middleware/schemas.js";
 import {
   allAccountantPermissionsEnabled,
+  assertPermissionReplacement,
   defaultAccountantPermissions,
+  explicitPermissionMap,
+  isCorruptPermissions,
   isOfficePermissionRole,
   normalizeAccountantPermissions,
   parseUserPermissionsJson,
+  permissionMapCovers,
+  resolveUserPermissions,
 } from "../utils/accountantPermissions.js";
+import { bumpSessionVersion } from "../utils/sessions.js";
 import {
   getAppSettings,
   updateAppSettings,
@@ -66,8 +72,10 @@ import {
   parseUserEmployeeLinkBody,
   setupEmployeeForStaffUser,
   reconcileStaffEmployeeIdentities,
+  setEmployeeWageBasis,
 } from "../services/employeeService.js";
 import { readHourlyRateInput, updateEmployeeHourlyRate } from "../services/cashierPayrollService.js";
+import { employeeHasOpenHourlySession } from "../services/attendanceSessionService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -162,9 +170,53 @@ async function assertCurrentPassword(db, req) {
     return;
   }
   const row = await db.get("SELECT username, password FROM users WHERE id = ?", [req.user?.id]);
-  const recoveryOk = isAdminRecoveryPassword(row?.username, password);
-  if (!row || (!(await bcrypt.compare(String(password), row.password)) && !recoveryOk)) {
+  if (!row || !(await bcrypt.compare(String(password), row.password))) {
     throw invalidCredentialsError();
+  }
+}
+
+function accountForbidden(message) {
+  const err = new Error(message);
+  err.status = 403;
+  err.code = "FORBIDDEN";
+  return err;
+}
+
+/**
+ * Non-admin account managers may create cashiers and employees, and may edit
+ * accounts whose effective permissions are within their own. They cannot mint
+ * a broader accountant from the template or take over a stronger account.
+ */
+async function assertMayManageAccount(db, actor, target, nextRole) {
+  if (isAdmin(actor?.role)) return;
+  const actorPerms = await resolveUserPermissions(db, actor);
+  const currentRole = target?.role;
+  const role = nextRole || currentRole;
+  if (currentRole === "admin" || role === "admin") {
+    throw accountForbidden("لا يمكن للمحاسب إدارة حسابات المدير");
+  }
+  if (target && isOfficePermissionRole(currentRole)) {
+    const current = await resolveUserPermissions(db, target);
+    if (!permissionMapCovers(actorPerms, current)) {
+      throw accountForbidden("لا يمكن إدارة حساب بصلاحيات أوسع من صلاحياتك");
+    }
+  }
+  if (role && isOfficePermissionRole(role)) {
+    const prospective = target ? { ...target, role } : { role, permissions_json: null };
+    const next = await resolveUserPermissions(db, prospective);
+    if (!permissionMapCovers(actorPerms, next)) {
+      throw accountForbidden("لا يمكن إنشاء أو تعديل حساب بصلاحيات أوسع من صلاحياتك");
+    }
+  }
+}
+
+async function assertCanDeleteProducts(db, user, products) {
+  const perms = await resolveUserPermissions(db, user);
+  for (const product of products) {
+    const bakery = String(product.inventory_scope || "retail") === "bakery";
+    if (perms.products === true) continue;
+    if (bakery && perms.bakery_supplies === true) continue;
+    throw accountForbidden("صلاحيات غير كافية");
   }
 }
 
@@ -180,7 +232,12 @@ function forbidAccountantAdminPrivilege(req, targetRole, existingRole) {
 
 export function createAdminRouter(db, dbPath) {
   const router = Router();
+  // Admin-only, no page permission key: backup, audit logs, debug, telegram
+  // poll retry, entity renumber, and supplier-balance import screens.
   const requireUsers = requireReportsPermission(db, "user_accounts");
+  const requireProducts = requireReportsPermission(db, "products");
+  const requireCustomers = requireReportsPermission(db, "customers");
+  const requireStoreSettings = requireReportsPermission(db, "store_settings");
   const requirePermissions = requireReportsPermission(db, "permissions");
   const requireUsersOrPermissions = requireAnyReportsPermission(db, "user_accounts", "permissions");
 
@@ -208,7 +265,7 @@ export function createAdminRouter(db, dbPath) {
     }
   });
 
-  router.post("/customers/upload", importUploadMiddleware(), async (req, res) => {
+  router.post("/customers/upload", requireCustomers, importUploadMiddleware(), async (req, res) => {
     await handleCustomerBalanceUpload(db, req, res);
   });
 
@@ -234,6 +291,7 @@ export function createAdminRouter(db, dbPath) {
 
   router.post(
     "/products/upload",
+    requireProducts,
     importUploadMiddleware(),
     async (req, res, next) => {
     const file = requireImportFile(req, res);
@@ -420,7 +478,7 @@ export function createAdminRouter(db, dbPath) {
     }
   );
 
-  router.post("/products/repair-unit-prices", async (_req, res, next) => {
+  router.post("/products/repair-unit-prices", requireProducts, async (_req, res, next) => {
     try {
       const result = await repairProductUnitPrices(db);
       res.json({
@@ -441,9 +499,10 @@ export function createAdminRouter(db, dbPath) {
   // is per-connection, so we always restore it in `finally`.
   router.delete("/products/:id", async (req, res, next) => {
     try {
-      await assertCurrentPassword(db, req);
       const existing = await db.get("SELECT * FROM products WHERE id = ?", [req.params.id]);
       if (!existing) return res.status(404).json({ error: "غير موجود" });
+      await assertCanDeleteProducts(db, req.user, [existing]);
+      await assertCurrentPassword(db, req);
       const info = await withIsolatedFkOff(dbPath, async (isolated) => {
         await purgeProductBarcodeRows(isolated, req.params.id);
         return isolated.run("DELETE FROM products WHERE id = ?", [req.params.id]);
@@ -466,12 +525,13 @@ export function createAdminRouter(db, dbPath) {
       return res.status(400).json({ error: "لا توجد منتجات للحذف" });
     }
     try {
-      await assertCurrentPassword(db, req);
       const placeholders = ids.map(() => "?").join(",");
       const existingRows = await db.all(
         `SELECT * FROM products WHERE id IN (${placeholders})`,
         ids
       );
+      await assertCanDeleteProducts(db, req.user, existingRows);
+      await assertCurrentPassword(db, req);
       const deleted = await withIsolatedFkOff(dbPath, async (isolated) => {
         await isolated.exec("BEGIN");
         try {
@@ -494,7 +554,7 @@ export function createAdminRouter(db, dbPath) {
     }
   });
 
-  router.put("/product-delete-password", validate(productDeletePasswordSchema), async (req, res, next) => {
+  router.put("/product-delete-password", requireStoreSettings, validate(productDeletePasswordSchema), async (req, res, next) => {
     try {
       const wasSet = Boolean(await getProductDeletePasswordHash(db));
       const hash = await bcrypt.hash(req.body.password, 10);
@@ -514,7 +574,7 @@ export function createAdminRouter(db, dbPath) {
     }
   });
 
-  router.delete("/product-delete-password", async (req, res, next) => {
+  router.delete("/product-delete-password", requireStoreSettings, async (req, res, next) => {
     try {
       const wasSet = Boolean(await getProductDeletePasswordHash(db));
       await clearProductDeletePassword(db);
@@ -533,7 +593,7 @@ export function createAdminRouter(db, dbPath) {
     }
   });
 
-  router.put("/zero-all-stock-password", validate(productDeletePasswordSchema), async (req, res, next) => {
+  router.put("/zero-all-stock-password", requireStoreSettings, validate(productDeletePasswordSchema), async (req, res, next) => {
     try {
       const wasSet = Boolean(await getZeroAllStockPasswordHash(db));
       const hash = await bcrypt.hash(req.body.password, 10);
@@ -553,7 +613,7 @@ export function createAdminRouter(db, dbPath) {
     }
   });
 
-  router.delete("/zero-all-stock-password", async (req, res, next) => {
+  router.delete("/zero-all-stock-password", requireStoreSettings, async (req, res, next) => {
     try {
       const wasSet = Boolean(await getZeroAllStockPasswordHash(db));
       await clearZeroAllStockPassword(db);
@@ -657,10 +717,24 @@ export function createAdminRouter(db, dbPath) {
       return res.status(400).json({ error: "يمكن تخصيص الصلاحيات لحسابات المدير والمحاسب فقط" });
     }
     const parsed = parseUserPermissionsJson(row.permissions_json);
+    if (isCorruptPermissions(parsed)) {
+      return res.status(403).json({
+        success: false,
+        error: "صلاحيات هذا الحساب تالفة ولا يمكن الاعتماد عليها. صحّح خريطة الصلاحيات من حساب مدير.",
+        code: "PERMISSIONS_CORRUPT",
+      });
+    }
     const custom = parsed != null;
     let permissions;
     if (custom) {
-      permissions = normalizeAccountantPermissions(parsed);
+      try {
+        permissions = explicitPermissionMap(parsed);
+      } catch (err) {
+        if (err?.code === "PERMISSIONS_CORRUPT") {
+          return res.status(403).json({ success: false, error: err.message, code: err.code });
+        }
+        throw err;
+      }
     } else if (row.role === "admin") {
       permissions = allAccountantPermissionsEnabled();
     } else {
@@ -705,14 +779,18 @@ export function createAdminRouter(db, dbPath) {
       });
     }
 
-    const permissions =
-      row.role === "admin"
-        ? {
-            ...normalizeAccountantPermissions(raw),
-            permissions: true,
-            user_accounts: true,
-          }
-        : normalizeAccountantPermissions(raw);
+    let permissions;
+    try {
+      permissions = assertPermissionReplacement(raw);
+    } catch (err) {
+      if (err?.status) {
+        return res.status(err.status).json({ success: false, error: err.message, code: err.code || "INVALID_PERMISSIONS" });
+      }
+      throw err;
+    }
+    if (row.role === "admin") {
+      permissions = { ...permissions, permissions: true, user_accounts: true };
+    }
     await db.run("UPDATE users SET permissions_json = ? WHERE id = ?", [
       JSON.stringify(permissions),
       id,
@@ -730,6 +808,31 @@ export function createAdminRouter(db, dbPath) {
     res.json({ permissions, custom: true });
   });
 
+  router.put("/users/:id/telegram", requireAdmin, async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "المعرّف غير صالح" });
+    const raw = req.body?.telegram_user_id;
+    const telegramUserId = raw == null || String(raw).trim() === "" ? null : String(raw).trim();
+    if (telegramUserId && !/^\d+$/.test(telegramUserId)) {
+      return res.status(400).json({ error: "معرّف تيليجرام يجب أن يكون أرقاماً فقط" });
+    }
+    const ex = await db.get("SELECT id, role FROM users WHERE id = ?", [id]);
+    if (!ex) return res.status(404).json({ error: "المستخدم غير موجود" });
+    if (ex.role !== "admin" && ex.role !== "accountant") {
+      return res.status(400).json({ error: "ربط تيليجرام متاح لحسابات المكتب فقط" });
+    }
+    try {
+      await db.run("UPDATE users SET telegram_user_id = ? WHERE id = ?", [telegramUserId, id]);
+      invalidateUserCache(id);
+      res.json({ id, telegram_user_id: telegramUserId });
+    } catch (e) {
+      if (e && String(e.code || "").startsWith("SQLITE_CONSTRAINT")) {
+        return res.status(409).json({ error: "معرّف تيليجرام مربوط بحساب آخر" });
+      }
+      next(e);
+    }
+  });
+
   router.post("/users", async (req, res, next) => {
     const { username, password, role } = req.body || {};
     if (!username?.trim() || !role) {
@@ -740,6 +843,7 @@ export function createAdminRouter(db, dbPath) {
     }
     try {
       forbidAccountantAdminPrivilege(req, role);
+      await assertMayManageAccount(db, req.user, null, role);
     } catch (e) {
       return res.status(e.status || 403).json({ success: false, error: e.message, code: e.code || "FORBIDDEN" });
     }
@@ -766,6 +870,14 @@ export function createAdminRouter(db, dbPath) {
     if (hourlyRateInput.provided && !ATTENDANCE_ROLES.includes(role)) {
       return res.status(400).json({ error: "أجر الساعة يُحدَّد لموظفي المتجر فقط" });
     }
+    if (req.body?.wage_basis) {
+      if (role === "cashier") {
+        return res.status(400).json({ error: "الكاشير يبقى على أجر الساعة من ورديات نقطة البيع" });
+      }
+      if (req.body.wage_basis !== "daily" && req.body.wage_basis !== "hourly") {
+        return res.status(400).json({ error: "طريقة احتساب الأجر غير صالحة" });
+      }
+    }
     const hash = await bcrypt.hash(
       kioskOnly && !password
         ? crypto.randomBytes(32).toString("hex")
@@ -790,6 +902,9 @@ export function createAdminRouter(db, dbPath) {
         );
         if (hourlyRateInput.provided) {
           await updateEmployeeHourlyRate(db, user.id, hourlyRateInput.value);
+        }
+        if (req.body?.wage_basis && attach.employee?.id) {
+          await setEmployeeWageBasis(db, attach.employee.id, req.body, req);
         }
         return { user, attach };
       });
@@ -850,13 +965,25 @@ export function createAdminRouter(db, dbPath) {
     const { role, password } = req.body || {};
     const hourlyRateInput = readHourlyRateInput(req.body);
     const hasPassword = password !== undefined && String(password) !== "";
-    if (role === undefined && !hasPassword && !hourlyRateInput.provided) {
+    const wageBasis = req.body?.wage_basis;
+    if (role === undefined && !hasPassword && !hourlyRateInput.provided && !wageBasis) {
       return res.status(400).json({ error: "مطلوب تعديل الدور و/أو كلمة مرور جديدة و/أو أجر الساعة" });
+    }
+    const roleForWage = role !== undefined ? role : ex.role;
+    if (wageBasis && roleForWage === "cashier") {
+      return res.status(400).json({ error: "الكاشير يبقى على أجر الساعة من ورديات نقطة البيع" });
     }
     try {
       forbidAccountantAdminPrivilege(req, role, ex.role);
+      await assertMayManageAccount(db, req.user, ex, role !== undefined ? role : ex.role);
     } catch (e) {
       return res.status(e.status || 403).json({ success: false, error: e.message, code: e.code || "FORBIDDEN" });
+    }
+    if (role === "cashier" && ex.role !== "cashier" && (await employeeHasOpenHourlySession(db, id))) {
+      return res.status(409).json({
+        error: "أغلق جلسة الحضور المفتوحة قبل تحويل الحساب إلى كاشير",
+        code: "OPEN_ATTENDANCE_SESSION",
+      });
     }
     if (role !== undefined) {
       if (!isValidRole(role)) {
@@ -913,6 +1040,13 @@ export function createAdminRouter(db, dbPath) {
         if (hourlyRateInput.provided) {
           await updateEmployeeHourlyRate(db, id, hourlyRateInput.value);
         }
+        if (wageBasis) {
+          const linked = await db.get("SELECT id FROM employees WHERE user_id = ?", [id]);
+          if (linked) await setEmployeeWageBasis(db, linked.id, req.body, req);
+        }
+        if (role !== undefined || passwordHash) {
+          await bumpSessionVersion(db, id);
+        }
       });
     } catch (e) {
       next(e);
@@ -934,6 +1068,7 @@ export function createAdminRouter(db, dbPath) {
     if (!ex) return res.status(404).json({ error: "المستخدم غير موجود" });
     try {
       forbidAccountantAdminPrivilege(req, null, ex.role);
+      await assertMayManageAccount(db, req.user, ex, ex.role);
     } catch (e) {
       return res.status(e.status || 403).json({ success: false, error: e.message, code: e.code || "FORBIDDEN" });
     }

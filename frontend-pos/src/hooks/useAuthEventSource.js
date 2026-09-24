@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { resolveApiUrl } from "../apiClient";
-import { getToken } from "../utils/auth";
+import { getToken, removeToken } from "../utils/auth";
 
 /**
  * Authenticated SSE via fetch (EventSource cannot send Authorization).
@@ -43,11 +43,22 @@ export function useAuthEventSource(url, onEvent, { enabled = true } = {}) {
               if (line.startsWith("data:")) data += line.slice(5).trim();
             }
             if (!data) continue;
+            let parsed = data;
             try {
-              onEventRef.current?.(event, JSON.parse(data));
+              parsed = JSON.parse(data);
             } catch {
-              onEventRef.current?.(event, data);
+              parsed = data;
             }
+            if (event === "session" && (parsed?.code === "SESSION_REVOKED" || parsed?.code === "INVALID_TOKEN")) {
+              removeToken();
+              const loginPath = `${process.env.PUBLIC_URL || ""}/login`;
+              if (!window.location.pathname.endsWith("/login")) {
+                window.location.replace(`${loginPath}?session=expired`);
+              }
+              controller.abort();
+              return;
+            }
+            onEventRef.current?.(event, parsed);
           }
         }
       } catch {

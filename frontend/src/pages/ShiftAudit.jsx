@@ -23,12 +23,19 @@ import {
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import { printReceipt } from "../utils/printReceipt";
+import { printSummaryReport } from "../utils/printReport";
+import { loadStoreSettings } from "../utils/loadStoreSettings";
+import { buildShiftCountSummaryModel, visaAmountText } from "../utils/shiftVisa";
 import CashCountFields, {
   buildCountCurrencyRows,
   countedCurrenciesPayload,
   countedNisTotal,
   expectedBreakdownText,
 } from "../components/CashCountFields";
+import CountSupplierPaymentSection from "../components/CountSupplierPaymentSection";
+import CountAdvanceSection from "../components/CountAdvanceSection";
+import ShiftCountTotals from "../components/ShiftCountTotals";
+import { mapShiftDetailToCountTarget } from "../utils/shiftCountSupplierPayment";
 
 const PM = { cash: "نقد", visa: "بطاقة" };
 
@@ -113,6 +120,10 @@ function movementLabel(t) {
     refund: "استرجاع",
     adjustment: "تسوية",
     closing: "إغلاق",
+    advance: "سلف",
+    supplier_payment: "دفع لمورد",
+    customer_collection: "قبض ذمم سابق — للمراجعة",
+    customer_cash_debt: "ذمم نقدية للعملاء",
   };
   return ar[t] || t;
 }
@@ -178,8 +189,8 @@ function getMovementRefs(m, txById, refundById) {
 }
 
 function movementTone(type) {
-  if (type === "payment") return "green";
-  if (type === "refund") return "red";
+  if (type === "payment" || type === "customer_collection") return "green";
+  if (type === "refund" || type === "supplier_payment" || type === "advance") return "red";
   if (type === "adjustment") return "orange";
   return "neutral";
 }
@@ -195,6 +206,33 @@ function SectionTitle({ title, filtered, total, searchActive }) {
       ) : null}
     </h3>
   );
+}
+
+function shiftCountSource(shift, summary) {
+  const visa = summary?.visa || shift || {};
+  return {
+    ...shift,
+    ...visa,
+    cash_sales: summary?.cash_sales ?? shift?.cash_sales,
+    cash_only_sales: summary?.cash_only_sales ?? shift?.cash_only_sales,
+    mixed_cash_sales: summary?.mixed_cash_sales ?? shift?.mixed_cash_sales,
+    cash_refunds: summary?.cash_refunds ?? shift?.cash_refunds,
+    cash_net: summary?.cash_net ?? shift?.cash_net,
+    tender_total: summary?.tender_total ?? shift?.tender_total,
+    cash_sales_incomplete: summary?.cash_sales_incomplete ?? shift?.cash_sales_incomplete,
+    cash_sales_label: summary?.cash_sales_label || shift?.cash_sales_label,
+    mixed_cash_label: summary?.mixed_cash_label || shift?.mixed_cash_label,
+    mixed_cash_included_note: summary?.mixed_cash_included_note || shift?.mixed_cash_included_note,
+    visa_amount_label: summary?.visa_amount_label || shift?.visa_amount_label,
+    tender_total_label: summary?.tender_total_label || shift?.tender_total_label,
+    cash_refunds_label: summary?.cash_refunds_label || shift?.cash_refunds_label,
+    cash_net_label: summary?.cash_net_label || shift?.cash_net_label,
+    cash_sales_incomplete_note:
+      summary?.cash_sales_incomplete_note || shift?.cash_sales_incomplete_note,
+    expected_cash: summary?.expected ?? shift?.expected_cash,
+    expected_cash_label: summary?.expected_cash_label || shift?.expected_cash_label,
+    expected_by_currency: shift?.expected_by_currency || summary?.expected_by_currency,
+  };
 }
 
 function ShiftDetailSummary({ shift, summary, varianceWarn }) {
@@ -221,42 +259,28 @@ function ShiftDetailSummary({ shift, summary, varianceWarn }) {
             <span className="shift-detail-chip-v num">{ils(shift.closing_cash ?? 0)}</span>
           </div>
           <div className="shift-detail-chip">
-            <span className="shift-detail-chip-k">متوقع</span>
-            <span className="shift-detail-chip-v num">{ils(shift.expected_cash ?? 0)}</span>
-          </div>
-          {expectedBreakdownText(shift.expected_by_currency || summary?.expected_by_currency) ? (
-            <div className="shift-detail-chip">
-              <span className="shift-detail-chip-k">حسب العملة</span>
-              <span className="shift-detail-chip-v num">
-                {expectedBreakdownText(shift.expected_by_currency || summary?.expected_by_currency)}
-              </span>
-            </div>
-          ) : null}
-          <div className="shift-detail-chip">
             <span className="shift-detail-chip-k">الفرق</span>
             <span className={`shift-detail-chip-v num ${varianceWarn(shift.variance) ? "negative" : ""}`}>
               {shift.variance != null ? `${shift.variance >= 0 ? "+" : ""}${ils(shift.variance)}` : "—"}
             </span>
           </div>
         </>
-      ) : (
-        <>
-          <div className="shift-detail-chip">
-            <span className="shift-detail-chip-k">{status === "pending_count" ? "متوقع" : "متوقع حالياً"}</span>
-            <span className="shift-detail-chip-v num">
-              {summary?.expected != null ? ils(summary.expected) : "—"}
-            </span>
-          </div>
-          {expectedBreakdownText(shift.expected_by_currency || summary?.expected_by_currency) ? (
-            <div className="shift-detail-chip">
-              <span className="shift-detail-chip-k">حسب العملة</span>
-              <span className="shift-detail-chip-v num">
-                {expectedBreakdownText(shift.expected_by_currency || summary?.expected_by_currency)}
-              </span>
-            </div>
-          ) : null}
-        </>
-      )}
+      ) : null}
+      <div className="shift-detail-summary-totals">
+        <ShiftCountTotals source={shiftCountSource(shift, summary)} />
+      </div>
+      <div className="shift-detail-chip">
+        <span className="shift-detail-chip-k">دفعات الموردين</span>
+        <span className="shift-detail-chip-v num">{ils(summary?.supplier_payments_total ?? 0)}</span>
+      </div>
+      <div className="shift-detail-chip">
+        <span className="shift-detail-chip-k">ذمم نقدية للعملاء</span>
+        <span className="shift-detail-chip-v num">{ils(summary?.customer_cash_debts_total ?? 0)}</span>
+      </div>
+      <div className="shift-detail-chip">
+        <span className="shift-detail-chip-k">سلف</span>
+        <span className="shift-detail-chip-v num">{ils(summary?.advances_total ?? 0)}</span>
+      </div>
     </div>
   );
 }
@@ -278,6 +302,7 @@ function CashMovementRow({ movement, txById, refundById }) {
         {saleId != null ? <span className="shift-ref-chip">#{saleId}</span> : null}
         {refundId != null ? <span className="shift-ref-chip">#{refundId}</span> : null}
         {receiptNumber ? <span className="shift-ref-chip shift-ref-chip--receipt">{receiptNumber}</span> : null}
+        {movement.voucher_id != null ? <span className="shift-ref-chip">سند #{movement.voucher_id}</span> : null}
         {movement.description && !saleId && !refundId ? (
           <span className="shift-cash-desc">{movement.description}</span>
         ) : null}
@@ -307,6 +332,8 @@ export default function ShiftAudit() {
   const [countCurrencies, setCountCurrencies] = useState([]);
   const [reconcileNotes, setReconcileNotes] = useState("");
   const [reconcileLoading, setReconcileLoading] = useState(false);
+  const [supplierSaving, setSupplierSaving] = useState(false);
+  const [advanceSaving, setAdvanceSaving] = useState(false);
   const [expandedSaleId, setExpandedSaleId] = useState(null);
   const [expandedRefundId, setExpandedRefundId] = useState(null);
   const [printingSaleId, setPrintingSaleId] = useState(null);
@@ -441,21 +468,72 @@ export default function ShiftAudit() {
     }
   }
 
+  function applyCountTarget(data) {
+    setReconcileTarget(mapShiftDetailToCountTarget(data));
+  }
+
+  async function refreshReconcileTarget(shiftId) {
+    const { data } = await api.get(`/api/shifts/${shiftId}`, { headers: getAuthHeaders() });
+    setReconcileTarget((prev) => {
+      if (!prev || Number(prev.id) !== Number(shiftId)) return prev;
+      return mapShiftDetailToCountTarget(data);
+    });
+    if (detail?.shift?.id === shiftId) {
+      setDetail(data);
+    }
+    return data;
+  }
+
   function openReconcile(row) {
+    setSupplierSaving(false);
+    setAdvanceSaving(false);
     setReconcileTarget({
       ...row,
       expected_cash: row.expected_cash ?? detail?.summary?.expected ?? row.expected_cash,
       expected_by_currency:
         row.expected_by_currency || detail?.summary?.expected_by_currency || [],
+      supplier_payments: row.supplier_payments || detail?.supplier_payments || [],
+      supplier_payments_total:
+        row.supplier_payments_total ?? detail?.summary?.supplier_payments_total ?? 0,
+      advances: row.advances || detail?.advances || [],
+      advances_total: row.advances_total ?? detail?.summary?.advances_total ?? 0,
+      cash_sales: row.cash_sales ?? detail?.summary?.cash_sales ?? 0,
+      cash_only_sales: row.cash_only_sales ?? detail?.summary?.cash_only_sales ?? 0,
+      mixed_cash_sales: row.mixed_cash_sales ?? detail?.summary?.mixed_cash_sales ?? 0,
+      cash_refunds: row.cash_refunds ?? detail?.summary?.cash_refunds ?? 0,
+      cash_net: row.cash_net ?? detail?.summary?.cash_net,
+      tender_total: row.tender_total ?? detail?.summary?.tender_total,
+      cash_sales_incomplete:
+        row.cash_sales_incomplete ?? detail?.summary?.cash_sales_incomplete ?? false,
+      cash_sales_label: row.cash_sales_label || detail?.summary?.cash_sales_label,
+      mixed_cash_label: row.mixed_cash_label || detail?.summary?.mixed_cash_label,
+      mixed_cash_included_note:
+        row.mixed_cash_included_note || detail?.summary?.mixed_cash_included_note,
+      visa_amount_label: row.visa_amount_label || detail?.summary?.visa_amount_label,
+      tender_total_label: row.tender_total_label || detail?.summary?.tender_total_label,
+      cash_refunds_label: row.cash_refunds_label || detail?.summary?.cash_refunds_label,
+      cash_net_label: row.cash_net_label || detail?.summary?.cash_net_label,
+      expected_cash_label: row.expected_cash_label || detail?.summary?.expected_cash_label,
     });
     setCountedAmounts({});
     setReconcileNotes("");
+    api
+      .get(`/api/shifts/${row.id}`, { headers: getAuthHeaders() })
+      .then(({ data }) => {
+        applyCountTarget(data);
+        if (detail?.shift?.id === row.id) setDetail(data);
+      })
+      .catch((e) => {
+        toast.error(apiErrorMessage(e, "تعذّر تحديث النقد المتوقع"));
+      });
   }
 
   function closeReconcile() {
     setReconcileTarget(null);
     setCountedAmounts({});
     setReconcileNotes("");
+    setSupplierSaving(false);
+    setAdvanceSaving(false);
   }
 
   async function submitReconcile(e) {
@@ -486,6 +564,91 @@ export default function ShiftAudit() {
     } finally {
       setReconcileLoading(false);
     }
+  }
+
+  async function printShiftReport() {
+    if (!detail?.shift) return;
+    const model = buildShiftCountSummaryModel(shiftCountSource(detail.shift, detail.summary));
+    const store = await loadStoreSettings();
+    printSummaryReport({
+      title: `تقرير وردية #${detail.shift.id}`,
+      subtitle: detail.shift.cashier_name || "",
+      meta: model.meta,
+      sections: [
+        {
+          heading: "ملخص الصندوق",
+          items: [
+            { label: model.cashSales.label, value: model.cashSales.value },
+            ...(model.mixedIncluded
+              ? [
+                  { label: model.mixedIncluded.label, value: model.mixedIncluded.value },
+                  { label: model.mixedIncludedNote, value: "" },
+                ]
+              : []),
+            { label: model.visa.label, value: model.visa.value },
+            { label: model.tenderTotal.label, value: model.tenderTotal.value },
+            { label: model.cashRefunds.label, value: model.cashRefunds.value },
+            { label: model.visaRefunds?.label, value: model.visaRefunds?.value },
+            { label: model.cashNet.label, value: model.cashNet.value },
+            { label: model.visaNet?.label, value: model.visaNet?.value },
+            { label: model.expected.label, value: model.expected.value },
+            {
+              label: "دفعات الموردين",
+              value: ils(detail.summary?.supplier_payments_total ?? 0),
+            },
+            {
+              label: "ذمم نقدية للعملاء",
+              value: ils(detail.summary?.customer_cash_debts_total ?? 0),
+            },
+            ...(Number(detail.summary?.customer_collections_total) > 0
+              ? [
+                  {
+                    label: "قبض ذمم سابق — للمراجعة",
+                    value: ils(detail.summary.customer_collections_total),
+                  },
+                ]
+              : []),
+            {
+              label: "سلف",
+              value: ils(detail.summary?.advances_total ?? 0),
+            },
+          ],
+        },
+        {
+          heading: "ذمم نقدية للعملاء",
+          items: (detail.customer_cash_debts || []).map((p) => ({
+            label: `${p.customer_name || "عميل"} — ${p.cashier_name || ""}`,
+            value: ils(p.amount),
+          })),
+        },
+        ...((detail.customer_collections || []).length
+          ? [
+              {
+                heading: "قبض ذمم سابق — للمراجعة",
+                items: (detail.customer_collections || []).map((p) => ({
+                  label: `${p.customer_name || "عميل"} — سند قبض #${p.voucher_no ?? "—"} — ${p.cashier_name || ""}`,
+                  value: ils(p.amount),
+                })),
+              },
+            ]
+          : []),
+        {
+          heading: "دفعات الموردين",
+          items: (detail.supplier_payments || []).map((p) => ({
+            label: `${p.supplier_name || "مورد"} — سند #${p.voucher_no ?? "—"} — ${p.cashier_name || ""}`,
+            value: ils(p.amount),
+          })),
+        },
+        {
+          heading: "سلف",
+          items: (detail.advances || []).map((p) => ({
+            label: `${p.employee_name || "موظف"} — طلب #${p.request_id ?? "—"} — ${p.recorded_by_name || ""}`,
+            value: ils(p.amount),
+          })),
+        },
+      ],
+      store,
+    });
   }
 
   async function downloadCsv(shiftId) {
@@ -622,6 +785,55 @@ export default function ShiftAudit() {
         ),
     },
     {
+      key: "cash_sales",
+      header: "مبيعات نقدية",
+      className: "num",
+      value: (r) => visaAmountText(r, "cash_sales"),
+      render: (r) => visaAmountText(r, "cash_sales"),
+    },
+    {
+      key: "visa_sales",
+      header: "مبيعات فيزا",
+      className: "num",
+      value: (r) => visaAmountText(r, "visa_sales"),
+      render: (r) => visaAmountText(r, "visa_sales"),
+    },
+    {
+      key: "tender_total",
+      header: "إجمالي المبيعات النقدية والفيزا",
+      className: "num",
+      value: (r) => visaAmountText(r, "tender_total"),
+      render: (r) => visaAmountText(r, "tender_total"),
+    },
+    {
+      key: "cash_refunds",
+      header: "مرتجعات نقدية",
+      className: "num",
+      value: (r) => visaAmountText(r, "cash_refunds"),
+      render: (r) => visaAmountText(r, "cash_refunds"),
+    },
+    {
+      key: "visa_refunds",
+      header: "مرتجعات الفيزا",
+      className: "num",
+      value: (r) => visaAmountText(r, "visa_refunds"),
+      render: (r) => visaAmountText(r, "visa_refunds"),
+    },
+    {
+      key: "cash_net",
+      header: "صافي المبيعات النقدية",
+      className: "num",
+      value: (r) => visaAmountText(r, "cash_net"),
+      render: (r) => visaAmountText(r, "cash_net"),
+    },
+    {
+      key: "visa_net",
+      header: "صافي المبيعات الفيزا",
+      className: "num",
+      value: (r) => visaAmountText(r, "visa_net"),
+      render: (r) => visaAmountText(r, "visa_net"),
+    },
+    {
       key: "status",
       header: "الحالة",
       value: (r) => {
@@ -653,7 +865,7 @@ export default function ShiftAudit() {
     <div className="office-page" dir="rtl" lang="ar">
       <PageHeader
         title="تدقيق الورديات"
-        subtitle="مراجعة الورديات والفروقات النقدية"
+        subtitle="مراجعة الورديات. أرقام الفيزا مدفوعات مسجّلة، وليست تسوية بنكية."
         icon="shifts"
         actions={
           <ReportToolbar
@@ -733,7 +945,11 @@ export default function ShiftAudit() {
         title={reconcileTarget ? `عد النقد — وردية #${reconcileTarget.id}` : ""}
         footer={
           <>
-            <PrimaryButton type="submit" form="reconcile-form" disabled={reconcileLoading || countRows.length === 0}>
+            <PrimaryButton
+              type="submit"
+              form="reconcile-form"
+              disabled={reconcileLoading || supplierSaving || advanceSaving || countRows.length === 0}
+            >
               {reconcileLoading ? "جاري الحفظ…" : "تأكيد وإغلاق"}
             </PrimaryButton>
             <SecondaryButton type="button" onClick={closeReconcile}>
@@ -743,14 +959,43 @@ export default function ShiftAudit() {
         }
       >
         {reconcileTarget ? (
-          <form id="reconcile-form" onSubmit={submitReconcile}>
+          <>
             <p style={{ color: "var(--office-text-muted)", lineHeight: 1.6 }}>
-              {reconcileTarget.cashier_name} — النقد المتوقع:{" "}
-              {reconcileTarget.expected_cash != null ? ils(reconcileTarget.expected_cash) : "—"}
-              {expectedBreakdownText(reconcileTarget.expected_by_currency)
-                ? ` (${expectedBreakdownText(reconcileTarget.expected_by_currency)})`
-                : ""}
+              {reconcileTarget.cashier_name}
+              {reconcileTarget.id != null ? ` — وردية #${reconcileTarget.id}` : ""}
             </p>
+            <ShiftCountTotals source={reconcileTarget} />
+            <CountSupplierPaymentSection
+              shiftId={reconcileTarget.id}
+              payments={reconcileTarget.supplier_payments}
+              paymentsTotal={reconcileTarget.supplier_payments_total}
+              onBusyChange={setSupplierSaving}
+              onPosted={async () => {
+                try {
+                  await refreshReconcileTarget(reconcileTarget.id);
+                  loadPending();
+                  load();
+                } catch (e) {
+                  toast.error(apiErrorMessage(e, "تعذّر تحديث النقد المتوقع"));
+                }
+              }}
+            />
+            <CountAdvanceSection
+              shiftId={reconcileTarget.id}
+              advances={reconcileTarget.advances}
+              advancesTotal={reconcileTarget.advances_total}
+              onBusyChange={setAdvanceSaving}
+              onPosted={async () => {
+                try {
+                  await refreshReconcileTarget(reconcileTarget.id);
+                  loadPending();
+                  load();
+                } catch (e) {
+                  toast.error(apiErrorMessage(e, "تعذّر تحديث النقد المتوقع"));
+                }
+              }}
+            />
+            <form id="reconcile-form" onSubmit={submitReconcile}>
             <CashCountFields
               countRows={countRows}
               values={countedAmounts}
@@ -776,6 +1021,7 @@ export default function ShiftAudit() {
               <Input value={reconcileNotes} onChange={(e) => setReconcileNotes(e.target.value)} />
             </FormField>
           </form>
+          </>
         ) : null}
       </Modal>
 
@@ -791,6 +1037,9 @@ export default function ShiftAudit() {
                 عد النقد
               </PrimaryButton>
             ) : null}
+            <PrimaryButton type="button" onClick={printShiftReport}>
+              طباعة التقرير
+            </PrimaryButton>
             <PrimaryButton type="button" onClick={() => downloadCsv(detail?.shift?.id)}>
               تصدير CSV
             </PrimaryButton>
@@ -848,6 +1097,50 @@ export default function ShiftAudit() {
                   ))}
                 </ul>
               </div>
+            )}
+
+            <h3 className="dashboard-subtitle dashboard-section-title--with-badge">ذمم نقدية للعملاء</h3>
+            {(detail.customer_cash_debts || []).length === 0 ? (
+              <p className="shift-section-empty">لا توجد ذمم نقدية في هذه الوردية</p>
+            ) : (
+              <ul className="dashboard-stock-list">
+                {(detail.customer_cash_debts || []).map((p) => (
+                  <li key={p.request_id || p.movement_id} className="shift-sale-row-btn" style={{ display: "block" }}>
+                    <span className="shift-sale-row-main">
+                      {p.customer_name || "عميل"} — {ils(p.amount)} — {p.cashier_name || "—"} — {formatDt(p.approved_at)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {(detail.customer_collections || []).length > 0 ? (
+              <>
+                <h3 className="dashboard-subtitle dashboard-section-title--with-badge">قبض ذمم سابق — للمراجعة</h3>
+                <ul className="dashboard-stock-list">
+                  {(detail.customer_collections || []).map((p) => (
+                    <li key={p.voucher_id || p.movement_id} className="shift-sale-row-btn" style={{ display: "block" }}>
+                      <span className="shift-sale-row-main">
+                        {p.customer_name || "عميل"} — {ils(p.amount)} — سند قبض #{p.voucher_no ?? "—"} — {p.cashier_name || "—"} — {formatDt(p.collected_at)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+
+            <h3 className="dashboard-subtitle dashboard-section-title--with-badge">دفعات الموردين</h3>
+            {(detail.supplier_payments || []).length === 0 ? (
+              <p className="shift-section-empty">لا توجد دفعات موردين في هذه الوردية</p>
+            ) : (
+              <ul className="dashboard-stock-list">
+                {(detail.supplier_payments || []).map((p) => (
+                  <li key={p.voucher_id || p.movement_id} className="shift-sale-row-btn" style={{ display: "block" }}>
+                    <span className="shift-sale-row-main">
+                      {p.supplier_name || "مورد"} — {ils(p.amount)} — سند #{p.voucher_no ?? "—"} — {p.cashier_name || "—"} — {formatDt(p.paid_at)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             )}
 
             <SectionTitle
@@ -922,9 +1215,11 @@ export default function ShiftAudit() {
               <ul className="dashboard-stock-list">
                 {filteredRefunds.map((r) => {
                   const expanded = expandedRefundId === r.id;
-                  const origReceipt = r.original_transaction_id
-                    ? shiftLookups.txById.get(r.original_transaction_id)?.receipt_number
-                    : null;
+                  const origReceipt =
+                    r.original_receipt_number ||
+                    (r.original_transaction_id
+                      ? shiftLookups.txById.get(r.original_transaction_id)?.receipt_number
+                      : null);
                   return (
                     <li key={r.id} style={{ display: "block", paddingBottom: expanded ? "0.5rem" : undefined }}>
                       <button
@@ -941,6 +1236,10 @@ export default function ShiftAudit() {
                           ) : null}
                           {origReceipt ? (
                             <span className="shift-ref-chip shift-ref-chip--receipt">{origReceipt}</span>
+                          ) : null}
+                          {r.original_shift_id != null &&
+                          Number(r.original_shift_id) !== Number(detail.shift.id) ? (
+                            <span className="shift-ref-chip">من وردية #{r.original_shift_id}</span>
                           ) : null}
                           <span className="shift-sale-row-meta">
                             {PM[r.payment_method] || r.payment_method}

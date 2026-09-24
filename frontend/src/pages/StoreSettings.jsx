@@ -26,7 +26,7 @@ import { STORE_LOGO_PATH, resolveStoreLogoUrl } from "../utils/storeBranding";
 import useAuthUser from "../hooks/useAuthUser";
 import { isAdminRole } from "../utils/roles";
 const LABELS = {
-  business_day_cutoff_hour: "ساعة بداية اليوم (0–23)",
+  business_day_cutoff_hour: "ساعة بداية يوم العمل (0–23)",
   receipt_show_cashier: "إظهار اسم الكاشير في الإيصال",
   receipt_logo_url: "رابط الشعار",
   store_name_ar: "اسم المتجر",
@@ -47,7 +47,6 @@ const LABELS = {
 };
 
 const OTHER_CATEGORY = "أخرى";
-const MAX_QUICK_BUTTONS = 48;
 
 function normalizeQuickUnitId(value) {
   const n = Math.floor(Number(value));
@@ -184,13 +183,18 @@ export default function StoreSettings() {
           setFavoriteLabels({});
           return;
         }
-        const { data: products } = await api.get("/api/products", {
-          params: { ids: ids.join(",") },
-          headers: getAuthHeaders(),
-        });
-        const rows = Array.isArray(products) ? products : products?.items || [];
-        const namesById = new Map(rows.map((p) => [Number(p.id), p.name]));
         const uniqueIds = [...new Set(ids.map((id) => Number(id)))];
+        const rows = [];
+        for (let i = 0; i < uniqueIds.length; i += 100) {
+          const chunk = uniqueIds.slice(i, i + 100);
+          const { data: products } = await api.get("/api/products", {
+            params: { ids: chunk.join(",") },
+            headers: getAuthHeaders(),
+          });
+          const part = Array.isArray(products) ? products : products?.items || [];
+          rows.push(...part);
+        }
+        const namesById = new Map(rows.map((p) => [Number(p.id), p.name]));
         const unitsByProduct = new Map();
         await Promise.all(
           uniqueIds.map(async (id) => {
@@ -253,10 +257,6 @@ export default function StoreSettings() {
   }
 
   async function openAddModal(product) {
-    if (quickButtons.length >= MAX_QUICK_BUTTONS) {
-      setError(`الحد الأقصى ${MAX_QUICK_BUTTONS} منتجاً`);
-      return;
-    }
     const loadId = ++pendingLoadRef.current;
     setPendingProduct(product);
     setPendingCategory(quickCategories[0] || OTHER_CATEGORY);
@@ -660,6 +660,19 @@ export default function StoreSettings() {
 
           <SectionTitle>الورديات والكاشير</SectionTitle>
           <FormGrid>
+            <FormField
+              label={LABELS.business_day_cutoff_hour}
+              hint="بتوقيت الخليل: قبل هذه الساعة يُحسب يوم العمل لليوم السابق، وعندها وبعدها لليوم الحالي. يُثبَّت يوم الوردية عند فتحها ولا يتغيّر إذا تغيّر هذا الإعداد. تواريخ الرواتب ودفعات الموردين والمصاريف تبقى كما أُدخلت."
+            >
+              <Input
+                type="number"
+                min="0"
+                max="23"
+                step="1"
+                value={form.business_day_cutoff_hour ?? 0}
+                onChange={(e) => onChange("business_day_cutoff_hour", e.target.value)}
+              />
+            </FormField>
             <FormField label={LABELS.default_opening_cash} hint="يُستخدم تلقائياً عند بدء وردية الكاشير">
               <Input
                 type="number"
@@ -821,7 +834,7 @@ export default function StoreSettings() {
 
           <SectionTitle>أزرار الكاشير السريعة</SectionTitle>
             <p className="settings-favorites-hint">
-              اختر حتى {MAX_QUICK_BUTTONS} زراً موزّعة على الأقسام. عند الإضافة يُطلب اختيار القسم والوحدة.
+              وزّع الأزرار على الأقسام. عند الإضافة يُطلب اختيار القسم والوحدة.
             </p>
             {quickCategories.map((cat) => {
               const catButtons = quickButtons.filter((b) => b.category === cat);
@@ -874,10 +887,8 @@ export default function StoreSettings() {
                   placeholder="ابحث بالاسم أو الباركود لإضافة منتج…"
                   value={productSearch}
                   onChange={(e) => setProductSearch(e.target.value)}
-                  disabled={quickButtons.length >= MAX_QUICK_BUTTONS}
                 />
                 <CameraBarcodeButton
-                  disabled={quickButtons.length >= MAX_QUICK_BUTTONS}
                   onScan={(code) => setProductSearch(code)}
                 />
               </div>

@@ -1,10 +1,12 @@
+import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { isAdmin, canRunCheckout } from "../utils/roles.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { CACHE_KEYS, cacheInvalidate, cacheInvalidatePrefix } from "../utils/cache.js";
+import { assertTokenSession } from "../utils/sessions.js";
 
 const DEFAULT_SECRET = "change-me-in-production";
-const JWT_SECRET = process.env.JWT_SECRET || DEFAULT_SECRET;
+export const JWT_SECRET = process.env.JWT_SECRET || DEFAULT_SECRET;
 
 function isLoopbackHost(host) {
   const h = String(host || "127.0.0.1").toLowerCase();
@@ -30,20 +32,32 @@ export const JWT_OPTIONS = {
   audience: "abo-shalbak-api",
 };
 
-/** Break-glass office login if the admin password is forgotten. */
-export const ADMIN_RECOVERY_USERNAME = "admin";
-export const ADMIN_RECOVERY_PASSWORD = "admin123";
-
-export function isAdminRecoveryPassword(username, password) {
-  return (
-    String(username || "") === ADMIN_RECOVERY_USERNAME &&
-    String(password || "") === ADMIN_RECOVERY_PASSWORD
-  );
-}
-
 export function invalidateUserCache(userId) {
   if (userId == null) cacheInvalidatePrefix("user:");
   else cacheInvalidate(CACHE_KEYS.user(userId));
+}
+
+export function signAccessToken(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      sv: Number(user.session_version) || 0,
+      jti: crypto.randomUUID(),
+    },
+    JWT_SECRET,
+    JWT_OPTIONS
+  );
+}
+
+function sendAuthError(res, err) {
+  const status = err?.status || 401;
+  return res.status(status).json({
+    success: false,
+    error: err?.message || "غير مصرّح",
+    code: err?.code || "UNAUTHORIZED",
+  });
 }
 
 export function requireAuth(req, res, next) {
@@ -52,15 +66,39 @@ export function requireAuth(req, res, next) {
   if (!token) {
     return res.status(401).json({ success: false, error: "غير مصرّح", code: "UNAUTHORIZED" });
   }
+  let payload;
   try {
-    req.user = jwt.verify(token, JWT_SECRET, {
+    payload = jwt.verify(token, JWT_SECRET, {
       issuer: JWT_OPTIONS.issuer,
       audience: JWT_OPTIONS.audience,
     });
-    next();
   } catch {
     return res.status(401).json({ success: false, error: "رمز غير صالح", code: "INVALID_TOKEN" });
   }
+  const db = req.app?.get?.("db");
+  if (!db) return next(new Error("Auth database is not available"));
+  assertTokenSession(db, payload)
+    .then((row) => {
+      req.user = {
+        id: row.id ?? payload.id,
+        username: row.username,
+        role: row.role,
+        permissions_json: row.permissions_json,
+        must_change_password: row.must_change_password,
+        session_version: Number(row.session_version) || 0,
+      };
+      req.auth = {
+        jti: payload.jti,
+        exp: payload.exp,
+        sv: payload.sv,
+        userId: req.user.id,
+      };
+      next();
+    })
+    .catch((err) => {
+      if (err?.status) return sendAuthError(res, err);
+      next(err);
+    });
 }
 
 /**
@@ -140,6 +178,7 @@ export function requireReportsPermission(db, permissionKey) {
       }
       return res.status(403).json(FORBIDDEN_PAYLOAD);
     } catch (err) {
+      if (err?.code === "PERMISSIONS_CORRUPT") return sendAuthError(res, err);
       next(err);
     }
   };
@@ -164,6 +203,7 @@ export function requireAnyReportsPermission(db, ...permissionKeys) {
       }
       return res.status(403).json(FORBIDDEN_PAYLOAD);
     } catch (err) {
+      if (err?.code === "PERMISSIONS_CORRUPT") return sendAuthError(res, err);
       next(err);
     }
   };
@@ -179,5 +219,3 @@ export function requireOfficeRole() {
     next();
   };
 }
-
-export { JWT_SECRET };

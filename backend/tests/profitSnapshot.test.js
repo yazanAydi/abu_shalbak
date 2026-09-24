@@ -137,8 +137,8 @@ describe("Historical profit: valid zero vs missing snapshot", () => {
     return (res.body.data || res.body).days.find((d) => d.date === today);
   }
 
-  test("zero-cost snapshot stays 0 after live cost is edited", async () => {
-    await ctx.db.run("UPDATE products SET cost = 0, price = 10, stock = 100 WHERE id = ?", [
+  test("unmarked zero cost is unknown and a later cost edit does not fill the snapshot", async () => {
+    await ctx.db.run("UPDATE products SET cost = 0, cost_known = NULL, price = 10, stock = 100 WHERE id = ?", [
       ctx.productId,
     ]);
     const sale = await request(ctx.app)
@@ -152,15 +152,50 @@ describe("Historical profit: valid zero vs missing snapshot", () => {
       );
     expect(sale.status).toBe(201);
     const before = await todayRow();
-    expect(before.cost).toBe(0);
-    expect(before.cost_unknown).toBe(false);
-    expect(before.profit).toBe(10);
+    expect(before.cost).toBeNull();
+    expect(before.cost_unknown).toBe(true);
+    expect(before.profit).toBeNull();
 
     await ctx.db.run("UPDATE products SET cost = 9 WHERE id = ?", [ctx.productId]);
     const after = await todayRow();
-    expect(after.cost).toBe(0);
-    expect(after.cost_unknown).toBe(false);
-    expect(after.profit).toBe(before.profit);
+    expect(after.cost).toBeNull();
+    expect(after.cost_unknown).toBe(true);
+    expect(after.profit).toBeNull();
+    const item = await ctx.db.get(
+      "SELECT unit_cost_at_sale FROM transaction_items ORDER BY id DESC LIMIT 1"
+    );
+    expect(item.unit_cost_at_sale).toBeNull();
+  });
+
+  test("explicit free cost stays a known zero after the live cost changes", async () => {
+    await ctx.db.run("UPDATE products SET cost = 0, cost_known = 1, price = 10, stock = 100 WHERE id = ?", [
+      ctx.productId,
+    ]);
+    const sale = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send(
+        withCheckoutKey({
+          items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+          payment_method: "cash",
+        })
+      );
+    expect(sale.status).toBe(201);
+    const txId = sale.body.data?.transaction_id ?? sale.body.transaction_id;
+    const before = await ctx.db.get(
+      "SELECT unit_cost_at_sale, gross_profit FROM transaction_items WHERE transaction_id = ?",
+      [txId]
+    );
+    expect(Number(before.unit_cost_at_sale)).toBe(0);
+    expect(Number(before.gross_profit)).toBe(10);
+
+    await ctx.db.run("UPDATE products SET cost = 9 WHERE id = ?", [ctx.productId]);
+    const after = await ctx.db.get(
+      "SELECT unit_cost_at_sale, gross_profit FROM transaction_items WHERE transaction_id = ?",
+      [txId]
+    );
+    expect(Number(after.unit_cost_at_sale)).toBe(0);
+    expect(Number(after.gross_profit)).toBe(10);
   });
 
   test("missing snapshot does not use live cost or report fake known zero", async () => {

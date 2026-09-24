@@ -6,6 +6,7 @@ import {
   authHeader,
   withCheckoutKey,
 } from "./helpers.js";
+import { shopYmdFromTimestamp } from "../utils/shopTime.js";
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -143,7 +144,7 @@ describe("Sales by price report", () => {
     );
     expect(txRows.length).toBeGreaterThan(0);
 
-    const saleDate = String(txRows[0].created_at).slice(0, 10);
+    const saleDate = shopYmdFromTimestamp(txRows[0].created_at);
 
     const resIn = await request(ctx.app)
       .get(`/api/v1/reports/products/${ctx.productId}/sales-by-price`)
@@ -154,7 +155,7 @@ describe("Sales by price report", () => {
     const rowsIn = resIn.body.data?.rows ?? res.body.rows;
     expect(rowsIn.length).toBeGreaterThan(0);
     for (const row of rowsIn) {
-      expect(String(row.first_sale_date).slice(0, 10)).toBe(saleDate);
+      expect(shopYmdFromTimestamp(row.first_sale_date)).toBe(saleDate);
     }
 
     const resOut = await request(ctx.app)

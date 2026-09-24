@@ -82,6 +82,96 @@ export const refundRequestReviewSchema = z.object({
   review_notes: z.string().max(500).optional().nullable(),
 });
 
+const optionalPositiveId = z.preprocess(
+  (v) => (v == null || v === "" ? undefined : v),
+  z.coerce.number().int().positive().optional()
+);
+
+const shopConsumptionItemSchema = z.object({
+  product_id: z.coerce.number().int().positive({ message: "صنف غير صالح" }),
+  unit_id: optionalPositiveId,
+  product_unit_id: optionalPositiveId,
+  quantity: z.coerce.number({
+    invalid_type_error: "الكمية غير صالحة",
+    required_error: "الكمية مطلوبة",
+  }),
+});
+
+export const shopConsumptionPreviewSchema = z.object({
+  items: z.array(shopConsumptionItemSchema).min(1, "السلة فارغة").max(200),
+});
+
+export const shopConsumptionSchema = shopConsumptionPreviewSchema.extend({
+  reason: z
+    .preprocess(
+      (v) => (v == null || String(v).trim() === "" ? null : String(v).trim()),
+      z.string().max(500).nullable()
+    )
+    .optional(),
+  idempotency_key: z
+    .string({ required_error: "مفتاح التكرار مطلوب" })
+    .trim()
+    .min(8, "مفتاح التكرار مطلوب (8–100 حرفاً)")
+    .max(100),
+});
+
+export const posSupplierPaymentSchema = z.object({
+  supplier_id: z.coerce.number().int().positive({ message: "اختر المورد" }),
+  amount: z.coerce.number({
+    invalid_type_error: "أدخل مبلغاً صالحاً",
+    required_error: "أدخل مبلغاً صالحاً",
+  }),
+  notes: z
+    .preprocess(
+      (v) => (v == null || String(v).trim() === "" ? null : String(v).trim()),
+      z.string().max(500).nullable()
+    )
+    .optional(),
+  idempotency_key: z
+    .string({ required_error: "مفتاح التكرار مطلوب" })
+    .trim()
+    .min(8, "مفتاح التكرار مطلوب (8–100 حرفاً)")
+    .max(100),
+});
+
+export const posCustomerCashDebtSchema = z.object({
+  customer_id: z.coerce.number().int().positive({ message: "اختر العميل" }),
+  amount: z.coerce.number({
+    invalid_type_error: "أدخل مبلغاً صالحاً",
+    required_error: "أدخل مبلغاً صالحاً",
+  }),
+  notes: z
+    .preprocess(
+      (v) => (v == null || String(v).trim() === "" ? null : String(v).trim()),
+      z.string().max(500).nullable()
+    )
+    .optional(),
+  idempotency_key: z
+    .string({ required_error: "مفتاح التكرار مطلوب" })
+    .trim()
+    .min(8, "مفتاح التكرار مطلوب (8–100 حرفاً)")
+    .max(100),
+});
+
+export const shiftCountAdvanceSchema = z.object({
+  employee_id: z.coerce.number().int().positive({ message: "اختر الموظف" }),
+  amount: z.coerce.number({
+    invalid_type_error: "أدخل مبلغاً صالحاً",
+    required_error: "أدخل مبلغاً صالحاً",
+  }),
+  notes: z
+    .preprocess(
+      (v) => (v == null || String(v).trim() === "" ? null : String(v).trim()),
+      z.string().max(500).nullable()
+    )
+    .optional(),
+  idempotency_key: z
+    .string({ required_error: "مفتاح التكرار مطلوب" })
+    .trim()
+    .min(8, "مفتاح التكرار مطلوب (8–100 حرفاً)")
+    .max(100),
+});
+
 export const advanceRequestCreateSchema = z.object({
   employee_id: z
     .any()
@@ -91,8 +181,12 @@ export const advanceRequestCreateSchema = z.object({
   notes: z.string().max(500).optional().nullable(),
 });
 
-export const advanceRequestReviewSchema = refundRequestReviewSchema;
-export const onAccountRequestReviewSchema = refundRequestReviewSchema;
+export const advanceRequestReviewSchema = refundRequestReviewSchema.extend({
+  occurred_on: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+export const onAccountRequestReviewSchema = refundRequestReviewSchema.extend({
+  override_credit_limit: z.boolean().optional(),
+});
 
 export const createUserSchema = z
   .object({
@@ -242,6 +336,14 @@ export const employeePatchSchema = z.object({
   active: z.union([z.boolean(), z.number(), z.string()]).optional(),
   user_id: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
   customer_id: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+});
+
+export const employeeWageBasisSchema = z.object({
+  wage_basis: z.enum(["daily", "hourly"], {
+    errorMap: () => ({ message: "طريقة احتساب الأجر يجب أن تكون أجراً يومياً أو أجراً بالساعة" }),
+  }),
+  daily_rate: z.coerce.number().positive().optional().nullable(),
+  hourly_rate: z.coerce.number().positive().optional().nullable(),
 });
 
 export const employeeCompensationSchema = z.object({

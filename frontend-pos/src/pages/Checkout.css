@@ -2,6 +2,7 @@
 
 .pos-header-scan .barcode-wrap {
   margin: 0;
+  position: relative;
 }
 
 .pos-header-scan {
@@ -12,10 +13,39 @@
 }
 
 .pos-header-scan-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 0.55rem;
+  display: flex;
   align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.pos-header-scan-row > .barcode-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pos-header-shop-expense {
+  flex: 0 0 auto;
+  height: 54px;
+  padding: 0 0.85rem;
+  border-radius: var(--pos-radius-sm);
+  border: 2px solid #fff;
+  background: #fff;
+  color: var(--pos-text);
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 700;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.pos-header-shop-expense:hover:not(:disabled) {
+  border-color: var(--pos-checkout);
+}
+
+.pos-header-shop-expense:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .pos-header-scan .barcode-input {
@@ -104,7 +134,8 @@
   color: var(--pos-text);
 }
 
-.pos-product-search-dropdown li:hover {
+.pos-product-search-dropdown li:hover,
+.pos-product-search-dropdown li.is-active {
   background: rgba(var(--pos-accent-rgb), 0.1);
 }
 

@@ -2,10 +2,16 @@ import { POS_SHORTCUTS } from "../../config/posShortcuts";
 import { RECEIPT_PRINT_REVISION } from "../../utils/printDocument";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
+const signedMoney = (n) => {
+  const value = Number(n) || 0;
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}`;
+};
 
 export default function PosPaymentPanel({
   tax,
   discount = 0,
+  roundingAdjustment = 0,
   total,
   error,
   printWarning,
@@ -30,6 +36,12 @@ export default function PosPaymentPanel({
           <div className="pos-total-row pos-total-row--discount">
             <span>عرض / خصم</span>
             <span>-{ils(discount)}</span>
+          </div>
+        ) : null}
+        {Number(roundingAdjustment) ? (
+          <div className="pos-total-row">
+            <span>تقريب</span>
+            <span>{signedMoney(roundingAdjustment)}</span>
           </div>
         ) : null}
         <div className="pos-total-row pos-total-row--grand">

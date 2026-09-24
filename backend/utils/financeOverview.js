@@ -58,19 +58,23 @@ export async function buildFinanceOverview(db, from, to) {
     snapshotRefundCogsForRange(db, from, to),
   ]);
 
-  const posGross = sumMoney(txs.map((row) => row.total));
+  const posTxs = txs.filter((row) => Number(row.office_invoice) !== 1);
+  const officeTxs = txs.filter((row) => Number(row.office_invoice) === 1);
+  const allGross = sumMoney(txs.map((row) => row.total));
+  const posGross = sumMoney(posTxs.map((row) => row.total));
+  const officeGross = sumMoney(officeTxs.map((row) => row.total));
   const refundTotal = sumMoney(refunds.map((row) => row.total));
-  const netPos = round2(posGross - refundTotal);
-  const posCount = txs.length;
+  const netSales = round2(allGross - refundTotal);
+  const posCount = posTxs.length;
   const refundCount = refunds.length;
 
   const cogsUnknown = !!(cogsSales.unknown || cogsRefunds.unknown);
   const salesCogs = cogsUnknown ? null : cogsSales.cogs;
   const refundCogs = cogsUnknown ? null : cogsRefunds.cogs;
   const netCogs = cogsUnknown ? null : round2((cogsSales.cogs || 0) - (cogsRefunds.cogs || 0));
-  const estGrossProfit = cogsUnknown ? null : round2(netPos - netCogs);
+  const estGrossProfit = cogsUnknown ? null : round2(netSales - netCogs);
   const grossMarginPercent =
-    cogsUnknown || netPos === 0 ? null : round2((estGrossProfit / netPos) * 100);
+    cogsUnknown || netSales === 0 ? null : round2((estGrossProfit / netSales) * 100);
 
   const [expRow, payRow, voucherRow, inv, recv, apRow, purchases] = await Promise.all([
     db.get(
@@ -146,16 +150,17 @@ export async function buildFinanceOverview(db, from, to) {
   const customersWithBalance = Number(recv?.customers_with_balance) || 0;
 
   const avgTicket = posCount > 0 ? round2(posGross / posCount) : null;
-  const refundRatePercent = posGross > 0 ? round2((refundTotal / posGross) * 100) : null;
+  const refundRatePercent = allGross > 0 ? round2((refundTotal / allGross) * 100) : null;
 
   return {
     from,
     to,
     pos_sales_total: posGross,
     pos_transaction_count: posCount,
+    office_sales_total: officeGross,
     refunds_total: refundTotal,
     refund_count: refundCount,
-    net_pos_sales: netPos,
+    net_pos_sales: netSales,
     operating_expenses_total: opexTotal,
     operating_expense_count: opexCount,
     supplier_payments_total: legacyTotal,
@@ -171,10 +176,13 @@ export async function buildFinanceOverview(db, from, to) {
     open_payables_total: round2(Number(apRow?.outstanding) || 0),
     open_invoices_count: Number(apRow?.n) || 0,
     sales: {
-      gross: posGross,
+      gross: allGross,
+      pos: posGross,
+      office: officeGross,
       refunds: refundTotal,
-      net: netPos,
-      transactionCount: posCount,
+      net: netSales,
+      transactionCount: txs.length,
+      posTransactionCount: posCount,
       refundCount,
       avgTicket,
       refundRatePercent,

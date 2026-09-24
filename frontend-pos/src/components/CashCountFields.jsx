@@ -74,6 +74,13 @@ export function countedCurrenciesPayload(countRows, values) {
   });
 }
 
+/** Keep typed text, including "" and "77.", until blur or submit. */
+export function sanitizeCountAmount(value) {
+  const next = String(value ?? "").replace(",", ".");
+  if (next === "" || /^\d*\.?\d*$/.test(next)) return next;
+  return null;
+}
+
 export default function CashCountFields({ countRows, values, onChange }) {
   if (!countRows.length) return null;
   return (
@@ -87,27 +94,31 @@ export default function CashCountFields({ countRows, values, onChange }) {
         const nis =
           amt != null && Number.isFinite(amt) && amt >= 0 ? round2(amt * (Number(row.rate) || 1)) : null;
         return (
-          <FormField
-            key={row.code}
-            label={`${row.name} (${row.symbol})`}
-            hint={`المتوقع: ${formatCurrencyAmount(row.symbol, row.expected_original)}${
-              !row.is_base ? ` — سعر الصرف ${Number(row.rate).toFixed(4)}` : ""
-            }`}
-          >
-            <Input
-              type="number"
-              min="0"
-              step="0.01"
-              value={raw}
-              onChange={(e) => onChange(row.code, e.target.value)}
-              placeholder="0.00"
-            />
+          <div key={row.code}>
+            <FormField
+              label={`${row.name} (${row.symbol})`}
+              hint={`المتوقع: ${formatCurrencyAmount(row.symbol, row.expected_original)}${
+                !row.is_base ? ` — سعر الصرف ${Number(row.rate).toFixed(4)}` : ""
+              }`}
+            >
+              <Input
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                value={raw}
+                onChange={(e) => {
+                  const next = sanitizeCountAmount(e.target.value);
+                  if (next != null) onChange(row.code, next);
+                }}
+                placeholder="0.00"
+              />
+            </FormField>
             {nis != null ? (
               <div style={{ marginTop: "0.35rem", fontSize: "0.85rem", color: "var(--office-text-muted)" }}>
                 بالشيكل: {ils(nis)}
               </div>
             ) : null}
-          </FormField>
+          </div>
         );
       })}
     </>

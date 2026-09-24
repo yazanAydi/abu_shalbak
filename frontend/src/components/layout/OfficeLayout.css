@@ -577,3 +577,21 @@
     background: rgba(220, 38, 38, 0.2);
   }
 }
+
+.attendance-reminder__day {
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+}
+
+.attendance-reminder__list {
+  max-height: 11rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attendance-reminder__list li {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--office-border, #e5e7eb);
+}

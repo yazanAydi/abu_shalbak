@@ -1,11 +1,12 @@
 import { parseItemsJson } from "../utils/cogs.js";
 import {
   TX_BUSINESS_DAY_JOIN,
+  businessDayRangeClause,
+  businessDayRangeParams,
   fetchRefundsForShopDateRange,
   rowMatchesShopDateRange,
-  toSqlUtc,
 } from "../utils/businessDay.js";
-import { shopDateRange, shopYmdRangeToUtcBounds } from "../utils/shopTime.js";
+import { shopDateRange } from "../utils/shopTime.js";
 import { round2, sumMoney } from "../utils/money.js";
 import { getAppSettings, updateAppSettings, SETTING_KEYS } from "../utils/settings.js";
 import { HttpError } from "../utils/httpError.js";
@@ -255,7 +256,7 @@ export async function saveBakeryReportCategories(db, rawIds) {
   return resolveBakeryReportCategories(db);
 }
 
-const BAKERY_PRODUCT_SELECT = `SELECT p.id, p.name, p.barcode, p.unit, p.stock, p.is_active, p.is_weighed,
+const BAKERY_PRODUCT_SELECT = `SELECT p.id, p.name, p.barcode, p.sku, p.unit, p.stock, p.is_active, p.is_weighed,
             p.category, p.price, p.min_stock,
             COALESCE(p.inventory_scope, 'retail') AS inventory_scope,
             pc.id AS category_id, pc.name AS category_name
@@ -382,9 +383,6 @@ async function loadExtraBarcodes(db, productIds) {
 
 async function fetchSaleLinesForProducts(db, productIds, fromYmd, toYmd) {
   if (!productIds.length) return [];
-  const { startIso, endIso } = shopYmdRangeToUtcBounds(fromYmd, toYmd);
-  const startSql = toSqlUtc(startIso);
-  const endSql = toSqlUtc(endIso);
   const rows = [];
   for (let i = 0; i < productIds.length; i += SALE_LINE_CHUNK) {
     const chunk = productIds.slice(i, i + SALE_LINE_CHUNK);
@@ -401,19 +399,16 @@ async function fetchSaleLinesForProducts(db, productIds, fromYmd, toYmd) {
          ti.unit_name,
          ti.conversion_to_base,
          t.created_at,
+         t.business_day AS business_day,
+         cs.business_day AS shift_business_day,
          cs.start_time AS start_time
        FROM transaction_items ti
        JOIN transactions t ON t.id = ti.transaction_id
        ${TX_BUSINESS_DAY_JOIN}
        WHERE ti.product_id IN (${placeholders})
          AND COALESCE(t.status, 'completed') = 'completed'
-         AND (
-           (datetime(t.created_at) >= datetime(?) AND datetime(t.created_at) <= datetime(?))
-           OR (cs.start_time IS NOT NULL
-               AND datetime(cs.start_time) >= datetime(?)
-               AND datetime(cs.start_time) <= datetime(?))
-         )`,
-      [...chunk, startSql, endSql, startSql, endSql]
+         AND ${businessDayRangeClause("t", "cs")}`,
+      [...chunk, ...businessDayRangeParams(fromYmd, toYmd)]
     );
     rows.push(...part);
   }
@@ -556,6 +551,7 @@ export async function getBakeryReport(db, filters = {}) {
           product_id: pid,
           name: product.name,
           barcode: product.barcode || null,
+          sku: product.sku ?? null,
           unit: displayUnit(product),
           stock: Number(product.stock) || 0,
           is_active: Number(product.is_active) === 0 ? 0 : 1,
@@ -619,6 +615,7 @@ export async function getBakeryReport(db, filters = {}) {
       product_id: row.product_id,
       name: row.name,
       barcode: row.barcode,
+      sku: row.sku ?? null,
       unit: row.unit,
       stock: row.stock,
       is_active: row.is_active,

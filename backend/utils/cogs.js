@@ -2,11 +2,11 @@ import { round2 } from "./money.js";
 import {
   TX_BUSINESS_DAY_JOIN,
   REFUND_BUSINESS_DAY_JOIN,
-  toSqlUtc,
+  businessDayRangeClause,
+  businessDayRangeParams,
   rowMatchesShopDateRange,
   shopBusinessDayYmd,
 } from "./businessDay.js";
-import { shopYmdRangeToUtcBounds } from "./shopTime.js";
 
 /**
  * Live (current-cost) COGS. ONLY valid for future estimates / unsold-inventory
@@ -43,13 +43,6 @@ export async function cogsForItemsJsonString(db, itemsJson) {
   const arr = parseItemsJson(itemsJson);
   if (!Array.isArray(arr)) return 0;
   return cogsForItemsArray(db, arr);
-}
-
-function rangeUtcParams(from, to) {
-  const { startIso, endIso } = shopYmdRangeToUtcBounds(from, to);
-  const startSql = toSqlUtc(startIso);
-  const endSql = toSqlUtc(endIso);
-  return [startSql, endSql, startSql, endSql];
 }
 
 /**
@@ -121,17 +114,15 @@ async function loadCogsByTransactionIds(db, transactionIds) {
 /** Per-shop-day historical sale COGS for a date range. */
 export async function snapshotSalesCogsByDay(db, from, to) {
   const rows = await db.all(
-    `SELECT t.id, t.items_json, t.created_at, cs.start_time AS start_time
+    `SELECT t.id, t.items_json, t.created_at,
+            t.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS start_time
      FROM transactions t
      ${TX_BUSINESS_DAY_JOIN}
      WHERE COALESCE(t.status, 'completed') = 'completed'
-       AND (
-         (datetime(t.created_at) >= datetime(?) AND datetime(t.created_at) <= datetime(?))
-         OR (cs.start_time IS NOT NULL
-             AND datetime(cs.start_time) >= datetime(?)
-             AND datetime(cs.start_time) <= datetime(?))
-       )`,
-    rangeUtcParams(from, to)
+       AND ${businessDayRangeClause("t", "cs")}`,
+    businessDayRangeParams(from, to)
   );
   const matched = rows.filter((r) => rowMatchesShopDateRange(r, from, to));
   const cogsByTx = await loadCogsByTransactionIds(
@@ -187,17 +178,15 @@ async function refundUnitCostLookup(db, refunds) {
 /** Per-shop-day historical refund COGS reversal for a date range. */
 export async function snapshotRefundCogsByDay(db, from, to) {
   const refunds = await db.all(
-    `SELECT r.items_json, r.original_transaction_id, r.created_at, cs.start_time AS start_time
+    `SELECT r.items_json, r.original_transaction_id, r.created_at,
+            r.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS start_time
      FROM refunds r
      ${REFUND_BUSINESS_DAY_JOIN}
      WHERE r.status = 'approved'
-       AND (
-         (datetime(r.created_at) >= datetime(?) AND datetime(r.created_at) <= datetime(?))
-         OR (cs.start_time IS NOT NULL
-             AND datetime(cs.start_time) >= datetime(?)
-             AND datetime(cs.start_time) <= datetime(?))
-       )`,
-    rangeUtcParams(from, to)
+       AND ${businessDayRangeClause("r", "cs")}`,
+    businessDayRangeParams(from, to)
   );
   const matched = refunds.filter((row) => rowMatchesShopDateRange(row, from, to));
   const costByKey = await refundUnitCostLookup(db, matched);

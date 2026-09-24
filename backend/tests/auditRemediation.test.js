@@ -130,6 +130,34 @@ describe("audit remediation regressions", () => {
     expect(created.request.total_amount).toBeCloseTo(Number(product.price) * 2 - 2, 2);
   });
 
+  test("refund does not subtract a header discount that is already in line_net", async () => {
+    const product = await ctx.db.get("SELECT * FROM products WHERE id = ?", [ctx.productId]);
+    const checkout = await request(ctx.app)
+      .post("/api/v1/checkout")
+      .set(authHeader(cashierToken))
+      .send(withCheckoutKey({
+        items: [{ product_id: ctx.productId, quantity: 2, price: product.price }],
+        payment_method: "cash",
+      }));
+    expect(checkout.status).toBe(201);
+    const tid = checkout.body.data.transaction_id;
+    const billed = Number(product.price) * 2 - 2;
+    await ctx.db.run("UPDATE transactions SET discount = 2, total = ? WHERE id = ?", [billed, tid]);
+    await ctx.db.run(
+      "UPDATE transaction_items SET line_net = ?, discount_at_sale = 2 WHERE transaction_id = ?",
+      [billed, tid]
+    );
+
+    const created = await createRefundRequest(ctx.db, {
+      cashierId,
+      transactionId: tid,
+      lines: [{ product_id: ctx.productId, quantity: 2 }],
+      paymentMethod: "cash",
+      reason: "test",
+    });
+    expect(created.request.total_amount).toBeCloseTo(billed, 2);
+  });
+
   test("mixed-payment change is deducted from cash", async () => {
     const product = await ctx.db.get("SELECT * FROM products WHERE id = ?", [ctx.productId]);
     const checkout = await request(ctx.app)

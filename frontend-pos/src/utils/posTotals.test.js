@@ -1,6 +1,7 @@
 import {
   round2,
   roundScaleSaleTotal,
+  roundPosPayable,
   computeDealLineTotal,
   estimateCartTotals,
 } from "./posTotals";
@@ -57,5 +58,18 @@ describe("POS scale sale rounding", () => {
 
   test("round2 is unchanged", () => {
     expect(round2(0.1 + 0.2)).toBe(0.3);
+  });
+
+  test("cart total applies final payable rounding after the line total", () => {
+    expect(roundPosPayable(21.3)).toEqual({ calculated: 21.3, payable: 21, adjustment: -0.3 });
+    expect(roundPosPayable(2.5).payable).toBe(2.5);
+    const totals = estimateCartTotals(
+      [{ unitName: "حبة", weighed: false, quantity: 1, price: 2.49 }],
+      { tax_inclusive: true, default_tax_rate: 0 }
+    );
+    expect(totals.subtotal).toBe(2.49);
+    expect(totals.amountBeforeRounding).toBe(2.49);
+    expect(totals.roundingAdjustment).toBe(-0.49);
+    expect(totals.total).toBe(2);
   });
 });

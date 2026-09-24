@@ -368,6 +368,7 @@ export function buildReceiptHtml(opts) {
     })
     .join("");
 
+  const discountHtml = discountSummaryHtml(opts);
   const taxHtml =
     showTax && opts.tax > 0
       ? `<div class="tax-line">ضريبة القيمة المضافة: ${escapeHtml(Number(opts.tax).toFixed(2))}</div>`
@@ -429,6 +430,8 @@ export function buildReceiptHtml(opts) {
         </tr>
       </tfoot>
     </table>
+    ${discountHtml}
+    ${roundingSummaryHtml(opts)}
     <div class="pay-box">المبلغ للدفع ${escapeHtml(Number(opts.total).toFixed(2))} شيقل</div>
     <div class="foot-box">
       <div>الوقت: ${escapeHtml(time)}</div>
@@ -493,8 +496,8 @@ export function buildReceiptText(opts) {
     );
   }
 
+  lines.push(thin, ...discountSummaryText(opts), ...roundingSummaryText(opts));
   lines.push(
-    thin,
     `${padRight("المجموع الكلي:", 34)}${padLeft(opts.total.toFixed(2), 10)}`,
     sep,
     padCenter(`المبلغ للدفع ${Number(opts.total).toFixed(2)} شيقل`, LINE),
@@ -515,6 +518,56 @@ export function buildReceiptText(opts) {
   return lines.join("\n");
 }
 
+/**
+ * Header discount is printed once, under line totals that are still the
+ * pre-discount amounts. A zero discount adds no خصم line.
+ * @param {object} opts
+ */
+function discountSummary(opts) {
+  const discount = round2(Number(opts.discount) || 0);
+  if (!(discount > 0)) return null;
+  return {
+    subtotal: round2(Number(opts.subtotal) || 0),
+    discount,
+  };
+}
+
+function discountSummaryText(opts) {
+  const row = discountSummary(opts);
+  if (!row) return [];
+  return [
+    `${padRight("المجموع قبل الخصم:", 34)}${padLeft(row.subtotal.toFixed(2), 10)}`,
+    `${padRight("خصم:", 34)}${padLeft(row.discount.toFixed(2), 10)}`,
+  ];
+}
+
+function discountSummaryHtml(opts) {
+  const row = discountSummary(opts);
+  if (!row) return "";
+  return `<div class="tax-line">المجموع قبل الخصم: ${escapeHtml(row.subtotal.toFixed(2))}</div>
+    <div class="tax-line">خصم: ${escapeHtml(row.discount.toFixed(2))}</div>`;
+}
+
+function formatRoundingAdjustment(value) {
+  if (value == null || value === "") return null;
+  const adj = round2(Number(value) || 0);
+  if (adj === 0) return null;
+  const sign = adj > 0 ? "+" : "";
+  return `${sign}${adj.toFixed(2)}`;
+}
+
+function roundingSummaryText(opts) {
+  const text = formatRoundingAdjustment(opts.roundingAdjustment);
+  if (!text) return [];
+  return [`${padRight("تقريب:", 34)}${padLeft(text, 10)}`];
+}
+
+function roundingSummaryHtml(opts) {
+  const text = formatRoundingAdjustment(opts.roundingAdjustment);
+  if (!text) return "";
+  return `<div class="tax-line">تقريب: ${escapeHtml(text)}</div>`;
+}
+
 /** @param {object} opts */
 export function buildReceiptPayload(opts) {
   return {
@@ -524,3 +577,86 @@ export function buildReceiptPayload(opts) {
 }
 
 export { methodLabel, ils as receiptIls };
+
+/**
+ * Thermal slip for a posted non-sale operation. Same header, width, and CSS as a sale.
+ * `copy` marks a deliberate reprint. Line objects are display text only.
+ * @param {object} opts
+ */
+export function buildOperationReceipt(opts) {
+  const settings = opts.settings || {};
+  const brand = brandingFromSettings(settings);
+  const printBrand = resolvePrintBranding(settings);
+  const { date, time } = splitTimestamp(opts.timestamp);
+  const copyLabel = opts.copy ? "نسخة" : "نسخة أصلية";
+  const logoSrc = getStoreLogoDataUri();
+  const logoHtml = logoSrc
+    ? `<div class="logo-wrap"><img src="${escapeHtml(logoSrc)}" alt="" /></div>`
+    : "";
+  const licenseHtml = printBrand.showLicense
+    ? `<div>${escapeHtml(printBrand.license)}</div>`
+    : `<div></div>`;
+  const rows = (opts.lines || [])
+    .map(
+      (line) =>
+        `<div>${escapeHtml(line)}</div>`
+    )
+    .join("");
+  const html = `<!DOCTYPE html>
+<html lang="ar-u-nu-latn" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <title>إيصال</title>
+  <style>${receiptHtmlCss()}</style>
+</head>
+<body>
+  <div class="receipt">
+    ${logoHtml}
+    <div class="center"><strong>${escapeHtml(brand.name)}</strong></div>
+    <div class="center">${escapeHtml(brand.phone)}</div>
+    <div class="header-box">
+      ${licenseHtml}
+      <div class="header-no">الرقم : ${escapeHtml(opts.documentNo || "")}</div>
+      <div class="header-title">${escapeHtml(opts.title || "")}<span class="copy">${copyLabel}</span></div>
+    </div>
+    <div class="meta-row">
+      <div class="meta-cell">${escapeHtml(opts.partyLabel || "")}</div>
+      <div class="meta-cell">${escapeHtml(date)}</div>
+    </div>
+    <div class="payment">
+      <div>الوقت: ${escapeHtml(time)}</div>
+      <div>اليوم التجاري: ${escapeHtml(opts.businessDay || date)}</div>
+      <div>الكاشير: ${escapeHtml(opts.cashierName || "")}</div>
+      <div>الوردية: ${escapeHtml(opts.shiftId ?? "")}</div>
+      ${opts.managerName ? `<div>المدير: ${escapeHtml(opts.managerName)}</div>` : ""}
+      ${opts.requestRef ? `<div>طلب الموافقة: ${escapeHtml(opts.requestRef)}</div>` : ""}
+      ${rows}
+      ${opts.note ? `<div>ملاحظة: ${escapeHtml(opts.note)}</div>` : ""}
+    </div>
+    <div class="pay-box">${escapeHtml(opts.amountLabel || "")}</div>
+    <div class="thanks">${escapeHtml(opts.footer || "")}</div>
+  </div>
+</body>
+</html>`;
+  const text = [
+    brand.name,
+    opts.title,
+    copyLabel,
+    `الرقم : ${opts.documentNo || ""}`,
+    opts.partyLabel || "",
+    `التاريخ: ${date}`,
+    `الوقت: ${time}`,
+    `اليوم التجاري: ${opts.businessDay || ""}`,
+    `الكاشير: ${opts.cashierName || ""}`,
+    `الوردية: ${opts.shiftId ?? ""}`,
+    opts.managerName ? `المدير: ${opts.managerName}` : "",
+    opts.requestRef ? `طلب الموافقة: ${opts.requestRef}` : "",
+    ...(opts.lines || []),
+    opts.note ? `ملاحظة: ${opts.note}` : "",
+    opts.amountLabel || "",
+    opts.footer || "",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+  return { receipt_html: html, receipt_text: text };
+}

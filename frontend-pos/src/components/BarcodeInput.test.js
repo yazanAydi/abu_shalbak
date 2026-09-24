@@ -33,11 +33,16 @@ jest.mock("../utils/focusBarcodeInput", () => ({
   focusBarcodeInput: jest.fn(),
 }));
 
+jest.mock("../utils/productSearch", () => ({
+  searchProductsApi: jest.fn(async () => []),
+}));
+
 const {
   beginProductNotFound,
   playProductNotFound,
   playScanSuccess,
 } = require("../utils/posSounds");
+const { searchProductsApi } = require("../utils/productSearch");
 
 const KNOWN_CODE = "7290012345678";
 const knownProduct = {
@@ -109,6 +114,8 @@ describe("BarcodeInput scan lookup", () => {
 
   beforeEach(() => {
     mockLookup.mockReset();
+    searchProductsApi.mockReset();
+    searchProductsApi.mockResolvedValue([]);
     beginProductNotFound.mockClear();
     playProductNotFound.mockClear();
     playScanSuccess.mockClear();
@@ -284,5 +291,108 @@ describe("BarcodeInput scan lookup", () => {
     expect(playScanSuccess).not.toHaveBeenCalled();
     expect(container.querySelector("[data-testid='qty']").textContent).toBe("0");
     expect(container.querySelector(".barcode-err")?.textContent).toContain("تعذّر الاتصال بالخادم");
+  });
+
+  test("Arabic name search selects one product and does not scan the name as a barcode", async () => {
+    const milk = { id: 9, name: "حليب طازج", barcode: "1112223334445", price: 6, sku: "44" };
+    searchProductsApi.mockResolvedValue([milk]);
+    mockLookup.mockResolvedValue({
+      found: true,
+      product: milk,
+      barcode: milk.barcode,
+      price: 6,
+    });
+
+    act(() => {
+      setInputValue(inputEl(), "حليب");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+
+    const option = container.querySelector("[role='option']");
+    expect(option.textContent).toContain("حليب طازج");
+    await act(async () => {
+      option.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockLookup).toHaveBeenCalledTimes(1);
+    expect(mockLookup).toHaveBeenCalledWith("1112223334445");
+    expect(playScanSuccess).toHaveBeenCalledTimes(1);
+    expect(inputEl().value).toBe("");
+    expect(container.querySelector("[role='listbox']")).toBeNull();
+  });
+
+  test("an unknown barcode does not add a visible suggestion", async () => {
+    searchProductsApi.mockResolvedValue([
+      { id: 2, name: "خبز", barcode: "999", price: 2 },
+    ]);
+    mockLookup.mockRejectedValueOnce(new Error("لم يُعثر على المنتج (000111)"));
+
+    act(() => {
+      setInputValue(inputEl(), "000111");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    expect(container.querySelector("[role='option']")).not.toBeNull();
+
+    await act(async () => {
+      pressEnter(inputEl());
+    });
+
+    expect(mockLookup).toHaveBeenCalledTimes(1);
+    expect(mockLookup).toHaveBeenCalledWith("000111");
+    expect(playScanSuccess).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-testid='lines']").textContent).toBe("0");
+    expect(container.querySelector(".barcode-err").textContent).toContain("لم يُعثر على المنتج");
+    expect(container.querySelector("[role='listbox']")).toBeNull();
+  });
+
+  test("arrow keys choose a suggestion and Escape closes the list", async () => {
+    searchProductsApi.mockResolvedValue([
+      { id: 1, name: "أ", barcode: "1", price: 1 },
+      { id: 2, name: "ب", barcode: "2", price: 2 },
+    ]);
+    act(() => {
+      setInputValue(inputEl(), "منتج");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+
+    const input = inputEl();
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(container.querySelector("[aria-selected='true']").textContent).toContain("ب");
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector("[role='listbox']")).toBeNull();
+    expect(input.value).toBe("منتج");
+  });
+
+  test("a scale barcode is looked up once as scanned", async () => {
+    const scaleCode = "2100410015504";
+    mockLookup.mockResolvedValue({
+      found: true,
+      product: { id: 5, name: "بندورة", barcode: null, is_weighed: 1 },
+      quantity: 1.55,
+      barcode: scaleCode,
+      price: 8,
+    });
+
+    await act(async () => {
+      setInputValue(inputEl(), scaleCode);
+      pressEnter(inputEl());
+    });
+
+    expect(mockLookup).toHaveBeenCalledTimes(1);
+    expect(mockLookup).toHaveBeenCalledWith(scaleCode);
+    expect(playScanSuccess).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("[data-testid='lines']").textContent).toBe("1");
   });
 });

@@ -4,11 +4,12 @@ import { buildReceiptPayload } from "../utils/receipt.js";
 import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { computeSaleTotals, productTaxRate, round2 } from "../utils/tax.js";
+import { roundPosPayable } from "../utils/money.js";
 import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
 import { checkoutSchema } from "../middleware/schemas.js";
-import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost, isWeighedBaseUnit, isKgUnit, toBaseQuantity } from "../utils/productUnits.js";
+import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost, isProductCostKnown, isWeighedBaseUnit, isKgUnit, toBaseQuantity } from "../utils/productUnits.js";
 import {
   resolveCheckoutPayments,
   loadSalePayments,
@@ -113,7 +114,9 @@ export function createCheckoutRouter(db) {
       lines: receiptLines,
       subtotal: row.subtotal,
       tax: row.tax,
+      discount: row.discount,
       total: row.total,
+      roundingAdjustment: row.rounding_adjustment,
       paymentMethod: row.payment_method,
       payments,
       changeNis: row.change_amount,
@@ -135,6 +138,8 @@ export function createCheckoutRouter(db) {
       tax: row.tax,
       discount: row.discount,
       total: row.total,
+      amount_before_rounding: row.amount_before_rounding,
+      rounding_adjustment: row.rounding_adjustment,
       payment_method: row.payment_method,
       payments,
       timestamp: row.created_at,
@@ -408,8 +413,16 @@ export function createCheckoutRouter(db) {
           });
         }
         qty = Math.round(rawQty);
+      } else if (!Number.isFinite(rawQty) || rawQty < 1 || Math.abs(rawQty - Math.round(rawQty)) > 1e-9) {
+        // Piece and package units are whole counts. A fraction is rejected
+        // rather than rounded up to the next piece.
+        return res.status(400).json({
+          error: "كمية الحبة يجب أن تكون عدداً صحيحاً",
+          code: "INVALID_PIECE_QTY",
+          product_id: productId,
+        });
       } else {
-        qty = Math.max(1, rawQty || 1);
+        qty = Math.round(rawQty);
       }
       const stockDelta = toBaseQuantity(qty, conversionToBase);
 
@@ -434,7 +447,7 @@ export function createCheckoutRouter(db) {
         category: p.category,
         quantity: qty,
         price: effectivePrice,
-        cost: resolveSoldUnitCost(unit, p),
+        cost: isProductCostKnown(p) ? resolveSoldUnitCost(unit, p) : null,
         taxRate: lineTaxRate,
         is_weighed: isWeightLine,
       });
@@ -480,7 +493,11 @@ export function createCheckoutRouter(db) {
         throw e;
       }
     }
-    const total = round2(grossTotal - discount);
+    const calculatedTotal = round2(grossTotal - discount);
+    const payable = roundPosPayable(calculatedTotal);
+    const total = payable.payable;
+    const amountBeforeRounding = payable.calculated;
+    const roundingAdjustment = payable.adjustment;
 
     const paymentResolved = await resolveCheckoutPayments(db, req.body, total);
     if (paymentResolved.error) {
@@ -585,6 +602,8 @@ export function createCheckoutRouter(db) {
             tax,
             total,
             discount,
+            amountBeforeRounding,
+            roundingAdjustment,
             paymentLines,
             summaryMethod,
             cashTendered,
@@ -612,6 +631,8 @@ export function createCheckoutRouter(db) {
                 subtotal,
                 tax,
                 total,
+                amountBeforeRounding,
+                roundingAdjustment,
                 onAccountTotal,
                 summaryMethod,
               },
@@ -654,6 +675,8 @@ export function createCheckoutRouter(db) {
         tax,
         total,
         discount,
+        amountBeforeRounding,
+        roundingAdjustment,
         paymentLines,
         summaryMethod,
         onAccountTotal,
@@ -717,7 +740,9 @@ export function createCheckoutRouter(db) {
         lines: receiptLines,
         subtotal,
         tax,
+        discount,
         total,
+        roundingAdjustment,
         paymentMethod: summaryMethod,
         payments: paymentLines,
         cashTendered,
@@ -740,6 +765,8 @@ export function createCheckoutRouter(db) {
         tax,
         discount,
         total,
+        amount_before_rounding: amountBeforeRounding,
+        rounding_adjustment: roundingAdjustment,
         payment_method: summaryMethod,
         payments: paymentLines,
         timestamp: row.created_at,

@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
-import { canViewReports } from "../utils/roles.js";
 import { parseItemsJson } from "../utils/cogs.js";
 import {
   refundedQtyByProduct,
@@ -24,18 +23,12 @@ import { listLimitSql } from "../utils/listQuery.js";
 import { loadSalePayments } from "../utils/salePayments.js";
 import { partyBalanceForRefund } from "../utils/partyBalanceAroundMove.js";
 
-function requirePosOrReports(req, res, next) {
-  const r = req.user?.role;
-  if (
-    canViewReports(r) ||
-    r === "admin" ||
-    r === "cashier" ||
-    r === "shelves_employee" ||
-    r === "bakery_employee"
-  ) {
-    return next();
-  }
-  return res.status(403).json({ error: "ممنوع" });
+function refundRoundingLine(refund) {
+  if (refund?.rounding_adjustment == null || refund.rounding_adjustment === "") return "";
+  const adj = round2(Number(refund.rounding_adjustment) || 0);
+  if (adj === 0) return "";
+  const sign = adj > 0 ? "+" : "";
+  return `<p>تقريب: ${sign}${adj.toFixed(2)}</p>`;
 }
 
 function partyBalanceBlock(partyBalance) {
@@ -82,6 +75,7 @@ ${logoHtml}
 طريقة الرد: ${pm}<br/>
 الحالة: ${escapeHtml(refund.status || "")}</p>
 <table><thead><tr><th>الصنف</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>${lines}</tbody></table>
+${refundRoundingLine(refund)}
 <p><strong>الإجمالي: ${round2(Number(refund.total))}</strong></p>
 ${partyBalanceBlock(partyBalance)}
 ${refund.reason ? `<p>السبب: ${escapeHtml(refund.reason)}</p>` : ""}
@@ -107,7 +101,12 @@ export function createRefundsRouter(db) {
   const router = Router();
   const requireRefunds = requireReportsPermission(db, "refunds");
 
-  router.get("/search", requireAuth, requirePosOrReports, async (req, res) => {
+  function requireRefundLookup(req, res, next) {
+    if (req.user?.role === "cashier") return next();
+    return requireRefunds(req, res, next);
+  }
+
+  router.get("/search", requireAuth, requireRefundLookup, async (req, res) => {
     const dateFrom = parseSearchDate(req.query.date_from);
     const dateTo = parseSearchDate(req.query.date_to);
     const minAmount =
@@ -194,7 +193,7 @@ export function createRefundsRouter(db) {
     res.json({ sales });
   });
 
-  router.get("/lookup/:transactionId", requireAuth, requirePosOrReports, async (req, res) => {
+  router.get("/lookup/:transactionId", requireAuth, requireRefundLookup, async (req, res) => {
     const tid = Number(req.params.transactionId);
     if (!tid) return res.status(400).json({ error: "رقم العملية غير صالح" });
     const tx = await db.get("SELECT * FROM transactions WHERE id = ?", [tid]);

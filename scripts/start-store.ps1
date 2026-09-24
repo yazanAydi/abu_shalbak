@@ -18,14 +18,16 @@ if (Test-Path $ensureToken) {
   & $ensureToken
 }
 
+# --env-file feeds Compose ${} substitution. Those values reach the container
+# only because docker-compose.yml lists them under environment: / env_file.
 if ($Build) {
-  docker compose up -d --build
+  docker compose --env-file .env.store up -d --build
 } else {
-  docker compose up -d
+  docker compose --env-file .env.store up -d
 }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-docker compose ps
+docker compose --env-file .env.store ps
 
 $agentScript = Join-Path (Get-Location) "scripts\start-receipt-print-agent.ps1"
 if (Test-Path $agentScript) {

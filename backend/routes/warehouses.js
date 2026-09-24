@@ -39,6 +39,14 @@ function catalogQuery(req) {
 export function createWarehousesRouter(db) {
   const router = Router();
   const requireWarehouses = requireReportsPermission(db, "warehouses");
+  const requireWarehouseLookup = requireAnyReportsPermission(
+    db,
+    "warehouses",
+    "bakery",
+    "bakery_supplies",
+    "purchases",
+    "inventory_receipts"
+  );
   const requireBakeryWarehouseRead = requireAnyReportsPermission(db, "warehouses", "bakery", "bakery_supplies");
   const requireWarehouseReport = (req, res, next) => {
     if (isBakeryMembership(req)) return requireBakeryWarehouseRead(req, res, next);
@@ -47,7 +55,7 @@ export function createWarehousesRouter(db) {
 
   // ════════════ Warehouses ════════════
 
-  router.get("/", requireAuth, async (_req, res) => {
+  router.get("/", requireAuth, requireWarehouseLookup, async (_req, res) => {
     res.json(await db.all("SELECT * FROM warehouses ORDER BY active DESC, name"));
   });
 

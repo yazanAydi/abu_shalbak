@@ -91,10 +91,19 @@ describe("Auth", () => {
       .set(authHeader(token))
       .send({ current_password: "oldpass123", new_password: "newpass123" });
     expect(changed.status).toBe(200);
+    const nextToken = changed.body.data?.token;
+    expect(nextToken).toBeTruthy();
+    expect(nextToken).not.toBe(token);
+
+    const stale = await request(ctx.app)
+      .post("/api/v1/shifts/start")
+      .set(authHeader(token))
+      .send({});
+    expect(stale.status).toBe(401);
 
     const startedAfter = await request(ctx.app)
       .post("/api/v1/shifts/start")
-      .set(authHeader(token))
+      .set(authHeader(nextToken))
       .send({});
     expect(startedAfter.status).toBe(201);
     expect(startedAfter.body.data?.shift_id ?? startedAfter.body.shift_id).toBeTruthy();
@@ -122,10 +131,18 @@ describe("Auth", () => {
       .set(authHeader(token))
       .send({ current_password: "oldadmin1", new_password: "newadmin1" });
     expect(changed.status).toBe(200);
+    const nextToken = changed.body.data?.token;
+    expect(nextToken).toBeTruthy();
+
+    const stale = await request(ctx.app)
+      .post("/api/v1/products")
+      .set(authHeader(token))
+      .send({ barcode: "8800990001", name: "قديم", price: 1, stock: 0, unit: "حبة" });
+    expect(stale.status).toBe(401);
 
     const allowed = await request(ctx.app)
       .post("/api/v1/products")
-      .set(authHeader(token))
+      .set(authHeader(nextToken))
       .send({ barcode: "8800990001", name: "مسموح", price: 1, stock: 0, unit: "حبة" });
     expect(allowed.status).toBe(201);
   });
