@@ -14,6 +14,16 @@ function unwrap(body) {
   return body?.data ?? body;
 }
 
+async function approveSupplierRequest(app, adminToken, created) {
+  const body = unwrap(created.body);
+  expect(body.pending_approval).toBe(true);
+  const approved = await request(app)
+    .post(`/api/v1/supplier-payment-requests/${body.request_id}/approve`)
+    .set(authHeader(adminToken));
+  expect(approved.status).toBe(200);
+  return unwrap(approved.body);
+}
+
 async function startShift(app, token, db, opening) {
   const res = await request(app).post("/api/v1/shifts/start").set(authHeader(token)).send({});
   expect(res.status).toBe(201);
@@ -144,10 +154,20 @@ describe("office count-dialog supplier payment", () => {
         idempotency_key: "office-cnt-20-aaaaaaa",
       });
     expect(res.status).toBe(201);
-    const body = unwrap(res.body);
-    expect(body.replayed).toBe(false);
+    const pending = unwrap(res.body);
+    expect(pending.pending_approval).toBe(true);
+    expect(pending.replayed).toBe(false);
+    expect(Number(pending.amount)).toBe(20);
+    expect(Number(pending.expected_cash)).toBe(77.5);
+    expect(Number(pending.shift_id)).toBe(shift.id);
+    expect(pending.voucher_id).toBeNull();
+    expect(await computeExpectedCash(ctx.db, shift.id, 77.5)).toBe(77.5);
+    expect(Number((await ctx.db.get("SELECT balance FROM suppliers WHERE id = ?", [supplierId])).balance)).toBe(
+      before.supplierBalance
+    );
+
+    const body = await approveSupplierRequest(ctx.app, adminToken, res);
     expect(Number(body.amount)).toBe(20);
-    expect(Number(body.expected_cash)).toBe(57.5);
     expect(Number(body.shift_id)).toBe(shift.id);
     expect(Number(body.recorded_by_id)).toBe(adminId);
     expect(body.recorded_by_name).toBe("testadmin");
@@ -219,6 +239,8 @@ describe("office count-dialog supplier payment", () => {
         idempotency_key: "office-cnt-replay-bbbb",
       });
     expect(first.status).toBe(201);
+    expect(unwrap(first.body).pending_approval).toBe(true);
+    expect(unwrap(first.body).voucher_id).toBeNull();
     const replay = await request(ctx.app)
       .post(`/api/v1/shifts/${shift.id}/supplier-payments`)
       .set(authHeader(adminToken))
@@ -230,7 +252,7 @@ describe("office count-dialog supplier payment", () => {
       });
     expect(replay.status).toBe(200);
     expect(unwrap(replay.body).replayed).toBe(true);
-    expect(unwrap(replay.body).voucher_id).toBe(unwrap(first.body).voucher_id);
+    expect(unwrap(replay.body).request_id).toBe(unwrap(first.body).request_id);
 
     const mismatch = await request(ctx.app)
       .post(`/api/v1/shifts/${shift.id}/supplier-payments`)
@@ -253,7 +275,9 @@ describe("office count-dialog supplier payment", () => {
         idempotency_key: "office-cnt-second-cccc",
       });
     expect(second.status).toBe(201);
-    expect(unwrap(second.body).voucher_id).not.toBe(unwrap(first.body).voucher_id);
+    expect(unwrap(second.body).request_id).not.toBe(unwrap(first.body).request_id);
+    await approveSupplierRequest(ctx.app, adminToken, first);
+    await approveSupplierRequest(ctx.app, adminToken, second);
     expect(
       Number((await ctx.db.get("SELECT COUNT(*) AS n FROM vouchers WHERE shift_id = ?", [shift.id])).n)
     ).toBe(3);
@@ -319,6 +343,51 @@ describe("office count-dialog supplier payment", () => {
     ).toBe(0);
   });
 
+  test("count-dialog request stays pending and sends through the approvals bot", async () => {
+    const prevToken = process.env.TELEGRAM_APPROVALS_BOT_TOKEN;
+    const prevChat = process.env.TELEGRAM_APPROVALS_CHAT_ID;
+    process.env.TELEGRAM_APPROVALS_BOT_TOKEN = "approvals-test-token";
+    process.env.TELEGRAM_APPROVALS_CHAT_ID = "-100777";
+    const fetchCalls = [];
+    const prevFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      fetchCalls.push({ url: String(url), body: opts?.body });
+      return { json: async () => ({ ok: true, result: { message_id: 5 } }) };
+    };
+    const shift = await startShift(ctx.app, otherToken, ctx.db, 200);
+    await endToPending(ctx.app, otherToken, shift.id);
+    await ctx.db.run("UPDATE suppliers SET balance = 100 WHERE id = ?", [otherSupplierId]);
+    const res = await request(ctx.app)
+      .post(`/api/v1/shifts/${shift.id}/supplier-payments`)
+      .set(authHeader(adminToken))
+      .send({
+        supplier_id: otherSupplierId,
+        amount: 30,
+        notes: "منسية",
+        idempotency_key: "office-cnt-bot-30-jjjj",
+      });
+    expect(res.status).toBe(201);
+    const body = unwrap(res.body);
+    expect(body.pending_approval).toBe(true);
+    expect(body.telegram).toBe(true);
+    expect(Number(body.expected_cash)).toBe(200);
+    expect(Number((await ctx.db.get("SELECT balance FROM suppliers WHERE id = ?", [otherSupplierId])).balance)).toBe(100);
+    const sent = fetchCalls.find((call) => call.url.includes("sendMessage"));
+    expect(sent).toBeTruthy();
+    const text = JSON.parse(sent.body).text;
+    expect(text).toContain("طلب دفع لمورد");
+    expect(text).toContain("عد الصندوق");
+    const approved = await approveSupplierRequest(ctx.app, adminToken, res);
+    expect(Number(approved.amount)).toBe(30);
+    expect(Number((await ctx.db.get("SELECT balance FROM suppliers WHERE id = ?", [otherSupplierId])).balance)).toBe(70);
+    expect(await computeExpectedCash(ctx.db, shift.id, 200)).toBe(170);
+    global.fetch = prevFetch;
+    if (prevToken == null) delete process.env.TELEGRAM_APPROVALS_BOT_TOKEN;
+    else process.env.TELEGRAM_APPROVALS_BOT_TOKEN = prevToken;
+    if (prevChat == null) delete process.env.TELEGRAM_APPROVALS_CHAT_ID;
+    else process.env.TELEGRAM_APPROVALS_CHAT_ID = prevChat;
+  });
+
   test("accountant without shift_audit is rejected", async () => {
     await createAccountantUser(ctx.db, {
       username: "acct-no-audit",
@@ -366,13 +435,19 @@ describe("office count-dialog supplier payment", () => {
     const closed = await ctx.db.get("SELECT expected_cash, status FROM cashier_shifts WHERE id = ?", [
       shift.id,
     ]);
+    const pending = await ctx.db.get(
+      "SELECT * FROM supplier_payment_approval_requests WHERE idempotency_key = ?",
+      ["office-cnt-race-hhhhhh"]
+    );
     if (pay.status === 201 || pay.status === 200) {
-      expect(vouchers).toHaveLength(1);
-      expect(moves).toHaveLength(1);
+      expect(pending).toBeTruthy();
+      expect(vouchers).toHaveLength(0);
+      expect(moves).toHaveLength(0);
       if (closed.status === "closed") {
-        expect(Number(closed.expected_cash)).toBe(57.5);
+        expect(Number(closed.expected_cash)).toBe(77.5);
       }
     } else {
+      expect(pending).toBeFalsy();
       expect(vouchers).toHaveLength(0);
       expect(moves).toHaveLength(0);
       if (closed.status === "closed") {

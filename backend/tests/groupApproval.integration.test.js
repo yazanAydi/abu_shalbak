@@ -9,6 +9,7 @@ import {
 } from "./helpers.js";
 import { claimNextPrintJob } from "../services/operationPrintService.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
+import { computeExpectedCash } from "../utils/salePayments.js";
 
 function unwrap(body) {
   return body?.data ?? body;
@@ -183,6 +184,40 @@ describe("group approval flows", () => {
     expect(slip.receipt_html).toContain("40.00");
   });
 
+  test("POS ₪30 against debt ₪100 and expected cash ₪200 posts once after approval", async () => {
+    await ctx.db.run("UPDATE cashier_shifts SET status = 'closed' WHERE cashier_id = ? AND status = 'open'", [
+      cashierId,
+    ]);
+    const start = await request(ctx.app).post("/api/v1/shifts/start").set(authHeader(cashierToken)).send({});
+    expect(start.status).toBe(201);
+    const shiftId = unwrap(start.body).shift_id;
+    await ctx.db.run("UPDATE cashier_shifts SET opening_cash = 200 WHERE id = ?", [shiftId]);
+    await ctx.db.run("UPDATE suppliers SET balance = 100, opening_balance = 100 WHERE id = ?", [supplierId]);
+    const created = unwrap(
+      (
+        await request(ctx.app).post("/api/v1/pos/supplier-payments").set(authHeader(cashierToken)).send({
+          supplier_id: supplierId,
+          amount: 30,
+          idempotency_key: "sup-req-30-from-200",
+        })
+      ).body
+    );
+    expect(created.pending_approval).toBe(true);
+    expect(Number((await ctx.db.get("SELECT balance FROM suppliers WHERE id = ?", [supplierId])).balance)).toBe(100);
+    expect(await computeExpectedCash(ctx.db, shiftId, 200)).toBe(200);
+
+    const approved = await request(ctx.app)
+      .post(`/api/v1/supplier-payment-requests/${created.request_id}/approve`)
+      .set(authHeader(adminToken));
+    expect(approved.status).toBe(200);
+    expect(Number((await ctx.db.get("SELECT balance FROM suppliers WHERE id = ?", [supplierId])).balance)).toBe(70);
+    expect(await computeExpectedCash(ctx.db, shiftId, 200)).toBe(170);
+    expect((await ctx.db.get("SELECT COUNT(*) AS n FROM operating_expenses WHERE source = 'shop_consumption'")).n).toBe(0);
+    expect(
+      Number((await ctx.db.get("SELECT COUNT(*) AS n FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'supplier_payment'", [shiftId])).n)
+    ).toBe(1);
+  });
+
   test("telegram approval uses the mapped account and ignores a second click", async () => {
     process.env.TELEGRAM_APPROVALS_BOT_TOKEN = "approvals-test-token";
     process.env.TELEGRAM_APPROVALS_CHAT_ID = "-100777";
@@ -231,6 +266,29 @@ describe("group approval flows", () => {
     const saved = await ctx.db.get("SELECT * FROM expense_approval_requests WHERE id = ?", [created.request_id]);
     expect(saved.telegram_actor_id).toBe("555");
     expect(saved.manager_id).toBeNull();
+
+    const pay = unwrap(
+      (
+        await request(ctx.app).post("/api/v1/pos/supplier-payments").set(authHeader(cashierToken)).send({
+          supplier_id: supplierId,
+          amount: 11,
+          notes: "من الصندوق",
+          idempotency_key: "sup-req-telegram-eeee",
+        })
+      ).body
+    );
+    expect(pay.telegram).toBe(true);
+    const sent = global.fetch.mock.calls.find((call) => {
+      if (!String(call[0]).includes("sendMessage") || !call[1]?.body) return false;
+      try {
+        return JSON.parse(call[1].body).text.includes("طلب دفع لمورد");
+      } catch {
+        return false;
+      }
+    });
+    expect(sent).toBeTruthy();
+    const sentBody = JSON.parse(sent[1].body);
+    expect(sentBody.text).toContain("11.00");
     delete process.env.TELEGRAM_APPROVALS_BOT_TOKEN;
     delete process.env.TELEGRAM_APPROVALS_CHAT_ID;
   });

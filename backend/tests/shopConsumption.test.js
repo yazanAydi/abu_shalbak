@@ -183,6 +183,9 @@ describe("POS shop consumption expense", () => {
       .send({ items: [{ product_id: unknownId, quantity: 1 }] });
     expect(unknown.status).toBe(400);
     expect(unknown.body.error).toContain("منظف بلا تكلفة");
+    expect(unknown.body.error).toContain("تكلفة الشراء");
+    expect(unknown.body.error).toContain("المكتب");
+    expect(unknown.body.code || unwrap(unknown.body)?.code).toBe("UNKNOWN_COST");
     expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [unknownId])).stock)).toBe(5);
 
     const free = await request(ctx.app)

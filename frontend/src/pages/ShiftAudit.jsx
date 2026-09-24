@@ -512,6 +512,8 @@ export default function ShiftAudit() {
       supplier_payments: row.supplier_payments || detail?.supplier_payments || [],
       supplier_payments_total:
         row.supplier_payments_total ?? detail?.summary?.supplier_payments_total ?? 0,
+      supplier_payment_requests:
+        row.supplier_payment_requests || detail?.supplier_payment_requests || [],
       advances: row.advances || detail?.advances || [],
       advances_total: row.advances_total ?? detail?.summary?.advances_total ?? 0,
       cash_sales: row.cash_sales ?? detail?.summary?.cash_sales ?? 0,
@@ -986,6 +988,7 @@ export default function ShiftAudit() {
               shiftId={reconcileTarget.id}
               payments={reconcileTarget.supplier_payments}
               paymentsTotal={reconcileTarget.supplier_payments_total}
+              pendingRequests={reconcileTarget.supplier_payment_requests}
               onBusyChange={setSupplierSaving}
               onPosted={async () => {
                 try {

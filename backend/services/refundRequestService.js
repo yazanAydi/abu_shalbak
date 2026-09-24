@@ -135,6 +135,11 @@ export async function applyApprovedRefundEffects(db, refund) {
     const pid = Number(L.product_id);
     if (pid && q > 0) {
       const conversion = Math.max(0.0001, Number(L.conversion_to_base) || 1);
+      let refundDay = refund.business_day || null;
+      if (!refundDay && refund.shift_id) {
+        const shiftDay = await db.get("SELECT business_day FROM cashier_shifts WHERE id = ?", [refund.shift_id]);
+        refundDay = shiftDay?.business_day || null;
+      }
       await recordMovement(db, {
         productId: pid,
         movementType: "refund",
@@ -144,6 +149,7 @@ export async function applyApprovedRefundEffects(db, refund) {
         notes: `استرجاع #${refund.id}`,
         userId: refund.approved_by_id || null,
         applyStock: true,
+        businessDay: refundDay,
       });
       await restoreSaleBatches(db, {
         transactionId: refund.original_transaction_id,

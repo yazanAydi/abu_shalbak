@@ -40,9 +40,11 @@ function Harness({ onPosted }) {
         shiftId={4}
         payments={payments}
         paymentsTotal={payments.reduce((sum, row) => sum + Number(row.amount || 0), 0)}
-        onPosted={async () => {
-          setExpected(57.5);
-          setPayments([{ voucher_id: 9, voucher_no: 3, amount: 20, supplier_name: "مورد الخضار" }]);
+        onPosted={async (payload) => {
+          if (payload?.voucher_id) {
+            setExpected(57.5);
+            setPayments([{ voucher_id: 9, voucher_no: 3, amount: 20, supplier_name: "مورد الخضار" }]);
+          }
           await onPosted?.();
         }}
       />
@@ -66,7 +68,7 @@ describe("CountSupplierPaymentSection", () => {
     mockPost.mockReset();
     mockGet.mockResolvedValue({ data: [{ id: 9, name: "مورد الخضار" }] });
     mockPost.mockResolvedValue({
-      data: { voucher_id: 9, voucher_no: 3, amount: 20, replayed: false },
+      data: { request_id: 4, pending_approval: true, voucher_id: null, replayed: false },
     });
     window.HTMLElement.prototype.scrollIntoView = jest.fn();
     container = document.createElement("div");
@@ -96,7 +98,7 @@ describe("CountSupplierPaymentSection", () => {
     expect(container.querySelector('[data-testid="expected"]').textContent).toBe("77.5");
   });
 
-  test("posts once and leaves counted text untouched after expected cash refresh", async () => {
+  test("submits a pending request and leaves counted cash untouched", async () => {
     const onPosted = jest.fn();
     await act(async () => {
       root.render(<Harness onPosted={onPosted} />);
@@ -128,9 +130,8 @@ describe("CountSupplierPaymentSection", () => {
     expect(body.amount).toBe(20);
     expect(body.supplier_id).toBe(9);
     expect(String(body.idempotency_key).length).toBeGreaterThanOrEqual(8);
-    expect(container.querySelector('[data-testid="expected"]').textContent).toBe("57.5");
+    expect(container.querySelector('[data-testid="expected"]').textContent).toBe("77.5");
     expect(container.querySelector('[data-testid="ils"]').textContent).toBe("77.50");
-    expect(container.textContent).toContain("سند #3");
     expect(onPosted).toHaveBeenCalled();
   });
 });

@@ -4,7 +4,8 @@ import { recordMovement } from "../utils/inventory.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { withTransaction } from "../utils/dbTx.js";
-import { getWarehouseValuation, listWarehouseStock } from "../utils/warehouseInventory.js";
+import { listWarehouseStock } from "../utils/warehouseInventory.js";
+import { getWarehouseValuationReport } from "../utils/warehouseValuationHistory.js";
 
 const WH_TYPES = ["main", "store", "returns", "damaged"];
 
@@ -107,7 +108,12 @@ export function createWarehousesRouter(db) {
 
   router.get("/valuation", requireAuth, requireWarehouseReport, async (req, res, next) => {
     try {
-      res.json(await getWarehouseValuation(db, catalogQuery(req)));
+      const report = await getWarehouseValuationReport(db, {
+        ...catalogQuery(req),
+        asOf: req.query.as_of,
+      });
+      if (report.error) return res.status(report.status || 400).json({ error: report.error, code: "VALIDATION_ERROR" });
+      res.json(report);
     } catch (e) {
       next(e);
     }

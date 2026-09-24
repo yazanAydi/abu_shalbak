@@ -337,6 +337,7 @@ export function createInventoryRouter(db) {
               notes: `تسوية #${no} (${adjustment_type})`,
               userId: req.user.id,
               applyStock: true,
+              businessDay: adjustment_date || shopTodayYmd(),
             });
           }
         }
@@ -363,6 +364,7 @@ export function createInventoryRouter(db) {
             productId: it.product_id, movementType: map.type, quantity: delta, unitCost: it.unit_cost,
             refType: "stock_adjustment", refId: adj.id, notes: `تسوية #${adj.adjustment_no ?? adj.id}`, userId: req.user.id,
             applyStock: true,
+            businessDay: adj.adjustment_date,
           });
         }
         await db.run("UPDATE stock_adjustments SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [adj.id]);

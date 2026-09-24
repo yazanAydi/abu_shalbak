@@ -16,6 +16,12 @@ import { pickExportColumns } from "../utils/reportExport";
 
 const WH_TYPES = { main: "رئيسي", store: "متجر", returns: "مرتجعات", damaged: "تالف" };
 
+function formatUnitCost(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "غير مكتمل";
+  return `₪${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
+}
+
 export default function Warehouses({ workspace = null }) {
   const isBakery = workspace === "bakery";
   const toast = useToast();
@@ -23,6 +29,7 @@ export default function Warehouses({ workspace = null }) {
   const [warehouses, setWarehouses] = useState([]);
   const [stock, setStock] = useState([]);
   const [valuation, setValuation] = useState(null);
+  const [asOf, setAsOf] = useState(() => todayISO());
   const [transfers, setTransfers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
@@ -46,8 +53,9 @@ export default function Warehouses({ workspace = null }) {
     const params = {};
     if (isBakery) params.membership = "bakery";
     if (qDebounced) params.q = qDebounced;
+    if (asOf) params.as_of = asOf;
     return params;
-  }, [isBakery, qDebounced]);
+  }, [isBakery, qDebounced, asOf]);
 
   const loadWarehouses = useCallback(async () => {
     try { const { data } = await api.get("/api/warehouses", { headers: getAuthHeaders() }); setWarehouses(data); }
@@ -170,9 +178,12 @@ export default function Warehouses({ workspace = null }) {
   ];
 
   const valuationColumns = [
+    { key: "as_of_label", header: "التاريخ", value: (r) => r.as_of_label || valuation?.as_of_label || asOf },
     { key: "warehouse_name", header: "المستودع" },
-    { key: "total_qty", header: "إجمالي الكمية", value: (r) => fmtQty(r.total_qty), render: (r) => fmtQty(r.total_qty) },
-    { key: "total_value", header: "القيمة", value: (r) => ils(r.total_value), render: (r) => ils(r.total_value) },
+    { key: "product_name", header: "الصنف", value: (r) => r.product_name || "—", render: (r) => r.product_name || "—" },
+    { key: "quantity", header: "الكمية", value: (r) => fmtQty(r.quantity), render: (r) => fmtQty(r.quantity) },
+    { key: "unit_cost", header: "تكلفة الوحدة", value: (r) => (r.cost_known ? formatUnitCost(r.unit_cost) : "غير مكتمل"), render: (r) => (r.cost_known ? formatUnitCost(r.unit_cost) : "غير مكتمل") },
+    { key: "value", header: "القيمة", value: (r) => (r.cost_known ? ils(r.value) : "غير مكتمل"), render: (r) => (r.cost_known ? ils(r.value) : "غير مكتمل") },
   ];
 
   const reportConfig = useMemo(() => {
@@ -183,16 +194,30 @@ export default function Warehouses({ workspace = null }) {
       return { title: isBakery ? "مخزون مستودعات المخبز" : "تقرير مخزون المستودعات", columns: stockColumns, rows: stock, filename: isBakery ? "bakery-warehouse-stock" : "warehouse-stock" };
     }
     if (tab === "valuation" && valuation) {
+      const when = valuation.as_of_label || asOf;
       return {
         title: isBakery ? "تقييم مخزون المخبز" : "تقييم المخزون",
+        subtitle: `تقييم المخزون بتاريخ ${when}`,
         columns: valuationColumns,
-        rows: valuation.warehouses || [],
+        rows: valuation.lines || [],
         filename: isBakery ? "bakery-warehouse-valuation" : "warehouse-valuation",
-        summary: [{ label: "إجمالي قيمة المخزون", value: ils(valuation.grand_total) }],
+        meta: [
+          `التاريخ: ${when}`,
+          `يوم العمل: ${valuation.shop_business_day || asOf}`,
+          "المستودع: كل مستودعات هذا العرض",
+        ],
+        summary: [
+          { label: "التاريخ", value: when },
+          {
+            label: valuation.valuation_complete ? "إجمالي قيمة المخزون" : "المجموع المعروف فقط — التقييم غير مكتمل",
+            value: valuation.valuation_complete ? ils(valuation.grand_total) : ils(valuation.known_subtotal),
+          },
+          { label: "أصناف مستبعدة لنقص التاريخ", value: String((valuation.excluded_products || []).length) },
+        ],
       };
     }
     return { title: isBakery ? "مستودعات المخبز" : "المستودعات", columns: pickExportColumns(warehouseColumns), rows: warehouses, filename: isBakery ? "bakery-warehouses" : "warehouses" };
-  }, [tab, warehouses, transfers, stock, valuation, isBakery]);
+  }, [tab, warehouses, transfers, stock, valuation, isBakery, asOf]);
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
@@ -200,8 +225,8 @@ export default function Warehouses({ workspace = null }) {
         icon="warehouses"
         title={isBakery ? "مستودعات المخبز" : "المستودعات"}
         subtitle={isBakery
-          ? "مخزون المخبز في المستودع الرئيسي، ومرتجعات شراء المخبز المرحّلة في مستودع المرتجعات"
-          : "مخزون السوبرماركت في المستودع الرئيسي، ومرتجعات الشراء المرحّلة في مستودع المرتجعات"}
+          ? "مخزون المخبز المملوك في المستودع الرئيسي. مرتجع المورد المرحّل خرج من الملكية، والتحويل إلى المرتجع أو التالف يبقى مملوكاً."
+          : "مخزون السوبرماركت المملوك في المستودع الرئيسي. مرتجع المورد المرحّل خرج من الملكية، والتحويل إلى المرتجع أو التالف يبقى مملوكاً."}
         actions={
           <>
             <ReportToolbar
@@ -210,6 +235,8 @@ export default function Warehouses({ workspace = null }) {
               rows={reportConfig.rows}
               filename={reportConfig.filename}
               summary={reportConfig.summary}
+              subtitle={reportConfig.subtitle}
+              meta={reportConfig.meta}
               disabled={loading && tab !== "warehouses"}
             />
             {!isBakery && tab === "warehouses" ? <Button icon="plus" onClick={() => setShowWh(true)}>مستودع جديد</Button>
@@ -226,6 +253,17 @@ export default function Warehouses({ workspace = null }) {
 
       {(tab === "stock" || tab === "valuation") && (
         <FilterBar onReset={q ? () => setQ("") : undefined}>
+          {tab === "valuation" && (
+            <FormField label="تقييم المخزون بتاريخ">
+              <Input
+                type="date"
+                value={asOf}
+                max={valuation?.shop_business_day || todayISO()}
+                aria-label="تقييم المخزون بتاريخ"
+                onChange={(e) => setAsOf(e.target.value)}
+              />
+            </FormField>
+          )}
           <FormField label="بحث">
             <Input
               value={q}
@@ -265,8 +303,8 @@ export default function Warehouses({ workspace = null }) {
           emptyIcon="inventory"
           empty={qDebounced ? "لا توجد أصناف مطابقة" : "لا يوجد مخزون في المستودعات"}
           emptyHint={isBakery
-            ? "مخزون المخبز يظهر تلقائياً في المستودع الرئيسي. فواتير مرتجعات شراء المخبز المرحّلة تظهر في مستودع المرتجعات."
-            : "مخزون السوبرماركت يظهر تلقائياً في المستودع الرئيسي. فواتير مرتجعات الشراء المرحّلة تظهر في مستودع المرتجعات."}
+            ? "مخزون المخبز المملوك يظهر في المستودع الرئيسي. مرتجع المورد المرحّل لا يظهر كمخزون مملوك."
+            : "مخزون السوبرماركت المملوك يظهر في المستودع الرئيسي. مرتجع المورد المرحّل لا يظهر كمخزون مملوك."}
         />
       )}
 
@@ -275,13 +313,60 @@ export default function Warehouses({ workspace = null }) {
           <div className="ui-stat-grid">
             <div className="ui-stat">
               <div className="ui-stat__icon ui-stat__icon--green"><Icon name="finance" /></div>
-              <div><div className="ui-stat__label">إجمالي قيمة المخزون</div><div className="ui-stat__value">{ils(valuation.grand_total)}</div></div>
+              <div>
+                <div className="ui-stat__label">{valuation.valuation_complete ? "إجمالي قيمة المخزون" : "التقييم غير مكتمل"} {valuation.as_of_label === "حتى الآن" ? "(حتى الآن)" : ""}</div>
+                <div className="ui-stat__value">{valuation.valuation_complete ? ils(valuation.grand_total) : "غير مكتمل"}</div>
+              </div>
+            </div>
+            <div className="ui-stat">
+              <div className="ui-stat__icon"><Icon name="inventory" /></div>
+              <div>
+                <div className="ui-stat__label">المجموع المعروف فقط</div>
+                <div className="ui-stat__value">{ils(valuation.known_subtotal)}</div>
+              </div>
             </div>
           </div>
+          {valuation.history_message && (
+            <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>{valuation.history_message}</p>
+          )}
+          {valuation.supported_from && (
+            <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>
+              سجل التكلفة المحفوظ مع الحركة يبدأ من {valuation.supported_from}. ما قبله يُعاد من فواتير الشراء والمرتجع عندما تبدأ الحركة من صفر.
+            </p>
+          )}
+          <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>{valuation.backdated_note}</p>
+          <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>{valuation.costing_note}</p>
+          <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>{valuation.classification_message}</p>
+          {(valuation.unexplained_rounding || []).length > 0 && (
+            <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>
+              فرق تقريب غير محفوظ على حركة: {valuation.unexplained_rounding.map((row) => `${row.product_name} ${row.amount}`).join("، ")}
+            </p>
+          )}
+          {(valuation.excluded_products || []).length > 0 && (
+            <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>
+              أصناف بلا تاريخ كافٍ ولا تدخل في المجموع: {valuation.excluded_products.map((row) => row.product_name).join("، ")}
+            </p>
+          )}
+          {valuation.document_date_estimate && (
+            <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>
+              {valuation.document_date_estimate.note}{" "}
+              {valuation.document_date_estimate.lines.map((row) => `${row.product_name}: مسجّل ${row.recorded_value} / تقدير ${row.estimate_value}`).join("، ")}
+            </p>
+          )}
+          {(valuation.unreconciled_products || []).length > 0 && (
+            <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>
+              أصناف غير مسوّاة ولم تُحسب صفراً: {valuation.unreconciled_products.map((row) => row.product_name).join("، ")}
+            </p>
+          )}
+          {(valuation.supplier_returns || []).length > 0 && (
+            <p style={{ color: "var(--office-panel-muted)", margin: "0.5rem 0" }}>
+              مرتجعات مورّدين مرحّلة (خرجت من ملكية الشركة ولا تُحسب في القيمة): {valuation.supplier_returns.map((row) => `${row.product_name} ${row.quantity}`).join("، ")}
+            </p>
+          )}
           <DataTable
-            columns={valuationColumns}
-            rows={valuation.warehouses}
-            empty="لا توجد بيانات"
+            columns={valuationColumns.filter((col) => col.key !== "as_of_label")}
+            rows={valuation.lines || []}
+            empty="لا يوجد مخزون موثق في هذا التاريخ"
           />
         </>
       )}

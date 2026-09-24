@@ -34,6 +34,9 @@ export function mapShiftDetailToCountTarget(data) {
       ? data.supplier_payments
       : shift.supplier_payments || [],
     supplier_payments_total: summary.supplier_payments_total ?? shift.supplier_payments_total ?? 0,
+    supplier_payment_requests: Array.isArray(data?.supplier_payment_requests)
+      ? data.supplier_payment_requests
+      : shift.supplier_payment_requests || [],
     customer_collections: Array.isArray(data?.customer_collections)
       ? data.customer_collections
       : shift.customer_collections || [],

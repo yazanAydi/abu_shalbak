@@ -408,6 +408,7 @@ export async function applySaleStock(db, opts) {
     referenceId,
     transactionItemId,
     invoiceItemId,
+    businessDay = null,
   } = opts;
   const qty = round6(quantity);
   if (qty <= 0) return [];
@@ -429,6 +430,7 @@ export async function applySaleStock(db, opts) {
     notes,
     userId,
     applyStock: true,
+    businessDay,
   });
   return allocations;
 }

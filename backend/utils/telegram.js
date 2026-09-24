@@ -790,6 +790,7 @@ export async function sendSupplierPaymentApprovalMessage({
   amount,
   shiftId,
   notes,
+  forgotten = false,
 }) {
   const { token, chatId } = approvalsBotConfig();
   const text = [
@@ -798,6 +799,7 @@ export async function sendSupplierPaymentApprovalMessage({
     `المورد: ${supplierName}`,
     `المبلغ: ${ils(amount)}`,
     `الوردية: #${shiftId}`,
+    forgotten ? "تسجيل دفعة سابقة أثناء عد الصندوق. ليست تعليمات بالدفع مرة أخرى." : null,
     notes ? `ملاحظة: ${notes}` : null,
     "",
     "اختر موافقة أو رفض. لا يُصرف النقد قبل الموافقة.",

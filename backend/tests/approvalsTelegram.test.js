@@ -135,6 +135,18 @@ describe("expenses/supplier approvals bot", () => {
     expect(db.runs).toHaveLength(0);
   });
 
+  test("consumption callbacks stay on the approvals bot", async () => {
+    const result = await handleTelegramUpdate(fakeDb(), callback("consumption:approve:3"), {
+      sourceBot: "approvals",
+    });
+    expect(result.handled).toBe(true);
+    expect(result.action).toBe("mismatch");
+    const wrongBot = await handleTelegramUpdate(fakeDb(), callback("consumption:approve:3"), {
+      sourceBot: "refund",
+    });
+    expect(wrongBot.handled).toBe(false);
+  });
+
   test("the click must match this bot, group, message, and request", async () => {
     const user = {
       id: 2,

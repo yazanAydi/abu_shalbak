@@ -1545,6 +1545,33 @@ async function migrateInventoryLedgerTable(db) {
     CREATE INDEX IF NOT EXISTS idx_inv_ledger_ref ON inventory_ledger(reference_type, reference_id);
     CREATE INDEX IF NOT EXISTS idx_inv_ledger_created ON inventory_ledger(created_at);
   `);
+  await migrateInventoryLedgerValuationSnapshot(db);
+}
+
+/**
+ * Cost and classification captured when a movement is posted.
+ * Older rows stay null — they are not backfilled.
+ * Valuation history that depends on these columns starts at the first
+ * movement written after this migration (see warehouseValuationHistory.js).
+ */
+async function migrateInventoryLedgerValuationSnapshot(db) {
+  const cols = [
+    ["business_day", "TEXT"],
+    ["unit_cost_after", "REAL"],
+    ["cost_known", "INTEGER"],
+    ["inventory_scope", "TEXT"],
+    ["category", "TEXT"],
+    ["warehouse_id", "INTEGER"],
+    ["value_adjustment", "REAL"],
+  ];
+  for (const [name, type] of cols) {
+    if (!(await tableHasColumn(db, "inventory_ledger", name))) {
+      await db.run(`ALTER TABLE inventory_ledger ADD COLUMN ${name} ${type}`);
+    }
+  }
+  await db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_inv_ledger_business_day ON inventory_ledger(business_day, product_id)"
+  );
 }
 
 function sqliteIdent(name) {
@@ -2602,6 +2629,12 @@ async function migrateGroupApprovalRequests(db) {
     await db.run("ALTER TABLE supplier_payment_approval_requests ADD COLUMN telegram_actor_id TEXT");
     await db.run("ALTER TABLE supplier_payment_approval_requests ADD COLUMN telegram_actor_username TEXT");
   }
+  if (!(await tableHasColumn(db, "supplier_payment_approval_requests", "forgotten"))) {
+    await db.run("ALTER TABLE supplier_payment_approval_requests ADD COLUMN forgotten INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!(await tableHasColumn(db, "supplier_payment_approval_requests", "recorded_by_id"))) {
+    await db.run("ALTER TABLE supplier_payment_approval_requests ADD COLUMN recorded_by_id INTEGER REFERENCES users(id)");
+  }
   if (!(await tableHasColumn(db, "expense_approval_requests", "telegram_actor_id"))) {
     await db.run("ALTER TABLE expense_approval_requests ADD COLUMN telegram_actor_id TEXT");
     await db.run("ALTER TABLE expense_approval_requests ADD COLUMN telegram_actor_username TEXT");
@@ -3367,7 +3400,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.09-pos-customer-cash-debt";
+const SCHEMA_VERSION = "2026.09-depletion-adjustment";
 
 async function migratePerfIndexes(db) {
   await db.exec(`

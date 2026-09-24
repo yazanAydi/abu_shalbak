@@ -203,6 +203,7 @@ async function applyPurchaseInvoicePost(db, inv, items, userId) {
       notes: `فاتورة شراء #${inv.invoice_no ?? inv.id}`,
       userId,
       applyStock: true,
+      businessDay: String(inv.invoice_date || "").slice(0, 10),
     });
   }
 
@@ -270,6 +271,7 @@ async function applyPurchaseReturnPost(db, ret, items, userId) {
       notes: `مرتجع شراء #${ret.return_no ?? ret.id}`,
       userId,
       applyStock: true,
+      businessDay: String(ret.return_date || "").slice(0, 10),
     });
   }
   await db.run("UPDATE suppliers SET balance = balance - ? WHERE id = ?", [ret.total, ret.supplier_id]);

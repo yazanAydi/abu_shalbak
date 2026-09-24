@@ -234,6 +234,7 @@ export async function createInventoryDocument(db, req, documentType, body) {
         notes: ledgerNote,
         userId,
         applyStock: true,
+        businessDay: documentDate,
       });
     }
 

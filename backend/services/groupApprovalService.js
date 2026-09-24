@@ -3,7 +3,7 @@ import { logAuditUser, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { HttpError, badRequest } from "../utils/httpError.js";
 import { round2 } from "../utils/money.js";
-import { shopTodayYmd } from "../utils/shopTime.js";
+import { shopTodayYmd, shopYmdFromTimestamp } from "../utils/shopTime.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import {
   isApprovalsTelegramConfigured,
@@ -16,6 +16,7 @@ import {
   fingerprintPosSupplierPayment,
   parsePosSupplierAmount,
   postLinkedSupplierPayment,
+  requirePendingCountShift,
 } from "./posSupplierPaymentService.js";
 
 const PAY_METHODS = ["cash", "transfer", "check", "other"];
@@ -142,6 +143,24 @@ export async function createExpenseApprovalRequest(db, input) {
   };
 }
 
+function voucherDateForShift(shift) {
+  if (shift?.business_day && /^\d{4}-\d{2}-\d{2}$/.test(String(shift.business_day))) {
+    return String(shift.business_day);
+  }
+  return shopYmdFromTimestamp(shift?.start_time) || shopTodayYmd();
+}
+
+export async function listShiftSupplierPaymentRequests(db, shiftId) {
+  const rows = await db.all(
+    `SELECT id AS request_id, supplier_id, supplier_name, amount, notes, status, forgotten, created_at
+       FROM supplier_payment_approval_requests
+      WHERE shift_id = ? AND status = 'pending'
+      ORDER BY created_at ASC, id ASC`,
+    [shiftId]
+  );
+  return rows.map((row) => ({ ...row, amount: round2(Number(row.amount) || 0) }));
+}
+
 export async function createSupplierPaymentApprovalRequest(db, input) {
   const supplierId = Number(input.supplierId);
   if (!Number.isInteger(supplierId) || supplierId <= 0) throw badRequest("مورد غير صالح", "INVALID_SUPPLIER");
@@ -152,6 +171,7 @@ export async function createSupplierPaymentApprovalRequest(db, input) {
   const fingerprint = fingerprintPosSupplierPayment({ supplierId, amount, notes });
   const supplier = await db.get("SELECT id, name FROM suppliers WHERE id = ?", [supplierId]);
   if (!supplier) throw badRequest("مورد غير صالح", "INVALID_SUPPLIER");
+  const forgotten = Boolean(input.forgotten);
 
   const created = await withTransaction(db, async () => {
     const existing = await db.get(
@@ -159,7 +179,9 @@ export async function createSupplierPaymentApprovalRequest(db, input) {
       [key]
     );
     if (existing) {
-      if (Number(existing.cashier_id) !== Number(input.cashierId)) {
+      const ownerId = forgotten ? existing.recorded_by_id : existing.cashier_id;
+      const actorId = forgotten ? input.recordedById : input.cashierId;
+      if (Number(ownerId) !== Number(actorId)) {
         throw new HttpError(403, "مفتاح التكرار لا يخص هذا الصندوق", "IDEMPOTENCY_OWNER_MISMATCH");
       }
       if (existing.payload_fingerprint !== fingerprint) {
@@ -167,22 +189,26 @@ export async function createSupplierPaymentApprovalRequest(db, input) {
       }
       return { request: existing, replayed: true, supplier };
     }
-    const shift = await db.get(
-      `SELECT * FROM cashier_shifts WHERE cashier_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`,
-      [input.cashierId]
-    );
+    const shift = forgotten
+      ? await requirePendingCountShift(db, input.shiftId)
+      : await db.get(
+          `SELECT * FROM cashier_shifts WHERE cashier_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`,
+          [input.cashierId]
+        );
     if (!shift) {
       const err = new Error("لا توجد وردية مفتوحة");
       err.status = 400;
       err.code = "NO_OPEN_SHIFT";
       throw err;
     }
+    const cashierId = forgotten ? shift.cashier_id : input.cashierId;
+    const recordedById = input.recordedById || input.cashierId;
     const voucherCount = await db.get("SELECT COUNT(*) AS n FROM vouchers");
     const ins = await db.run(
       `INSERT INTO supplier_payment_approval_requests
-         (cashier_id, shift_id, supplier_id, supplier_name, amount, notes, idempotency_key, payload_fingerprint, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [input.cashierId, shift.id, supplier.id, supplier.name, amount, notes, key, fingerprint]
+         (cashier_id, shift_id, supplier_id, supplier_name, amount, notes, idempotency_key, payload_fingerprint, status, forgotten, recorded_by_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      [cashierId, shift.id, supplier.id, supplier.name, amount, notes, key, fingerprint, forgotten ? 1 : 0, recordedById]
     );
     const request = await db.get("SELECT * FROM supplier_payment_approval_requests WHERE id = ?", [ins.lastID]);
     if (Number(voucherCount.n) !== Number((await db.get("SELECT COUNT(*) AS n FROM vouchers")).n)) {
@@ -194,14 +220,15 @@ export async function createSupplierPaymentApprovalRequest(db, input) {
   let telegramMessageId = created.request.telegram_message_id || null;
   if (!created.replayed && isApprovalsTelegramConfigured()) {
     try {
-      const cashier = await db.get("SELECT username FROM users WHERE id = ?", [input.cashierId]);
+      const cashier = await db.get("SELECT username FROM users WHERE id = ?", [created.request.cashier_id]);
       telegramMessageId = await sendSupplierPaymentApprovalMessage({
         requestId: created.request.id,
-        cashierName: cashier?.username || String(input.cashierId),
+        cashierName: cashier?.username || String(created.request.cashier_id),
         supplierName: created.supplier.name,
         amount,
         shiftId: created.request.shift_id,
         notes,
+        forgotten,
       });
       await db.run(
         "UPDATE supplier_payment_approval_requests SET telegram_message_id = ? WHERE id = ?",
@@ -223,6 +250,7 @@ export async function createSupplierPaymentApprovalRequest(db, input) {
     supplier_name: created.request.supplier_name,
     shift_id: created.request.shift_id,
     voucher_id: created.request.voucher_id || null,
+    forgotten,
     telegram: isApprovalsTelegramConfigured() && !!telegramMessageId,
   };
 }
@@ -349,8 +377,11 @@ export async function approveSupplierPaymentApprovalRequest(db, requestId, manag
       err.action = "already_handled";
       throw err;
     }
-    const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [request.shift_id]);
-    if (!shift || shift.status !== "open") {
+    const forgotten = Number(request.forgotten) === 1;
+    const shift = forgotten
+      ? await requirePendingCountShift(db, request.shift_id)
+      : await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [request.shift_id]);
+    if (!forgotten && (!shift || shift.status !== "open")) {
       const err = new Error("لا يمكن صرف الدفعة: الوردية لم تعد مفتوحة");
       err.status = 400;
       err.code = "NO_OPEN_SHIFT";
@@ -359,7 +390,7 @@ export async function approveSupplierPaymentApprovalRequest(db, requestId, manag
     const posted = await postLinkedSupplierPayment(db, {
       shift,
       parsed: {
-        actorId: request.cashier_id,
+        actorId: request.recorded_by_id || request.cashier_id,
         supplierId: request.supplier_id,
         amount: Number(request.amount),
         notes: request.notes,
@@ -367,7 +398,8 @@ export async function approveSupplierPaymentApprovalRequest(db, requestId, manag
         fingerprint: request.payload_fingerprint,
       },
       req,
-      paidOn: shopTodayYmd(),
+      paidOn: forgotten ? voucherDateForShift(shift) : shopTodayYmd(),
+      forgotten,
       managerName: actor.telegramActor?.username || managerUser?.username || "",
     });
     const info = await db.run(

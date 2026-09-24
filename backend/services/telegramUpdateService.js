@@ -100,7 +100,7 @@ export async function handleTelegramUpdate(db, update, context = {}) {
     return { handled: false };
   }
 
-  if (parsed.kind === "expense" || parsed.kind === "supplier") {
+  if (parsed.kind === "expense" || parsed.kind === "supplier" || parsed.kind === "consumption") {
     if (sourceBot !== "approvals") return { handled: false };
     return handleApprovalsCallback(db, cq, parsed);
   }

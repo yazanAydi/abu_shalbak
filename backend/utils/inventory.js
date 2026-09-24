@@ -61,6 +61,8 @@ export async function applyStockDelta(
     userId = null,
     notes = null,
     storeId = 1,
+    businessDay = null,
+    warehouseId = null,
   } = {}
 ) {
   const pid = Number(productId);
@@ -77,6 +79,8 @@ export async function applyStockDelta(
     userId,
     notes,
     storeId,
+    businessDay,
+    warehouseId,
   });
 }
 
@@ -97,6 +101,7 @@ export async function recordMovement(
     notes = null,
     userId = null,
     applyStock = false,
+    businessDay = null,
   }
 ) {
   const pid = Number(productId);
@@ -111,6 +116,8 @@ export async function recordMovement(
       referenceId: refId,
       userId,
       notes,
+      businessDay,
+      warehouseId,
     });
   }
   return null;

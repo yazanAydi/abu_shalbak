@@ -1,6 +1,8 @@
 import { handleTelegramUpdate } from "./telegramUpdateService.js";
 import {
   getApprovalBotPollConfigs,
+  getApprovalsChatId,
+  isApprovalsBotTokenConfigured,
   telegramGet,
 } from "../utils/telegram.js";
 import { loadPollOffset, processPolledUpdate } from "./telegramPollRecovery.js";
@@ -92,6 +94,11 @@ export function startTelegramBotPollLoops(db, bots, options = {}) {
  * Long-poll Telegram getUpdates for all approval bots (localhost / LAN store).
  */
 export function startTelegramPolling(db) {
+  console.log(
+    `[telegram] approvals: token=${isApprovalsBotTokenConfigured() ? "set" : "empty"} chat=${
+      getApprovalsChatId() ? "set" : "empty"
+    } polling=${process.env.TELEGRAM_USE_POLLING === "1" ? "on" : "off"}`
+  );
   const bots = getApprovalBotPollConfigs();
   if (!isTelegramPollingEnabled() || !bots.length) return null;
 

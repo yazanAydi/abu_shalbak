@@ -368,6 +368,7 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
         referenceId: transactionId,
         transactionItemId: itemIns.lastID,
         invoiceItemId: it.id,
+        businessDay,
       });
       await db.run(
         "UPDATE sales_invoice_items SET batch_allocations_json = ? WHERE id = ?",

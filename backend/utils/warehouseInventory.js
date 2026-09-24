@@ -176,7 +176,8 @@ export async function postedPurchaseReturnLines(db, warehouse, catalog) {
             p.name AS product_name, p.barcode, p.sku,
             SUM(${RETURN_QTY_SQL}) AS quantity,
             p.cost,
-            ROUND(SUM(${RETURN_VALUE_SQL}), 2) AS value
+            ROUND(SUM(${RETURN_VALUE_SQL}), 2) AS value,
+            'purchase_return' AS source
        FROM purchase_return_items pri
        JOIN purchase_returns pr ON pr.id = pri.return_id
        JOIN products p ON p.id = pri.product_id
@@ -244,9 +245,8 @@ export async function getWarehouseValuation(db, options = {}) {
   const warehouses = await loadWarehouses(db);
   const { main, returns: returnsWh } = warehouseRoles(warehouses);
   const outside = await quantitiesOutsideMain(db, catalog, [main?.id]);
-  const [catalogTotals, returns, transferMap] = await Promise.all([
+  const [catalogTotals, transferMap] = await Promise.all([
     main ? adjustedCatalogTotals(db, main, catalog, outside) : Promise.resolve(null),
-    postedPurchaseReturnTotals(db, catalog),
     transferStockTotalsByWarehouse(db, catalog),
   ]);
 
@@ -256,11 +256,7 @@ export async function getWarehouseValuation(db, options = {}) {
     }
     if (returnsWh && Number(w.id) === Number(returnsWh.id)) {
       const moved = transferMap.get(Number(returnsWh.id));
-      return mapValuationRow(
-        w,
-        num(returns?.total_qty) + num(moved?.total_qty),
-        round2(num(returns?.total_value) + num(moved?.total_value))
-      );
+      return mapValuationRow(w, moved?.total_qty, moved?.total_value);
     }
     const transferred = transferMap.get(Number(w.id));
     return mapValuationRow(w, transferred?.total_qty, transferred?.total_value);
@@ -274,24 +270,19 @@ export async function getWarehouseValuation(db, options = {}) {
 export async function listWarehouseStock(db, options = {}) {
   const catalog = await resolveWarehouseCatalog(db, options);
   const warehouses = await loadWarehouses(db);
-  const { main, returns: returnsWh } = warehouseRoles(warehouses);
+  const { main } = warehouseRoles(warehouses);
   const warehouseId = options.warehouseId;
   const filterId = warehouseId != null && warehouseId !== "" ? Number(warehouseId) : null;
   const derivedIds = [];
   const lines = [];
 
   const includeMain = main && (filterId == null || filterId === Number(main.id));
-  const includeReturns = returnsWh && (filterId == null || filterId === Number(returnsWh.id));
 
   const outside = await quantitiesOutsideMain(db, catalog, [main?.id]);
   if (includeMain) {
     derivedIds.push(main.id);
     lines.push(...(await catalogStockLines(db, main, catalog, outside)));
   }
-  if (includeReturns) {
-    lines.push(...(await postedPurchaseReturnLines(db, returnsWh, catalog)));
-  }
-
   const extra = await transferStockLines(db, {
     warehouseId: filterId,
     excludeIds: derivedIds,
@@ -339,18 +330,11 @@ export async function listProductWarehouseLocations(db, productId) {
 
   if (returnsWh) {
     derivedIds.push(Number(returnsWh.id));
-    const ret = await db.get(
-      `SELECT COALESCE(SUM(${RETURN_QTY_SQL}), 0) AS qty
-         FROM purchase_return_items pri
-         JOIN purchase_returns pr ON pr.id = pri.return_id
-        WHERE pr.status = 'posted' AND pri.product_id = ?`,
-      [pid]
-    );
     const moved = await db.get(
       "SELECT COALESCE(quantity, 0) AS qty FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?",
       [returnsWh.id, pid]
     );
-    const qty = num(ret?.qty) + num(moved?.qty);
+    const qty = num(moved?.qty);
     if (Math.abs(qty) > QTY_EPS) {
       out.push({
         warehouse_id: returnsWh.id,

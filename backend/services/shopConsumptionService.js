@@ -18,6 +18,14 @@ import { enqueueOperationPrint, shopConsumptionPrintSnapshot } from "./operation
 
 const SOURCE = "shop_consumption";
 
+export function unknownCostBlockMessage(names) {
+  const listed = names.join("، ");
+  return (
+    `لا يمكن ترحيل مصاريف المحل قبل تسجيل تكلفة الشراء من المكتب ` +
+    `(بطاقة الصنف أو فاتورة شراء مرحّلة) لهذه الأصناف: ${listed}`
+  );
+}
+
 export function fingerprintShopConsumption(lines, reason) {
   const payload = {
     reason: reason || null,
@@ -142,10 +150,7 @@ async function resolveLines(db, rawItems) {
     line.line_cost = round2(unitCost * line.quantity);
   }
   if (unknown.length) {
-    throw badRequest(
-      `يجب تحديد تكلفة هذه الأصناف قبل الترحيل: ${unknown.join("، ")}`,
-      "UNKNOWN_COST"
-    );
+    throw badRequest(unknownCostBlockMessage(unknown), "UNKNOWN_COST");
   }
 
   const published = lines.map(({ product, ...line }) => line);
@@ -327,6 +332,7 @@ async function postCore(db, { cashierId, items, reason, idempotencyKey, req }) {
         notes: `مصاريف محل #${consumptionId}`,
         userId: cashierId,
         applyStock: true,
+        businessDay,
       });
     }
 

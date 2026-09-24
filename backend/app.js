@@ -59,6 +59,11 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
       ok: true,
       serverTime: new Date().toISOString(),
       timezone: process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
+      approvalsTelegram: {
+        tokenConfigured: Boolean(String(process.env.TELEGRAM_APPROVALS_BOT_TOKEN || "").trim()),
+        chatConfigured: Boolean(String(process.env.TELEGRAM_APPROVALS_CHAT_ID || "").trim()),
+        pollingEnabled: process.env.TELEGRAM_USE_POLLING === "1",
+      },
     });
   });
   router.use("/auth", createAuthRouter(db));

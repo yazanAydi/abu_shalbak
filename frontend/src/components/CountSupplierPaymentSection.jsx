@@ -17,6 +17,7 @@ export default function CountSupplierPaymentSection({
   shiftId,
   payments = [],
   paymentsTotal = 0,
+  pendingRequests = [],
   onPosted,
   onBusyChange,
 }) {
@@ -89,7 +90,7 @@ export default function CountSupplierPaymentSection({
     setSaving(true);
     onBusyChange?.(true);
     try {
-      await api.post(
+      const { data } = await api.post(
         `/api/shifts/${shiftId}/supplier-payments`,
         {
           supplier_id: sid,
@@ -101,7 +102,7 @@ export default function CountSupplierPaymentSection({
       );
       lastSentSigRef.current = sig;
       closeForm();
-      await onPosted?.();
+      await onPosted?.(data?.data ?? data);
     } catch (err) {
       lastSentSigRef.current = sig;
       setError(apiErrorMessage(err, "فشل تسجيل الدفعة"));
@@ -112,6 +113,7 @@ export default function CountSupplierPaymentSection({
   }
 
   const rows = Array.isArray(payments) ? payments : [];
+  const pending = Array.isArray(pendingRequests) ? pendingRequests : [];
   const total = Number(paymentsTotal) || rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
 
   return (
@@ -119,6 +121,15 @@ export default function CountSupplierPaymentSection({
       <h3 className="dashboard-subtitle" style={{ marginBottom: "0.5rem" }}>
         دفعات الموردين
       </h3>
+      {pending.length ? (
+        <ul style={{ listStyle: "none", padding: 0, margin: "0 0 0.5rem" }}>
+          {pending.map((row) => (
+            <li key={row.request_id} style={{ marginBottom: "0.35rem" }}>
+              بانتظار الموافقة — {row.supplier_name || "مورد"} — {ils(row.amount)} — طلب #{row.request_id}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {rows.length ? (
         <ul style={{ listStyle: "none", padding: 0, margin: "0 0 0.5rem" }}>
           {rows.map((row) => (

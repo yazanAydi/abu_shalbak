@@ -115,6 +115,11 @@ async function executeCheckoutSaleCore(db, params) {
       ]
     );
     const transactionId = ins.lastID;
+    let saleBusinessDay = null;
+    if (shiftId) {
+      const shiftDay = await db.get("SELECT business_day FROM cashier_shifts WHERE id = ?", [shiftId]);
+      saleBusinessDay = shiftDay?.business_day || null;
+    }
 
     const preDiscountGross = round2(
       detailed.reduce((s, d) => s + round2(Number(d.lineGross) || 0), 0)
@@ -173,6 +178,7 @@ async function executeCheckoutSaleCore(db, params) {
         referenceType: "transaction",
         referenceId: transactionId,
         transactionItemId: itemIns.lastID,
+        businessDay: saleBusinessDay,
       });
     }
 

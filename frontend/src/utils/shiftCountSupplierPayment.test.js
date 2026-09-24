@@ -21,10 +21,12 @@ describe("mapShiftDetailToCountTarget", () => {
         cash_sales_incomplete: false,
       },
       supplier_payments: [{ voucher_no: 12, amount: 20, supplier_name: "مورد الخضار" }],
+      supplier_payment_requests: [{ request_id: 8, amount: 15, supplier_name: "مورد الخضار", status: "pending" }],
       advances: [{ request_id: 3, amount: 20, employee_name: "سامي" }],
     });
     expect(mapped.expected_cash).toBe(57.5);
     expect(mapped.supplier_payments).toHaveLength(1);
+    expect(mapped.supplier_payment_requests).toHaveLength(1);
     expect(mapped.supplier_payments_total).toBe(20);
     expect(mapped.advances).toHaveLength(1);
     expect(mapped.advances_total).toBe(20);

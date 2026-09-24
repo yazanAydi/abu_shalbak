@@ -279,42 +279,44 @@ export async function postPosSupplierPayment(db, input) {
  * Forgotten cash already handed to a supplier during a shift waiting to be counted.
  * Uses the selected shift, not the office user's current shift.
  */
-export async function postShiftSupplierPayment(db, input) {
-  const shiftId = Number(input.shiftId);
-  if (!Number.isInteger(shiftId) || shiftId <= 0) {
+export async function requirePendingCountShift(db, shiftId) {
+  const id = Number(shiftId);
+  if (!Number.isInteger(id) || id <= 0) {
     throw badRequest("معرّف الوردية غير صالح", "INVALID_SHIFT");
   }
+  const locked = await db.run(
+    `UPDATE cashier_shifts SET status = status WHERE id = ? AND status = 'pending_count'`,
+    [id]
+  );
+  const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [id]);
+  if (!shift) {
+    const err = new Error("الوردية غير موجودة");
+    err.status = 404;
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+  if (shift.status === "closed" || (!locked.changes && shift.status === "closed")) {
+    const err = new Error("لا يمكن تسجيل دفعة على وردية مغلقة");
+    err.status = 400;
+    err.code = "SHIFT_CLOSED";
+    throw err;
+  }
+  if (!locked.changes || shift.status !== "pending_count") {
+    const err = new Error("الوردية ليست بانتظار العد");
+    err.status = 400;
+    err.code = "NOT_PENDING";
+    throw err;
+  }
+  return shift;
+}
+
+export async function postShiftSupplierPayment(db, input) {
   const parsed = parsePaymentInput(input, input.userId);
   return runSupplierPayment(db, {
     parsed,
     req: input.req,
     forgotten: true,
     paidOnForShift: voucherDateForShift,
-    resolveShift: async () => {
-      const locked = await db.run(
-        `UPDATE cashier_shifts SET status = status WHERE id = ? AND status = 'pending_count'`,
-        [shiftId]
-      );
-      const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
-      if (!shift) {
-        const err = new Error("الوردية غير موجودة");
-        err.status = 404;
-        err.code = "NOT_FOUND";
-        throw err;
-      }
-      if (shift.status === "closed" || (!locked.changes && shift.status === "closed")) {
-        const err = new Error("لا يمكن تسجيل دفعة على وردية مغلقة");
-        err.status = 400;
-        err.code = "SHIFT_CLOSED";
-        throw err;
-      }
-      if (!locked.changes || shift.status !== "pending_count") {
-        const err = new Error("الوردية ليست بانتظار العد");
-        err.status = 400;
-        err.code = "NOT_PENDING";
-        throw err;
-      }
-      return shift;
-    },
+    resolveShift: () => requirePendingCountShift(db, input.shiftId),
   });
 }

@@ -40,8 +40,11 @@ import { listShiftCustomerCashDebts } from "../services/customerCashDebtRequestS
 import {
   listShiftSupplierPayments,
   listSupplierPaymentOptions,
-  postShiftSupplierPayment,
 } from "../services/posSupplierPaymentService.js";
+import {
+  createSupplierPaymentApprovalRequest,
+  listShiftSupplierPaymentRequests,
+} from "../services/groupApprovalService.js";
 import { validate } from "../middleware/validate.js";
 import { posSupplierPaymentSchema, shiftCountAdvanceSchema } from "../middleware/schemas.js";
 import {
@@ -439,14 +442,15 @@ export function createShiftsRouter(db) {
         return res.status(400).json({ error: "معرّف الوردية غير صالح", code: "INVALID_SHIFT" });
       }
       try {
-        const result = await postShiftSupplierPayment(db, {
+        const result = await createSupplierPaymentApprovalRequest(db, {
+          cashierId: req.user.id,
+          recordedById: req.user.id,
           shiftId,
-          userId: req.user.id,
+          forgotten: true,
           supplierId: req.body.supplier_id,
           amount: req.body.amount,
           notes: req.body.notes,
           idempotencyKey: req.body.idempotency_key,
-          req,
         });
         const live = await db.get("SELECT id, opening_cash, status FROM cashier_shifts WHERE id = ?", [
           shiftId,
@@ -455,6 +459,7 @@ export function createShiftsRouter(db) {
           ? await computeExpectedDrawer(db, live.id, live.opening_cash)
           : { expected_cash: null, by_currency: [], sales_cash_nis: 0 };
         const payments = await listShiftSupplierPayments(db, shiftId);
+        const pending = await listShiftSupplierPaymentRequests(db, shiftId);
         res.status(result.replayed ? 200 : 201).json({
           ...result,
           expected_cash: drawer.expected_cash,
@@ -462,6 +467,7 @@ export function createShiftsRouter(db) {
           cash_sales: drawer.sales_cash_nis,
           supplier_payments: payments.rows,
           supplier_payments_total: payments.total,
+          supplier_payment_requests: pending,
         });
       } catch (e) {
         if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
@@ -1021,6 +1027,7 @@ export function createShiftsRouter(db) {
       [shiftId]
     );
     const supplierPayments = await listShiftSupplierPayments(db, shiftId);
+    const supplierPaymentRequests = await listShiftSupplierPaymentRequests(db, shiftId);
     const customerCollections = await listShiftCustomerCollections(db, shiftId);
     const customerCashDebts = await listShiftCustomerCashDebts(db, shiftId);
     const advances = await listShiftAdvances(db, shiftId);
@@ -1089,6 +1096,7 @@ export function createShiftsRouter(db) {
       refunds,
       cash_movements,
       supplier_payments: supplierPayments.rows,
+      supplier_payment_requests: supplierPaymentRequests,
       customer_collections: customerCollections.rows,
       customer_cash_debts: customerCashDebts.rows,
       advances: advances.rows,
