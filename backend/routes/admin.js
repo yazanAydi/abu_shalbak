@@ -73,6 +73,7 @@ import {
   setupEmployeeForStaffUser,
   reconcileStaffEmployeeIdentities,
   setEmployeeWageBasis,
+  deleteUserAccount,
 } from "../services/employeeService.js";
 import { readHourlyRateInput, updateEmployeeHourlyRate } from "../services/cashierPayrollService.js";
 import { employeeHasOpenHourlySession } from "../services/attendanceSessionService.js";
@@ -1078,42 +1079,14 @@ export function createAdminRouter(db, dbPath) {
         return res.status(400).json({ error: "لا يمكن حذف آخر مدير في النظام" });
       }
     }
-    const tx = await db.get("SELECT COUNT(*) as c FROM transactions WHERE cashier_id = ?", [id]);
-    if (tx.c > 0) {
-      return res
-        .status(400)
-        .json({ error: "لا يمكن حذف مستخدم له سجل مبيعات؛ غيّر الدور بدلاً من ذلك" });
-    }
-    const linkedEmployee = await db.get("SELECT id FROM employees WHERE user_id = ?", [id]);
-    if (linkedEmployee) {
-      return res.status(400).json({
-        error:
-          "لا يمكن حذف حساب مربوط بسجل موظف. عطّل سجل الموظف أو غيّر الدور حتى تبقى الرواتب والذمم والورديات.",
-        code: "USER_HAS_EMPLOYEE",
+    try {
+      await deleteUserAccount(db, id);
+    } catch (e) {
+      return res.status(e.status || e.statusCode || 400).json({
+        error: e.message || "تعذّر حذف الحساب",
+        code: e.code || "USER_DELETE_FAILED",
       });
     }
-    const shifts = await db.get("SELECT COUNT(*) as c FROM cashier_shifts WHERE cashier_id = ?", [id]);
-    if (shifts.c > 0) {
-      return res.status(400).json({
-        error: "لا يمكن حذف حساب له ورديات. غيّر الدور بدلاً من الحذف.",
-        code: "USER_HAS_SHIFTS",
-      });
-    }
-    const punches = await db.get("SELECT COUNT(*) as c FROM attendance_punches WHERE user_id = ?", [id]);
-    if (punches.c > 0) {
-      return res.status(400).json({
-        error: "لا يمكن حذف حساب له سجل حضور. غيّر الدور بدلاً من الحذف.",
-        code: "USER_HAS_ATTENDANCE",
-      });
-    }
-    const faces = await db.get("SELECT COUNT(*) as c FROM face_descriptors WHERE user_id = ?", [id]);
-    if (faces.c > 0) {
-      return res.status(400).json({
-        error: "لا يمكن حذف حساب له تسجيل وجه. غيّر الدور بدلاً من الحذف.",
-        code: "USER_HAS_FACE",
-      });
-    }
-    await db.run("DELETE FROM users WHERE id = ?", [id]);
     await logAudit(db, req, AUDIT_ACTIONS.USER_DELETE, "users", id, { username: ex.username, role: ex.role }, null);
     res.status(204).send();
   });

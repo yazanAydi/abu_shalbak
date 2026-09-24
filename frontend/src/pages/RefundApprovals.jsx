@@ -315,6 +315,11 @@ export default function RefundApprovals() {
               <p className="ui-hint">
                 {reviewTarget.cashier_username} — فاتورة #{reviewTarget.transaction_id} —{" "}
                 {ils(reviewTarget.total_amount ?? 0)}
+                {reviewTarget.rounding_adjustment != null &&
+                reviewTarget.rounding_adjustment !== "" &&
+                Number(reviewTarget.rounding_adjustment) !== 0
+                  ? ` — تقريب ${ils(reviewTarget.rounding_adjustment)}`
+                  : ""}
                 {reviewTarget.readOnly ? ` — ${statusLabel(reviewTarget.status)}` : null}
               </p>
               {!reviewTarget.readOnly ? (

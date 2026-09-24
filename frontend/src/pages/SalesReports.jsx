@@ -169,6 +169,9 @@ export default function SalesReports() {
     if (!dailyReport) return [];
     return [
       { label: "صافي المبيعات", value: ils(dailyReport.net_sales), tone: "green" },
+      { label: "إجمالي المبيعات", value: ils(dailyReport.total_sales) },
+      { label: "إيراد الأصناف", value: ils(dailyReport.item_revenue) },
+      { label: "تقريب الفواتير", value: ils(dailyReport.rounding_adjustment) },
       { label: "عدد العمليات", value: String(dailyReport.total_transactions ?? 0) },
       { label: "الاسترجاعات", value: ils(dailyReport.refunds_total), tone: "orange" },
       { label: "القطع المباعة", value: String(dailyReport.items_sold ?? 0) },
@@ -185,6 +188,9 @@ export default function SalesReports() {
     if (!rangeReport) return [];
     return [
       { label: "صافي المبيعات", value: ils(rangeReport.net_sales), tone: "green" },
+      { label: "إجمالي المبيعات", value: ils(rangeReport.total_sales) },
+      { label: "إيراد الأصناف", value: ils(rangeReport.item_revenue) },
+      { label: "تقريب الفواتير", value: ils(rangeReport.rounding_adjustment) },
       { label: "عدد العمليات", value: String(rangeReport.total_transactions ?? 0) },
       { label: "الاسترجاعات", value: ils(rangeReport.refunds_total), tone: "orange" },
       { label: "القطع المباعة", value: String(rangeReport.items_sold ?? 0) },

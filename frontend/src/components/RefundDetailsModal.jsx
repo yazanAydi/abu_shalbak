@@ -114,6 +114,13 @@ export default function RefundDetailsModal({ open, refundId, onClose, onUpdated,
                 ))}
               </tbody>
             </table>
+            {refund.rounding_adjustment != null &&
+            refund.rounding_adjustment !== "" &&
+            Number(refund.rounding_adjustment) !== 0 ? (
+              <p className="rf-modal-total">
+                تقريب: <strong>{ils(refund.rounding_adjustment)}</strong>
+              </p>
+            ) : null}
             <p className="rf-modal-total">
               الإجمالي: <strong>{ils(refund.total)}</strong>
             </p>

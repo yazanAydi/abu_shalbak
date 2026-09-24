@@ -37,9 +37,26 @@ export function presentOnAccountItems(snapshot) {
   });
 }
 
+function snapshotRoundingAdjustment(raw) {
+  let snapshot = raw;
+  if (typeof raw === "string") {
+    try {
+      snapshot = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!snapshot || snapshot.roundingAdjustment == null || snapshot.roundingAdjustment === "") return null;
+  return round2(Number(snapshot.roundingAdjustment));
+}
+
 function withOnAccountItems(row) {
   if (!row) return row;
-  return { ...row, items: presentOnAccountItems(row.sale_snapshot_json) };
+  return {
+    ...row,
+    items: presentOnAccountItems(row.sale_snapshot_json),
+    rounding_adjustment: snapshotRoundingAdjustment(row.sale_snapshot_json),
+  };
 }
 
 async function insertOnAccountRequest(db, params) {
@@ -302,6 +319,7 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
     status: row.status,
     total_amount: row.total_amount,
     on_account_amount: row.on_account_amount,
+    rounding_adjustment: snapshotRoundingAdjustment(row.sale_snapshot_json),
     customer_name: row.customer_name,
     employee_id: row.employee_id ?? null,
     employee_name: row.employee_name || null,

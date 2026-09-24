@@ -15,7 +15,7 @@ import {
   authHeader,
   withCheckoutKey,
 } from "./helpers.js";
-import { round2, roundScaleSaleTotal } from "../utils/money.js";
+import { round2 } from "../utils/money.js";
 import { computePurchaseInvoiceTotals } from "../utils/tax.js";
 import { deriveStockFromLedger } from "../utils/inventoryLedger.js";
 import { wacAfterInbound } from "../utils/purchaseInventoryCost.js";
@@ -247,11 +247,9 @@ describe("audit independent reconciliation", () => {
       expected.breadSoldQty += 1;
     });
 
-    test("weighed 0.255 kg at ₪20 charges whole shekels independently", async () => {
+    test("weighed 0.255 kg at ₪20 keeps the 5.10 line and rounds the invoice to 5", async () => {
       const raw = round2(0.255 * 20);
       expect(raw).toBe(5.1);
-      const charged = roundScaleSaleTotal(raw);
-      expect(charged).toBe(5);
 
       const res = await checkout({
         items: [{ product_id: cheese.id, quantity: 0.255, price: 20, unit_id: cheese.unit.id }],
@@ -259,9 +257,11 @@ describe("audit independent reconciliation", () => {
       });
       expect(res.status).toBe(201);
       const body = unwrap(res);
-      expect(body.total).toBe(charged);
+      expect(body.amount_before_rounding).toBe(5.1);
+      expect(body.rounding_adjustment).toBe(-0.1);
+      expect(body.total).toBe(5);
       ids.weighed = body.transaction_id;
-      expected.posGross = round2(expected.posGross + charged);
+      expected.posGross = round2(expected.posGross + body.total);
       expected.cheeseSoldKg += 0.255;
 
       const stock = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [cheese.id]);
@@ -642,8 +642,8 @@ describe("audit independent reconciliation", () => {
           .query({ date: today })
           .set(authHeader(adminToken))
       );
-      // The 10% milk line stays 7.20. Payable rounding removes 0.20 on the invoice only.
-      expect(Number(daily.rounding_adjustment)).toBe(-0.2);
+      // Milk discount leaves 7.20 (adjustment −0.20). The weighed 5.10 line adds −0.10.
+      expect(Number(daily.rounding_adjustment)).toBe(-0.3);
       expect(round2(Number(daily.item_revenue) + Number(daily.rounding_adjustment))).toBe(
         Number(daily.total_sales)
       );

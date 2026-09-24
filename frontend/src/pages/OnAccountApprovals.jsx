@@ -416,6 +416,11 @@ export default function OnAccountApprovals() {
                 {reviewTarget.cashier_username} — {reviewTarget.employee_name || reviewTarget.customer_name || "ذمة"} — ذمة{" "}
                 {ils(reviewTarget.on_account_amount ?? 0)} — إجمالي{" "}
                 {ils(reviewTarget.total_amount ?? 0)}
+                {reviewTarget.rounding_adjustment != null &&
+                reviewTarget.rounding_adjustment !== "" &&
+                Number(reviewTarget.rounding_adjustment) !== 0
+                  ? ` — تقريب ${ils(reviewTarget.rounding_adjustment)}`
+                  : ""}
                 {reviewTarget.readOnly ? ` — ${statusLabel(reviewTarget.status)}` : null}
               </p>
               {reviewTarget.credit ? (

@@ -178,7 +178,7 @@ export default function UserManagement() {
   }
 
   async function removeUser(id) {
-    if (!window.confirm("حذف هذا الحساب؟")) return;
+    if (!window.confirm("حذف هذا الحساب مع سجل الموظف والحضور والورديات المرتبطة به؟ المبيعات والمرتجعات تبقى.")) return;
     try {
       await api.delete(`/api/admin/users/${id}`, { headers: getAuthHeaders() });
       toast.success("تم الحذف");

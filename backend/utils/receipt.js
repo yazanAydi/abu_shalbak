@@ -1,12 +1,12 @@
 import { getStoreLogoDataUri, resolvePrintBranding, STORE_NAME_AR, STORE_PHONE } from "./storeBranding.js";
 import { formatProductSku } from "./entityCodes.js";
-import { round2, roundScaleSaleTotal } from "./money.js";
+import { round2 } from "./money.js";
 
 const LINE = 48;
 
 /**
  * Reprint line totals from stored sale rows. Prefer transaction_items.line_gross;
- * if missing, round KG lines to whole shekels and leave others at round2(qty × price).
+ * if missing, use round2(qty × price). Stored line_gross is never recomputed.
  * @param {object[]} itemsJson
  * @param {object[]} [storedItems]
  */
@@ -22,8 +22,7 @@ export function mapSaleItemsToReceiptLines(itemsJson, storedItems = []) {
     if (row?.line_gross != null && Number.isFinite(Number(row.line_gross))) {
       lineTotal = round2(Number(row.line_gross));
     } else {
-      const raw = round2(qty * price);
-      lineTotal = unitName === "كغم" ? roundScaleSaleTotal(raw) : raw;
+      lineTotal = round2(qty * price);
     }
     return {
       name: it.name || `صنف ${it.product_id}`,

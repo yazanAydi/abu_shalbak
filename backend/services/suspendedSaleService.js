@@ -1,6 +1,6 @@
 import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
-import { computeSaleTotals, productTaxRate, round2, roundScaleSaleTotal } from "../utils/tax.js";
+import { computeSaleTotals, productTaxRate, round2 } from "../utils/tax.js";
 import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js";
 import { ensureDefaultProductUnit, isWeighedBaseUnit } from "../utils/productUnits.js";
 import { HttpError } from "../utils/httpError.js";
@@ -82,8 +82,7 @@ async function normalizeSuspendLine(db, line, settings) {
     line.scanned_barcode != null ? String(line.scanned_barcode).trim() || null : null;
   const taxRate = productTaxRate(p, settings);
   const scaleWeighed = isWeighedBaseUnit(unit, Number(p.is_weighed) === 1);
-  const rawTotal = round2(qty * dbPrice);
-  const totalPrice = scaleWeighed ? roundScaleSaleTotal(rawTotal) : rawTotal;
+  const totalPrice = round2(qty * dbPrice);
 
   return {
     product_id: productId,

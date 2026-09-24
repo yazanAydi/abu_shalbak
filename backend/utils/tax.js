@@ -1,5 +1,5 @@
 export { round2, roundScaleSaleTotal } from "./money.js";
-import { round2, roundScaleSaleTotal } from "./money.js";
+import { round2 } from "./money.js";
 
 /**
  * Sales VAT is not split: buy and sell prices already include tax.
@@ -12,7 +12,7 @@ export function productTaxRate(_product, _settings) {
 /**
  * Compute sale totals from line items.
  * Tax rate is always 0: shelf price is the full amount (net = gross, tax = 0).
- * Weighed KG lines (`scaleWeighed`) round the charged line total to whole shekels.
+ * Weighed KG lines keep round2(quantity × price). Whole-shekel rounding is not applied here.
  *
  * @param {Array<{ quantity: number, unitPrice: number, taxRate?: number, scaleWeighed?: boolean }>} lines
  * @param {{ tax_inclusive?: boolean }} [_settings]
@@ -24,8 +24,7 @@ export function computeSaleTotals(lines, _settings) {
   for (const line of lines) {
     const qty = Math.max(0, Number(line.quantity) || 0);
     const unitPrice = round2(Number(line.unitPrice) || 0);
-    const raw = round2(qty * unitPrice);
-    const lineNet = line.scaleWeighed ? roundScaleSaleTotal(raw) : raw;
+    const lineNet = round2(qty * unitPrice);
     const lineTax = 0;
     const lineGross = lineNet;
 

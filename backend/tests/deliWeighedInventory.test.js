@@ -173,7 +173,7 @@ describe("deli dual-sale weighed inventory", () => {
       },
     ]);
     expect(res.status).toBe(201);
-    expect(unwrap(res).total).toBe(13);
+    expect(unwrap(res).total).toBe(12.5);
     expect(await stockOf(productA.id)).toBeCloseTo(before - 0.5, 3);
   });
 
@@ -206,7 +206,7 @@ describe("deli dual-sale weighed inventory", () => {
     expect(item.unit_name).toBe("كغم");
     expect(Number(item.unit_price)).toBe(6);
     expect(Number(item.quantity)).toBeCloseTo(0.93, 3);
-    expect(Number(item.line_gross)).toBe(6);
+    expect(Number(item.line_gross)).toBe(5.58);
     expect(await stockOf(p.id)).toBeCloseTo(7.07, 3);
   });
 

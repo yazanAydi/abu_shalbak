@@ -7,7 +7,7 @@ import {
   login,
   withCheckoutKey,
 } from "./helpers.js";
-import { round2 } from "../utils/money.js";
+import { round2, roundPosPayable } from "../utils/money.js";
 import { invalidatePromotionsCache } from "../utils/promotions.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
 
@@ -227,16 +227,16 @@ describe("POS final payable rounding", () => {
         })
       ).body
     );
-    expect(combined.subtotal).toBe(7.3);
+    expect(combined.subtotal).toBe(7.4);
     expect(combined.tax).toBe(0);
-    expect(combined.amount_before_rounding).toBe(7.3);
+    expect(combined.amount_before_rounding).toBe(7.4);
     expect(combined.total).toBe(7);
-    expect(combined.rounding_adjustment).toBe(-0.3);
+    expect(combined.rounding_adjustment).toBe(-0.4);
     const lines = await ctx.db.all(
       "SELECT line_gross FROM transaction_items WHERE transaction_id = ? ORDER BY line_gross",
       [combined.transaction_id]
     );
-    expect(lines.map((entry) => entry.line_gross)).toEqual([2.3, 5]);
+    expect(lines.map((entry) => entry.line_gross)).toEqual([2.3, 5.1]);
   });
 
   test("customer and employee ذمة use the rounded credit, including the limit override", async () => {
@@ -503,5 +503,121 @@ describe("POS final payable rounding", () => {
     );
     expect(sample.unit_cost_at_sale).toBe(5);
     expect(round2(sample.line_net - sample.unit_cost_at_sale)).toBe(sample.gross_profit);
+  });
+
+  test("server ignores a client total, and repeated approvals do not post twice", async () => {
+    await setPrice(21.3);
+    const key = "client-total-ignore-2130";
+    const first = await sell({
+      idempotency_key: key,
+      items: [{ product_id: ctx.productId, quantity: 1, price: 21.3 }],
+      payment_method: "cash",
+      total: 1,
+      tax: 9,
+      subtotal: 1,
+    });
+    expect(first.status).toBe(201);
+    const sale = unwrap(first.body);
+    expect(sale.total).toBe(21);
+    expect(sale.tax).toBe(0);
+    expect(sale.amount_before_rounding).toBe(21.3);
+    expect(sale.rounding_adjustment).toBe(-0.3);
+    const replay = await sell({
+      idempotency_key: key,
+      items: [{ product_id: ctx.productId, quantity: 1, price: 21.3 }],
+      payment_method: "cash",
+      total: 99,
+    });
+    expect(replay.status).toBe(200);
+    expect(unwrap(replay.body).transaction_id).toBe(sale.transaction_id);
+    const copies = await ctx.db.get("SELECT COUNT(*) AS n FROM transactions WHERE idempotency_key = ?", [key]);
+    expect(Number(copies.n)).toBe(1);
+
+    await setPrice(0.49);
+    const zero = unwrap(
+      (
+        await sell({
+          items: [{ product_id: ctx.productId, quantity: 1, price: 0.49 }],
+          payment_method: "cash",
+        })
+      ).body
+    );
+    expect(zero.total).toBe(0);
+    expect(zero.amount_before_rounding).toBe(0.49);
+    expect(zero.rounding_adjustment).toBe(-0.49);
+
+    const cust = await ctx.db.run(
+      `INSERT INTO customers (name, customer_code, balance, opening_balance, credit_limit)
+       VALUES ('إعادة موافقة', 'RND-RETRY', 0, 0, 100)`
+    );
+    await setPrice(5.6);
+    const pending = await sell({
+      items: [{ product_id: ctx.productId, quantity: 1, price: 5.6 }],
+      payment_method: "on_account",
+      customer_id: cust.lastID,
+    });
+    expect(pending.status).toBe(202);
+    const requestId = unwrap(pending.body).request_id;
+    const once = await request(ctx.app)
+      .put(`/api/v1/on-account-requests/${requestId}`)
+      .set(authHeader(adminToken))
+      .send({ status: "approved" });
+    expect(once.status).toBe(200);
+    const twice = await request(ctx.app)
+      .put(`/api/v1/on-account-requests/${requestId}`)
+      .set(authHeader(adminToken))
+      .send({ status: "approved" });
+    expect(twice.status).toBeGreaterThanOrEqual(400);
+    expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [cust.lastID])).balance)).toBe(6);
+    const posted = await ctx.db.get(
+      "SELECT COUNT(*) AS n FROM transactions WHERE customer_id = ? AND total = 6",
+      [cust.lastID]
+    );
+    expect(Number(posted.n)).toBe(1);
+  });
+
+  test("three partial refunds sum to the original payable", async () => {
+    await setPrice(10.3);
+    const sale = unwrap(
+      (
+        await sell({
+          items: [{ product_id: ctx.productId, quantity: 3, price: 10.3 }],
+          payment_method: "visa",
+        })
+      ).body
+    );
+    expect(sale.amount_before_rounding).toBe(30.9);
+    expect(sale.total).toBe(31);
+    expect(sale.rounding_adjustment).toBe(0.1);
+    const unit = await ctx.db.get("SELECT id FROM product_units WHERE product_id = ?", [ctx.productId]);
+    const amounts = [];
+    for (let i = 0; i < 3; i += 1) {
+      const created = await request(ctx.app)
+        .post("/api/v1/refund-requests")
+        .set(authHeader(cashierToken))
+        .send({
+          original_transaction_id: sale.transaction_id,
+          payment_method: "visa",
+          lines: [{ product_id: ctx.productId, unit_id: unit.id, quantity: 1 }],
+        });
+      expect(created.status).toBe(201);
+      const body = unwrap(created.body);
+      const approved = await request(ctx.app)
+        .put(`/api/v1/refund-requests/${body.request_id}`)
+        .set(authHeader(adminToken))
+        .send({ status: "approved" });
+      expect(approved.status).toBe(200);
+      const again = await request(ctx.app)
+        .put(`/api/v1/refund-requests/${body.request_id}`)
+        .set(authHeader(adminToken))
+        .send({ status: "approved" });
+      expect(again.status).toBeGreaterThanOrEqual(400);
+      amounts.push(Number(body.request.total_amount));
+    }
+    expect(amounts[0]).toBe(10.33);
+    expect(amounts[1]).toBe(10.33);
+    expect(amounts[2]).toBe(10.34);
+    expect(round2(amounts[0] + amounts[1] + amounts[2])).toBe(31);
+    expect(amounts[0]).not.toBe(roundPosPayable(10.3).payable);
   });
 });

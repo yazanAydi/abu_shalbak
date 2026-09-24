@@ -98,15 +98,16 @@ describe("Money precision", () => {
     }
   });
 
-  test("weighed KG line 0.93 × 6 charges 6 while qty stays 0.93", () => {
+  test("weighed KG line 0.93 × 6 stays 5.58 and qty stays 0.93", () => {
     const r = computeSaleTotals(
       [{ quantity: 0.93, unitPrice: 6, scaleWeighed: true }],
       { tax_inclusive: false }
     );
     expect(r.lines[0].unitPrice).toBe(6);
     expect(r.lines[0].quantity).toBeCloseTo(0.93, 3);
-    expect(r.lines[0].lineGross).toBe(6);
-    expect(r.total).toBe(6);
+    expect(r.lines[0].lineGross).toBe(5.58);
+    expect(r.total).toBe(5.58);
+    expect(roundPosPayable(r.total)).toEqual({ calculated: 5.58, payable: 6, adjustment: 0.42 });
   });
 
   test("non-weighed lines keep round2", () => {

@@ -12,6 +12,8 @@ export const RANGE_BY_DAY_COLUMNS = [
   { key: "date", header: "التاريخ" },
   { key: "transactions", header: "العمليات" },
   { key: "total_sales", header: "إجمالي المبيعات", value: (r) => ilsCell(r.total_sales) },
+  { key: "item_revenue", header: "إيراد الأصناف", value: (r) => ilsCell(r.item_revenue) },
+  { key: "rounding_adjustment", header: "تقريب الفواتير", value: (r) => ilsCell(r.rounding_adjustment) },
   { key: "refunds_total", header: "الاسترجاعات", value: (r) => ilsCell(r.refunds_total) },
   { key: "net_sales", header: "صافي المبيعات", value: (r) => ilsCell(r.net_sales) },
   { key: "items_sold", header: "القطع", value: (r) => qty(r.items_sold) },
@@ -35,6 +37,10 @@ export function buildDailySummaryItems(report) {
   return [
     { label: "صافي المبيعات", value: ils(report.net_sales) },
     { label: "إجمالي المبيعات", value: ils(report.total_sales) },
+    ...(report.item_revenue != null ? [{ label: "إيراد الأصناف", value: ils(report.item_revenue) }] : []),
+    ...(report.rounding_adjustment != null
+      ? [{ label: "تقريب الفواتير", value: ils(report.rounding_adjustment) }]
+      : []),
     { label: "عدد العمليات", value: String(report.total_transactions ?? 0) },
     { label: "الاسترجاعات", value: `${report.refund_count ?? 0} (${ils(report.refunds_total)})` },
     { label: "القطع المباعة", value: String(report.items_sold ?? 0) },
@@ -79,6 +85,10 @@ export function buildRangeSummaryItems(report) {
     { label: "إلى", value: report.to || "—" },
     { label: "صافي المبيعات", value: ils(report.net_sales) },
     { label: "إجمالي المبيعات", value: ils(report.total_sales) },
+    ...(report.item_revenue != null ? [{ label: "إيراد الأصناف", value: ils(report.item_revenue) }] : []),
+    ...(report.rounding_adjustment != null
+      ? [{ label: "تقريب الفواتير", value: ils(report.rounding_adjustment) }]
+      : []),
     { label: "عدد العمليات", value: String(report.total_transactions ?? 0) },
     { label: "الاسترجاعات", value: `${report.refund_count ?? 0} (${ils(report.refunds_total)})` },
     { label: "القطع المباعة", value: String(report.items_sold ?? 0) },

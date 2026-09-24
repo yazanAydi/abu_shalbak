@@ -17,9 +17,8 @@ export function round2(n) {
 }
 
 /**
- * Whole-shekel half-up rounding for weighed KG POS line totals only.
- * `round2` first so 5.499999 / 5.50 follow the documented cases, then
- * Math.floor(n + 0.5): 5.49 → 5, 5.5 → 6.
+ * Retired whole-shekel half-up helper. New POS charges do not call this.
+ * Historical weighed lines keep the line_gross already stored on the sale.
  */
 export function roundScaleSaleTotal(amount) {
   const n = round2(amount);

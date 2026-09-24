@@ -437,7 +437,7 @@ describe("إدارة الحسابات ↔ employee records", () => {
     expect(detail.compensation[0].amount).toBe(22);
   });
 
-  test("account deletion does not cascade into employee, shifts, or payments", async () => {
+  test("account deletion removes the employee, attendance, and shifts but keeps sales", async () => {
     const username = uniqueName("nodel_");
     const created = await request(ctx.app)
       .post("/api/v1/admin/users")
@@ -451,17 +451,38 @@ describe("إدارة الحسابات ↔ employee records", () => {
        VALUES (?, '2026-09-02T07:00:00.000Z', '2026-09-02T15:00:00.000Z', 50, 'closed', 18)`,
       [user.id]
     );
+    await ctx.db.run(
+      "INSERT INTO attendance_punches (user_id, punch_time, type, source) VALUES (?, '2026-09-02 08:00:00', 'in', 'manual')",
+      [user.id]
+    );
 
     const removed = await request(ctx.app)
       .delete(`/api/v1/admin/users/${user.id}`)
       .set(authHeader(adminToken));
-    expect(removed.status).toBe(400);
-    expect(removed.body.code).toBe("USER_HAS_EMPLOYEE");
-    expect(await ctx.db.get("SELECT id FROM users WHERE id = ?", [user.id])).toBeTruthy();
-    expect(await ctx.db.get("SELECT id FROM employees WHERE id = ?", [empId])).toBeTruthy();
-    expect(
-      (await ctx.db.get("SELECT COUNT(*) AS n FROM cashier_shifts WHERE cashier_id = ?", [user.id])).n
-    ).toBeGreaterThan(0);
+    expect(removed.status).toBe(204);
+    expect(await ctx.db.get("SELECT id FROM users WHERE id = ?", [user.id])).toBeUndefined();
+    expect(await ctx.db.get("SELECT id FROM employees WHERE id = ?", [empId])).toBeUndefined();
+    expect((await ctx.db.get("SELECT COUNT(*) AS n FROM cashier_shifts WHERE cashier_id = ?", [user.id])).n).toBe(0);
+    expect((await ctx.db.get("SELECT COUNT(*) AS n FROM attendance_punches WHERE user_id = ?", [user.id])).n).toBe(0);
+
+    const seller = uniqueName("seller_");
+    const sellerCreated = await request(ctx.app)
+      .post("/api/v1/admin/users")
+      .set(authHeader(adminToken))
+      .send({ username: seller, password: "staffpass1", role: "cashier" });
+    const sellerUser = unwrap(sellerCreated.body);
+    await ctx.db.run(
+      `INSERT INTO transactions
+         (cashier_id, items_json, subtotal, tax, total, discount, payment_method, shift_id, status, created_at)
+       VALUES (?, '[]', 10, 0, 10, 0, 'cash', NULL, 'completed', datetime('now'))`,
+      [sellerUser.id]
+    );
+    const blocked = await request(ctx.app)
+      .delete(`/api/v1/admin/users/${sellerUser.id}`)
+      .set(authHeader(adminToken));
+    expect(blocked.status).toBe(400);
+    expect(await ctx.db.get("SELECT id FROM users WHERE id = ?", [sellerUser.id])).toBeTruthy();
+    expect((await ctx.db.get("SELECT COUNT(*) AS n FROM transactions WHERE cashier_id = ?", [sellerUser.id])).n).toBe(1);
   });
 
   test("inactive employee stays on office lists and drops out of POS selection", async () => {

@@ -1,11 +1,10 @@
 import { computeCartDiscount } from "./promotions.js";
-import { isKgSoldUnit } from "./cartProduct.js";
 
 export function round2(n) {
   return Math.round(Number(n) * 100) / 100;
 }
 
-/** Same two-step whole-shekel half-up as backend roundScaleSaleTotal. */
+/** Retired. Weighed lines stay at round2; invoice rounding happens once on the total. */
 export function roundScaleSaleTotal(amount) {
   const n = round2(amount);
   if (!Number.isFinite(n)) return 0;
@@ -30,15 +29,6 @@ export function roundPosPayable(amount) {
   else if (remainder > 50) payableAgorot = agorot + (100 - remainder);
   const payable = round2Money((negative ? -1 : 1) * (payableAgorot / 100));
   return { calculated, payable, adjustment: round2Money(payable - calculated) };
-}
-
-function isKgCartLine(item) {
-  if (!item) return false;
-  if (isKgSoldUnit(item)) return true;
-  const units = item.availableUnits || [];
-  const selected =
-    units.find((u) => Number(u.id) === Number(item.unitId ?? item.unit_id)) || null;
-  return isKgSoldUnit(selected) || Boolean(item.weighed);
 }
 
 export function productTaxRate(_product, _settings) {
@@ -87,7 +77,7 @@ export function buildCartLineDiscounts(cartItems, promos) {
  */
 export function computeDealLineTotal(cartItem, promos) {
   const raw = round2(Number(cartItem.subtotal) || Number(cartItem.price) * Number(cartItem.quantity));
-  const lineGross = isKgCartLine(cartItem) ? roundScaleSaleTotal(raw) : raw;
+  const lineGross = raw;
   if (!Array.isArray(promos) || !promos.length) return lineGross;
 
   const lines = buildPromoLines([cartItem]);
@@ -96,8 +86,7 @@ export function computeDealLineTotal(cartItem, promos) {
     (sum, entry) => round2(sum + (Number(entry.discount) || 0)),
     0
   );
-  const afterPromo = round2(Math.max(0, lineGross - lineDiscount));
-  return isKgCartLine(cartItem) ? roundScaleSaleTotal(afterPromo) : afterPromo;
+  return round2(Math.max(0, lineGross - lineDiscount));
 }
 
 /**
@@ -115,7 +104,7 @@ export function estimateCartTotals(cartItems, settings, promos) {
     const qty = Math.max(0, Number(it.quantity) || 0);
     const unitPrice = round2(Number(it.price) || 0);
     const raw = round2(qty * unitPrice);
-    subtotal = round2(subtotal + (isKgCartLine(it) ? roundScaleSaleTotal(raw) : raw));
+    subtotal = round2(subtotal + raw);
   }
 
   const tax = 0;

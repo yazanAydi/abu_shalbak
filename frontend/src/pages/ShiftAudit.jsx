@@ -37,7 +37,14 @@ import CountAdvanceSection from "../components/CountAdvanceSection";
 import ShiftCountTotals from "../components/ShiftCountTotals";
 import { mapShiftDetailToCountTarget } from "../utils/shiftCountSupplierPayment";
 
-const PM = { cash: "نقد", visa: "بطاقة" };
+const PM = { cash: "نقد", visa: "بطاقة", on_account: "ذمة", mixed: "مختلط" };
+
+function savedAdjustmentText(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n === 0) return null;
+  return ils(n);
+}
 
 function ExpectedCashCell({ row }) {
   const breakdown = expectedBreakdownText(row.expected_by_currency);
@@ -95,9 +102,19 @@ function ReceiptTotals({ record, showReceiptNumber = true }) {
       <div>
         المجموع الفرعي: <span className="num">{ils(record.subtotal ?? 0)}</span>
       </div>
+      {Number(record.discount) > 0 ? (
+        <div>
+          الخصم: <span className="num">{ils(record.discount)}</span>
+        </div>
+      ) : null}
       <div>
         الضريبة: <span className="num">{ils(record.tax ?? 0)}</span>
       </div>
+      {savedAdjustmentText(record.rounding_adjustment) ? (
+        <div>
+          تقريب: <span className="num">{savedAdjustmentText(record.rounding_adjustment)}</span>
+        </div>
+      ) : null}
       <div>
         <strong>
           الإجمالي: <span className="num">{ils(record.total ?? 0)}</span>

@@ -24,14 +24,14 @@ describe("POS scale sale rounding", () => {
     }
   });
 
-  test("KG cart line 0.93 × 6 displays 6", () => {
+  test("KG cart line 0.93 × 6 stays 5.58 until the invoice total", () => {
     const item = {
       unitName: "كغم",
       weighed: true,
       quantity: 0.93,
       price: 6,
     };
-    expect(computeDealLineTotal(item, [])).toBe(6);
+    expect(computeDealLineTotal(item, [])).toBe(5.58);
   });
 
   test("package line keeps agorot", () => {
@@ -52,7 +52,9 @@ describe("POS scale sale rounding", () => {
       ],
       { tax_inclusive: true, default_tax_rate: 0 }
     );
-    expect(totals.subtotal).toBe(18);
+    expect(totals.subtotal).toBe(17.58);
+    expect(totals.amountBeforeRounding).toBe(17.58);
+    expect(totals.roundingAdjustment).toBe(0.42);
     expect(totals.total).toBe(18);
   });
 

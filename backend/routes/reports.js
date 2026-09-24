@@ -468,6 +468,8 @@ export function createReportsRouter(db) {
       return res.status(400).json({ error: "الفترة تتجاوز 366 يوماً" });
     }
     let total_sales = 0;
+    let rounding_adjustment = 0;
+    let item_revenue = 0;
     let total_transactions = 0;
     let items_sold = 0;
     let net_sales = 0;
@@ -483,6 +485,8 @@ export function createReportsRouter(db) {
       const r = await aggregateDay(db, dateStr);
       const p = profitByDate.get(dateStr) || {};
       total_sales = round2(total_sales + r.total_sales);
+      rounding_adjustment = round2(rounding_adjustment + (Number(r.rounding_adjustment) || 0));
+      item_revenue = round2(item_revenue + (Number(r.item_revenue) || 0));
       total_transactions += r.total_transactions;
       items_sold += r.items_sold;
       net_sales = round2(net_sales + r.net_sales);
@@ -494,6 +498,8 @@ export function createReportsRouter(db) {
       byDay.push({
         date: dateStr,
         total_sales: r.total_sales,
+        rounding_adjustment: r.rounding_adjustment,
+        item_revenue: r.item_revenue,
         transactions: r.total_transactions,
         net_sales: r.net_sales,
         refunds_total: r.refunds_total,
@@ -519,6 +525,8 @@ export function createReportsRouter(db) {
       from,
       to,
       total_sales,
+      rounding_adjustment,
+      item_revenue,
       total_transactions,
       items_sold,
       net_sales,

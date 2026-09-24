@@ -53,6 +53,28 @@ describe("office sales-report unknown profit copy", () => {
     expect(incompleteProfitNote({ cost_unknown: true })).toBe(INCOMPLETE_PROFIT_AR);
   });
 
+  test("daily print summary shows saved item revenue and invoice rounding", () => {
+    const items = buildDailySummaryItems({
+      net_sales: 67,
+      total_sales: 67,
+      item_revenue: 66.9,
+      rounding_adjustment: 0.1,
+      total_transactions: 2,
+      refund_count: 0,
+      refunds_total: 0,
+      items_sold: 2,
+      cash_total: 67,
+      card_total: 0,
+      on_account_total: 0,
+      change_total: 0,
+      net_cash_total: 67,
+      net_card_total: 0,
+    });
+    expect(items.find((i) => i.label === "إيراد الأصناف").value).toBe("₪66.90");
+    expect(items.find((i) => i.label === "تقريب الفواتير").value).toBe("₪0.10");
+    expect(items.find((i) => i.label === "إجمالي المبيعات").value).toBe("₪67.00");
+  });
+
   test("mixed range totals stay unknown and mark incomplete profit", () => {
     const items = buildRangeSummaryItems({
       from: "2026-09-01",

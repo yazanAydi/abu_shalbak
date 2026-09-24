@@ -1143,3 +1143,105 @@ export async function createEmployeeDebtAccount(db, employeeId, req) {
   }
   return updated;
 }
+
+/**
+ * Remove a login and its employee record, attendance, and shifts.
+ * Completed sales and refunds stay; those rows require the cashier id.
+ */
+export async function deleteUserAccount(db, userId) {
+  const sales = await db.get("SELECT COUNT(*) AS c FROM transactions WHERE cashier_id = ?", [userId]);
+  const refunds = await db.get("SELECT COUNT(*) AS c FROM refunds WHERE cashier_id = ?", [userId]);
+  if (Number(sales?.c) > 0 || Number(refunds?.c) > 0) {
+    throw badRequest("لا يمكن حذف الحساب لأن له مبيعات أو مرتجعات مسجّلة");
+  }
+
+  await withTransaction(db, async () => {
+    const employee = await db.get("SELECT id FROM employees WHERE user_id = ?", [userId]);
+    if (employee) {
+      const employeeId = employee.id;
+      await db.run(
+        `DELETE FROM employee_period_attendance
+         WHERE session_id IN (SELECT id FROM attendance_sessions WHERE user_id = ? OR employee_id = ?)`,
+        [userId, employeeId]
+      );
+      await db.run("DELETE FROM employee_settlements WHERE employee_id = ?", [employeeId]);
+      await db.run("DELETE FROM employee_payroll_payouts WHERE employee_id = ?", [employeeId]);
+      await db.run(
+        `DELETE FROM employee_period_shifts
+         WHERE period_id IN (SELECT id FROM employee_salary_periods WHERE employee_id = ?)`,
+        [employeeId]
+      );
+      await db.run("DELETE FROM employee_salary_periods WHERE employee_id = ?", [employeeId]);
+      await db.run(
+        `DELETE FROM employee_entitlement_shifts
+         WHERE entitlement_id IN (SELECT id FROM employee_salary_entitlements WHERE employee_id = ?)`,
+        [employeeId]
+      );
+      await db.run("DELETE FROM employee_salary_entitlements WHERE employee_id = ?", [employeeId]);
+      await db.run(
+        `UPDATE employee_ledger_entries
+         SET reverses_id = NULL, intended_employee_id = NULL
+         WHERE employee_id = ? OR intended_employee_id = ?`,
+        [employeeId, employeeId]
+      );
+      await db.run(
+        "DELETE FROM employee_ledger_entries WHERE employee_id = ? OR intended_employee_id = ?",
+        [employeeId, employeeId]
+      );
+      await db.run("DELETE FROM employee_events WHERE employee_id = ?", [employeeId]);
+      await db.run("DELETE FROM employee_event_clock WHERE employee_id = ?", [employeeId]);
+      await db.run("DELETE FROM employee_opening_balances WHERE employee_id = ?", [employeeId]);
+      await db.run("DELETE FROM employee_compensation WHERE employee_id = ?", [employeeId]);
+      await db.run("UPDATE transactions SET employee_id = NULL WHERE employee_id = ?", [employeeId]);
+      await db.run("UPDATE on_account_requests SET employee_id = NULL WHERE employee_id = ?", [employeeId]);
+      await db.run("UPDATE advance_requests SET employee_id = NULL WHERE employee_id = ?", [employeeId]);
+      await db.run("DELETE FROM attendance_sessions WHERE user_id = ? OR employee_id = ?", [userId, employeeId]);
+      await db.run("UPDATE employees SET customer_id = NULL WHERE id = ?", [employeeId]);
+      await db.run("DELETE FROM employees WHERE id = ?", [employeeId]);
+    } else {
+      await db.run(
+        `DELETE FROM employee_period_attendance
+         WHERE session_id IN (SELECT id FROM attendance_sessions WHERE user_id = ?)`,
+        [userId]
+      );
+      await db.run("DELETE FROM attendance_sessions WHERE user_id = ?", [userId]);
+    }
+
+    await db.run("DELETE FROM attendance_punches WHERE user_id = ?", [userId]);
+    await db.run("DELETE FROM face_descriptors WHERE user_id = ?", [userId]);
+    await db.run("DELETE FROM attendance_reminder_dismissals WHERE user_id = ?", [userId]);
+
+    await db.run(
+      `DELETE FROM shift_cash_movements
+       WHERE shift_id IN (SELECT id FROM cashier_shifts WHERE cashier_id = ?)`,
+      [userId]
+    );
+    const cashierTables = [
+      "suspended_sales",
+      "customer_cash_debt_requests",
+      "refund_requests",
+      "advance_requests",
+      "on_account_requests",
+      "operation_print_jobs",
+    ];
+    for (const table of cashierTables) {
+      const exists = await db.get("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?", [table]);
+      if (exists) await db.run(`DELETE FROM ${table} WHERE cashier_id = ?`, [userId]);
+    }
+    await db.run("DELETE FROM cashier_shifts WHERE cashier_id = ?", [userId]);
+
+    const tables = await db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
+    for (const { name } of tables) {
+      const fks = await db.all(`PRAGMA foreign_key_list(${name})`);
+      const info = await db.all(`PRAGMA table_info(${name})`);
+      for (const fk of fks) {
+        if (fk.table !== "users") continue;
+        const col = info.find((row) => row.name === fk.from);
+        if (!col || Number(col.notnull) === 1) continue;
+        await db.run(`UPDATE ${name} SET ${fk.from} = NULL WHERE ${fk.from} = ?`, [userId]);
+      }
+    }
+
+    await db.run("DELETE FROM users WHERE id = ?", [userId]);
+  });
+}
