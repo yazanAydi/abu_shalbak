@@ -20,6 +20,7 @@ import {
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import { apiErrorMessage } from "../utils/apiError";
+import { HandoverRejectField } from "../components/CountPendingDecisions";
 
 function formatDt(v) {
   return dateTime(v);
@@ -39,6 +40,7 @@ export default function AdvanceApprovals() {
   const [loading, setLoading] = useState(true);
   const [reviewTarget, setReviewTarget] = useState(null);
   const [reviewNotes, setReviewNotes] = useState("");
+  const [handoverChoice, setHandoverChoice] = useState("");
   const [reviewLoading, setReviewLoading] = useState(false);
   const [staleMessage, setStaleMessage] = useState(null);
   const pollBusy = useRef(false);
@@ -90,6 +92,7 @@ export default function AdvanceApprovals() {
       }
       setReviewTarget({ ...row, ...fresh, action, readOnly: false });
       setReviewNotes("");
+      setHandoverChoice("");
     } catch (e) {
       toast.error(apiErrorMessage(e, "تعذّر فتح الطلب"));
     }
@@ -98,17 +101,28 @@ export default function AdvanceApprovals() {
   function closeReview() {
     setReviewTarget(null);
     setReviewNotes("");
+    setHandoverChoice("");
     setStaleMessage(null);
   }
 
   async function submitReview(e) {
     e.preventDefault();
     if (!reviewTarget || reviewTarget.readOnly) return;
+    const needsHandover =
+      reviewTarget.action === "rejected" && reviewTarget.shift_status === "pending_count";
+    if (needsHandover && handoverChoice !== "returned" && handoverChoice !== "outstanding") {
+      toast.error("حدد هل أُعيد النقد أو البضاعة");
+      return;
+    }
     setReviewLoading(true);
     try {
       await api.put(
         `/api/advance-requests/${reviewTarget.id}`,
-        { status: reviewTarget.action, review_notes: reviewNotes.trim() || null },
+        {
+          status: reviewTarget.action,
+          review_notes: reviewNotes.trim() || null,
+          ...(needsHandover ? { handover_disposition: handoverChoice } : {}),
+        },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       toast.success(reviewTarget.action === "approved" ? "تمت الموافقة" : "تم الرفض");
@@ -306,6 +320,11 @@ export default function AdvanceApprovals() {
               <Notice tone="warn">{staleMessage}</Notice>
             ) : null}
             <form id="advance-review-form" onSubmit={submitReview}>
+              {!reviewTarget.readOnly &&
+              reviewTarget.action === "rejected" &&
+              reviewTarget.shift_status === "pending_count" ? (
+                <HandoverRejectField value={handoverChoice} onChange={setHandoverChoice} />
+              ) : null}
               <p className="ui-hint">
                 {reviewTarget.cashier_username} — {reviewTarget.employee_name}
                 {reviewTarget.employee_id ? ` · رقم ${reviewTarget.employee_id}` : ""} —{" "}

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { formatRefundReason, ils, sortRefunds, statusLabelAr } from "../utils/refundHelpers";
+import { dateTime } from "../utils/format";
 import "./RefundsManagement.css";
 
 const PM = { cash: "نقد", visa: "بطاقة" };
@@ -107,7 +108,7 @@ export default function RefundTable({
                       {st.icon} {st.text}
                     </span>
                   </td>
-                  <td>{r.created_at?.replace("T", " ").slice(0, 16)}</td>
+                  <td>{dateTime(r.created_at)}</td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <button type="button" className="rf-mini-btn" onClick={() => onViewDetails(r)}>
                       تفاصيل
@@ -151,7 +152,7 @@ export default function RefundTable({
               </div>
               <div className="rf-card-row">
                 <span>التاريخ</span>
-                <span>{r.created_at?.replace("T", " ").slice(0, 16)}</span>
+                <span>{dateTime(r.created_at)}</span>
               </div>
               <div className="rf-card-actions" onClick={(e) => e.stopPropagation()}>
                 <input

@@ -7,6 +7,7 @@ import {
   createTestEmployee,
   createAccountantUser,
   configureTelegramApprover,
+  telegramMemberFetch,
 } from "./helpers.js";
 import { defaultAccountantPermissions } from "../utils/accountantPermissions.js";
 import { listPosEmployeeDirectory } from "../services/employeeService.js";
@@ -335,7 +336,7 @@ describe("POS salary advance (employee_id + payment service)", () => {
     process.env.TELEGRAM_SULAF_WEBHOOK_SECRET = "test-sulaf-secret";
     process.env.TELEGRAM_SULAF_CHAT_ID = "6096292832";
     const originalFetch = global.fetch;
-    global.fetch = async () => ({ json: async () => ({ ok: true, result: { message_id: 9 } }) });
+    global.fetch = telegramMemberFetch({ messageId: 9 });
 
     try {
       const emp = await createTestEmployee(ctx.db, { name: "تيليجرام" });
@@ -349,22 +350,24 @@ describe("POS salary advance (employee_id + payment service)", () => {
         callback_query: {
           id: "cq-pos-salary",
           data: `sulaf:approve:${requestId}`,
-          message: { chat: { id: 6096292832 } },
-          from: { id: 6096292832 },
+          message: { message_id: 9, chat: { id: 6096292832 } },
+          from: { id: 6096292832, first_name: "موافقة" },
         },
       });
       expect(result.action).toBe("approve");
       const row = await ctx.db.get("SELECT * FROM advance_requests WHERE id = ?", [requestId]);
       expect(row.status).toBe("approved");
       expect(Number(row.employee_id)).toBe(emp.id);
-      expect(Number(row.manager_id)).toBe(adminId);
+      expect(row.manager_id).toBeNull();
+      expect(row.telegram_actor_id).toBe("6096292832");
+      expect(row.telegram_actor_name).toBe("موافقة");
 
       const again = await handleTelegramUpdate(ctx.db, {
         callback_query: {
           id: "cq-pos-salary-2",
           data: `sulaf:approve:${requestId}`,
-          message: { chat: { id: 6096292832 } },
-          from: { id: 6096292832 },
+          message: { message_id: 9, chat: { id: 6096292832 } },
+          from: { id: 6096292832, first_name: "موافقة" },
         },
       });
       expect(again.action).toBe("already_handled");

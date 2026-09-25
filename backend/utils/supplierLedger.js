@@ -1,4 +1,5 @@
 import { round2 } from "./tax.js";
+import { previousCalendarYmd } from "./shopTime.js";
 
 const OPENING_ENTRY_SOURCE_TYPE = "opening_balance_import";
 
@@ -6,9 +7,7 @@ const OPENING_ENTRY_SOURCE_TYPE = "opening_balance_import";
  * @param {string} isoDate yyyy-mm-dd
  */
 export function dayBefore(isoDate) {
-  const d = new Date(`${isoDate}T12:00:00`);
-  d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return previousCalendarYmd(isoDate);
 }
 
 /**

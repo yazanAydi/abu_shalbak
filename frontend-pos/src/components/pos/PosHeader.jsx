@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { dateTime } from "../../utils/format";
+import { dateOnly, dateTime } from "../../utils/format";
 import { SHOP_TZ } from "../../utils/shopTime";
 import BarcodeInput from "../BarcodeInput";
 
@@ -54,7 +54,13 @@ export default function PosHeader({
         {posNeedsShift && activeShift ? (
           <>
             <span className="pos-pill">
-              وردية {activeShift.start_time ? dateTime(activeShift.start_time) : "—"}
+              وقت الفتح {activeShift.start_time ? dateTime(activeShift.start_time) : "—"}
+              {activeShift.business_day ? (
+                <>
+                  <span className="pos-meta-divider"> · </span>
+                  يوم العمل {dateOnly(activeShift.business_day)}
+                </>
+              ) : null}
               <span className="pos-meta-divider"> · </span>
               مبيعات: {shiftTxCount}
             </span>

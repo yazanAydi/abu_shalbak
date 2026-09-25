@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { validate } from "../middleware/validate.js";
-import { onAccountRequestReviewSchema, posCustomerCashDebtSchema } from "../middleware/schemas.js";
+import { handoverFollowUpSchema, onAccountRequestReviewSchema, posCustomerCashDebtSchema } from "../middleware/schemas.js";
 import {
   acknowledgeCustomerCashDebtDecision,
   approveCustomerCashDebtRequest,
@@ -12,6 +12,7 @@ import {
   listCustomerCashDebtRequestHistory,
   listPendingCustomerCashDebtRequests,
   listUnreadCustomerCashDebtDecisions,
+  recordCustomerCashDebtHandover,
   rejectCustomerCashDebtRequest,
 } from "../services/customerCashDebtRequestService.js";
 
@@ -81,6 +82,18 @@ export function createCustomerCashDebtRequestsRouter(db) {
     }
   });
 
+  router.post("/:id/handover", requireAuth, requireApprovals, validate(handoverFollowUpSchema), async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
+    try {
+      const row = await recordCustomerCashDebtHandover(db, id, req.user.id, req.body.disposition);
+      res.json({ success: true, request: row });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
+  });
+
   router.put("/:id", requireAuth, requireApprovals, validate(onAccountRequestReviewSchema), async (req, res, next) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
@@ -91,7 +104,9 @@ export function createCustomerCashDebtRequestsRouter(db) {
           ? await approveCustomerCashDebtRequest(db, id, req.user, note, req, "admin", {
               overrideCreditLimit: req.body.override_credit_limit === true,
             })
-          : await rejectCustomerCashDebtRequest(db, id, req.user, note, req, "admin");
+          : await rejectCustomerCashDebtRequest(db, id, req.user, note, req, "admin", {
+              handoverDisposition: req.body.handover_disposition,
+            });
       res.json({ success: true, ...result });
     } catch (e) {
       if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });

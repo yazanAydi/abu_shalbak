@@ -7,6 +7,7 @@ import {
   authHeader,
   configureTelegramApprover,
   createTestEmployee,
+  telegramMemberFetch,
 } from "./helpers.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 
@@ -22,9 +23,7 @@ describe("Telegram sulaf callback", () => {
     process.env.TELEGRAM_SULAF_CHAT_ID = managerChatId;
 
     originalFetch = global.fetch;
-    global.fetch = jest.fn(async () => ({
-      json: async () => ({ ok: true, result: { message_id: 1 } }),
-    }));
+    global.fetch = jest.fn(telegramMemberFetch({ messageId: 1 }));
 
     ctx = await createTestContext();
     await configureTelegramApprover(ctx.db);
@@ -64,7 +63,7 @@ describe("Telegram sulaf callback", () => {
       callback_query: {
         id: "test-cq-sulaf",
         data: `sulaf:approve:${requestId}`,
-        message: { chat: { id: Number(managerChatId) } },
+        message: { message_id: 1, chat: { id: Number(managerChatId) } },
         from: { id: Number(managerChatId) },
       },
     });
@@ -97,7 +96,7 @@ describe("Telegram sulaf callback", () => {
       callback_query: {
         id: "test-cq-sulaf-reject",
         data: `sulaf:reject:${requestId}`,
-        message: { chat: { id: Number(managerChatId) } },
+        message: { message_id: 1, chat: { id: Number(managerChatId) } },
         from: { id: Number(managerChatId) },
       },
     });

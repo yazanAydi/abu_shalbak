@@ -231,17 +231,54 @@ function refundItemLinesForBudget(items, reservedChars) {
   });
 }
 
+export function redactTelegramText(text) {
+  return String(text || "")
+    .replace(/https?:\/\/api\.telegram\.org\/bot[^\s"']+/gi, "https://api.telegram.org/bot<redacted>/…")
+    .replace(/bot\d{6,}:[A-Za-z0-9_-]+/g, "bot<redacted>");
+}
+
+export class TelegramApiError extends Error {
+  constructor(method, data) {
+    const description = redactTelegramText(data?.description || `Telegram API error: ${method}`);
+    super(description);
+    this.name = "TelegramApiError";
+    this.errorCode = data?.error_code ?? null;
+    this.description = description;
+    this.method = method;
+  }
+}
+
+export function telegramFailureLog(err) {
+  const code = err?.errorCode ?? err?.error_code ?? "";
+  const description = redactTelegramText(err?.description || err?.message || err);
+  return `error_code=${code || "none"} description=${description}`;
+}
+
+export function logApprovalStage(stage, fields = {}) {
+  const parts = [`stage=${stage}`];
+  for (const [key, value] of Object.entries(fields)) {
+    if (value == null || value === "") continue;
+    parts.push(`${key}=${redactTelegramText(value)}`);
+  }
+  console.log(`[telegram-approval] ${parts.join(" ")}`);
+}
+
 async function telegramRequest(method, body, token) {
   if (!token) throw new Error("Telegram bot token not configured");
-  const res = await fetch(`${API_BASE}${token}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!data.ok) {
-    throw new Error(data.description || `Telegram API error: ${method}`);
+  let data;
+  try {
+    const res = await fetch(`${API_BASE}${token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    data = await res.json();
+  } catch (err) {
+    const wrapped = new Error(redactTelegramText(err?.message || err));
+    wrapped.errorCode = null;
+    throw wrapped;
   }
+  if (!data.ok) throw new TelegramApiError(method, data);
   return data.result;
 }
 
@@ -256,11 +293,16 @@ export async function telegramGet(method, query = {}, token) {
   }
   const qs = params.toString();
   const url = `${API_BASE}${token}/${method}${qs ? `?${qs}` : ""}`;
-  const res = await fetch(url);
-  const data = await res.json();
-  if (!data.ok) {
-    throw new Error(data.description || `Telegram API error: ${method}`);
+  let data;
+  try {
+    const res = await fetch(url);
+    data = await res.json();
+  } catch (err) {
+    const wrapped = new Error(redactTelegramText(err?.message || err));
+    wrapped.errorCode = null;
+    throw wrapped;
   }
+  if (!data.ok) throw new TelegramApiError(method, data);
   return data.result;
 }
 
@@ -648,7 +690,7 @@ export function parseApprovalCallbackData(data) {
 }
 
 function approvalBotKind(botKind) {
-  if (botKind === "expense" || botKind === "supplier" || botKind === "approvals") return "approvals";
+  if (botKind === "expense" || botKind === "supplier" || botKind === "consumption" || botKind === "approvals") return "approvals";
   if (botKind === "zimma" || botKind === "cashdebt") return "zimma";
   if (botKind === "sulaf") return "sulaf";
   return "refund";
@@ -684,13 +726,6 @@ export function parseApprovalsCallbackData(data) {
   return { kind: m[1], action: m[2], requestId: Number(m[3]) };
 }
 
-export function parseApprovalsApproverIds() {
-  return env("TELEGRAM_APPROVALS_USER_IDS")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 /**
  * Telegram guarantees getChatMember only when the bot is a group administrator.
  * No extra admin rights are required. Privacy mode can stay enabled.
@@ -705,21 +740,56 @@ export function isActiveChatMember(member) {
   return false;
 }
 
-export async function fetchApprovalsChatMember(userId, get = telegramGet) {
-  const { token, chatId } = approvalsBotConfig();
+export function botConfigForKind(botKind) {
+  const kind = approvalBotKind(botKind);
+  if (kind === "approvals") return approvalsBotConfig();
+  if (kind === "zimma") return zimmaBotConfig();
+  if (kind === "sulaf") return sulafBotConfig();
+  return refundBotConfig();
+}
+
+export function isConfiguredGroupChat(chatId, botKind = "refund") {
+  const expected = botConfigForKind(botKind).chatId;
+  return !!expected && String(chatId) === String(expected);
+}
+
+export async function fetchBotChatMember(botKind, userId, get = telegramGet) {
+  const { token, chatId } = botConfigForKind(botKind);
   if (!token || !chatId || userId == null || String(userId).trim() === "") return null;
   return get("getChatMember", { chat_id: chatId, user_id: String(userId) }, token);
 }
 
-export function isApprovalsGroupChat(chatId) {
-  const expected = approvalsBotConfig().chatId;
-  return !!expected && String(chatId) === expected;
+export async function fetchApprovalsChatMember(userId, get = telegramGet) {
+  return fetchBotChatMember("approvals", userId, get);
 }
 
-export function approvalsPermissionKey(kind) {
-  if (kind === "expense") return "expenses";
-  if (kind === "supplier") return "suppliers";
-  return null;
+export function isApprovalsGroupChat(chatId) {
+  return isConfiguredGroupChat(chatId, "approvals");
+}
+
+/** Display name for the person who tapped the button: full name, then @username, then id. */
+export function telegramActorFromUser(from) {
+  const id = from?.id == null ? "" : String(from.id);
+  const full = [from?.first_name, from?.last_name]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  const username = from?.username ? `@${String(from.username).replace(/^@/, "")}` : "";
+  return {
+    id,
+    username: from?.username ? String(from.username).replace(/^@/, "") : null,
+    name: full || username || id,
+  };
+}
+
+/** The button must be the original message in this bot's configured group. */
+export function callbackMatchesStoredMessage(callbackQuery, storedMessageId, botKind) {
+  const message = callbackQuery?.message;
+  if (!message || storedMessageId == null || String(storedMessageId).trim() === "") return false;
+  return (
+    String(message.message_id) === String(storedMessageId) &&
+    isConfiguredGroupChat(message.chat?.id, botKind)
+  );
 }
 
 export function approvalsCallbackMatchesTarget(parsed, callbackQuery, target) {
@@ -857,30 +927,7 @@ export async function editGroupApprovalMessage({ kind, messageId, requestId, sta
 }
 
 export function isManagerChat(chatId, botKind = "refund") {
-  const kind = approvalBotKind(botKind);
-  const config =
-    kind === "zimma" ? zimmaBotConfig() : kind === "sulaf" ? sulafBotConfig() : refundBotConfig();
-  return String(chatId) === config.chatId;
-}
-
-export function parseTelegramApproverIds() {
-  return env("TELEGRAM_MANAGER_USER_IDS")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/**
- * If TELEGRAM_MANAGER_USER_IDS is set (comma-separated Telegram user IDs),
- * only those accounts may approve. If unset, any click inside the configured
- * manager chat is accepted (group or private). App roles are not consulted.
- */
-export function isAllowedTelegramApprover(fromId, chatId, botKind = "refund") {
-  const from = fromId == null ? "" : String(fromId);
-  if (!from) return false;
-  const allowList = parseTelegramApproverIds();
-  if (allowList.length > 0) return allowList.includes(from);
-  return isManagerChat(chatId, botKind);
+  return isConfiguredGroupChat(chatId, botKind);
 }
 
 function buildApprovalKeyboard(prefix, requestId, withButtons) {

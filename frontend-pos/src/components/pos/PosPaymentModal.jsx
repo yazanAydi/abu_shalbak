@@ -363,7 +363,7 @@ export default function PosPaymentModal({
 
   const submittingRef = useRef(false);
   const handleTarhil = useCallback(() => {
-    if (submittingRef.current) return;
+    if (submittingRef.current || isLoading) return;
     if (!canTarhil) {
       if (selectedPayment === "cash" && !cashValid) {
         setCashErr("المبلغ المستلم (بالمعادل بالشيكل) يجب أن يغطي الإجمالي");
@@ -441,6 +441,7 @@ export default function PosPaymentModal({
     onTarhil,
     selectedPayment,
     total,
+    isLoading,
   ]);
 
   const handleTarhilRef = useRef(handleTarhil);
@@ -471,8 +472,8 @@ export default function PosPaymentModal({
       handleTarhilRef.current();
     }
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
 
   if (!open) return null;

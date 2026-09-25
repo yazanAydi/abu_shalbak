@@ -236,6 +236,19 @@ describe("hourly attendance sessions", () => {
     expect(open.id).toBeTruthy();
   });
 
+  test("automatic checkout is 12 hours of real time across midnight", async () => {
+    const staff = await makeStaff(ctx.db, "midnight-shelf", "shelves_employee", 10);
+    await ctx.db.run("UPDATE employees SET wage_basis = 'hourly' WHERE id = ?", [staff.employeeId]);
+    const inMs = shopLocalToUtcMs("2026-09-24", 20, 0);
+    setAttendanceNow(inMs + 12 * 3600000);
+    const row = await checkInAttendance(ctx.db, { userId: staff.userId, checkInAt: "2026-09-24 20:00:00" });
+    expect(row.status).toBe("closed");
+    expect(row.close_source).toBe("auto");
+    expect(row.check_out_at).toBe(utcMsToSql(inMs + 12 * 3600000));
+    expect(shiftHours(utcMsToSql(inMs), row.check_out_at)).toBe(12);
+    expect(shiftPay(10, 12)).toBe(120);
+  });
+
   test("historical overdue check-in closes, and a correction is not overwritten", async () => {
     const staff = await makeStaff(ctx.db, "history-shelf", "shelves_employee", 20);
     await ctx.db.run("UPDATE employees SET wage_basis = 'hourly' WHERE id = ?", [staff.employeeId]);

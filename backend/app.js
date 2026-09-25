@@ -48,6 +48,7 @@ import { requireAuth, enforceMustChangePassword } from "./middleware/auth.js";
 import { HttpError } from "./utils/httpError.js";
 import { queryCountMiddleware } from "./utils/queryStats.js";
 import { isOriginAllowed, parseAllowedOrigins } from "./utils/corsOrigins.js";
+import { SHOP_TZ } from "./utils/shopTime.js";
 import { isPosPublicPath, withPosPrintHelperConnectSrc } from "./utils/posContentSecurityPolicy.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -58,6 +59,7 @@ function mountApiRoutes(router, db, dbPath, useEnvelope = false) {
     res.json({
       ok: true,
       serverTime: new Date().toISOString(),
+      shopTimeZone: SHOP_TZ,
       timezone: process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
       approvalsTelegram: {
         tokenConfigured: Boolean(String(process.env.TELEGRAM_APPROVALS_BOT_TOKEN || "").trim()),

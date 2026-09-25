@@ -10,6 +10,8 @@ import {
   sendExpenseApprovalMessage,
   sendSupplierPaymentApprovalMessage,
   editGroupApprovalMessage,
+  logApprovalStage,
+  telegramFailureLog,
 } from "../utils/telegram.js";
 import { enqueueOperationPrint } from "./operationPrintService.js";
 import {
@@ -125,8 +127,9 @@ export async function createExpenseApprovalRequest(db, input) {
         telegramMessageId,
         created.request.id,
       ]);
+      logApprovalStage("sent", { request: created.request.id, kind: "expense", message: telegramMessageId });
     } catch (e) {
-      console.error("Telegram expense approval send failed:", e.message);
+      logApprovalStage("send_failed", { request: created.request.id, kind: "expense", detail: telegramFailureLog(e) });
       telegramMessageId = null;
     }
   }
@@ -234,10 +237,21 @@ export async function createSupplierPaymentApprovalRequest(db, input) {
         "UPDATE supplier_payment_approval_requests SET telegram_message_id = ? WHERE id = ?",
         [telegramMessageId, created.request.id]
       );
+      logApprovalStage("sent", { request: created.request.id, kind: "supplier", message: telegramMessageId });
     } catch (e) {
-      console.error("Telegram supplier approval send failed:", e.message);
+      logApprovalStage("send_failed", {
+        request: created.request.id,
+        kind: "supplier",
+        detail: telegramFailureLog(e),
+      });
       telegramMessageId = null;
     }
+  } else if (!created.replayed) {
+    logApprovalStage("send_skipped", {
+      request: created.request.id,
+      kind: "supplier",
+      detail: "approvals bot not configured",
+    });
   }
 
   return {
@@ -266,7 +280,7 @@ async function editAfter(kind, request, status, approverName) {
       approverName,
     });
   } catch (e) {
-    console.error("Telegram approvals edit failed:", e.message);
+    console.error(`[telegram-approval] stage=edit_failed request=${request.id} kind=${kind} ${telegramFailureLog(e)}`);
   }
 }
 
@@ -297,7 +311,7 @@ export async function approveExpenseApprovalRequest(db, requestId, managerUser, 
     const info = await db.run(
       `UPDATE expense_approval_requests
          SET status = 'approved', manager_id = ?, operating_expense_id = ?, decision_source = ?,
-             telegram_actor_id = ?, telegram_actor_username = ?, approved_at = datetime('now')
+             telegram_actor_id = ?, telegram_actor_username = ?, telegram_actor_name = ?, approved_at = datetime('now')
        WHERE id = ? AND status = 'pending'`,
       [
         decisionSource === "telegram" ? null : managerUser?.id ?? null,
@@ -305,6 +319,7 @@ export async function approveExpenseApprovalRequest(db, requestId, managerUser, 
         decisionSource,
         actor.telegramActor?.id || null,
         actor.telegramActor?.username || null,
+        actor.telegramActor?.name || null,
         request.id,
       ]
     );
@@ -331,16 +346,18 @@ export async function approveExpenseApprovalRequest(db, requestId, managerUser, 
         note: request.reference_note,
         amountLabel: `المبلغ ${Number(request.amount).toFixed(2)} شيقل`,
         footer: "اعتُمد بعد موافقة المجموعة",
-        managerName: actor.telegramActor?.username || managerUser?.username || "",
+        managerName: actor.telegramActor?.name || actor.telegramActor?.username || managerUser?.username || "",
       },
     });
-    await logAuditUser(db, managerUser || { id: null, username: actor.telegramActor?.username || "telegram" }, AUDIT_ACTIONS.VOUCHER_POST, "expense_approval_requests", request.id, { status: "pending" }, {
+    await logAuditUser(db, managerUser || { id: null, username: actor.telegramActor?.name || actor.telegramActor?.username || "telegram" }, AUDIT_ACTIONS.VOUCHER_POST, "expense_approval_requests", request.id, { status: "pending" }, {
       operating_expense_id: ins.lastID,
       decision_source: decisionSource,
+      telegram_user_id: actor.telegramActor?.id || null,
+      telegram_actor_name: actor.telegramActor?.name || null,
     });
     return db.get("SELECT * FROM expense_approval_requests WHERE id = ?", [request.id]);
   });
-  await editAfter("expense", updated, "approved", actor.telegramActor?.username || managerUser?.username);
+  await editAfter("expense", updated, "approved", actor.telegramActor?.name || actor.telegramActor?.username || managerUser?.username);
   return updated;
 }
 
@@ -350,9 +367,17 @@ export async function rejectExpenseApprovalRequest(db, requestId, managerUser, d
     const before = await db.get("SELECT COUNT(*) AS n FROM operating_expenses");
     const info = await db.run(
       `UPDATE expense_approval_requests
-         SET status = 'rejected', manager_id = ?, decision_source = ?, rejected_at = datetime('now')
+         SET status = 'rejected', manager_id = ?, decision_source = ?,
+             telegram_actor_id = ?, telegram_actor_username = ?, telegram_actor_name = ?, rejected_at = datetime('now')
        WHERE id = ? AND status = 'pending'`,
-      [decisionSource === "telegram" ? null : managerUser?.id ?? null, decisionSource, requestId]
+      [
+        decisionSource === "telegram" ? null : managerUser?.id ?? null,
+        decisionSource,
+        actor.telegramActor?.id || null,
+        actor.telegramActor?.username || null,
+        actor.telegramActor?.name || null,
+        requestId,
+      ]
     );
     if (!info.changes) {
       const err = new HttpError(409, "تمت المعالجة مسبقاً", "ALREADY_HANDLED");
@@ -363,7 +388,7 @@ export async function rejectExpenseApprovalRequest(db, requestId, managerUser, d
     if (Number(before.n) !== Number(after.n)) throw new Error("reject must not post an expense");
     return db.get("SELECT * FROM expense_approval_requests WHERE id = ?", [requestId]);
   });
-  await editAfter("expense", updated, "rejected", managerUser.username);
+  await editAfter("expense", updated, "rejected", actor.telegramActor?.name || actor.telegramActor?.username || managerUser?.username);
   return updated;
 }
 
@@ -400,12 +425,12 @@ export async function approveSupplierPaymentApprovalRequest(db, requestId, manag
       req,
       paidOn: forgotten ? voucherDateForShift(shift) : shopTodayYmd(),
       forgotten,
-      managerName: actor.telegramActor?.username || managerUser?.username || "",
+      managerName: actor.telegramActor?.name || actor.telegramActor?.username || managerUser?.username || "",
     });
     const info = await db.run(
       `UPDATE supplier_payment_approval_requests
          SET status = 'approved', manager_id = ?, voucher_id = ?, decision_source = ?,
-             telegram_actor_id = ?, telegram_actor_username = ?, approved_at = datetime('now')
+             telegram_actor_id = ?, telegram_actor_username = ?, telegram_actor_name = ?, approved_at = datetime('now')
        WHERE id = ? AND status = 'pending'`,
       [
         decisionSource === "telegram" ? null : managerUser?.id ?? null,
@@ -413,6 +438,7 @@ export async function approveSupplierPaymentApprovalRequest(db, requestId, manag
         decisionSource,
         actor.telegramActor?.id || null,
         actor.telegramActor?.username || null,
+        actor.telegramActor?.name || null,
         request.id,
       ]
     );
@@ -423,7 +449,7 @@ export async function approveSupplierPaymentApprovalRequest(db, requestId, manag
     }
     return { request: await db.get("SELECT * FROM supplier_payment_approval_requests WHERE id = ?", [request.id]), posted };
   });
-  await editAfter("supplier", updated.request, "approved", actor.telegramActor?.username || managerUser?.username);
+  await editAfter("supplier", updated.request, "approved", actor.telegramActor?.name || actor.telegramActor?.username || managerUser?.username);
   return { ...updated.posted, request_id: updated.request.id, status: "approved", pending_approval: false };
 }
 
@@ -433,13 +459,14 @@ export async function rejectSupplierPaymentApprovalRequest(db, requestId, manage
     const before = await db.get("SELECT COUNT(*) AS n FROM vouchers");
     const info = await db.run(
       `UPDATE supplier_payment_approval_requests
-         SET status = 'rejected', manager_id = ?, decision_source = ?, telegram_actor_id = ?, telegram_actor_username = ?, rejected_at = datetime('now')
+         SET status = 'rejected', manager_id = ?, decision_source = ?, telegram_actor_id = ?, telegram_actor_username = ?, telegram_actor_name = ?, rejected_at = datetime('now')
        WHERE id = ? AND status = 'pending'`,
       [
         decisionSource === "telegram" ? null : managerUser?.id ?? null,
         decisionSource,
         actor.telegramActor?.id || null,
         actor.telegramActor?.username || null,
+        actor.telegramActor?.name || null,
         requestId,
       ]
     );
@@ -452,7 +479,7 @@ export async function rejectSupplierPaymentApprovalRequest(db, requestId, manage
     if (Number(before.n) !== Number(after.n)) throw new Error("reject must not post a voucher");
     return db.get("SELECT * FROM supplier_payment_approval_requests WHERE id = ?", [requestId]);
   });
-  await editAfter("supplier", updated, "rejected", actor.telegramActor?.username || managerUser?.username);
+  await editAfter("supplier", updated, "rejected", actor.telegramActor?.name || actor.telegramActor?.username || managerUser?.username);
   return updated;
 }
 
@@ -460,12 +487,93 @@ export async function getExpenseApprovalRequestById(db, id) {
   return db.get("SELECT * FROM expense_approval_requests WHERE id = ?", [id]);
 }
 
-export async function getSupplierPaymentApprovalRequestById(db, id) {
-  return db.get(
-    `SELECT r.*, u.username AS cashier_username
+const SUPPLIER_REQUEST_SELECT = `
+  SELECT r.*,
+         cashier.username AS cashier_username,
+         manager.username AS manager_username,
+         recorder.username AS recorded_by_username
+    FROM supplier_payment_approval_requests r
+    JOIN users cashier ON cashier.id = r.cashier_id
+    LEFT JOIN users manager ON manager.id = r.manager_id
+    LEFT JOIN users recorder ON recorder.id = r.recorded_by_id
+`;
+
+function decisionFields(row) {
+  const fromTelegram = row.decision_source === "telegram";
+  return {
+    decision_source: row.decision_source || null,
+    decision_actor: fromTelegram
+      ? row.telegram_actor_username || (row.telegram_actor_id ? String(row.telegram_actor_id) : null)
+      : row.manager_username || null,
+    decision_at: row.approved_at || row.rejected_at || null,
+  };
+}
+
+function queueFilter(status) {
+  const value = String(status || "pending").toLowerCase();
+  if (!["pending", "approved", "rejected", "all"].includes(value)) {
+    throw badRequest("حالة غير صالحة", "VALIDATION_ERROR");
+  }
+  return value;
+}
+
+export function presentSupplierPaymentApproval(row) {
+  const forgotten = Number(row.forgotten) === 1;
+  return {
+    id: row.id,
+    request_id: row.id,
+    created_at: row.created_at,
+    cashier_id: row.cashier_id,
+    cashier_username: row.cashier_username || null,
+    shift_id: row.shift_id,
+    supplier_id: row.supplier_id,
+    supplier_name: row.supplier_name,
+    amount: round2(Number(row.amount) || 0),
+    notes: row.notes || null,
+    status: row.status,
+    forgotten: forgotten ? 1 : 0,
+    already_paid: forgotten,
+    origin: forgotten ? "shift_count" : "pos",
+    origin_label: forgotten ? "عد الصندوق — دفعة سابقة" : "صندوق الكاشير",
+    recorded_by_username: row.recorded_by_username || null,
+    manager_id: row.manager_id || null,
+    manager_username: row.manager_username || null,
+    telegram_actor_id: row.telegram_actor_id || null,
+    telegram_actor_username: row.telegram_actor_username || null,
+    telegram_message_id: row.telegram_message_id || null,
+    voucher_id: row.voucher_id || null,
+    can_reprint: row.status === "approved" && row.voucher_id != null,
+    ...decisionFields(row),
+  };
+}
+
+export async function listUnreadSupplierPaymentDecisions(db, cashierId) {
+  return db.all(
+    `SELECT r.id, r.status, r.amount, r.supplier_name, r.notes, r.shift_id, r.voucher_id,
+            r.created_at, r.approved_at, r.rejected_at, r.decision_source
      FROM supplier_payment_approval_requests r
-     JOIN users u ON u.id = r.cashier_id
-     WHERE r.id = ?`,
-    [id]
+     WHERE r.cashier_id = ?
+       AND r.status IN ('approved', 'rejected')
+       AND r.cashier_acknowledged_at IS NULL
+     ORDER BY COALESCE(r.approved_at, r.rejected_at) ASC, r.id ASC`,
+    [Number(cashierId)]
   );
+}
+
+export async function listSupplierPaymentApprovalRequests(db, status) {
+  const filter = queueFilter(status);
+  const where = filter === "all" ? "" : "WHERE r.status = ?";
+  const params = filter === "all" ? [] : [filter];
+  const order = filter === "pending" ? "r.created_at ASC, r.id ASC" : "r.created_at DESC, r.id DESC";
+  const rows = await db.all(`${SUPPLIER_REQUEST_SELECT} ${where} ORDER BY ${order}`, params);
+  return rows.map(presentSupplierPaymentApproval);
+}
+
+export async function getSupplierPaymentApprovalRequestById(db, id) {
+  return db.get(`${SUPPLIER_REQUEST_SELECT} WHERE r.id = ?`, [id]);
+}
+
+export async function getPresentedSupplierPaymentApproval(db, id) {
+  const row = await getSupplierPaymentApprovalRequestById(db, id);
+  return row ? presentSupplierPaymentApproval(row) : null;
 }

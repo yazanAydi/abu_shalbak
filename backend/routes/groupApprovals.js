@@ -1,10 +1,13 @@
 import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
+import { reprintOperationByReference } from "../services/operationPrintService.js";
 import {
   approveShopConsumptionRequest,
   rejectShopConsumptionRequest,
-  getShopConsumptionRequestById,
+  getPresentedShopConsumptionRequest,
+  listShopConsumptionRequests,
+  listUnreadShopConsumptionDecisions,
 } from "../services/shopConsumptionService.js";
 import {
   approveExpenseApprovalRequest,
@@ -13,7 +16,9 @@ import {
   rejectSupplierPaymentApprovalRequest,
   createExpenseApprovalRequest,
   getExpenseApprovalRequestById,
-  getSupplierPaymentApprovalRequestById,
+  getPresentedSupplierPaymentApproval,
+  listSupplierPaymentApprovalRequests,
+  listUnreadSupplierPaymentDecisions,
 } from "../services/groupApprovalService.js";
 
 function review(action) {
@@ -81,12 +86,48 @@ export function createExpenseApprovalRouter(db) {
   return router;
 }
 
+async function reprintPosted(db, row, kind, referenceId) {
+  if (!row || row.status !== "approved" || referenceId == null) {
+    const err = new Error("لا توجد عملية مرحّلة لإعادة طباعتها");
+    err.status = 409;
+    err.code = "NOT_POSTED";
+    throw err;
+  }
+  return reprintOperationByReference(db, kind, referenceId);
+}
+
 export function createShopConsumptionApprovalRouter(db) {
   const router = Router();
   const requireExpenses = requireReportsPermission(db, "expenses");
+  router.get("/", requireAuth, requireExpenses, async (req, res, next) => {
+    try {
+      res.json(await listShopConsumptionRequests(db, req.query.status));
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
+  });
+  router.get("/mine/unread", requireAuth, requirePosAccess, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(await listUnreadShopConsumptionDecisions(db, req.user.id));
+  });
+  router.post("/:id/acknowledge", requireAuth, requirePosAccess, async (req, res, next) => {
+    try {
+      const info = await db.run(
+        `UPDATE shop_consumption_requests
+           SET cashier_acknowledged_at = datetime('now')
+         WHERE id = ? AND cashier_id = ? AND status IN ('approved', 'rejected')`,
+        [req.params.id, req.user.id]
+      );
+      if (!info.changes) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
+      res.json({ success: true });
+    } catch (e) {
+      next(e);
+    }
+  });
   router.get("/:id", requireAuth, async (req, res, next) => {
     try {
-      const row = await getShopConsumptionRequestById(db, req.params.id);
+      const row = await getPresentedShopConsumptionRequest(db, req.params.id);
       if (!row) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
       const isCashier = Number(row.cashier_id) === Number(req.user.id);
       const canReview = await userHasAccountantPermission(db, req.user, "expenses");
@@ -122,15 +163,36 @@ export function createShopConsumptionApprovalRouter(db) {
       next(e);
     }
   });
+  router.post("/:id/reprint", requireAuth, requireExpenses, async (req, res, next) => {
+    try {
+      const row = await getPresentedShopConsumptionRequest(db, req.params.id);
+      res.json(await reprintPosted(db, row, "shop_consumption", row?.consumption_id));
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
+  });
   return router;
 }
 
 export function createSupplierPaymentApprovalRouter(db) {
   const router = Router();
   const requireSuppliers = requireReportsPermission(db, "suppliers");
+  router.get("/", requireAuth, requireSuppliers, async (req, res, next) => {
+    try {
+      res.json(await listSupplierPaymentApprovalRequests(db, req.query.status));
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
+  });
+  router.get("/mine/unread", requireAuth, requirePosAccess, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(await listUnreadSupplierPaymentDecisions(db, req.user.id));
+  });
   router.get("/:id", requireAuth, async (req, res, next) => {
     try {
-      const row = await getSupplierPaymentApprovalRequestById(db, req.params.id);
+      const row = await getPresentedSupplierPaymentApproval(db, req.params.id);
       if (!row) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
       const isCashier = Number(row.cashier_id) === Number(req.user.id);
       const canReview = await userHasAccountantPermission(db, req.user, "suppliers");
@@ -161,5 +223,14 @@ export function createSupplierPaymentApprovalRouter(db) {
   router.post("/:id/reject", requireAuth, requireSuppliers, (req, res, next) =>
     review("reject")(db, req, res, next, "supplier")
   );
+  router.post("/:id/reprint", requireAuth, requireSuppliers, async (req, res, next) => {
+    try {
+      const row = await getPresentedSupplierPaymentApproval(db, req.params.id);
+      res.json(await reprintPosted(db, row, "supplier_payment", row?.voucher_id));
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
+  });
   return router;
 }

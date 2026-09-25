@@ -1,14 +1,16 @@
 import { handleTelegramUpdate } from "./telegramUpdateService.js";
 import {
   getApprovalBotPollConfigs,
+  getApprovalsBotToken,
   getApprovalsChatId,
   isApprovalsBotTokenConfigured,
+  telegramFailureLog,
   telegramGet,
 } from "../utils/telegram.js";
 import { loadPollOffset, processPolledUpdate } from "./telegramPollRecovery.js";
 
 const POLL_TIMEOUT_SEC = 30;
-const ERROR_RETRY_MS = 100;
+const ERROR_RETRY_MS = 2000;
 
 export function isTelegramPollingEnabled() {
   return (
@@ -77,7 +79,7 @@ export function startTelegramBotPollLoops(db, bots, options = {}) {
           }
         } catch (e) {
           if (!stopped) {
-            console.error(`[telegram-poll] Error (${bot.kind}):`, e.message);
+            console.error(`[telegram-poll] Error (${bot.kind}): ${telegramFailureLog(e)}`);
             await new Promise((r) => setTimeout(r, errorRetryMs));
           }
         }
@@ -93,11 +95,37 @@ export function startTelegramBotPollLoops(db, bots, options = {}) {
 /**
  * Long-poll Telegram getUpdates for all approval bots (localhost / LAN store).
  */
+async function logApprovalsBotAccess() {
+  if (!isApprovalsBotTokenConfigured()) return;
+  try {
+    const me = await telegramGet("getMe", {}, getApprovalsBotToken());
+    console.log(`[telegram-poll] approvals bot id=${me?.id ?? "?"} username=@${me?.username || "?"}`);
+    const chatId = getApprovalsChatId();
+    if (!chatId) {
+      console.warn("[telegram-poll] TELEGRAM_APPROVALS_CHAT_ID is empty; approval messages will not be sent");
+      return;
+    }
+    const member = await telegramGet(
+      "getChatMember",
+      { chat_id: chatId, user_id: String(me.id) },
+      getApprovalsBotToken()
+    );
+    console.log(`[telegram-poll] approvals bot chat_status=${member?.status || "unknown"}`);
+    if (member?.status !== "administrator" && member?.status !== "creator") {
+      console.warn(
+        "[telegram-poll] Approvals bot is not a group administrator. Membership checks are not reliable and button presses will be denied."
+      );
+    }
+  } catch (e) {
+    console.error(`[telegram-poll] approvals access check failed ${telegramFailureLog(e)}`);
+  }
+}
+
 export function startTelegramPolling(db) {
   console.log(
     `[telegram] approvals: token=${isApprovalsBotTokenConfigured() ? "set" : "empty"} chat=${
       getApprovalsChatId() ? "set" : "empty"
-    } polling=${process.env.TELEGRAM_USE_POLLING === "1" ? "on" : "off"}`
+    } chat_id=${getApprovalsChatId() || "empty"} polling=${process.env.TELEGRAM_USE_POLLING === "1" ? "on" : "off"}`
   );
   const bots = getApprovalBotPollConfigs();
   if (!isTelegramPollingEnabled() || !bots.length) return null;
@@ -112,9 +140,11 @@ export function startTelegramPolling(db) {
         await telegramGet("deleteWebhook", {}, bot.token);
         console.log(`[telegram-poll] Cleared ${bot.kind} bot webhook (required for polling)`);
       } catch (e) {
-        console.warn(`[telegram-poll] deleteWebhook (${bot.kind}):`, e.message);
+        console.warn(`[telegram-poll] deleteWebhook (${bot.kind}): ${telegramFailureLog(e)}`);
       }
     }
+    if (stopped) return;
+    await logApprovalsBotAccess();
     if (stopped) return;
     console.log("[telegram-poll] Listening for approve/reject button presses…");
     stopLoops = startTelegramBotPollLoops(db, bots);

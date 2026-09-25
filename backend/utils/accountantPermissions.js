@@ -318,6 +318,8 @@ export const NAV_PATH_PERMISSION_KEYS = {
   "/refund-approvals": "refund_approvals",
   "/on-account-approvals": "on_account_approvals",
   "/advance-approvals": "advance_approvals",
+  "/supplier-payment-approvals": "suppliers",
+  "/shop-consumption-approvals": "expenses",
   "/marketing": "marketing",
   "/deliveries": "deliveries",
   "/manage-users": "user_accounts",

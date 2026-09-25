@@ -88,6 +88,10 @@ export default function PosQuickGrid({ onProductFound }) {
         ) : (
           items.map((p) => {
             const outOfStock = Number(p.stock) <= 0;
+            const fullName = p.name || "";
+            const hoverLabel = outOfStock
+              ? `${fullName}${p.barcode ? ` — ${p.barcode}` : ""} — الرصيد: 0`
+              : `${fullName}${p.barcode ? ` — ${p.barcode}` : ""}`;
             return (
             <button
               key={`${p.id}-${p.unit_id ?? "default"}`}
@@ -95,11 +99,11 @@ export default function PosQuickGrid({ onProductFound }) {
               className={`pos-quick-btn${outOfStock ? " pos-quick-btn--no-stock" : ""}`}
               onMouseDown={preventButtonFocus}
               onClick={() => tap(p)}
-              title={outOfStock ? `${p.barcode} — الرصيد: 0` : p.barcode}
+              title={hoverLabel}
             >
-              <span>{p.name}</span>
+              <span className="pos-quick-name">{fullName}</span>
               {p.unit_name ? <span className="pos-quick-unit">{p.unit_name}</span> : null}
-              <span className="pos-quick-price">{ils(p.price)}</span>
+              <span className="pos-quick-price" dir="ltr">{ils(p.price)}</span>
             </button>
             );
           })

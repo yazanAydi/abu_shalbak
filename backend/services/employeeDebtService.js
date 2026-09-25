@@ -1,5 +1,5 @@
 import { round2, sumMoney } from "../utils/money.js";
-import { shopTodayYmd, shopYmdFromTimestamp } from "../utils/shopTime.js";
+import { shopDaySqlBounds, shopTodayYmd, shopYmdFromTimestamp, sqlUtcTimestampExpr } from "../utils/shopTime.js";
 import { shopBusinessDayYmd } from "../utils/businessDay.js";
 import { badRequest, notFound } from "../utils/httpError.js";
 import { withTransaction } from "../utils/dbTx.js";
@@ -156,8 +156,8 @@ export async function listEmployeeDebts(db, emp, { from = null, to = null, asOf 
       `SELECT COALESCE(SUM(total), 0) AS total
        FROM refunds
        WHERE original_transaction_id = ? AND COALESCE(status, 'approved') = 'approved'
-         AND (? IS NULL OR date(created_at) <= ?)`,
-      [row.id, asOfDay, asOfDay]
+         AND (? IS NULL OR ${sqlUtcTimestampExpr("created_at")} <= datetime(?))`,
+      [row.id, asOfDay, asOfDay ? shopDaySqlBounds(asOfDay).endSql : null]
     );
     const refunded = round2(Number(refund?.total) || 0);
     const afterAsOf = Boolean(asOfDay && ymd > asOfDay);
@@ -193,8 +193,8 @@ export async function listEmployeeDebts(db, emp, { from = null, to = null, asOf 
         `SELECT COALESCE(SUM(total), 0) AS total
          FROM refunds
          WHERE original_transaction_id = ? AND COALESCE(status, 'approved') = 'approved'
-           AND (? IS NULL OR date(created_at) <= ?)`,
-        [row.transaction_id, asOfDay, asOfDay]
+           AND (? IS NULL OR ${sqlUtcTimestampExpr("created_at")} <= datetime(?))`,
+        [row.transaction_id, asOfDay, asOfDay ? shopDaySqlBounds(asOfDay).endSql : null]
       );
       refunded = round2(Number(refund?.total) || 0);
     }

@@ -30,6 +30,7 @@ export async function enqueueOperationPrint(db, job) {
       snapshot,
     ]
   );
+  console.log(`[operation-print] stage=queued kind=${job.kind} reference=${Number(job.referenceId)}`);
 }
 
 function parseSnapshot(row) {
@@ -135,6 +136,19 @@ export async function reprintPrintJob(db, cashierId, jobId) {
     [Number(jobId), Number(cashierId)]
   );
   if (!row) throw new HttpError(404, "الإيصال غير موجود", "NOT_FOUND");
+  return renderCopy(db, row);
+}
+
+export async function reprintOperationByReference(db, kind, referenceId) {
+  const row = await db.get(
+    "SELECT * FROM operation_print_jobs WHERE kind = ? AND reference_id = ?",
+    [String(kind), Number(referenceId)]
+  );
+  if (!row) throw new HttpError(404, "لا يوجد إيصال لهذه العملية", "NOT_FOUND");
+  return renderCopy(db, row);
+}
+
+async function renderCopy(db, row) {
   const rendered = await renderJob(db, row, { copy: true });
   return {
     id: row.id,

@@ -9,6 +9,7 @@ import RefundFilters from "../components/RefundFilters";
 import RefundTable from "../components/RefundTable";
 import RefundDetailsModal from "../components/RefundDetailsModal";
 import { formatRefundReason, statusLabelAr, ils as refundIls } from "../utils/refundHelpers";
+import { dateTime } from "../utils/format";
 import { PageHeader, ReportToolbar } from "../components/ui";
 import "../components/RefundsManagement.css";
 
@@ -26,7 +27,7 @@ const REFUND_COLUMNS = [
     header: "طريقة الرد",
     value: (r) => (r.payment_method === "cash" ? "نقد" : "بطاقة"),
   },
-  { key: "created_at", header: "التاريخ", value: (r) => (r.created_at || "").replace("T", " ").slice(0, 16) },
+  { key: "created_at", header: "وقت العملية", value: (r) => dateTime(r.created_at) },
 ];
 
 function firstOfMonth() {

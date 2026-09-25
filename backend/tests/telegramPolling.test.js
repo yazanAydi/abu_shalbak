@@ -275,9 +275,12 @@ describe("Telegram poll recoverability", () => {
     process.env.TELEGRAM_REFUND_BOT_TOKEN = "test-refund-token";
     process.env.TELEGRAM_MANAGER_CHAT_ID = "6096292831";
     const originalFetch = global.fetch;
-    global.fetch = jest.fn(async () => ({
-      json: async () => ({ ok: true, result: true }),
-    }));
+    global.fetch = jest.fn(async (url) => {
+      if (String(url).includes("getChatMember")) {
+        return { json: async () => ({ ok: true, result: { status: "member" } }) };
+      }
+      return { json: async () => ({ ok: true, result: true }) };
+    });
     try {
       const retryRes = await request(ctx.app)
         .post(`/api/v1/admin/telegram-poll-failures/${stored.id}/retry`)
@@ -298,9 +301,12 @@ describe("Telegram poll recoverability", () => {
     process.env.TELEGRAM_REFUND_BOT_TOKEN = "test-refund-token";
     process.env.TELEGRAM_MANAGER_CHAT_ID = "6096292831";
     const originalFetch = global.fetch;
-    global.fetch = jest.fn(async () => ({
-      json: async () => ({ ok: true, result: true }),
-    }));
+    global.fetch = jest.fn(async (url) => {
+      if (String(url).includes("getChatMember")) {
+        return { json: async () => ({ ok: true, result: { status: "member" } }) };
+      }
+      return { json: async () => ({ ok: true, result: true }) };
+    });
 
     try {
       const result = await handleTelegramUpdate(ctx.db, {

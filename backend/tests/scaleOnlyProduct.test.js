@@ -508,7 +508,7 @@ describe("scale-only products", () => {
       );
     expect(sale.status).toBe(201);
     const body = unwrap(sale);
-    expect(body.total).toBe(38);
+    expect(body.total).toBe(37.5);
 
     const item = await ctx.db.get(
       "SELECT quantity, unit_name, unit_price FROM transaction_items WHERE transaction_id = ?",

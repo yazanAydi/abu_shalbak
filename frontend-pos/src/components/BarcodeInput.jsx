@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createAbortController } from "../apiClient";
-import { focusBarcodeInput } from "../utils/focusBarcodeInput";
+import { focusBarcodeInput, registerBarcodeInput } from "../utils/focusBarcodeInput";
 import { lookupProductByBarcode, normalizeBarcode } from "../utils/barcode";
 import { searchProductsApi } from "../utils/productSearch";
 import { pickSearchProduct } from "./pos/PosProductSearch";
@@ -56,8 +56,9 @@ export default function BarcodeInput({ onProductFound, onError }) {
   }, []);
 
   useEffect(() => {
-    focusBarcodeInput();
+    registerBarcodeInput(inputRef.current);
     return () => {
+      registerBarcodeInput(null);
       if (errTimer.current) clearTimeout(errTimer.current);
     };
   }, []);
@@ -135,7 +136,7 @@ export default function BarcodeInput({ onProductFound, onError }) {
         }
         if (queueRef.current.length === 0) {
           setValue("");
-          setTimeout(() => focusBarcodeInput(), 0);
+          focusBarcodeInput();
         }
       } finally {
         inFlightRef.current = false;
@@ -161,7 +162,7 @@ export default function BarcodeInput({ onProductFound, onError }) {
     if (gen !== pickGenRef.current) return;
     setValue("");
     setErr("");
-    setTimeout(() => focusBarcodeInput(), 0);
+    focusBarcodeInput();
   }
 
   function onKeyDown(ev) {

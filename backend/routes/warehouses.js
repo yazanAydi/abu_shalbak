@@ -2,6 +2,8 @@ import { Router } from "express";
 import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
 import { recordMovement } from "../utils/inventory.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { effectiveInventoryDay } from "../utils/businessDay.js";
+import { getAppSettings } from "../utils/settings.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { listWarehouseStock } from "../utils/warehouseInventory.js";
@@ -211,7 +213,16 @@ export function createWarehousesRouter(db) {
             notes: `تحويل #${t.transfer_no ?? t.id}`, userId: req.user.id,
           });
         }
-        await db.run("UPDATE warehouse_transfers SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [t.id]);
+        const settings = await getAppSettings(db);
+        const inventoryDay = effectiveInventoryDay(
+          String(t.transfer_date || "").slice(0, 10),
+          new Date().toISOString(),
+          settings.business_day_cutoff_hour
+        );
+        await db.run(
+          "UPDATE warehouse_transfers SET status = 'posted', posted_at = datetime('now'), inventory_business_day = ? WHERE id = ?",
+          [inventoryDay, t.id]
+        );
         return db.get("SELECT * FROM warehouse_transfers WHERE id = ?", [t.id]);
       });
       res.json(row);

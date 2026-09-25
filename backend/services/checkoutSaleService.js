@@ -12,12 +12,12 @@ import { applySaleStock } from "./stockBatchService.js";
  * @param {{ inTransaction?: boolean }} [options] — set inTransaction when already inside withTransaction
  */
 export async function executeCheckoutSale(db, params, options = {}) {
-  const run = async () => executeCheckoutSaleCore(db, params);
+  const run = async () => executeCheckoutSaleCore(db, params, options);
   if (options.inTransaction) return run();
   return withTransaction(db, run);
 }
 
-async function executeCheckoutSaleCore(db, params) {
+async function executeCheckoutSaleCore(db, params, options = {}) {
   const {
     cashierId,
     shiftId,
@@ -71,9 +71,10 @@ async function executeCheckoutSaleCore(db, params) {
   }
 
   if (shiftId) {
+    const allowed = options.allowPendingCount ? ["open", "pending_count"] : ["open"];
     const openShift = await db.get(
-      "SELECT id FROM cashier_shifts WHERE id = ? AND status = 'open'",
-      [shiftId]
+      `SELECT id FROM cashier_shifts WHERE id = ? AND status IN (${allowed.map(() => "?").join(", ")})`,
+      [shiftId, ...allowed]
     );
     if (!openShift) {
       const err = new Error("الوردية أُغلقت — أعد المحاولة بعد فتح وردية");

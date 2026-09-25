@@ -182,7 +182,8 @@ describe("permission settings topics", () => {
     expect(sectionsOf(payrollOnly)).not.toContain("finance");
 
     const financeOnly = navFor("accountant", { ...NONE, finance: true, expenses: true });
-    expect(sectionsOf(financeOnly)).toEqual(["finance"]);
+    expect(sectionsOf(financeOnly)).toEqual(["finance", "operations"]);
+    expect(pathsIn(financeOnly, "operations")).toEqual(["/shop-consumption-approvals"]);
     expect(pathsIn(financeOnly, "finance")).not.toContain("/employee-statements");
     expect(sectionsOf(navFor("accountant", NONE))).not.toContain("employees");
   });

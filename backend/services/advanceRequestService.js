@@ -19,6 +19,11 @@ import {
   postPosSalaryAdvanceInTx,
 } from "./employeePaymentService.js";
 import { enqueueOperationPrint } from "./operationPrintService.js";
+import {
+  lockOriginatingShift,
+  rejectHandoverFields,
+  updateOutstandingHandover,
+} from "./originatingShiftDecision.js";
 
 export { getTelegramManagerUser };
 
@@ -116,10 +121,12 @@ export async function createAdvanceRequest(db, params) {
 
 export async function getAdvanceRequestById(db, id) {
   return db.get(
-    `SELECT ar.*, u.username AS cashier_username, m.username AS manager_username
+    `SELECT ar.*, u.username AS cashier_username, m.username AS manager_username,
+            s.status AS shift_status
      FROM advance_requests ar
      JOIN users u ON u.id = ar.cashier_id
      LEFT JOIN users m ON m.id = ar.manager_id
+     LEFT JOIN cashier_shifts s ON s.id = ar.shift_id
      WHERE ar.id = ?`,
     [id]
   );
@@ -127,12 +134,17 @@ export async function getAdvanceRequestById(db, id) {
 
 export async function listPendingAdvanceRequests(db) {
   return db.all(
-    `SELECT ar.*, u.username AS cashier_username
+    `SELECT ar.*, u.username AS cashier_username, s.status AS shift_status
      FROM advance_requests ar
      JOIN users u ON u.id = ar.cashier_id
+     LEFT JOIN cashier_shifts s ON s.id = ar.shift_id
      WHERE ar.status = 'pending'
      ORDER BY ar.created_at ASC, ar.id ASC`
   );
+}
+
+export async function recordAdvanceHandover(db, requestId, userId, disposition) {
+  return updateOutstandingHandover(db, "advance_requests", requestId, userId, disposition);
 }
 
 export async function listAdvanceRequestHistory(db, status = "all", limit = 200) {
@@ -258,8 +270,9 @@ export async function approveAdvanceRequest(
       throw err;
     }
 
-    const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [request.shift_id]);
-    if (!shift || shift.status !== "open") {
+    const locked = await lockOriginatingShift(db, request.shift_id);
+    const shift = locked.shift;
+    if (locked.mode !== "open" && locked.mode !== "pending_count") {
       const err = new Error("لا توجد وردية مفتوحة لصرف السلف");
       err.status = 400;
       err.code = "NO_OPEN_SHIFT";
@@ -267,7 +280,7 @@ export async function approveAdvanceRequest(
     }
 
     const employeeId = request.employee_id != null ? Number(request.employee_id) : null;
-    if (employeeId) {
+    if (employeeId && decisionSource !== "telegram") {
       await assertCanApproveLinkedSalaryAdvance(db, managerUser);
     }
 
@@ -292,45 +305,71 @@ export async function approveAdvanceRequest(
 
     let ledger = null;
     if (employeeId) {
+      const shiftDay = shopBusinessDayYmd({
+        business_day: shift.business_day,
+        start_time: shift.start_time,
+      });
       const businessDay =
-        occurredOn && /^\d{4}-\d{2}-\d{2}$/.test(String(occurredOn))
-          ? String(occurredOn)
-          : shopBusinessDayYmd({ business_day: shift.business_day, start_time: shift.start_time });
+        locked.mode === "pending_count"
+          ? shift.business_day || shiftDay
+          : occurredOn && /^\d{4}-\d{2}-\d{2}$/.test(String(occurredOn))
+            ? String(occurredOn)
+            : shiftDay;
       ledger = await postPosSalaryAdvanceInTx(db, {
         employeeId,
         amount,
         occurredOn: businessDay,
         advanceRequestId: requestId,
         shiftCashMovementId: movement.lastID,
-        createdBy: managerUser.id,
+        createdBy: decisionSource === "telegram" ? null : managerUser?.id ?? null,
         note: request.notes
           ? `سلفة على الراتب — ${request.employee_name} #${requestId} — ${request.notes}`
           : undefined,
       });
     }
 
-    await db.run(
+    if (managerUser?.failAfterPost) {
+      const err = new Error("forced");
+      err.code = "FORCED_ROLLBACK";
+      throw err;
+    }
+
+    const actorId = decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null;
+    const actorName = decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null;
+    const managerId = decisionSource === "telegram" ? null : managerUser?.id ?? null;
+    const decided = await db.run(
       `UPDATE advance_requests SET
         status = 'approved', manager_id = ?, approved_at = ?,
         review_notes = COALESCE(?, review_notes), rejected_at = NULL,
         decision_source = ?,
         ledger_entry_id = COALESCE(?, ledger_entry_id),
-        operating_expense_id = COALESCE(?, operating_expense_id)
-       WHERE id = ?`,
+        operating_expense_id = COALESCE(?, operating_expense_id),
+        telegram_actor_id = ?, telegram_actor_name = ?
+       WHERE id = ? AND status = 'pending'`,
       [
-        managerUser.id,
+        managerId,
         now,
         reviewNotes,
         decisionSource,
         ledger?.id ?? null,
         ledger?.operating_expense_id ?? null,
+        actorId,
+        actorName,
         requestId,
       ]
     );
+    if (!decided.changes) {
+      const err = new Error("الطلب ليس قيد المراجعة");
+      err.status = 400;
+      err.code = "NOT_PENDING";
+      throw err;
+    }
 
     const auditUser = req?.user || managerUser;
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.ADVANCE_REQUEST_APPROVE, "advance_requests", requestId, { status: "pending" }, {
-      manager_id: managerUser.id,
+      manager_id: managerId,
+      telegram_user_id: actorId,
+      telegram_actor_name: actorName,
       employee_id: employeeId,
       amount,
     });
@@ -371,7 +410,8 @@ export async function rejectAdvanceRequest(
   managerUser,
   reviewNotes,
   req = null,
-  decisionSource = "admin"
+  decisionSource = "admin",
+  options = {}
 ) {
   const updated = await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM advance_requests WHERE id = ?", [requestId]);
@@ -387,19 +427,44 @@ export async function rejectAdvanceRequest(
       throw err;
     }
 
+    const locked = await lockOriginatingShift(db, request.shift_id);
     const now = new Date().toISOString();
-    await db.run(
+    const actorId = decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null;
+    const actorName = decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null;
+    const managerId = decisionSource === "telegram" ? null : managerUser?.id ?? null;
+    const handover = rejectHandoverFields(locked.mode, options?.handoverDisposition, managerId);
+    const decided = await db.run(
       `UPDATE advance_requests SET
         status = 'rejected', manager_id = ?, rejected_at = ?,
         review_notes = COALESCE(?, review_notes), approved_at = NULL,
-        decision_source = ?
-       WHERE id = ?`,
-      [managerUser.id, now, reviewNotes, decisionSource, requestId]
+        decision_source = ?, telegram_actor_id = ?, telegram_actor_name = ?,
+        handover_disposition = ?, handover_recorded_at = ?, handover_recorded_by = ?
+       WHERE id = ? AND status = 'pending'`,
+      [
+        managerId,
+        now,
+        reviewNotes,
+        decisionSource,
+        actorId,
+        actorName,
+        handover.disposition,
+        handover.recordedAt,
+        handover.recordedBy,
+        requestId,
+      ]
     );
+    if (!decided.changes) {
+      const err = new Error("الطلب ليس قيد المراجعة");
+      err.status = 400;
+      err.code = "NOT_PENDING";
+      throw err;
+    }
 
     const auditUser = req?.user || managerUser;
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.ADVANCE_REQUEST_REJECT, "advance_requests", requestId, { status: "pending" }, {
-      manager_id: managerUser.id,
+      manager_id: managerId,
+      telegram_user_id: actorId,
+      telegram_actor_name: actorName,
     });
 
     return getAdvanceRequestById(db, requestId);

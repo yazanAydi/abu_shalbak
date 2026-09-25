@@ -29,7 +29,10 @@ const STATEMENT_FIELD_PATTERNS = {
 export function parseStatementDate(val) {
   if (val === undefined || val === null || val === "") return null;
   if (val instanceof Date && !Number.isNaN(val.getTime())) {
-    return val.toISOString().slice(0, 10);
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, "0");
+    const d = String(val.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
   }
   if (typeof val === "number" && Number.isFinite(val)) {
     const epoch = new Date(Date.UTC(1899, 11, 30));

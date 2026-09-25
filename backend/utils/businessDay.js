@@ -15,8 +15,15 @@
  * so today's cutoff is not applied retroactively and open shifts from before
  * the migration keep the day they already had.
  *
- * Date-only fields (paid_on, occurred_on, invoice_date) are not timestamps
- * and are never passed through this cutoff.
+ * Date-only fields (paid_on, occurred_on, invoice_date, return_date,
+ * transfer_date) are not rewritten. Payment and purchase lists keep the
+ * document date as entered.
+ *
+ * Inventory valuation is different. effectiveInventoryDay: when that document
+ * date is the Asia/Hebron calendar date of the posting instant, the inventory
+ * date is the business day of that instant (before the cutoff, the previous
+ * calendar date). Any other document date stays as written. Sales are not
+ * passed through this function; they keep the stored shift day.
  */
 
 import {
@@ -55,6 +62,29 @@ export function businessDayFromTimestamp(ts, cutoffHour) {
   if (!parts?.ymd) return null;
   if (parts.hour < cutoff) return previousCalendarYmd(parts.ymd);
   return parts.ymd;
+}
+
+/**
+ * Inventory date for a purchase, purchase return, or warehouse transfer.
+ * Does not rewrite the document date.
+ *
+ * Missing document date → business day of the posting instant.
+ * Document date equal to the posting calendar date → that same business day,
+ * so a post before the cutoff belongs to the previous calendar date.
+ * Any other document date is kept, including an explicit earlier or later day.
+ *
+ * @param {string|null|undefined} documentDay
+ * @param {string|number|Date|null|undefined} postedAt
+ * @param {number|string} cutoffHour
+ * @returns {string|null}
+ */
+export function effectiveInventoryDay(documentDay, postedAt, cutoffHour) {
+  const doc = ymdOrNull(typeof documentDay === "string" ? documentDay.trim().slice(0, 10) : "");
+  const business = postedAt != null && postedAt !== "" ? businessDayFromTimestamp(postedAt, cutoffHour) : null;
+  const calendar = postedAt != null && postedAt !== "" ? shopYmdFromTimestamp(postedAt) : null;
+  if (!doc) return business || calendar;
+  if (calendar && doc === calendar && business) return business;
+  return doc;
 }
 
 function ymdOrNull(value) {

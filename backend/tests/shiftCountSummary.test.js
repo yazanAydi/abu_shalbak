@@ -205,8 +205,25 @@ describe("count-dialog cash sales and expected visa", () => {
       });
     expect(paid.status).toBe(201);
     const paidBody = unwrap(paid.body);
-    expect(Number(paidBody.expected_cash)).toBe(580);
+    expect(paidBody.pending_approval).toBe(true);
+    expect(paidBody.voucher_id).toBeNull();
+    expect(Number(paidBody.expected_cash)).toBe(680);
     expect(Number(paidBody.cash_sales)).toBe(500);
+    const vouchersBefore = await ctx.db.all(
+      "SELECT id FROM vouchers WHERE shift_id = ? AND voucher_type = 'payment'",
+      [shiftId]
+    );
+    const movesBefore = await ctx.db.all(
+      "SELECT id FROM shift_cash_movements WHERE shift_id = ? AND movement_type = 'supplier_payment'",
+      [shiftId]
+    );
+    expect(vouchersBefore).toHaveLength(0);
+    expect(movesBefore).toHaveLength(0);
+
+    const approved = await request(ctx.app)
+      .post(`/api/v1/supplier-payment-requests/${paidBody.request_id}/approve`)
+      .set(authHeader(adminToken));
+    expect(approved.status).toBe(200);
 
     const drawer = await computeExpectedDrawer(ctx.db, shiftId, 200);
     const visa = await computeShiftVisa(ctx.db, shiftId);

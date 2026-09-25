@@ -59,7 +59,7 @@ function CartQtyStepper({
     const next = bumpQty(qty, delta, decimals);
     if (!(next > 0) || next < min) return;
     onChange(next);
-    focusBarcodeInput();
+    focusBarcodeInput({ releaseCartEdit: true });
   };
 
   return (
@@ -83,6 +83,14 @@ function CartQtyStepper({
         placeholder={placeholder}
         autoFocus={autoFocus}
         aria-label={ariaLabel}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || e.repeat) return;
+          const next = Number(e.currentTarget.value);
+          if (!(next > 0)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          focusBarcodeInput({ releaseCartEdit: true });
+        }}
         onChange={(e) => {
           const raw = e.target.value;
           if (raw === "") {
@@ -208,7 +216,7 @@ function CartTableBody({
                         value={it.unitId ?? ""}
                         onChange={(e) => {
                           onUnitChange?.(key, Number(e.target.value));
-                          focusBarcodeInput();
+                          focusBarcodeInput({ releaseCartEdit: true });
                         }}
                         aria-label="وحدة البيع"
                       >
@@ -265,7 +273,7 @@ function CartTableBody({
                       onMouseDown={preventButtonFocus}
                       onClick={() => {
                         onRemoveItem(key);
-                        focusBarcodeInput();
+                        focusBarcodeInput({ releaseCartEdit: true });
                       }}
                       aria-label="حذف"
                     >

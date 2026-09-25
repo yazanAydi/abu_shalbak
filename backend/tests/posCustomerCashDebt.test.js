@@ -7,6 +7,7 @@ import {
   authHeader,
   configureTelegramApprover,
   createAccountantUser,
+  telegramMemberFetch,
 } from "./helpers.js";
 import { computeExpectedDrawer, computeShiftVisa } from "../utils/salePayments.js";
 import { buildCustomerLedger } from "../utils/customerLedger.js";
@@ -40,9 +41,7 @@ describe("POS customer cash on account", () => {
     process.env.TELEGRAM_ZIMMA_WEBHOOK_SECRET = "test-zimma-secret";
     process.env.TELEGRAM_ZIMMA_CHAT_ID = managerChatId;
     originalFetch = global.fetch;
-    global.fetch = jest.fn(async () => ({
-      json: async () => ({ ok: true, result: { message_id: 41 } }),
-    }));
+    global.fetch = jest.fn(telegramMemberFetch({ messageId: 41 }));
     ctx = await createTestContext();
     await configureTelegramApprover(ctx.db);
     adminToken = (await login(ctx.app, "testadmin", "adminpass123", "office")).body.token;
@@ -289,7 +288,7 @@ describe("POS customer cash on account", () => {
     await request(ctx.app).post(`/api/v1/shifts/${shift.id}/end`).set(authHeader(cashierToken)).send({});
   });
 
-  test("a closed shift is not posted, including a close race", async () => {
+  test("pending_count still posts, and a counted shift does not", async () => {
     const customerId = await addCustomer("عميل إغلاق", 100);
     const shift = await startShift(ctx.app, cashierToken, ctx.db, 200);
     const created = await requestCash(customerId, 30, "cash-debt-closed-hhhh");
@@ -299,9 +298,36 @@ describe("POS customer cash on account", () => {
       .put(`/api/v1/customer-cash-debt-requests/${requestId}`)
       .set(authHeader(adminToken))
       .send({ status: "approved" });
-    expect(late.status).toBe(400);
-    expect(late.body.code).toBe("SHIFT_CLOSED");
-    expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [customerId])).balance)).toBe(100);
+    expect(late.status).toBe(200);
+    expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [customerId])).balance)).toBe(130);
+    const posted = await ctx.db.get(
+      "SELECT shift_id FROM shift_cash_movements WHERE voucher_id = (SELECT voucher_id FROM customer_cash_debt_requests WHERE id = ?)",
+      [requestId]
+    );
+    expect(Number(posted.shift_id)).toBe(Number(shift.id));
+
+    const countedShift = await startShift(ctx.app, cashierToken, ctx.db, 200);
+    const countedCustomer = await addCustomer("عميل مجرود", 20);
+    const countedCreated = await requestCash(countedCustomer, 10, "cash-debt-counted-hhhh");
+    const countedId = unwrap(countedCreated).request_id;
+    await ctx.db.run(
+      "UPDATE cashier_shifts SET status = 'closed', closing_cash = 200, expected_cash = 200, variance = 0 WHERE id = ?",
+      [countedShift.id]
+    );
+    const blocked = await request(ctx.app)
+      .put(`/api/v1/customer-cash-debt-requests/${countedId}`)
+      .set(authHeader(adminToken))
+      .send({ status: "approved" });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.code).toBe("CLOSED_SHIFT_RECONCILE");
+    expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [countedCustomer])).balance)).toBe(20);
+    const saved = await ctx.db.get(
+      "SELECT expected_cash, variance, closing_cash FROM cashier_shifts WHERE id = ?",
+      [countedShift.id]
+    );
+    expect(Number(saved.expected_cash)).toBe(200);
+    expect(Number(saved.closing_cash)).toBe(200);
+    expect(Number(saved.variance)).toBe(0);
 
     const open = await startShift(ctx.app, cashierToken, ctx.db, 200);
     const raceCustomer = await addCustomer("عميل سباق إغلاق", 50);
@@ -323,19 +349,13 @@ describe("POS customer cash on account", () => {
         )
       ).n
     );
-    if (decided.status === 200 && unwrap(decided).request?.status === "approved") {
-      expect(balance).toBe(60);
-      expect(moves).toBe(1);
-      expect(ended.status).toBeLessThan(500);
-    } else {
-      expect(decided.body.code).toBe("SHIFT_CLOSED");
-      expect(balance).toBe(50);
-      expect(moves).toBe(0);
-    }
+    expect(decided.status).toBe(200);
+    expect(unwrap(decided).request?.status).toBe("approved");
+    expect(balance).toBe(60);
+    expect(moves).toBe(1);
+    expect(ended.status).toBeLessThan(500);
     const live = await ctx.db.get("SELECT status FROM cashier_shifts WHERE id = ?", [open.id]);
-    if (live.status === "open") {
-      await request(ctx.app).post(`/api/v1/shifts/${open.id}/end`).set(authHeader(cashierToken)).send({});
-    }
+    expect(live.status).toBe("pending_count");
   });
 
   test("employee accounts stay out of the customer list", async () => {

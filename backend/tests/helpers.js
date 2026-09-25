@@ -79,11 +79,30 @@ export function withCheckoutKey(body = {}, key) {
  * Office accountant used by permission tests. Pass `permissions` to store a
  * custom users.permissions_json map; omit it to follow the global template.
  */
+/** Fetch mock: group membership for callbacks, and a stable message id for sends. */
+export function telegramMemberFetch({ messageId = 77, memberStatus = "member", failMembership = false } = {}) {
+  return async (url) => {
+    if (String(url).includes("getChatMember")) {
+      if (failMembership) {
+        return { json: async () => ({ ok: false, error_code: 500, description: "membership lookup failed" }) };
+      }
+      return {
+        json: async () => ({
+          ok: true,
+          result: {
+            status: memberStatus,
+            is_member: memberStatus === "restricted" || memberStatus === "member",
+          },
+        }),
+      };
+    }
+    return { json: async () => ({ ok: true, result: { message_id: messageId } }) };
+  };
+}
+
 export async function configureTelegramApprover(db, username = "testadmin") {
-  const { updateAppSettings, SETTING_KEYS } = await import("../utils/settings.js");
   const user = await db.get("SELECT id FROM users WHERE username = ?", [username]);
   if (!user?.id) throw new Error(`missing telegram approver ${username}`);
-  await updateAppSettings(db, { [SETTING_KEYS.refund_telegram_manager_user_id]: user.id });
   return user.id;
 }
 

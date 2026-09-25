@@ -7,8 +7,11 @@ import { parseTimestampMs } from "../services/cashierPayrollService.js";
 
 export { parseTimestampMs };
 
-/** @type {string} IANA zone for Ramallah (West Bank). */
-export const SHOP_TZ = process.env.TZ || "Asia/Hebron";
+/**
+ * Shop zone is Asia/Hebron even when the host or container clock is UTC.
+ * `TZ` is the process zone; it must not redefine the shop calendar.
+ */
+export const SHOP_TZ = process.env.SHOP_TZ || "Asia/Hebron";
 
 export const SHOP_TZ_LABEL = "Ramallah";
 
@@ -39,6 +42,7 @@ const localPartsFormatter = new Intl.DateTimeFormat("en-US", {
   day: "2-digit",
   hour: "2-digit",
   minute: "2-digit",
+  second: "2-digit",
   hourCycle: "h23",
 });
 
@@ -119,9 +123,52 @@ export function shopLocalParts(instant) {
   const day = pick("day");
   let hour = Number(pick("hour"));
   const minute = Number(pick("minute"));
-  if (!year || !month || !day || !Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  let second = Number(pick("second"));
+  if (!year || !month || !day || !Number.isInteger(hour) || !Number.isInteger(minute) || !Number.isInteger(second)) {
+    return null;
+  }
   if (hour === 24) hour = 0;
-  return { ymd: `${year}-${month}-${day}`, hour, minute };
+  if (second === 60) second = 0;
+  return { ymd: `${year}-${month}-${day}`, hour, minute, second };
+}
+
+/**
+ * Asia/Hebron wall clock for a stored UTC instant.
+ * @param {Date|number|string|null|undefined} instant
+ * @returns {{ ymd: string, date: string, time: string, dateTime: string } | null}
+ */
+export function formatShopWall(instant) {
+  const parts = shopLocalParts(instant);
+  if (!parts) return null;
+  const hh = String(parts.hour).padStart(2, "0");
+  const mm = String(parts.minute).padStart(2, "0");
+  const ss = String(parts.second ?? 0).padStart(2, "0");
+  const time = `${hh}:${mm}:${ss}`;
+  return { ymd: parts.ymd, date: parts.ymd, time, dateTime: `${parts.ymd} ${time}` };
+}
+
+/**
+ * SQLite expression for a UTC timestamp stored as "YYYY-MM-DD HH:MM:SS" or ISO.
+ * @param {string} column
+ */
+export function sqlUtcTimestampExpr(column) {
+  if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(column)) {
+    throw new Error("Invalid timestamp column");
+  }
+  return `datetime(replace(substr(${column}, 1, 19), 'T', ' '))`;
+}
+
+/**
+ * Inclusive UTC sql bounds for one or more Asia/Hebron calendar days.
+ * @param {string} fromYmd
+ * @param {string} [toYmd]
+ */
+export function shopDaySqlBounds(fromYmd, toYmd = fromYmd) {
+  const { startIso, endIso } = shopYmdRangeToUtcBounds(fromYmd, toYmd);
+  return {
+    startSql: startIso.replace("T", " ").slice(0, 19),
+    endSql: endIso.replace("T", " ").slice(0, 19),
+  };
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   withCheckoutKey,
   createTestEmployee,
   configureTelegramApprover,
+  telegramMemberFetch,
 } from "./helpers.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 import { buildPosDecisionSnapshot } from "../routes/pos.js";
@@ -31,9 +32,7 @@ describe("POS recovery after Telegram sulaf/zimma decisions", () => {
     process.env.TELEGRAM_ZIMMA_CHAT_ID = managerChatId;
 
     originalFetch = global.fetch;
-    global.fetch = jest.fn(async () => ({
-      json: async () => ({ ok: true, result: { message_id: 1 } }),
-    }));
+    global.fetch = jest.fn(telegramMemberFetch({ messageId: 1 }));
 
     ctx = await createTestContext();
     await configureTelegramApprover(ctx.db);
@@ -67,7 +66,7 @@ describe("POS recovery after Telegram sulaf/zimma decisions", () => {
       callback_query: {
         id: `cq-${kind}-${action}-${requestId}`,
         data: `${kind}:${action}:${requestId}`,
-        message: { chat: { id: Number(managerChatId) } },
+        message: { message_id: 1, chat: { id: Number(managerChatId) } },
         from: { id: Number(managerChatId) },
       },
     });

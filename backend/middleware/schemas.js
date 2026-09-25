@@ -80,6 +80,11 @@ export const refundRequestCreateSchema = z.object({
 export const refundRequestReviewSchema = z.object({
   status: z.enum(["approved", "rejected"]),
   review_notes: z.string().max(500).optional().nullable(),
+  handover_disposition: z.enum(["returned", "outstanding"]).optional(),
+});
+
+export const handoverFollowUpSchema = z.object({
+  disposition: z.enum(["returned", "loss_accepted"]),
 });
 
 const optionalPositiveId = z.preprocess(

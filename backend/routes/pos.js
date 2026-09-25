@@ -21,8 +21,15 @@ import {
   listCustomerCollectionOptions,
 } from "../services/posCustomerCollectionService.js";
 import { listSupplierPaymentOptions } from "../services/posSupplierPaymentService.js";
-import { createSupplierPaymentApprovalRequest } from "../services/groupApprovalService.js";
-import { createShopConsumptionRequest, previewShopConsumption } from "../services/shopConsumptionService.js";
+import {
+  createSupplierPaymentApprovalRequest,
+  listUnreadSupplierPaymentDecisions,
+} from "../services/groupApprovalService.js";
+import {
+  createShopConsumptionRequest,
+  listUnreadShopConsumptionDecisions,
+  previewShopConsumption,
+} from "../services/shopConsumptionService.js";
 import {
   claimNextPrintJob,
   finishPrintJob,
@@ -31,13 +38,15 @@ import {
 } from "../services/operationPrintService.js";
 
 export async function buildPosDecisionSnapshot(db, cashierId) {
-  const [refunds, advances, on_account, cash_debts] = await Promise.all([
+  const [refunds, advances, on_account, cash_debts, supplier_payments, shop_consumption] = await Promise.all([
     listUnreadRefundDecisions(db, cashierId),
     listUnreadAdvanceDecisions(db, cashierId),
     listUnreadOnAccountDecisions(db, cashierId),
     listUnreadCustomerCashDebtDecisions(db, cashierId),
+    listUnreadSupplierPaymentDecisions(db, cashierId),
+    listUnreadShopConsumptionDecisions(db, cashierId),
   ]);
-  return { refunds, advances, on_account, cash_debts };
+  return { refunds, advances, on_account, cash_debts, supplier_payments, shop_consumption };
 }
 
 function saleUnitsFor(units) {

@@ -1,7 +1,5 @@
 import {
   parseApprovalCallbackData,
-  isManagerChat,
-  isAllowedTelegramApprover,
   answerCallbackQuery,
   editRefundMessageAlreadyHandled,
   editOnAccountMessageAlreadyHandled,
@@ -11,18 +9,20 @@ import {
   isZimmaTelegramConfigured,
   isSulafTelegramConfigured,
   isApprovalsTelegramConfigured,
-  isApprovalsGroupChat,
+  isConfiguredGroupChat,
   isActiveChatMember,
-  fetchApprovalsChatMember,
-  approvalsCallbackMatchesTarget,
+  fetchBotChatMember,
+  callbackMatchesStoredMessage,
+  telegramActorFromUser,
   observeApprovalsSetupCommand,
+  logApprovalStage,
+  telegramFailureLog,
 } from "../utils/telegram.js";
-import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
+import { telegramShiftHold } from "./originatingShiftDecision.js";
 import {
   approveRefundRequest,
   rejectRefundRequest,
   getRefundRequestById,
-  getTelegramManagerUser,
 } from "./refundRequestService.js";
 import {
   approveOnAccountRequest,
@@ -53,11 +53,89 @@ import {
   getShopConsumptionRequestById,
 } from "./shopConsumptionService.js";
 
-function telegramReviewNote(managerUser) {
-  const id = managerUser?.telegram_user_id;
-  const uname = managerUser?.telegram_username;
+function telegramReviewNote(actor) {
+  const id = actor?.id;
+  const name = actor?.name;
   if (!id) return null;
-  return uname ? `telegram:${id} (@${uname})` : `telegram:${id}`;
+  return name ? `telegram:${id} (${name})` : `telegram:${id}`;
+}
+
+function telegramDecisionUser(actor) {
+  return {
+    id: null,
+    username: actor?.name || null,
+    role: null,
+    telegram_user_id: actor?.id || null,
+    telegram_actor_name: actor?.name || null,
+  };
+}
+
+function fromIdForLog(cq) {
+  return cq?.from?.id == null ? "" : String(cq.from.id);
+}
+
+async function answerQuiet(cq, text, kind, requestId) {
+  try {
+    await answerCallbackQuery(cq.id, text, kind);
+  } catch (err) {
+    console.error(
+      `[telegram-approval] stage=answer_failed request=${requestId} kind=${kind} ${telegramFailureLog(err)}`
+    );
+  }
+}
+
+async function authorizeGroupCallback(cq, parsed) {
+  const chatId = cq.message?.chat?.id;
+  const fromId = cq.from?.id;
+  logApprovalStage("callback", {
+    request: parsed.requestId,
+    kind: parsed.kind,
+    action: parsed.action,
+    from: fromIdForLog(cq),
+  });
+  if (!isConfiguredGroupChat(chatId, parsed.kind) || fromId == null || String(fromId).trim() === "") {
+    logApprovalStage("denied", { request: parsed.requestId, kind: parsed.kind, reason: "chat_mismatch" });
+    await answerQuiet(cq, "غير مسموح", parsed.kind, parsed.requestId);
+    return {
+      denied: true,
+      result: { handled: true, action: "denied", kind: parsed.kind, requestId: parsed.requestId },
+    };
+  }
+  let member = null;
+  try {
+    member = await fetchBotChatMember(parsed.kind, fromId);
+  } catch (err) {
+    logApprovalStage("membership_failed", {
+      request: parsed.requestId,
+      kind: parsed.kind,
+      detail: telegramFailureLog(err),
+    });
+    await answerQuiet(cq, "تعذّر التحقق من عضوية المجموعة", parsed.kind, parsed.requestId);
+    return {
+      denied: true,
+      result: { handled: true, action: "membership_failed", kind: parsed.kind, requestId: parsed.requestId },
+    };
+  }
+  logApprovalStage("membership", {
+    request: parsed.requestId,
+    kind: parsed.kind,
+    status: member?.status || "none",
+  });
+  if (!isActiveChatMember(member)) {
+    logApprovalStage("denied", { request: parsed.requestId, kind: parsed.kind, reason: "not_member" });
+    await answerQuiet(cq, "غير مسموح", parsed.kind, parsed.requestId);
+    return {
+      denied: true,
+      result: { handled: true, action: "denied", kind: parsed.kind, requestId: parsed.requestId },
+    };
+  }
+  return { denied: false, actor: telegramActorFromUser(cq.from) };
+}
+
+async function mismatchResult(cq, parsed) {
+  logApprovalStage("mismatch", { request: parsed.requestId, kind: parsed.kind });
+  await answerQuiet(cq, "الرسالة لا تطابق الطلب", parsed.kind, parsed.requestId);
+  return { handled: true, action: "mismatch", kind: parsed.kind, requestId: parsed.requestId };
 }
 
 function isBotConfigured(kind) {
@@ -110,73 +188,50 @@ export async function handleTelegramUpdate(db, update, context = {}) {
     return { handled: false };
   }
 
-  const chatId = cq.message?.chat?.id;
-  if (!isManagerChat(chatId, parsed.kind)) {
-    await answerCallbackQuery(cq.id, "غير مسموح", parsed.kind);
-    return { handled: true, action: "denied", kind: parsed.kind };
-  }
+  const gate = await authorizeGroupCallback(cq, parsed);
+  if (gate.denied) return gate.result;
 
-  const fromId = cq.from?.id;
-  if (!isAllowedTelegramApprover(fromId, chatId, parsed.kind)) {
-    await answerCallbackQuery(cq.id, "غير مسموح", parsed.kind);
-    return { handled: true, action: "denied", kind: parsed.kind };
-  }
-
-  const managerUser = await getTelegramManagerUser(db);
-  if (!managerUser) {
-    await answerCallbackQuery(cq.id, "لم يُضبط حساب موافق صالح في الإعدادات", parsed.kind);
-    return { handled: true, action: "no_manager", kind: parsed.kind };
-  }
-  const permissionKey =
-    parsed.kind === "zimma" || parsed.kind === "cashdebt"
-      ? "on_account_approvals"
-      : parsed.kind === "sulaf"
-        ? "advance_approvals"
-        : "refund_approvals";
-  let permitted = false;
-  try {
-    permitted = await userHasAccountantPermission(db, managerUser, permissionKey);
-  } catch (err) {
-    if (err?.code === "PERMISSIONS_CORRUPT") {
-      await answerCallbackQuery(cq.id, "صلاحيات حساب الموافق تالفة", parsed.kind);
-      return { handled: true, action: "forbidden", kind: parsed.kind, requestId: parsed.requestId };
-    }
-    throw err;
-  }
-  if (!permitted) {
-    await answerCallbackQuery(cq.id, "حساب الموافق لا يملك صلاحية الموافقة", parsed.kind);
-    return { handled: true, action: "forbidden", kind: parsed.kind, requestId: parsed.requestId };
-  }
-
-  const approver = {
-    ...managerUser,
-    telegram_user_id: fromId,
-    telegram_username: cq.from?.username || null,
-  };
+  const approver = gate.actor;
 
   try {
     if (parsed.kind === "refund") {
-      return handleRefundCallback(db, cq, parsed, approver);
+      return await handleRefundCallback(db, cq, parsed, approver);
     }
     if (parsed.kind === "zimma") {
-      return handleZimmaCallback(db, cq, parsed, approver);
+      return await handleZimmaCallback(db, cq, parsed, approver);
     }
     if (parsed.kind === "cashdebt") {
-      return handleCashDebtCallback(db, cq, parsed, approver);
+      return await handleCashDebtCallback(db, cq, parsed, approver);
     }
     if (parsed.kind === "sulaf") {
-      return handleSulafCallback(db, cq, parsed, approver);
+      return await handleSulafCallback(db, cq, parsed, approver);
     }
     return { handled: false };
   } catch (e) {
+    const already = e?.code === "NOT_PENDING" || e?.code === "ALREADY_HANDLED" || /ليس قيد المراجعة|تمت المعالجة مسبقاً/.test(String(e?.message || ""));
+    if (already) {
+      await answerQuiet(cq, "تمت المعالجة مسبقاً", parsed.kind, parsed.requestId);
+      return { handled: true, action: "already_handled", requestId: parsed.requestId, kind: parsed.kind };
+    }
     console.error("Telegram update error:", e);
     await answerCallbackQuery(cq.id, e.message || "فشل المعالجة", parsed.kind);
     return { handled: true, action: "error", requestId: parsed.requestId, kind: parsed.kind };
   }
 }
 
-async function handleRefundCallback(db, cq, parsed, managerUser) {
+async function releaseIfShiftHeld(db, cq, shiftId, kind, requestId) {
+  const hold = await telegramShiftHold(db, shiftId);
+  if (!hold) return null;
+  await answerCallbackQuery(cq.id, hold.alert, kind);
+  return { handled: true, action: hold.action, requestId, kind };
+}
+
+async function handleRefundCallback(db, cq, parsed, actor) {
+  const managerUser = telegramDecisionUser(actor);
   const existing = await getRefundRequestById(db, parsed.requestId);
+  if (existing?.status === "pending" && !callbackMatchesStoredMessage(cq, existing.telegram_message_id, "refund")) {
+    return mismatchResult(cq, parsed);
+  }
   if (!existing || existing.status !== "pending") {
     await answerCallbackQuery(cq.id, "تمت المعالجة مسبقاً", "refund");
     if (existing?.telegram_message_id) {
@@ -191,15 +246,26 @@ async function handleRefundCallback(db, cq, parsed, managerUser) {
     return { handled: true, action: "already_handled", requestId: parsed.requestId, kind: "refund" };
   }
 
+  const refundHold = await releaseIfShiftHeld(db, cq, existing.shift_id, "refund", parsed.requestId);
+  if (refundHold) return refundHold;
+
   if (parsed.action === "approve") {
-    await approveRefundRequest(
-      db,
-      parsed.requestId,
-      managerUser,
-      telegramReviewNote(managerUser),
-      null,
-      "telegram"
-    );
+    try {
+      await approveRefundRequest(
+        db,
+        parsed.requestId,
+        managerUser,
+        telegramReviewNote(actor),
+        null,
+        "telegram"
+      );
+    } catch (e) {
+      if (e?.code === "NOT_PENDING" || /ليس قيد المراجعة/.test(String(e?.message || ""))) {
+        await answerQuiet(cq, "تمت المعالجة مسبقاً", "refund", parsed.requestId);
+        return { handled: true, action: "already_handled", requestId: parsed.requestId, kind: "refund" };
+      }
+      throw e;
+    }
     await answerCallbackQuery(cq.id, "تمت الموافقة", "refund");
     return { handled: true, action: "approve", requestId: parsed.requestId, kind: "refund" };
   }
@@ -208,7 +274,7 @@ async function handleRefundCallback(db, cq, parsed, managerUser) {
     db,
     parsed.requestId,
     managerUser,
-    telegramReviewNote(managerUser),
+    telegramReviewNote(actor),
     null,
     "telegram"
   );
@@ -216,8 +282,12 @@ async function handleRefundCallback(db, cq, parsed, managerUser) {
   return { handled: true, action: "reject", requestId: parsed.requestId, kind: "refund" };
 }
 
-async function handleZimmaCallback(db, cq, parsed, managerUser) {
+async function handleZimmaCallback(db, cq, parsed, actor) {
+  const managerUser = telegramDecisionUser(actor);
   const existing = await getOnAccountRequestById(db, parsed.requestId);
+  if (existing?.status === "pending" && !callbackMatchesStoredMessage(cq, existing.telegram_message_id, "zimma")) {
+    return mismatchResult(cq, parsed);
+  }
   if (!existing || existing.status !== "pending") {
     await answerCallbackQuery(cq.id, "تمت المعالجة مسبقاً", "zimma");
     if (existing?.telegram_message_id) {
@@ -232,13 +302,16 @@ async function handleZimmaCallback(db, cq, parsed, managerUser) {
     return { handled: true, action: "already_handled", requestId: parsed.requestId, kind: "zimma" };
   }
 
+  const zimmaHold = await releaseIfShiftHeld(db, cq, existing.shift_id, "zimma", parsed.requestId);
+  if (zimmaHold) return zimmaHold;
+
   if (parsed.action === "approve") {
     try {
       await approveOnAccountRequest(
         db,
         parsed.requestId,
         managerUser,
-        telegramReviewNote(managerUser),
+        telegramReviewNote(actor),
         null,
         "telegram"
       );
@@ -262,7 +335,7 @@ async function handleZimmaCallback(db, cq, parsed, managerUser) {
     db,
     parsed.requestId,
     managerUser,
-    telegramReviewNote(managerUser),
+    telegramReviewNote(actor),
     null,
     "telegram"
   );
@@ -270,8 +343,12 @@ async function handleZimmaCallback(db, cq, parsed, managerUser) {
   return { handled: true, action: "reject", requestId: parsed.requestId, kind: "zimma" };
 }
 
-async function handleCashDebtCallback(db, cq, parsed, managerUser) {
+async function handleCashDebtCallback(db, cq, parsed, actor) {
+  const managerUser = telegramDecisionUser(actor);
   const existing = await getCustomerCashDebtRequestById(db, parsed.requestId);
+  if (existing?.status === "pending" && !callbackMatchesStoredMessage(cq, existing.telegram_message_id, "cashdebt")) {
+    return mismatchResult(cq, parsed);
+  }
   if (!existing || existing.status !== "pending") {
     await answerCallbackQuery(cq.id, "تمت المعالجة مسبقاً", "cashdebt");
     if (existing?.telegram_message_id) {
@@ -286,13 +363,16 @@ async function handleCashDebtCallback(db, cq, parsed, managerUser) {
     return { handled: true, action: "already_handled", requestId: parsed.requestId, kind: "cashdebt" };
   }
 
+  const debtHold = await releaseIfShiftHeld(db, cq, existing.shift_id, "cashdebt", parsed.requestId);
+  if (debtHold) return debtHold;
+
   if (parsed.action === "approve") {
     try {
       await approveCustomerCashDebtRequest(
         db,
         parsed.requestId,
         managerUser,
-        telegramReviewNote(managerUser),
+        telegramReviewNote(actor),
         null,
         "telegram"
       );
@@ -316,7 +396,7 @@ async function handleCashDebtCallback(db, cq, parsed, managerUser) {
     db,
     parsed.requestId,
     managerUser,
-    telegramReviewNote(managerUser),
+    telegramReviewNote(actor),
     null,
     "telegram"
   );
@@ -329,48 +409,21 @@ async function handleApprovalsCallback(db, cq, parsed) {
     await answerCallbackQuery(cq.id, "المجموعة غير مضبوطة", parsed.kind);
     return { handled: true, action: "denied", kind: parsed.kind, requestId: parsed.requestId };
   }
-  const chatId = cq.message?.chat?.id;
-  if (!isApprovalsGroupChat(chatId)) {
-    await answerCallbackQuery(cq.id, "غير مسموح", parsed.kind);
-    return { handled: true, action: "denied", kind: parsed.kind, requestId: parsed.requestId };
-  }
-  const fromId = cq.from?.id;
-  let member = null;
-  try {
-    member = await fetchApprovalsChatMember(fromId);
-  } catch (err) {
-    await answerCallbackQuery(cq.id, "تعذّر التحقق من عضوية المجموعة", parsed.kind);
-    return { handled: true, action: "denied", kind: parsed.kind, requestId: parsed.requestId };
-  }
-  if (!isActiveChatMember(member)) {
-    await answerCallbackQuery(cq.id, "غير مسموح", parsed.kind);
-    return { handled: true, action: "denied", kind: parsed.kind, requestId: parsed.requestId };
-  }
-  const telegramActor = {
-    id: fromId == null ? "" : String(fromId),
-    username: cq.from?.username || null,
-  };
+  const gate = await authorizeGroupCallback(cq, parsed);
+  if (gate.denied) return gate.result;
+  const telegramActor = gate.actor;
   const request =
     parsed.kind === "expense"
       ? await getExpenseApprovalRequestById(db, parsed.requestId)
       : parsed.kind === "consumption"
         ? await getShopConsumptionRequestById(db, parsed.requestId)
         : await getSupplierPaymentApprovalRequestById(db, parsed.requestId);
-  const target = request
-    ? {
-        kind: parsed.kind,
-        request_id: request.id,
-        telegram_message_id: request.telegram_message_id,
-        chat_id: String(cq.message?.chat?.id),
-        bot_kind: "approvals",
-      }
-    : null;
-  if (!request || !approvalsCallbackMatchesTarget(parsed, cq, target)) {
-    await answerCallbackQuery(cq.id, "الرسالة لا تطابق الطلب", parsed.kind);
-    return { handled: true, action: "mismatch", kind: parsed.kind, requestId: parsed.requestId };
+  if (!request || !callbackMatchesStoredMessage(cq, request.telegram_message_id, parsed.kind)) {
+    return mismatchResult(cq, parsed);
   }
   if (request.status !== "pending") {
-    await answerCallbackQuery(cq.id, "تمت المعالجة مسبقاً", parsed.kind);
+    logApprovalStage("already_handled", { request: parsed.requestId, kind: parsed.kind, status: request.status });
+    await answerQuiet(cq, "تمت المعالجة مسبقاً", parsed.kind, parsed.requestId);
     return { handled: true, action: "already_handled", kind: parsed.kind, requestId: parsed.requestId };
   }
   try {
@@ -388,12 +441,15 @@ async function handleApprovalsCallback(db, cq, parsed) {
     }
   } catch (err) {
     if (err?.code === "ALREADY_HANDLED" || err?.action === "already_handled") {
-      await answerCallbackQuery(cq.id, "تمت المعالجة مسبقاً", parsed.kind);
+      logApprovalStage("already_handled", { request: parsed.requestId, kind: parsed.kind });
+      await answerQuiet(cq, "تمت المعالجة مسبقاً", parsed.kind, parsed.requestId);
       return { handled: true, action: "already_handled", kind: parsed.kind, requestId: parsed.requestId };
     }
+    logApprovalStage("post_failed", { request: parsed.requestId, kind: parsed.kind, detail: telegramFailureLog(err) });
     throw err;
   }
-  await answerCallbackQuery(cq.id, parsed.action === "approve" ? "تمت الموافقة" : "تم الرفض", parsed.kind);
+  logApprovalStage("posted", { request: parsed.requestId, kind: parsed.kind, action: parsed.action });
+  await answerQuiet(cq, parsed.action === "approve" ? "تمت الموافقة" : "تم الرفض", parsed.kind, parsed.requestId);
   return {
     handled: true,
     action: parsed.action,
@@ -403,8 +459,12 @@ async function handleApprovalsCallback(db, cq, parsed) {
   };
 }
 
-async function handleSulafCallback(db, cq, parsed, managerUser) {
+async function handleSulafCallback(db, cq, parsed, actor) {
+  const managerUser = telegramDecisionUser(actor);
   const existing = await getAdvanceRequestById(db, parsed.requestId);
+  if (existing?.status === "pending" && !callbackMatchesStoredMessage(cq, existing.telegram_message_id, "sulaf")) {
+    return mismatchResult(cq, parsed);
+  }
   if (!existing || existing.status !== "pending") {
     await answerCallbackQuery(cq.id, "تمت المعالجة مسبقاً", "sulaf");
     if (existing?.telegram_message_id) {
@@ -419,12 +479,15 @@ async function handleSulafCallback(db, cq, parsed, managerUser) {
     return { handled: true, action: "already_handled", requestId: parsed.requestId, kind: "sulaf" };
   }
 
+  const sulafHold = await releaseIfShiftHeld(db, cq, existing.shift_id, "sulaf", parsed.requestId);
+  if (sulafHold) return sulafHold;
+
   if (parsed.action === "approve") {
     await approveAdvanceRequest(
       db,
       parsed.requestId,
       managerUser,
-      telegramReviewNote(managerUser),
+      telegramReviewNote(actor),
       null,
       "telegram"
     );
@@ -436,7 +499,7 @@ async function handleSulafCallback(db, cq, parsed, managerUser) {
     db,
     parsed.requestId,
     managerUser,
-    telegramReviewNote(managerUser),
+    telegramReviewNote(actor),
     null,
     "telegram"
   );

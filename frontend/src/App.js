@@ -21,6 +21,8 @@ const RefundsPage = lazy(() => import("./pages/RefundsPage"));
 const RefundApprovals = lazy(() => import("./pages/RefundApprovals"));
 const OnAccountApprovals = lazy(() => import("./pages/OnAccountApprovals"));
 const AdvanceApprovals = lazy(() => import("./pages/AdvanceApprovals"));
+const SupplierPaymentApprovals = lazy(() => import("./pages/SupplierPaymentApprovals"));
+const ShopConsumptionApprovals = lazy(() => import("./pages/ShopConsumptionApprovals"));
 const StoreSettings = lazy(() => import("./pages/StoreSettings"));
 const AccountantPermissions = lazy(() => import("./pages/AccountantPermissions"));
 const Inventory = lazy(() => import("./pages/Inventory"));
@@ -239,6 +241,22 @@ function App() {
             element={
               <OfficeRoute requirePermission="advance_approvals">
                 <AdvanceApprovals />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/supplier-payment-approvals"
+            element={
+              <OfficeRoute requirePermission="suppliers">
+                <SupplierPaymentApprovals />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/shop-consumption-approvals"
+            element={
+              <OfficeRoute requirePermission="expenses">
+                <ShopConsumptionApprovals />
               </OfficeRoute>
             }
           />

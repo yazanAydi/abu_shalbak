@@ -35,6 +35,7 @@ import { partyBalanceForSale } from "../utils/partyBalanceAroundMove.js";
 import { getSuspendedSalesSummary } from "../services/suspendedSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { businessDayFromTimestamp } from "../utils/businessDay.js";
+import { formatShopWall, shopDaySqlBounds, sqlUtcTimestampExpr } from "../utils/shopTime.js";
 import { listShiftCustomerCollections } from "../services/posCustomerCollectionService.js";
 import { listShiftCustomerCashDebts } from "../services/customerCashDebtRequestService.js";
 import {
@@ -52,6 +53,11 @@ import {
   listShiftAdvances,
   postShiftSalaryAdvance,
 } from "../services/advanceRequestService.js";
+import {
+  assertShiftReadyToClose,
+  listClosedShiftPendingRequests,
+  listShiftDecisionState,
+} from "../services/originatingShiftDecision.js";
 
 function parseDate(s) {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return null;
@@ -182,6 +188,7 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
       err.code = "SHIFT_ALREADY_CLOSED";
       throw err;
     }
+    await assertShiftReadyToClose(db, shiftId);
     const expected_cash = await computeExpectedCash(db, shiftId, live.opening_cash);
     const variance = round2(closing_cash - expected_cash);
     const { card_total, refund_total, visa } = await computeShiftTotals(db, shiftId);
@@ -338,6 +345,7 @@ export function createShiftsRouter(db) {
         id: shift.id,
         cashier_id: shift.cashier_id,
         start_time: shift.start_time,
+        business_day: shift.business_day,
         opening_cash: shift.opening_cash,
         status: shift.status,
         expected_cash: drawer.expected_cash,
@@ -405,6 +413,15 @@ export function createShiftsRouter(db) {
       limit,
       offset,
     });
+  });
+
+  router.get("/closed-pending-requests", requireAuth, requireShiftAudit, async (_req, res, next) => {
+    try {
+      const rows = await listClosedShiftPendingRequests(db);
+      res.json({ requests: rows });
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.get("/pending", requireAuth, requireShiftAudit, async (req, res) => {
@@ -548,19 +565,14 @@ export function createShiftsRouter(db) {
       sql += " AND s.cashier_id = ?";
       params.push(cashierId);
     }
-    if (dateFrom) {
+    if (dateFrom || dateTo) {
+      const bounds = shopDaySqlBounds(dateFrom || "1970-01-01", dateTo || "2100-12-31");
+      const started = sqlUtcTimestampExpr("s.start_time");
       sql += ` AND (
-        (s.business_day IS NOT NULL AND s.business_day >= ?)
-        OR (s.business_day IS NULL AND date(s.start_time) >= ?)
+        (s.business_day IS NOT NULL AND s.business_day >= ? AND s.business_day <= ?)
+        OR (s.business_day IS NULL AND ${started} >= datetime(?) AND ${started} <= datetime(?))
       )`;
-      params.push(dateFrom, dateFrom);
-    }
-    if (dateTo) {
-      sql += ` AND (
-        (s.business_day IS NOT NULL AND s.business_day <= ?)
-        OR (s.business_day IS NULL AND date(s.start_time) <= ?)
-      )`;
-      params.push(dateTo, dateTo);
+      params.push(dateFrom || "1970-01-01", dateTo || "2100-12-31", bounds.startSql, bounds.endSql);
     }
     sql += " ORDER BY datetime(COALESCE(s.end_time, s.start_time)) DESC, s.id DESC";
     sql += listLimitSql(req.query, 100, req.user?.role).sql;
@@ -711,7 +723,7 @@ export function createShiftsRouter(db) {
     );
     for (const m of movements) {
       lines.push(
-        [m.id, m.movement_type, m.amount, m.description ?? "", m.created_at, m.transaction_id ?? "", m.refund_id ?? ""]
+        [m.id, m.movement_type, m.amount, m.description ?? "", formatShopWall(m.created_at)?.dateTime || m.created_at, m.transaction_id ?? "", m.refund_id ?? ""]
           .map(esc)
           .join(",")
       );
@@ -1059,6 +1071,7 @@ export function createShiftsRouter(db) {
       cash_net_label: SHIFT_CASH_NET_LABEL,
       expected_cash_label: SHIFT_EXPECTED_CASH_LABEL,
     };
+    const decisions = await listShiftDecisionState(db, shiftId, req.user);
     const summary =
       shift.status === "closed"
         ? {
@@ -1087,6 +1100,8 @@ export function createShiftsRouter(db) {
             customer_cash_debts_total: customerCashDebts.total,
             advances_total: advances.total,
           };
+    summary.balanced = decisions.balanced;
+    summary.handover_blocks_count = decisions.count_blocked;
 
     const suspended_summary = await getSuspendedSalesSummary(db, shiftId);
 
@@ -1111,6 +1126,9 @@ export function createShiftsRouter(db) {
       },
       summary,
       suspended_summary,
+      pending_requests: decisions.pending_requests,
+      handover_discrepancies: decisions.handover_discrepancies,
+      count_blocked: decisions.count_blocked,
     });
   });
 

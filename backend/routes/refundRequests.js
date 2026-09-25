@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { validate } from "../middleware/validate.js";
-import { refundRequestCreateSchema, refundRequestReviewSchema } from "../middleware/schemas.js";
+import { handoverFollowUpSchema, refundRequestCreateSchema, refundRequestReviewSchema } from "../middleware/schemas.js";
 import {
   createRefundRequest,
   getRefundRequestById,
@@ -13,6 +13,7 @@ import {
   acknowledgeRefundDecision,
   approveRefundRequest,
   rejectRefundRequest,
+  recordRefundHandover,
 } from "../services/refundRequestService.js";
 
 async function canViewRefundRequest(db, user, request) {
@@ -104,7 +105,20 @@ export function createRefundRequestsRouter(db) {
       cashier_acknowledged_at: row.cashier_acknowledged_at ?? null,
       cashier_username: row.cashier_username,
       manager_username: row.manager_username,
+      shift_status: row.shift_status ?? null,
     });
+  });
+
+  router.post("/:id/handover", requireAuth, requireRefundApprovals, validate(handoverFollowUpSchema), async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
+    try {
+      const row = await recordRefundHandover(db, id, req.user.id, req.body.disposition);
+      res.json({ success: true, request: row });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
   });
 
   router.put("/:id", requireAuth, requireRefundApprovals, validate(refundRequestReviewSchema), async (req, res, next) => {
@@ -116,7 +130,9 @@ export function createRefundRequestsRouter(db) {
       const result =
         status === "approved"
           ? await approveRefundRequest(db, id, req.user, note, req, "admin")
-          : await rejectRefundRequest(db, id, req.user, note, req, "admin");
+          : await rejectRefundRequest(db, id, req.user, note, req, "admin", {
+              handoverDisposition: req.body.handover_disposition,
+            });
       res.json({ success: true, ...result });
     } catch (e) {
       if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });

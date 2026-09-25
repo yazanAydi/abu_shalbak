@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { formatRefundReason, ils, statusLabelAr } from "../utils/refundHelpers";
+import { dateTime } from "../utils/format";
 import "./RefundsManagement.css";
 
 const PM = { cash: "نقد", visa: "بطاقة" };
@@ -87,7 +88,7 @@ export default function RefundDetailsModal({ open, refundId, onClose, onUpdated,
               <br />
               الكاشير: <strong>{refund.cashier_username}</strong>
               <br />
-              التاريخ: {refund.created_at?.replace("T", " ").slice(0, 16)}
+              وقت العملية: {dateTime(refund.created_at)}
               <br />
               طريقة الرد للزبون: {PM[refund.payment_method] || refund.payment_method}
             </p>

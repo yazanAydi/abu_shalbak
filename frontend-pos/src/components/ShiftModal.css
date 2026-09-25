@@ -240,6 +240,20 @@
   margin-top: 0;
 }
 
+.pos-leave-overlay {
+  z-index: 1200;
+}
+
+.shift-modal-actions--stack {
+  flex-direction: column;
+}
+
+.shift-modal-actions--stack .shift-modal-primary,
+.shift-modal-actions--stack .shift-modal-secondary {
+  flex: none;
+  width: 100%;
+}
+
 .shift-modal-err {
   color: var(--pos-danger, #dc2626);
   margin-bottom: 0.5rem;

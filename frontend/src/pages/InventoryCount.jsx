@@ -19,6 +19,7 @@ import {
   StatusPill,
 } from "../components/ui";
 import { apiErrorMessage } from "../utils/apiError";
+import { dateTime } from "../utils/format";
 
 const SESSION_COLUMNS = [
   { key: "id", header: "رقم" },
@@ -27,7 +28,7 @@ const SESSION_COLUMNS = [
     header: "الحالة",
     value: (s) => (s.status === "open" ? "مفتوح" : s.status === "posted" ? "مرحّل" : "ملغي"),
   },
-  { key: "created_at", header: "أُنشئ في", value: (s) => s.created_at?.slice(0, 16) || "—" },
+  { key: "created_at", header: "أُنشئ في", value: (s) => dateTime(s.created_at) },
   { key: "created_by_name", header: "بواسطة", value: (s) => s.created_by_name || "—" },
 ];
 

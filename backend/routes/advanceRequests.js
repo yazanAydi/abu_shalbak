@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { validate } from "../middleware/validate.js";
-import { advanceRequestCreateSchema, advanceRequestReviewSchema } from "../middleware/schemas.js";
+import { advanceRequestCreateSchema, advanceRequestReviewSchema, handoverFollowUpSchema } from "../middleware/schemas.js";
 import {
   createAdvanceRequest,
   getAdvanceRequestById,
@@ -13,6 +13,7 @@ import {
   acknowledgeAdvanceDecision,
   approveAdvanceRequest,
   rejectAdvanceRequest,
+  recordAdvanceHandover,
 } from "../services/advanceRequestService.js";
 
 async function canViewAdvanceRequest(db, user, request) {
@@ -103,7 +104,20 @@ export function createAdvanceRequestsRouter(db) {
       cashier_acknowledged_at: row.cashier_acknowledged_at ?? null,
       cashier_username: row.cashier_username,
       manager_username: row.manager_username,
+      shift_status: row.shift_status ?? null,
     });
+  });
+
+  router.post("/:id/handover", requireAuth, requireAdvanceApprovals, validate(handoverFollowUpSchema), async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
+    try {
+      const row = await recordAdvanceHandover(db, id, req.user.id, req.body.disposition);
+      res.json({ success: true, request: row });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
   });
 
   router.put("/:id", requireAuth, requireAdvanceApprovals, validate(advanceRequestReviewSchema), async (req, res, next) => {
@@ -115,7 +129,9 @@ export function createAdvanceRequestsRouter(db) {
       const result =
         status === "approved"
           ? await approveAdvanceRequest(db, id, req.user, note, req, "admin", req.body.occurred_on)
-          : await rejectAdvanceRequest(db, id, req.user, note, req, "admin");
+          : await rejectAdvanceRequest(db, id, req.user, note, req, "admin", {
+              handoverDisposition: req.body.handover_disposition,
+            });
       res.json({ success: true, ...result });
     } catch (e) {
       if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });

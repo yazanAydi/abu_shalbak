@@ -14,6 +14,8 @@ const ACK_PATH = {
   advance: "/api/advance-requests",
   on_account: "/api/on-account-requests",
   cash_debt: "/api/customer-cash-debt-requests",
+  supplier: "/api/supplier-payment-requests",
+  shop: "/api/shop-consumption-requests",
 };
 
 /** Oldest terminal decision first so the cashier clears the queue in order. */
@@ -42,6 +44,8 @@ function mergeSnapshot(snapshot) {
     ...tagKind("advance", src.advances),
     ...tagKind("on_account", src.on_account),
     ...tagKind("cash_debt", src.cash_debts),
+    ...tagKind("supplier", src.supplier_payments),
+    ...tagKind("shop", src.shop_consumption),
   ]);
 }
 
@@ -69,6 +73,12 @@ function titleFor(item) {
   if (item.kind === "cash_debt") {
     return approved ? "تمت الموافقة على الذمة النقدية" : "تم رفض طلب الذمة النقدية";
   }
+  if (item.kind === "supplier") {
+    return approved ? "تمت الموافقة — سُجّلت الدفعة" : "تم رفض طلب الدفع للمورد";
+  }
+  if (item.kind === "shop") {
+    return approved ? "تمت الموافقة — خُصم المخزون بالتكلفة" : "تم رفض مصاريف المحل";
+  }
   return approved ? "تمت الموافقة على الاسترجاع" : "تم رفض طلب الاسترجاع";
 }
 
@@ -76,6 +86,8 @@ function headingFor(item) {
   if (item.kind === "advance") return `طلب سلف #${item.id}`;
   if (item.kind === "on_account") return `طلب ذمة #${item.id}`;
   if (item.kind === "cash_debt") return `طلب ذمة نقدية #${item.id}`;
+  if (item.kind === "supplier") return `طلب دفع لمورد #${item.id}`;
+  if (item.kind === "shop") return `مصاريف محل #${item.id}`;
   return `طلب استرجاع #${item.id}`;
 }
 
@@ -92,6 +104,11 @@ function detailFor(item) {
     const name = item.customer_name ? `${item.customer_name} — ` : "";
     return `${name}ذمة ${ils(item.on_account_amount ?? item.total_amount ?? 0)}`;
   }
+  if (item.kind === "supplier") {
+    const name = item.supplier_name ? `${item.supplier_name} — ` : "";
+    return `${name}${ils(item.amount ?? 0)}`;
+  }
+  if (item.kind === "shop") return item.reason || "مصاريف محل";
   return `فاتورة #${item.transaction_id} — ${ils(item.total_amount ?? 0)}`;
 }
 
@@ -117,6 +134,8 @@ export default function PosRefundNotifications({
         api.get("/api/advance-requests/mine/unread", { headers: getAuthHeaders() }),
         api.get("/api/on-account-requests/mine/unread", { headers: getAuthHeaders() }),
         api.get("/api/customer-cash-debt-requests/mine/unread", { headers: getAuthHeaders() }),
+        api.get("/api/supplier-payment-requests/mine/unread", { headers: getAuthHeaders() }),
+        api.get("/api/shop-consumption-requests/mine/unread", { headers: getAuthHeaders() }),
       ]);
       setUnread(
         mergeSnapshot({
@@ -124,6 +143,8 @@ export default function PosRefundNotifications({
           advances: settledList(results[1]),
           on_account: settledList(results[2]),
           cash_debts: settledList(results[3]),
+          supplier_payments: settledList(results[4]),
+          shop_consumption: settledList(results[5]),
         })
       );
     } catch {

@@ -7,10 +7,8 @@ import {
   authHeader,
   withCheckoutKey,
   configureTelegramApprover,
-  createAccountantUser,
+  telegramMemberFetch,
 } from "./helpers.js";
-import { updateAppSettings, SETTING_KEYS } from "../utils/settings.js";
-import { allAccountantPermissionsDisabled } from "../utils/accountantPermissions.js";
 import { handleTelegramUpdate } from "../services/telegramUpdateService.js";
 
 describe("Telegram refund callback", () => {
@@ -26,9 +24,7 @@ describe("Telegram refund callback", () => {
     process.env.TELEGRAM_MANAGER_CHAT_ID = managerChatId;
 
     originalFetch = global.fetch;
-    global.fetch = jest.fn(async () => ({
-      json: async () => ({ ok: true, result: true }),
-    }));
+    global.fetch = jest.fn(telegramMemberFetch({ messageId: 77 }));
 
     ctx = await createTestContext();
     await configureTelegramApprover(ctx.db);
@@ -106,7 +102,7 @@ describe("Telegram refund callback", () => {
       callback_query: {
         id: "test-cq-1",
         data: `refund:approve:${requestId}`,
-        message: { chat: { id: Number(managerChatId) } },
+        message: { message_id: 77, chat: { id: Number(managerChatId) } },
         from: { id: Number(managerChatId) },
       },
     });
@@ -151,7 +147,7 @@ describe("Telegram refund callback", () => {
         callback_query: {
           id: "test-cq-2",
           data: `refund:approve:${requestId}`,
-          message: { chat: { id: Number(managerChatId) } },
+          message: { message_id: 77, chat: { id: Number(managerChatId) } },
           from: { id: Number(managerChatId) },
         },
       });
@@ -172,7 +168,7 @@ describe("Telegram refund callback", () => {
       callback_query: {
         id: "test-cq-group",
         data: `refund:approve:${requestId}`,
-        message: { chat: { id: Number(groupChatId) } },
+        message: { message_id: 77, chat: { id: Number(groupChatId) } },
         from: { id: 111222333 },
       },
     });
@@ -183,7 +179,7 @@ describe("Telegram refund callback", () => {
     expect(reqRow.status).toBe("approved");
   });
 
-  test("allow-list denies a click from a user not on the list", async () => {
+  test("a filled approver id list does not block a current group member", async () => {
     process.env.TELEGRAM_MANAGER_USER_IDS = "999888777";
     const requestId = await createPendingRefund();
 
@@ -191,34 +187,17 @@ describe("Telegram refund callback", () => {
       callback_query: {
         id: "test-cq-deny",
         data: `refund:approve:${requestId}`,
-        message: { chat: { id: Number(managerChatId) } },
-        from: { id: 111222333 },
+        message: { message_id: 77, chat: { id: Number(managerChatId) } },
+        from: { id: 111222333, first_name: "ليلى" },
       },
     });
 
-    expect(result.handled).toBe(true);
-    expect(result.action).toBe("denied");
-    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
-    expect(reqRow.status).toBe("pending");
-  });
-
-  test("allow-list approves a click from a listed user", async () => {
-    process.env.TELEGRAM_MANAGER_USER_IDS = "111222333,999888777";
-    const requestId = await createPendingRefund();
-
-    const result = await handleTelegramUpdate(ctx.db, {
-      callback_query: {
-        id: "test-cq-allow",
-        data: `refund:approve:${requestId}`,
-        message: { chat: { id: Number(managerChatId) } },
-        from: { id: 111222333 },
-      },
-    });
-
-    expect(result.handled).toBe(true);
     expect(result.action).toBe("approve");
-    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
+    const reqRow = await ctx.db.get("SELECT * FROM refund_requests WHERE id = ?", [requestId]);
     expect(reqRow.status).toBe("approved");
+    expect(reqRow.telegram_actor_id).toBe("111222333");
+    expect(reqRow.telegram_actor_name).toBe("ليلى");
+    expect(reqRow.manager_id).toBeNull();
   });
 
   test("wrong chat id is denied", async () => {
@@ -228,7 +207,7 @@ describe("Telegram refund callback", () => {
       callback_query: {
         id: "test-cq-wrong-chat",
         data: `refund:approve:${requestId}`,
-        message: { chat: { id: 12345 } },
+        message: { message_id: 77, chat: { id: 12345 } },
         from: { id: Number(managerChatId) },
       },
     });
@@ -239,40 +218,19 @@ describe("Telegram refund callback", () => {
     expect(reqRow.status).toBe("pending");
   });
 
-  test("an unconfigured approver does not post the refund", async () => {
-    await updateAppSettings(ctx.db, { [SETTING_KEYS.refund_telegram_manager_user_id]: 0 });
+  test("an empty linked manager setting does not block a current group member", async () => {
     const requestId = await createPendingRefund();
     const result = await handleTelegramUpdate(ctx.db, {
       callback_query: {
         id: "test-cq-no-manager",
         data: `refund:approve:${requestId}`,
-        message: { chat: { id: Number(managerChatId) } },
-        from: { id: Number(managerChatId) },
+        message: { message_id: 77, chat: { id: Number(managerChatId) } },
+        from: { id: Number(managerChatId), first_name: "سامي" },
       },
     });
-    expect(result.action).toBe("no_manager");
-    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
-    expect(reqRow.status).toBe("pending");
-  });
-
-  test("an approver without refund_approvals does not post the refund", async () => {
-    const limited = await createAccountantUser(ctx.db, {
-      username: "tglimited",
-      password: "tgpass123",
-      permissions: allAccountantPermissionsDisabled(),
-    });
-    await updateAppSettings(ctx.db, { [SETTING_KEYS.refund_telegram_manager_user_id]: limited.id });
-    const requestId = await createPendingRefund();
-    const result = await handleTelegramUpdate(ctx.db, {
-      callback_query: {
-        id: "test-cq-no-perm",
-        data: `refund:approve:${requestId}`,
-        message: { chat: { id: Number(managerChatId) } },
-        from: { id: Number(managerChatId) },
-      },
-    });
-    expect(result.action).toBe("forbidden");
-    const reqRow = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
-    expect(reqRow.status).toBe("pending");
+    expect(result.action).toBe("approve");
+    const reqRow = await ctx.db.get("SELECT status, manager_id FROM refund_requests WHERE id = ?", [requestId]);
+    expect(reqRow.status).toBe("approved");
+    expect(reqRow.manager_id).toBeNull();
   });
 });

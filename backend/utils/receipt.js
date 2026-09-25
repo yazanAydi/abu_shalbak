@@ -1,6 +1,7 @@
 import { getStoreLogoDataUri, resolvePrintBranding, STORE_NAME_AR, STORE_PHONE } from "./storeBranding.js";
 import { formatProductSku } from "./entityCodes.js";
 import { round2 } from "./money.js";
+import { formatShopWall } from "./shopTime.js";
 
 const LINE = 48;
 
@@ -83,6 +84,8 @@ function soldToLabel(opts) {
 }
 
 function splitTimestamp(ts) {
+  const wall = formatShopWall(ts);
+  if (wall) return { date: wall.date, time: wall.time.slice(0, 5) };
   const raw = String(ts || "").trim();
   const [datePart, ...rest] = raw.split(/\s+/);
   return { date: datePart || raw, time: rest.join(" ") || "" };

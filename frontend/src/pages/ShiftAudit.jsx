@@ -2,7 +2,7 @@ import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
-import { ils, dateTime, dateTimeSeconds } from "../utils/format";
+import { ils, dateOnly, dateTime, dateTimeSeconds } from "../utils/format";
 import { SHIFT_VARIANCE_WARNING } from "../components/ShiftEnd";
 import {
   PageHeader,
@@ -34,6 +34,7 @@ import CashCountFields, {
 } from "../components/CashCountFields";
 import CountSupplierPaymentSection from "../components/CountSupplierPaymentSection";
 import CountAdvanceSection from "../components/CountAdvanceSection";
+import CountPendingDecisions from "../components/CountPendingDecisions";
 import ShiftCountTotals from "../components/ShiftCountTotals";
 import { mapShiftDetailToCountTarget } from "../utils/shiftCountSupplierPayment";
 
@@ -336,6 +337,7 @@ export default function ShiftAudit() {
   const toast = useToast();
   const [rows, setRows] = useState([]);
   const [pendingRows, setPendingRows] = useState([]);
+  const [closedPending, setClosedPending] = useState([]);
   const [pendingLoading, setPendingLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
@@ -362,6 +364,9 @@ export default function ShiftAudit() {
     try {
       const { data } = await api.get("/api/shifts/pending", { headers: getAuthHeaders() });
       setPendingRows(Array.isArray(data) ? data : []);
+      const closed = await api.get("/api/shifts/closed-pending-requests", { headers: getAuthHeaders() });
+      const closedRows = closed.data?.requests ?? closed.data;
+      setClosedPending(Array.isArray(closedRows) ? closedRows : []);
     } catch (e) {
       toast.error(apiErrorMessage(e, "تعذّر تحميل الورديات المعلقة"));
       setPendingRows([]);
@@ -737,7 +742,8 @@ export default function ShiftAudit() {
 
   const pendingColumns = [
     { key: "cashier", header: "الكاشير", value: (r) => r.cashier_name || r.cashier_id, render: (r) => r.cashier_name || r.cashier_id },
-    { key: "start", header: "البداية", value: (r) => formatDt(r.start_time), render: (r) => formatDt(r.start_time) },
+    { key: "start", header: "وقت الفتح", value: (r) => formatDt(r.start_time), render: (r) => formatDt(r.start_time) },
+    { key: "business_day", header: "يوم العمل", value: (r) => dateOnly(r.business_day), render: (r) => dateOnly(r.business_day) },
     { key: "end", header: "نهاية الوردية", value: (r) => formatDt(r.end_time), render: (r) => formatDt(r.end_time) },
     {
       key: "expected",
@@ -764,7 +770,8 @@ export default function ShiftAudit() {
 
   const columns = [
     { key: "cashier", header: "الكاشير", value: (r) => r.cashier_name || r.cashier_id, render: (r) => r.cashier_name || r.cashier_id },
-    { key: "start", header: "البداية", value: (r) => formatDt(r.start_time), render: (r) => formatDt(r.start_time) },
+    { key: "start", header: "وقت الفتح", value: (r) => formatDt(r.start_time), render: (r) => formatDt(r.start_time) },
+    { key: "business_day", header: "يوم العمل", value: (r) => dateOnly(r.business_day), render: (r) => dateOnly(r.business_day) },
     { key: "end", header: "النهاية", value: (r) => formatDt(r.end_time), render: (r) => formatDt(r.end_time) },
     {
       key: "opening",
@@ -898,6 +905,26 @@ export default function ShiftAudit() {
         }
       />
 
+      {closedPending.length > 0 ? (
+        <Card>
+          <CardBody>
+            <h2 className="dashboard-subtitle">طلبات معلّقة على ورديات جُردت — تسوية يدوية</h2>
+            <p className="ui-hint">
+              هذه الطلبات بقيت معلّقة بعد حفظ الجرد. لا يُغيّر النظام الجرد المحفوظ تلقائياً.
+            </p>
+            <ul className="dashboard-stock-list">
+              {closedPending.map((row) => (
+                <li key={`${row.kind}:${row.request_id}`}>
+                  {row.label} — وردية #{row.shift_id}
+                  {row.cashier_name ? ` — ${row.cashier_name}` : ""} — {ils(row.amount)}
+                  {row.business_day ? ` — ${row.business_day}` : ""}
+                </li>
+              ))}
+            </ul>
+          </CardBody>
+        </Card>
+      ) : null}
+
       <Card>
         <CardBody flush>
           <h2 className="dashboard-subtitle ui-toolbar--compact">
@@ -967,7 +994,13 @@ export default function ShiftAudit() {
             <PrimaryButton
               type="submit"
               form="reconcile-form"
-              disabled={reconcileLoading || supplierSaving || advanceSaving || countRows.length === 0}
+              disabled={
+                reconcileLoading ||
+                supplierSaving ||
+                advanceSaving ||
+                countRows.length === 0 ||
+                !!reconcileTarget?.count_blocked
+              }
             >
               {reconcileLoading ? "جاري الحفظ…" : "تأكيد وإغلاق"}
             </PrimaryButton>
@@ -984,6 +1017,12 @@ export default function ShiftAudit() {
               {reconcileTarget.id != null ? ` — وردية #${reconcileTarget.id}` : ""}
             </p>
             <ShiftCountTotals source={reconcileTarget} />
+            <CountPendingDecisions
+              pendingRequests={reconcileTarget.pending_requests || []}
+              discrepancies={reconcileTarget.handover_discrepancies || []}
+              balanced={reconcileTarget.balanced !== false}
+              onChanged={() => refreshReconcileTarget(reconcileTarget.id)}
+            />
             <CountSupplierPaymentSection
               shiftId={reconcileTarget.id}
               payments={reconcileTarget.supplier_payments}
@@ -1078,6 +1117,22 @@ export default function ShiftAudit() {
               summary={detail.summary}
               varianceWarn={varianceWarn}
             />
+            {detail.summary?.balanced === false ? (
+              <p className="ui-hint" style={{ color: "var(--office-danger, #9b2c2c)" }}>
+                الوردية غير متوازنة بسبب نقد أو بضاعة سُلّمت ولم تُعكس في القيود.
+              </p>
+            ) : null}
+            {(detail.handover_discrepancies || []).length > 0 ? (
+              <ul className="dashboard-stock-list">
+                {detail.handover_discrepancies.map((row) => (
+                  <li key={`${row.kind}:${row.request_id}`}>
+                    {row.label}
+                    {row.cash_amount != null ? ` — ${ils(row.cash_amount)}` : ""}
+                    {row.disposition === "loss_accepted" ? " — عجز مقبول" : " — لم يُعد"}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
 
             <SearchInput
               className="shift-detail-search"

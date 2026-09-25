@@ -20,6 +20,7 @@ import {
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import { apiErrorMessage } from "../utils/apiError";
+import { HandoverRejectField } from "../components/CountPendingDecisions";
 
 function formatDt(v) {
   return dateTime(v);
@@ -75,6 +76,7 @@ export default function OnAccountApprovals() {
   const [loading, setLoading] = useState(true);
   const [reviewTarget, setReviewTarget] = useState(null);
   const [reviewNotes, setReviewNotes] = useState("");
+  const [handoverChoice, setHandoverChoice] = useState("");
   const [reviewLoading, setReviewLoading] = useState(false);
   const [staleMessage, setStaleMessage] = useState(null);
   const [overrideCredit, setOverrideCredit] = useState(false);
@@ -148,6 +150,7 @@ export default function OnAccountApprovals() {
       }
       setReviewTarget({ ...row, ...fresh, action, readOnly: false });
       setReviewNotes("");
+      setHandoverChoice("");
       setOverrideCredit(false);
     } catch (e) {
       toast.error(apiErrorMessage(e, "تعذّر فتح الطلب"));
@@ -157,6 +160,7 @@ export default function OnAccountApprovals() {
   function closeReview() {
     setReviewTarget(null);
     setReviewNotes("");
+    setHandoverChoice("");
     setOverrideCredit(false);
     setStaleMessage(null);
   }
@@ -164,6 +168,12 @@ export default function OnAccountApprovals() {
   async function submitReview(e) {
     e.preventDefault();
     if (!reviewTarget || reviewTarget.readOnly) return;
+    const needsHandover =
+      reviewTarget.action === "rejected" && reviewTarget.shift_status === "pending_count";
+    if (needsHandover && handoverChoice !== "returned" && handoverChoice !== "outstanding") {
+      toast.error("حدد هل أُعيد النقد أو البضاعة");
+      return;
+    }
     setReviewLoading(true);
     try {
       const base =
@@ -177,6 +187,7 @@ export default function OnAccountApprovals() {
           review_notes: reviewNotes.trim() || null,
           override_credit_limit:
             reviewTarget.action === "approved" && overrideCredit ? true : undefined,
+          ...(needsHandover ? { handover_disposition: handoverChoice } : {}),
         },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
@@ -451,6 +462,11 @@ export default function OnAccountApprovals() {
                 <p className="ui-mt-md">
                   <strong>ملاحظات العملية:</strong> {reviewTarget.notes}
                 </p>
+              ) : null}
+              {!reviewTarget.readOnly &&
+              reviewTarget.action === "rejected" &&
+              reviewTarget.shift_status === "pending_count" ? (
+                <HandoverRejectField value={handoverChoice} onChange={setHandoverChoice} />
               ) : null}
               {!reviewTarget.readOnly ? (
                 <FormField label="ملاحظات المراجعة" optional>

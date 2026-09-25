@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { validate } from "../middleware/validate.js";
-import { onAccountRequestReviewSchema } from "../middleware/schemas.js";
+import { handoverFollowUpSchema, onAccountRequestReviewSchema } from "../middleware/schemas.js";
 import {
   getOnAccountRequestById,
   listPendingOnAccountRequests,
@@ -13,6 +13,7 @@ import {
   approveOnAccountRequest,
   rejectOnAccountRequest,
   buildOnAccountRequestStatusPayload,
+  recordOnAccountHandover,
 } from "../services/onAccountRequestService.js";
 
 async function canViewOnAccountRequest(db, user, request) {
@@ -74,6 +75,18 @@ export function createOnAccountRequestsRouter(db) {
     res.json(await buildOnAccountRequestStatusPayload(db, row));
   });
 
+  router.post("/:id/handover", requireAuth, requireOnAccountApprovals, validate(handoverFollowUpSchema), async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
+    try {
+      const row = await recordOnAccountHandover(db, id, req.user.id, req.body.disposition);
+      res.json({ success: true, request: row });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
+  });
+
   router.put("/:id", requireAuth, requireOnAccountApprovals, validate(onAccountRequestReviewSchema), async (req, res, next) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
@@ -85,7 +98,9 @@ export function createOnAccountRequestsRouter(db) {
           ? await approveOnAccountRequest(db, id, req.user, note, req, "admin", {
               overrideCreditLimit: req.body.override_credit_limit === true,
             })
-          : await rejectOnAccountRequest(db, id, req.user, note, req, "admin");
+          : await rejectOnAccountRequest(db, id, req.user, note, req, "admin", {
+              handoverDisposition: req.body.handover_disposition,
+            });
       res.json({ success: true, ...result });
     } catch (e) {
       if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });

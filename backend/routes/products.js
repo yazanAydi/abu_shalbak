@@ -52,7 +52,7 @@ import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { ensureEntityCode, parseNumericCode, productSkuLookupValues } from "../utils/entityCodes.js";
 import { recordPriceChange } from "../utils/priceHistory.js";
 import { getSalesByPrice } from "../utils/salesByPrice.js";
-import { shopTodayYmd } from "../utils/shopTime.js";
+import { shopDaySqlBounds, shopTodayYmd, shopYmdFromTimestamp, sqlUtcTimestampExpr } from "../utils/shopTime.js";
 import { listStockBatches } from "../services/stockBatchService.js";
 import {
   BAKERY_CATEGORY_NAME,
@@ -1700,17 +1700,22 @@ export function createProductsRouter(db) {
     const today = shopTodayYmd();
     const monthStart = `${today.slice(0, 8)}01`;
 
+    const todayBounds = shopDaySqlBounds(today);
+    const monthBounds = shopDaySqlBounds(monthStart, today);
+    const soldAt = sqlUtcTimestampExpr("t.created_at");
     const todayRow = await db.get(
       `SELECT COALESCE(SUM(ti.line_gross),0) AS revenue, COALESCE(SUM(ti.quantity),0) AS qty
        FROM transaction_items ti JOIN transactions t ON t.id = ti.transaction_id
-       WHERE ti.product_id = ? AND t.status = 'completed' AND date(t.created_at) = ?`,
-      [pid, today]
+       WHERE ti.product_id = ? AND t.status = 'completed'
+         AND ${soldAt} >= datetime(?) AND ${soldAt} <= datetime(?)`,
+      [pid, todayBounds.startSql, todayBounds.endSql]
     );
     const monthRow = await db.get(
       `SELECT COALESCE(SUM(ti.line_gross),0) AS revenue, COALESCE(SUM(ti.quantity),0) AS qty
        FROM transaction_items ti JOIN transactions t ON t.id = ti.transaction_id
-       WHERE ti.product_id = ? AND t.status = 'completed' AND date(t.created_at) >= ?`,
-      [pid, monthStart]
+       WHERE ti.product_id = ? AND t.status = 'completed'
+         AND ${soldAt} >= datetime(?) AND ${soldAt} <= datetime(?)`,
+      [pid, monthBounds.startSql, monthBounds.endSql]
     );
     const totalsRow = await db.get(
       `SELECT COALESCE(SUM(ti.quantity),0) AS qty
@@ -2003,19 +2008,35 @@ export function createProductsRouter(db) {
     const product = await loadProductById(req.params.id);
     if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
 
-    const series = await db.all(
-      `SELECT date(t.created_at) AS day,
-              ROUND(SUM(ti.line_gross), 2) AS revenue,
-              ROUND(SUM(COALESCE(ti.gross_profit, 0)), 2) AS profit,
-              ROUND(SUM(ti.quantity), 3) AS quantity,
-              ROUND(SUM(ti.unit_cost_at_sale * ti.quantity), 2) AS cost,
-              ROUND(SUM(ti.unit_price * ti.quantity) / NULLIF(SUM(ti.quantity), 0), 2) AS avg_price
+    const saleRows = await db.all(
+      `SELECT t.created_at,
+              ti.line_gross, ti.gross_profit, ti.quantity, ti.unit_cost_at_sale, ti.unit_price
        FROM transaction_items ti JOIN transactions t ON t.id = ti.transaction_id
        WHERE ti.product_id = ? AND t.status = 'completed'
-       GROUP BY date(t.created_at)
-       ORDER BY day ASC`,
+       ORDER BY t.created_at ASC, ti.id ASC`,
       [product.id]
     );
+    const byDay = new Map();
+    for (const row of saleRows) {
+      const day = shopYmdFromTimestamp(row.created_at);
+      if (!day) continue;
+      const bucket = byDay.get(day) || { day, revenue: 0, profit: 0, quantity: 0, cost: 0, priceWeighted: 0 };
+      const qty = Number(row.quantity) || 0;
+      bucket.revenue += Number(row.line_gross) || 0;
+      bucket.profit += Number(row.gross_profit) || 0;
+      bucket.quantity += qty;
+      bucket.cost += (Number(row.unit_cost_at_sale) || 0) * qty;
+      bucket.priceWeighted += (Number(row.unit_price) || 0) * qty;
+      byDay.set(day, bucket);
+    }
+    const series = [...byDay.values()].map((bucket) => ({
+      day: bucket.day,
+      revenue: round2(bucket.revenue),
+      profit: round2(bucket.profit),
+      quantity: Math.round(bucket.quantity * 1000) / 1000,
+      cost: round2(bucket.cost),
+      avg_price: bucket.quantity ? round2(bucket.priceWeighted / bucket.quantity) : 0,
+    }));
 
     const withMargin = series.map((d) => ({
       ...d,

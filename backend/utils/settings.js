@@ -430,10 +430,6 @@ export async function getAppSettings(db) {
       SETTING_KEYS.default_opening_cash,
       map[SETTING_KEYS.default_opening_cash]
     ),
-    refund_telegram_manager_user_id: parseValue(
-      SETTING_KEYS.refund_telegram_manager_user_id,
-      map[SETTING_KEYS.refund_telegram_manager_user_id]
-    ),
     expiry_alert_days: (() => {
       const n = parseValue(SETTING_KEYS.expiry_alert_days, map[SETTING_KEYS.expiry_alert_days]);
       return n >= 1 && n <= 365 ? n : DEFAULTS[SETTING_KEYS.expiry_alert_days];
@@ -605,11 +601,6 @@ export async function updateAppSettings(db, patch) {
     [SETTING_KEYS.default_opening_cash]: (v) => {
       const n = Number(v);
       if (!Number.isFinite(n) || n < 0) throw new Error("النقد الافتتاحي يجب أن يكون رقماً موجباً");
-      return String(n);
-    },
-    [SETTING_KEYS.refund_telegram_manager_user_id]: (v) => {
-      const n = Math.floor(Number(v));
-      if (!Number.isFinite(n) || n < 0) throw new Error("معرّف مدير التيليجرام غير صالح");
       return String(n);
     },
     [SETTING_KEYS.expiry_alert_days]: (v) => {

@@ -181,7 +181,7 @@ export default function PosSupplierPaymentModal({ open, onClose, onPaid, onCashD
       );
       const payload = data?.data ?? data;
       if (payload?.pending_approval && payload?.request_id) {
-        onSupplierWaiting?.(payload.request_id);
+        onSupplierWaiting?.(payload.request_id, { telegram: payload.telegram === true });
         return;
       }
       setSupplierSuccess(data);

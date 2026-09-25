@@ -15,6 +15,7 @@
 
 import { round2 as r2 } from "./money.js";
 import { CACHE_KEYS, cacheClone, cacheGet, cacheInvalidate, cacheSet } from "./cache.js";
+import { shopTodayYmd } from "./shopTime.js";
 
 const OFFER_PRIORITY = {
   multi_price: 50,
@@ -190,18 +191,20 @@ export function invalidatePromotionsCache() {
 export async function getActivePromotions(db) {
   const cached = cacheGet(CACHE_KEYS.PROMOTIONS);
   if (cached) return cacheClone(cached);
+  const today = shopTodayYmd();
   const rows = await db.all(
     `SELECT p.* FROM promotions p
      LEFT JOIN campaigns c ON c.id = p.campaign_id
      WHERE p.active = 1
        AND (p.campaign_id IS NULL OR c.active = 1)
-       AND (p.start_date IS NULL OR date(p.start_date) <= date('now'))
-       AND (p.end_date IS NULL OR date(p.end_date) >= date('now'))
-       AND (c.start_date IS NULL OR date(c.start_date) <= date('now'))
-       AND (c.end_date IS NULL OR date(c.end_date) >= date('now'))
+       AND (p.start_date IS NULL OR date(p.start_date) <= date(?))
+       AND (p.end_date IS NULL OR date(p.end_date) >= date(?))
+       AND (c.start_date IS NULL OR date(c.start_date) <= date(?))
+       AND (c.end_date IS NULL OR date(c.end_date) >= date(?))
        AND (p.limit_qty <= 0 OR p.used_qty < p.limit_qty)
        AND (p.stop_when_out_of_stock = 0 OR p.product_id IS NULL
-            OR (SELECT stock FROM products WHERE id = p.product_id) > 0)`
+            OR (SELECT stock FROM products WHERE id = p.product_id) > 0)`,
+    [today, today, today, today]
   );
   cacheSet(CACHE_KEYS.PROMOTIONS, rows, 30_000);
   return cacheClone(rows);

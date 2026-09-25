@@ -15,6 +15,11 @@ import { withTransaction } from "../utils/dbTx.js";
 import { computeExpectedBaseCash, loadSalePayments } from "../utils/salePayments.js";
 import { restoreSaleBatches } from "./stockBatchService.js";
 import { businessDayFromTimestamp } from "../utils/businessDay.js";
+import {
+  lockOriginatingShift,
+  rejectHandoverFields,
+  updateOutstandingHandover,
+} from "./originatingShiftDecision.js";
 
 export function assertRefundPaymentMethod(salePayments, paymentMethod) {
   const hasOnAccount = (salePayments || []).some((l) => l.method === "on_account");
@@ -513,10 +518,12 @@ export async function createRefundRequest(db, params) {
 
 export async function getRefundRequestById(db, id) {
   return db.get(
-    `SELECT rr.*, u.username AS cashier_username, m.username AS manager_username
+    `SELECT rr.*, u.username AS cashier_username, m.username AS manager_username,
+            s.status AS shift_status
      FROM refund_requests rr
      JOIN users u ON u.id = rr.cashier_id
      LEFT JOIN users m ON m.id = rr.manager_id
+     LEFT JOIN cashier_shifts s ON s.id = rr.shift_id
      WHERE rr.id = ?`,
     [id]
   );
@@ -524,12 +531,17 @@ export async function getRefundRequestById(db, id) {
 
 export async function listPendingRefundRequests(db) {
   return db.all(
-    `SELECT rr.*, u.username AS cashier_username
+    `SELECT rr.*, u.username AS cashier_username, s.status AS shift_status
      FROM refund_requests rr
      JOIN users u ON u.id = rr.cashier_id
+     LEFT JOIN cashier_shifts s ON s.id = rr.shift_id
      WHERE rr.status = 'pending'
      ORDER BY rr.created_at ASC, rr.id ASC`
   );
+}
+
+export async function recordRefundHandover(db, requestId, userId, disposition) {
+  return updateOutstandingHandover(db, "refund_requests", requestId, userId, disposition);
 }
 
 export async function listRefundRequestHistory(db, status = "all", limit = 200) {
@@ -658,22 +670,28 @@ export async function approveRefundRequest(
     const pendingLines = parseItemsJson(request.items_json) || [];
     await buildRefundLines(db, request.transaction_id, pendingLines, requestId);
 
-    const targetShiftId = await resolveRefundTargetShift(db, {
-      cashierId: request.cashier_id,
-      paymentMethod: request.payment_method,
-      fallbackShiftId: request.shift_id,
-    });
-
+    const locked = await lockOriginatingShift(db, request.shift_id);
+    let targetShiftId;
+    let refundBusinessDay = null;
     const now = new Date().toISOString();
+    if (locked.mode === "pending_count") {
+      targetShiftId = locked.shift.id;
+      refundBusinessDay = locked.shift.business_day || null;
+    } else {
+      targetShiftId = await resolveRefundTargetShift(db, {
+        cashierId: request.cashier_id,
+        paymentMethod: request.payment_method,
+        fallbackShiftId: request.shift_id,
+      });
+      if (targetShiftId == null) {
+        const settings = await getAppSettings(db);
+        refundBusinessDay = businessDayFromTimestamp(now, settings.business_day_cutoff_hour);
+      }
+    }
     const origTx = await db.get(
       "SELECT customer_id FROM transactions WHERE id = ?",
       [request.transaction_id]
     );
-    let refundBusinessDay = null;
-    if (targetShiftId == null) {
-      const settings = await getAppSettings(db);
-      refundBusinessDay = businessDayFromTimestamp(now, settings.business_day_cutoff_hour);
-    }
     const ins = await db.run(
       `INSERT INTO refunds (
         original_transaction_id, items_json, subtotal, tax, total, rounding_adjustment, payment_method,
@@ -692,7 +710,7 @@ export async function approveRefundRequest(
         request.cashier_id,
         targetShiftId,
         now,
-        managerUser.id,
+        decisionSource === "telegram" ? null : managerUser?.id ?? null,
         reviewNotes ?? request.review_notes,
         origTx?.customer_id ?? null,
         refundBusinessDay,
@@ -701,20 +719,36 @@ export async function approveRefundRequest(
     const refundId = ins.lastID;
     const refund = await db.get("SELECT * FROM refunds WHERE id = ?", [refundId]);
     await applyApprovedRefundEffects(db, refund);
+    if (managerUser?.failAfterPost) {
+      const err = new Error("forced");
+      err.code = "FORCED_ROLLBACK";
+      throw err;
+    }
 
-    await db.run(
+    const actorId = decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null;
+    const actorName = decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null;
+    const managerId = decisionSource === "telegram" ? null : managerUser?.id ?? null;
+    const decided = await db.run(
       `UPDATE refund_requests SET
         status = 'approved', manager_id = ?, approved_at = ?, refund_id = ?,
         review_notes = COALESCE(?, review_notes), rejected_at = NULL,
-        decision_source = ?
-       WHERE id = ?`,
-      [managerUser.id, now, refundId, reviewNotes, decisionSource, requestId]
+        decision_source = ?, telegram_actor_id = ?, telegram_actor_name = ?
+       WHERE id = ? AND status = 'pending'`,
+      [managerId, now, refundId, reviewNotes, decisionSource, actorId, actorName, requestId]
     );
+    if (!decided.changes) {
+      const err = new Error("الطلب ليس قيد المراجعة");
+      err.status = 400;
+      err.code = "NOT_PENDING";
+      throw err;
+    }
 
     const auditUser = req?.user || managerUser;
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.REFUND_REQUEST_APPROVE, "refund_requests", requestId, { status: "pending" }, {
       refund_id: refundId,
-      manager_id: managerUser.id,
+      manager_id: managerId,
+      telegram_user_id: actorId,
+      telegram_actor_name: actorName,
     });
 
     return { refund };
@@ -731,7 +765,8 @@ export async function rejectRefundRequest(
   managerUser,
   reviewNotes,
   req = null,
-  decisionSource = "admin"
+  decisionSource = "admin",
+  options = {}
 ) {
   await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM refund_requests WHERE id = ?", [requestId]);
@@ -747,19 +782,48 @@ export async function rejectRefundRequest(
       throw err;
     }
 
+    const locked = await lockOriginatingShift(db, request.shift_id);
     const now = new Date().toISOString();
-    await db.run(
+    const actorId = decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null;
+    const actorName = decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null;
+    const managerId = decisionSource === "telegram" ? null : managerUser?.id ?? null;
+    const handover = rejectHandoverFields(
+      locked.mode,
+      options?.handoverDisposition,
+      managerId
+    );
+    const decided = await db.run(
       `UPDATE refund_requests SET
         status = 'rejected', manager_id = ?, rejected_at = ?,
         review_notes = COALESCE(?, review_notes), approved_at = NULL, refund_id = NULL,
-        decision_source = ?
-       WHERE id = ?`,
-      [managerUser.id, now, reviewNotes, decisionSource, requestId]
+        decision_source = ?, telegram_actor_id = ?, telegram_actor_name = ?,
+        handover_disposition = ?, handover_recorded_at = ?, handover_recorded_by = ?
+       WHERE id = ? AND status = 'pending'`,
+      [
+        managerId,
+        now,
+        reviewNotes,
+        decisionSource,
+        actorId,
+        actorName,
+        handover.disposition,
+        handover.recordedAt,
+        handover.recordedBy,
+        requestId,
+      ]
     );
+    if (!decided.changes) {
+      const err = new Error("الطلب ليس قيد المراجعة");
+      err.status = 400;
+      err.code = "NOT_PENDING";
+      throw err;
+    }
 
     const auditUser = req?.user || managerUser;
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.REFUND_REQUEST_REJECT, "refund_requests", requestId, { status: "pending" }, {
-      manager_id: managerUser.id,
+      manager_id: managerId,
+      telegram_user_id: actorId,
+      telegram_actor_name: actorName,
     });
   });
 

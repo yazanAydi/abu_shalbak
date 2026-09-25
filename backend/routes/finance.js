@@ -7,7 +7,7 @@ import {
   fetchRefundsForShopDate,
   fetchTransactionsForShopDate,
 } from "../utils/businessDay.js";
-import { nextCalendarYmd } from "../utils/shopTime.js";
+import { formatShopWall, shopDaySqlBounds, sqlUtcTimestampExpr } from "../utils/shopTime.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { buildFinanceOverview, parseOverviewRange } from "../utils/financeOverview.js";
 import {
@@ -460,11 +460,12 @@ export function createFinanceRouter(db) {
     const from = parseDateParam(String(req.query.from || ""));
     const to = parseDateParam(String(req.query.to || ""));
     if (!from || !to) return res.status(400).json({ error: "مطلوب from و to (YYYY-MM-DD)" });
-    const toExclusive = nextCalendarYmd(to);
+    const bounds = shopDaySqlBounds(from, to);
     const salesRow = await db.get(
       `SELECT COALESCE(SUM(total),0) t FROM transactions
-       WHERE created_at >= ? AND created_at < ?`,
-      [from, toExclusive]
+       WHERE ${sqlUtcTimestampExpr("created_at")} >= datetime(?)
+         AND ${sqlUtcTimestampExpr("created_at")} <= datetime(?)`,
+      [bounds.startSql, bounds.endSql]
     );
     const payRows = await db.all(
       `SELECT * FROM supplier_payments WHERE paid_on >= ? AND paid_on <= ? ORDER BY paid_on`,
@@ -475,9 +476,10 @@ export function createFinanceRouter(db) {
       [from, to]
     );
     const refRows = await db.all(
-      `SELECT id, total, substr(created_at, 1, 10) as d, original_transaction_id, payment_method
-       FROM refunds WHERE created_at >= ? AND created_at < ?`,
-      [from, toExclusive]
+      `SELECT id, total, created_at, original_transaction_id, payment_method
+       FROM refunds WHERE ${sqlUtcTimestampExpr("created_at")} >= datetime(?)
+         AND ${sqlUtcTimestampExpr("created_at")} <= datetime(?)`,
+      [bounds.startSql, bounds.endSql]
     );
     const lines = [
       `Summary ${from} to ${to}`,
@@ -490,7 +492,7 @@ export function createFinanceRouter(db) {
       lines.push(`Opex ${o.category},${o.paid_on},${o.amount},${o.id}`);
     }
     for (const r of refRows) {
-      lines.push(`Refund,${r.d},${r.total},refund ${r.id}`);
+      lines.push(`Refund,${formatShopWall(r.created_at)?.ymd || ""},${r.total},refund ${r.id}`);
     }
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="finance-${from}-${to}.csv"`);

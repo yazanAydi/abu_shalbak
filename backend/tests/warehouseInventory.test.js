@@ -94,12 +94,12 @@ describe("warehouse supermarket stock and purchase returns", () => {
     const data = unwrap(res);
     const main = findWh(data, "main");
     const returnsRow = findWh(data, "returns");
-    expect(data.valuation_complete).toBe(false);
-    expect(data.grand_total).toBeNull();
-    expect((data.excluded_products || []).some((row) => Number(row.product_id) === Number(productId))).toBe(true);
-    expect(main.total_qty).not.toBe(Number(expected.total_qty));
+    expect(data.costing_method).toBe("current_inventory_cost");
+    expect(data.basis_label).toBe("القيمة الحالية حسب تكلفة المخزون");
+    expect((data.lines || []).some((row) => Number(row.product_id) === Number(productId))).toBe(true);
+    expect(main.total_qty).toBeCloseTo(Number(expected.total_qty), 3);
     expect(Number(bakery.stock)).toBe(40);
-    expect(main.total_qty).not.toBe(Number(expected.total_qty) + Number(bakery.stock));
+    expect(main.total_qty).not.toBeCloseTo(Number(expected.total_qty) + Number(bakery.stock), 3);
     expect(returnsRow.total_qty).toBe(0);
     expect(returnsRow.total_value).toBeCloseTo(0, 2);
   });
@@ -225,8 +225,10 @@ describe("warehouse supermarket stock and purchase returns", () => {
     const before = unwrap(
       await request(ctx.app).get("/api/v1/warehouses/valuation").query({ membership: "bakery" }).set(hdr)
     );
-    expect(before.valuation_complete).toBe(false);
-    expect((before.excluded_products || []).some((row) => Number(row.product_id) === Number(bakeryProductId))).toBe(true);
+    const bakeryLine = (before.lines || []).find((row) => Number(row.product_id) === Number(bakeryProductId));
+    expect(bakeryLine.quantity).toBeCloseTo(40, 3);
+    expect(bakeryLine.cost_known).toBe(true);
+    expect((before.lines || []).some((row) => Number(row.product_id) === Number(productId))).toBe(false);
 
     const stock = unwrap(
       await request(ctx.app).get("/api/v1/warehouses/stock").query({ membership: "bakery" }).set(hdr)
@@ -259,8 +261,8 @@ describe("warehouse supermarket stock and purchase returns", () => {
     const bakeryVal = unwrap(
       await request(ctx.app).get("/api/v1/warehouses/valuation").query({ membership: "bakery" }).set(hdr)
     );
-    expect(bakeryVal.valuation_complete).toBe(false);
-    expect(bakeryVal.grand_total).toBeNull();
+    expect(bakeryVal.costing_method).toBe("current_inventory_cost");
+    expect((bakeryVal.lines || []).some((row) => Number(row.product_id) === Number(bakeryProductId))).toBe(true);
     expect((bakeryVal.supplier_returns || []).some((row) => Number(row.product_id) === Number(bakeryProductId))).toBe(true);
     expect(findWh(bakeryVal, "returns").total_value).toBeCloseTo(0, 2);
 
@@ -325,8 +327,8 @@ describe("warehouse supermarket stock and purchase returns", () => {
     const lines = unwrap(await request(ctx.app).get("/api/v1/warehouses/stock").set(hdr));
     const live = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [productId]);
     expect(Number(live.stock)).toBeCloseTo(stockBefore, 3);
-    expect(after.grand_total).toBe(before.grand_total);
-    expect(after.valuation_complete).toBe(false);
+    expect(after.costing_method).toBe("current_inventory_cost");
+    expect(after.known_subtotal).toBeCloseTo(before.known_subtotal, 2);
     expect(productQty(lines, mainWarehouse.id)).toBeCloseTo(stockBefore - 6 - 2 - 1, 3);
     expect(productQty(lines, store.id)).toBeCloseTo(6, 3);
     expect(productQty(lines, returnsWarehouse.id)).toBeCloseTo(2, 3);

@@ -1320,6 +1320,7 @@ async function migrateWarehousesTables(db) {
       notes             TEXT,
       created_by        INTEGER REFERENCES users(id),
       posted_at         TEXT,
+      inventory_business_day TEXT,
       created_at        TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE TABLE IF NOT EXISTS warehouse_transfer_items (
@@ -1343,6 +1344,9 @@ async function migrateWarehousesTables(db) {
     for (const [name, code, type] of seed) {
       await db.run("INSERT INTO warehouses (name, code, type) VALUES (?, ?, ?)", [name, code, type]);
     }
+  }
+  if (!(await tableHasColumn(db, "warehouse_transfers", "inventory_business_day"))) {
+    await db.run("ALTER TABLE warehouse_transfers ADD COLUMN inventory_business_day TEXT");
   }
 }
 
@@ -1549,9 +1553,10 @@ async function migrateInventoryLedgerTable(db) {
 }
 
 /**
- * Cost and classification captured when a movement is posted.
- * Older rows stay null — they are not backfilled.
- * Valuation history that depends on these columns starts at the first
+ * Cost captured when a movement is posted. Category and scope on the ledger
+ * are a posting-time copy. The valuation report does not group by that copy;
+ * it uses the product's current category and does not backfill older rows.
+ * Valuation history that depends on the cost columns starts at the first
  * movement written after this migration (see warehouseValuationHistory.js).
  */
 async function migrateInventoryLedgerValuationSnapshot(db) {
@@ -2641,6 +2646,44 @@ async function migrateGroupApprovalRequests(db) {
   }
 }
 
+async function addTextColumn(db, table, column) {
+  if (!(await tableHasColumn(db, table, column))) {
+    await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+  }
+}
+
+async function migrateTelegramActorColumns(db) {
+  const tables = [
+    "refund_requests",
+    "on_account_requests",
+    "advance_requests",
+    "customer_cash_debt_requests",
+    "expense_approval_requests",
+    "supplier_payment_approval_requests",
+    "shop_consumption_requests",
+  ];
+  for (const table of tables) {
+    await addTextColumn(db, table, "telegram_actor_id");
+    await addTextColumn(db, table, "telegram_actor_name");
+  }
+}
+
+async function migrateHandoverDispositionColumns(db) {
+  const tables = [
+    "refund_requests",
+    "on_account_requests",
+    "advance_requests",
+    "customer_cash_debt_requests",
+  ];
+  for (const table of tables) {
+    await addTextColumn(db, table, "handover_disposition");
+    await addTextColumn(db, table, "handover_recorded_at");
+    if (!(await tableHasColumn(db, table, "handover_recorded_by"))) {
+      await db.run(`ALTER TABLE ${table} ADD COLUMN handover_recorded_by INTEGER REFERENCES users(id)`);
+    }
+  }
+}
+
 async function migrateApprovalsTelegram(db) {
   if (!(await tableHasColumn(db, "users", "telegram_user_id"))) {
     await db.run("ALTER TABLE users ADD COLUMN telegram_user_id TEXT");
@@ -3387,6 +3430,8 @@ export async function initDatabase(dbPath) {
   await migrateShiftCustomerCollections(db);
   await migrateShiftCustomerCashDebts(db);
   await migrateCustomerCashDebtRequests(db);
+  await migrateTelegramActorColumns(db);
+  await migrateHandoverDispositionColumns(db);
   await migrateShiftCountAdvanceIdempotency(db);
   await db.exec("PRAGMA optimize;");
 

@@ -120,17 +120,38 @@ describe("shift edge cases: refund attribution, business day, sale search", () =
     await reconcileShift(shiftB, 100);
   });
 
-  test("cash refund approval blocked when cashier has no open shift", async () => {
+  test("a pending refund blocks the count, and approval does not rewrite a saved count", async () => {
     const shiftA = await startShift();
     const txId = await checkout(1);
     const requestId = await createRefundRequest(txId, 1);
     await closeShiftAsCashier(shiftA);
-    await reconcileShift(shiftA, 110);
+    const blocked = await request(ctx.app)
+      .post(`/api/v1/shifts/${shiftA}/reconcile`)
+      .set(authHeader(adminToken))
+      .send({ closing_cash: 110 });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.code).toBe("COUNT_BLOCKED");
 
+    await ctx.db.run(
+      `UPDATE cashier_shifts
+       SET status = 'closed', closing_cash = 110, expected_cash = 110, variance = 0
+       WHERE id = ?`,
+      [shiftA]
+    );
     const manager = { id: adminUser.id, username: adminUser.username, role: adminUser.role };
     await expect(
       approveRefundRequest(ctx.db, requestId, manager, null, null, "admin")
-    ).rejects.toMatchObject({ code: "NO_OPEN_SHIFT_FOR_REFUND" });
+    ).rejects.toMatchObject({ code: "CLOSED_SHIFT_RECONCILE" });
+    const shift = await ctx.db.get(
+      "SELECT status, expected_cash, variance, closing_cash FROM cashier_shifts WHERE id = ?",
+      [shiftA]
+    );
+    expect(shift.status).toBe("closed");
+    expect(Number(shift.expected_cash)).toBe(110);
+    expect(Number(shift.variance)).toBe(0);
+    expect(Number(shift.closing_cash)).toBe(110);
+    const pending = await ctx.db.get("SELECT status FROM refund_requests WHERE id = ?", [requestId]);
+    expect(pending.status).toBe("pending");
   });
 
   test("cross-midnight sale reports under shift start business day (Ramallah)", async () => {

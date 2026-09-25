@@ -474,7 +474,7 @@ describe("permissions audit — office reads, writes, and defaults", () => {
     const adminSettings = await request(ctx.app).get("/api/v1/settings").set(authHeader(adminToken));
     expect(adminSettings.status).toBe(200);
     expect(dataOf(adminSettings.body).accountant_permissions).toBeTruthy();
-    expect(dataOf(adminSettings.body).refund_telegram_manager_user_id).toBeDefined();
+    expect(dataOf(adminSettings.body).refund_telegram_manager_user_id).toBeUndefined();
 
     const warehouses = await request(ctx.app).get("/api/v1/warehouses").set(authHeader(cashierToken));
     assertDenied(warehouses, "cashier warehouses");

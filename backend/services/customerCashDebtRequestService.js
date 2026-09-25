@@ -15,6 +15,11 @@ import {
 } from "../utils/telegram.js";
 import { parsePosCustomerAmount } from "./posCustomerCollectionService.js";
 import { enqueueOperationPrint } from "./operationPrintService.js";
+import {
+  lockOriginatingShift,
+  rejectHandoverFields,
+  updateOutstandingHandover,
+} from "./originatingShiftDecision.js";
 
 export const CUSTOMER_CASH_DEBT_MOVEMENT = "customer_cash_debt";
 const SHIFT_CLOSED_MESSAGE = "أُغلقت وردية الطلب قبل الموافقة. لم يُخصم النقد ولم تُزاد الذمة.";
@@ -61,6 +66,8 @@ function publicRequest(row, extra = {}) {
     manager_id: row.manager_id,
     manager_username: row.manager_username || null,
     shift_id: row.shift_id,
+    shift_status: row.shift_status ?? null,
+    handover_disposition: row.handover_disposition ?? null,
     customer_id: row.customer_id,
     customer_name: row.customer_name,
     amount: round2(Number(row.amount) || 0),
@@ -254,7 +261,8 @@ export async function approveCustomerCashDebtRequest(
       throw httpError(400, "الطلب ليس قيد المراجعة", "NOT_PENDING");
     }
 
-    await lockOpenRequestShift(db, request);
+    const locked = await lockOriginatingShift(db, request.shift_id);
+    if (locked.mode === "open") await lockOpenRequestShift(db, request);
     await assertOrdinaryCustomer(db, request.customer_id);
     const overrideCreditLimit = options?.overrideCreditLimit === true && decisionSource !== "telegram";
     const creditErr = await validateCustomerCredit(db, request.customer_id, request.amount, {
@@ -269,9 +277,9 @@ export async function approveCustomerCashDebtRequest(
     const voucher = await insertPostedCustomerCashDebtVoucher(db, {
       customerId: request.customer_id,
       amount,
-      paidOn: shopTodayYmd(),
+      paidOn: locked.mode === "pending_count" ? locked.shift.business_day || shopTodayYmd() : shopTodayYmd(),
       note,
-      userId: managerUser.id,
+      userId: decisionSource === "telegram" ? null : managerUser?.id ?? null,
       shiftId: request.shift_id,
       idempotencyKey: `cash-debt-request-${requestId}`,
       payloadFingerprint: request.payload_fingerprint,
@@ -281,14 +289,24 @@ export async function approveCustomerCashDebtRequest(
        VALUES (?, 'customer_cash_debt', ?, ?, ?)`,
       [request.shift_id, -amount, note, voucher.id]
     );
+    if (managerUser?.failAfterPost) {
+      const err = new Error("forced");
+      err.code = "FORCED_ROLLBACK";
+      throw err;
+    }
     const now = new Date().toISOString();
-    await db.run(
+    const actorId = decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null;
+    const actorName = decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null;
+    const managerId = decisionSource === "telegram" ? null : managerUser?.id ?? null;
+    const decided = await db.run(
       `UPDATE customer_cash_debt_requests SET
          status = 'approved', manager_id = ?, approved_at = ?, voucher_id = ?,
-         review_notes = COALESCE(?, review_notes), decision_source = ?, rejected_at = NULL
+         review_notes = COALESCE(?, review_notes), decision_source = ?, rejected_at = NULL,
+         telegram_actor_id = ?, telegram_actor_name = ?
        WHERE id = ? AND status = 'pending'`,
-      [managerUser.id, now, voucher.id, reviewNotes || null, decisionSource, requestId]
+      [managerId, now, voucher.id, reviewNotes || null, decisionSource, actorId, actorName, requestId]
     );
+    if (!decided.changes) throw httpError(400, "الطلب ليس قيد المراجعة", "NOT_PENDING");
     const auditUser = req?.user || managerUser;
     await logAuditUser(
       db,
@@ -298,7 +316,9 @@ export async function approveCustomerCashDebtRequest(
       requestId,
       { status: "pending" },
       {
-        manager_id: managerUser.id,
+        manager_id: decisionSource === "telegram" ? null : managerUser?.id ?? null,
+        telegram_user_id: decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null,
+        telegram_actor_name: decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null,
         customer_id: request.customer_id,
         amount,
         voucher_id: voucher.id,
@@ -345,7 +365,8 @@ export async function rejectCustomerCashDebtRequest(
   managerUser,
   reviewNotes,
   req = null,
-  decisionSource = "admin"
+  decisionSource = "admin",
+  options = {}
 ) {
   const updated = await withTransaction(db, async () => {
     const request = await getCustomerCashDebtRequestById(db, requestId);
@@ -358,14 +379,33 @@ export async function rejectCustomerCashDebtRequest(
     if (!claimed.changes) {
       throw httpError(400, "الطلب ليس قيد المراجعة", "NOT_PENDING");
     }
+    const locked = await lockOriginatingShift(db, request.shift_id);
     const now = new Date().toISOString();
-    await db.run(
+    const actorId = decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null;
+    const actorName = decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null;
+    const managerId = decisionSource === "telegram" ? null : managerUser?.id ?? null;
+    const handover = rejectHandoverFields(locked.mode, options?.handoverDisposition, managerId);
+    const decided = await db.run(
       `UPDATE customer_cash_debt_requests SET
          status = 'rejected', manager_id = ?, rejected_at = ?,
-         review_notes = COALESCE(?, review_notes), decision_source = ?, approved_at = NULL
+         review_notes = COALESCE(?, review_notes), decision_source = ?, approved_at = NULL,
+         telegram_actor_id = ?, telegram_actor_name = ?,
+         handover_disposition = ?, handover_recorded_at = ?, handover_recorded_by = ?
        WHERE id = ? AND status = 'pending'`,
-      [managerUser.id, now, reviewNotes || null, decisionSource, requestId]
+      [
+        managerId,
+        now,
+        reviewNotes || null,
+        decisionSource,
+        actorId,
+        actorName,
+        handover.disposition,
+        handover.recordedAt,
+        handover.recordedBy,
+        requestId,
+      ]
     );
+    if (!decided.changes) throw httpError(400, "الطلب ليس قيد المراجعة", "NOT_PENDING");
     const auditUser = req?.user || managerUser;
     await logAuditUser(
       db,
@@ -374,7 +414,12 @@ export async function rejectCustomerCashDebtRequest(
       "customer_cash_debt_requests",
       requestId,
       { status: "pending" },
-      { manager_id: managerUser.id, decision_source: decisionSource }
+      {
+        manager_id: managerId,
+        telegram_user_id: actorId,
+        telegram_actor_name: actorName,
+        decision_source: decisionSource,
+      }
     );
     return { row: await getCustomerCashDebtRequestById(db, requestId), replayed: false };
   });
@@ -411,11 +456,16 @@ async function notifyDecision(row, managerUser, status, decisionSource) {
   }
 }
 
+export async function recordCustomerCashDebtHandover(db, requestId, userId, disposition) {
+  return updateOutstandingHandover(db, "customer_cash_debt_requests", requestId, userId, disposition);
+}
+
 export async function listPendingCustomerCashDebtRequests(db) {
   const rows = await db.all(
-    `SELECT r.*, u.username AS cashier_username
+    `SELECT r.*, u.username AS cashier_username, s.status AS shift_status
      FROM customer_cash_debt_requests r
      JOIN users u ON u.id = r.cashier_id
+     LEFT JOIN cashier_shifts s ON s.id = r.shift_id
      WHERE r.status = 'pending'
      ORDER BY r.created_at ASC, r.id ASC`
   );

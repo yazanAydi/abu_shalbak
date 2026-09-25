@@ -31,6 +31,7 @@ jest.mock("../utils/posSounds", () => ({
 
 jest.mock("../utils/focusBarcodeInput", () => ({
   focusBarcodeInput: jest.fn(),
+  registerBarcodeInput: jest.fn(),
 }));
 
 jest.mock("../utils/productSearch", () => ({

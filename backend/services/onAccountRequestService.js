@@ -17,6 +17,11 @@ import { round2 } from "../utils/money.js";
 import { validateCustomerCredit, throwCreditError, creditLimitPreview } from "../utils/customerCredit.js";
 import { resolveEmployeeCustomerForPostedSale } from "./employeeService.js";
 import { enqueueOperationPrint } from "./operationPrintService.js";
+import {
+  lockOriginatingShift,
+  rejectHandoverFields,
+  updateOutstandingHandover,
+} from "./originatingShiftDecision.js";
 
 export { getTelegramManagerUser };
 
@@ -176,24 +181,31 @@ export async function createOnAccountRequest(db, params, options = {}) {
 export async function getOnAccountRequestById(db, id) {
   return db.get(
     `SELECT oar.*, u.username AS cashier_username, m.username AS manager_username,
-            c.name AS customer_name, e.name AS employee_name
+            c.name AS customer_name, e.name AS employee_name, s.status AS shift_status
      FROM on_account_requests oar
      JOIN users u ON u.id = oar.cashier_id
      LEFT JOIN users m ON m.id = oar.manager_id
      LEFT JOIN customers c ON c.id = oar.customer_id
      LEFT JOIN employees e ON e.id = oar.employee_id
+     LEFT JOIN cashier_shifts s ON s.id = oar.shift_id
      WHERE oar.id = ?`,
     [id]
   );
 }
 
+export async function recordOnAccountHandover(db, requestId, userId, disposition) {
+  return updateOutstandingHandover(db, "on_account_requests", requestId, userId, disposition);
+}
+
 export async function listPendingOnAccountRequests(db) {
   const rows = await db.all(
-    `SELECT oar.*, u.username AS cashier_username, c.name AS customer_name, e.name AS employee_name
+    `SELECT oar.*, u.username AS cashier_username, c.name AS customer_name, e.name AS employee_name,
+            s.status AS shift_status
      FROM on_account_requests oar
      JOIN users u ON u.id = oar.cashier_id
      LEFT JOIN customers c ON c.id = oar.customer_id
      LEFT JOIN employees e ON e.id = oar.employee_id
+     LEFT JOIN cashier_shifts s ON s.id = oar.shift_id
      WHERE oar.status = 'pending'
      ORDER BY oar.created_at ASC, oar.id ASC`
   );
@@ -330,6 +342,8 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
     notes: row.notes || null,
     review_notes: row.review_notes,
     decision_source: row.decision_source ?? null,
+    shift_status: row.shift_status ?? null,
+    handover_disposition: row.handover_disposition ?? null,
     credit: await creditLimitPreview(db, row.customer_id, row.on_account_amount),
     cashier_notified_at: row.cashier_notified_at ?? null,
     cashier_acknowledged_at: row.cashier_acknowledged_at ?? null,
@@ -434,12 +448,17 @@ export async function approveOnAccountRequest(
       throw err;
     }
 
-    const { shift, error: shiftErr } = await requireOpenShiftForCashier(db, request.cashier_id);
-    if (shiftErr || !shift) {
-      const err = new Error("لا توجد وردية مفتوحة للكاشير");
-      err.status = 400;
-      err.code = "NO_OPEN_SHIFT";
-      throw err;
+    const locked = await lockOriginatingShift(db, request.shift_id);
+    let shift = locked.shift;
+    if (locked.mode === "open") {
+      const open = await requireOpenShiftForCashier(db, request.cashier_id);
+      if (open.error || !open.shift) {
+        const err = new Error("لا توجد وردية مفتوحة للكاشير");
+        err.status = 400;
+        err.code = "NO_OPEN_SHIFT";
+        throw err;
+      }
+      shift = open.shift;
     }
 
     let snapshot;
@@ -520,17 +539,26 @@ export async function approveOnAccountRequest(
         employeeId,
         notes: request.notes || snapshot.notes || null,
       },
-      { inTransaction: true }
+      { inTransaction: true, allowPendingCount: locked.mode === "pending_count" }
     );
 
     const txId = saleResult.replayTxId || saleResult.transactionId;
+    if (managerUser?.failAfterPost) {
+      const err = new Error("forced");
+      err.code = "FORCED_ROLLBACK";
+      throw err;
+    }
     const now = new Date().toISOString();
+    const actorId = decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null;
+    const actorName = decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null;
+    const managerId = decisionSource === "telegram" ? null : managerUser?.id ?? null;
     const upd = await db.run(
       `UPDATE on_account_requests SET
         status = 'approved', manager_id = ?, approved_at = ?, transaction_id = ?,
-        review_notes = COALESCE(?, review_notes), rejected_at = NULL, decision_source = ?
+        review_notes = COALESCE(?, review_notes), rejected_at = NULL, decision_source = ?,
+        telegram_actor_id = ?, telegram_actor_name = ?
        WHERE id = ? AND status = 'pending'`,
-      [managerUser.id, now, txId, reviewNotes, decisionSource, requestId]
+      [managerId, now, txId, reviewNotes, decisionSource, actorId, actorName, requestId]
     );
     if (!upd.changes) {
       const err = new Error("الطلب ليس قيد المراجعة");
@@ -554,7 +582,9 @@ export async function approveOnAccountRequest(
 
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.ON_ACCOUNT_REQUEST_APPROVE, "on_account_requests", requestId, { status: "pending" }, {
       transaction_id: txId,
-      manager_id: managerUser.id,
+      manager_id: managerId,
+      telegram_user_id: actorId,
+      telegram_actor_name: actorName,
       approved_at: now,
       credit_limit_override: Boolean(overrideCreditLimit && credit?.exceeds_limit),
       credit,
@@ -575,7 +605,8 @@ export async function rejectOnAccountRequest(
   managerUser,
   reviewNotes,
   req = null,
-  decisionSource = "admin"
+  decisionSource = "admin",
+  options = {}
 ) {
   const updated = await withTransaction(db, async () => {
     const request = await db.get("SELECT * FROM on_account_requests WHERE id = ?", [requestId]);
@@ -591,19 +622,44 @@ export async function rejectOnAccountRequest(
       throw err;
     }
 
+    const locked = await lockOriginatingShift(db, request.shift_id);
     const now = new Date().toISOString();
-    await db.run(
+    const actorId = decisionSource === "telegram" ? managerUser?.telegram_user_id || null : null;
+    const actorName = decisionSource === "telegram" ? managerUser?.telegram_actor_name || managerUser?.username || null : null;
+    const managerId = decisionSource === "telegram" ? null : managerUser?.id ?? null;
+    const handover = rejectHandoverFields(locked.mode, options?.handoverDisposition, managerId);
+    const decided = await db.run(
       `UPDATE on_account_requests SET
         status = 'rejected', manager_id = ?, rejected_at = ?,
         review_notes = COALESCE(?, review_notes), approved_at = NULL, transaction_id = NULL,
-        decision_source = ?
-       WHERE id = ?`,
-      [managerUser.id, now, reviewNotes, decisionSource, requestId]
+        decision_source = ?, telegram_actor_id = ?, telegram_actor_name = ?,
+        handover_disposition = ?, handover_recorded_at = ?, handover_recorded_by = ?
+       WHERE id = ? AND status = 'pending'`,
+      [
+        managerId,
+        now,
+        reviewNotes,
+        decisionSource,
+        actorId,
+        actorName,
+        handover.disposition,
+        handover.recordedAt,
+        handover.recordedBy,
+        requestId,
+      ]
     );
+    if (!decided.changes) {
+      const err = new Error("الطلب ليس قيد المراجعة");
+      err.status = 400;
+      err.code = "NOT_PENDING";
+      throw err;
+    }
 
     const auditUser = req?.user || managerUser;
     await logAuditUser(db, auditUser, AUDIT_ACTIONS.ON_ACCOUNT_REQUEST_REJECT, "on_account_requests", requestId, { status: "pending" }, {
-      manager_id: managerUser.id,
+      manager_id: managerId,
+      telegram_user_id: actorId,
+      telegram_actor_name: actorName,
     });
 
     return getOnAccountRequestById(db, requestId);

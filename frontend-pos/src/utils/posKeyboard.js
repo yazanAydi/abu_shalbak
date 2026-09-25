@@ -17,18 +17,31 @@ export function matchesShortcut(ev, shortcutKey) {
   if (!!ev.altKey !== needsAlt) return false;
 
   if (/^f\d+$/i.test(keyPart)) {
-    return ev.key.toLowerCase() === keyPart.toLowerCase();
+    return functionKeyFromEvent(ev) === keyPart.toLowerCase();
   }
   return ev.key.toLowerCase() === keyPart.toLowerCase();
 }
 
+/** F9 and the other function keys, including when key is empty and only keyCode is set. */
+export function functionKeyFromEvent(ev) {
+  const key = String(ev?.key || "");
+  if (/^f\d+$/i.test(key)) return key.toLowerCase();
+  const code = String(ev?.code || "");
+  if (/^f\d+$/i.test(code)) return code.toLowerCase();
+  const which = Number(ev?.keyCode || ev?.which || 0);
+  if (which >= 112 && which <= 123) return `f${which - 111}`;
+  return "";
+}
+
 /**
  * Global POS shortcuts should not fire while typing in normal inputs.
- * Barcode scanner input is excluded so F-keys still work after scanning.
+ * Function keys (F9 and the rest) always work, including from the scanner,
+ * quantity, and weight fields.
  */
 export function shouldHandlePosShortcut(ev) {
   const el = ev.target;
   if (!el || typeof el.closest !== "function") return true;
+  if (functionKeyFromEvent(ev)) return true;
   if (el.closest(".barcode-input")) return true;
   const tag = el.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return false;

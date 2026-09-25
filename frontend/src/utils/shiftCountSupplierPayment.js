@@ -66,5 +66,11 @@ export function mapShiftDetailToCountTarget(data) {
     cash_sales_incomplete_note:
       summary.cash_sales_incomplete_note || shift.cash_sales_incomplete_note,
     expected_cash_label: summary.expected_cash_label || shift.expected_cash_label,
+    pending_requests: Array.isArray(data?.pending_requests) ? data.pending_requests : [],
+    handover_discrepancies: Array.isArray(data?.handover_discrepancies)
+      ? data.handover_discrepancies
+      : [],
+    count_blocked: !!data?.count_blocked,
+    balanced: data?.summary?.balanced !== false,
   };
 }

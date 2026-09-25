@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { dateTime } from "../utils/format";
+import { Link, useNavigate } from "react-router-dom";
 import api from "../apiClient";
-import { getAuthHeaders } from "../utils/auth";
+import { getAuthHeaders, removeToken } from "../utils/auth";
+import PosWindowCloseHost from "../components/pos/PosWindowCloseHost";
 import { useVisiblePoll } from "../hooks/useVisiblePoll";
 import {
   PageHeader,
@@ -13,7 +15,7 @@ import {
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
-const formatDt = (v) => (v ? String(v).replace("T", " ").slice(0, 16) : "—");
+const formatDt = (v) => dateTime(v);
 
 function statusLabel(status) {
   if (status === "approved") return "موافَق";
@@ -26,6 +28,7 @@ const STATUS_TONE = { approved: "green", rejected: "red", pending: "orange" };
 
 export default function MyRefundRequests() {
   const toast = useToast();
+  const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -117,6 +120,14 @@ export default function MyRefundRequests() {
             ? "expiring-soon"
             : ""
         }
+      />
+
+      <PosWindowCloseHost
+        autoLoad
+        onLogout={() => {
+          removeToken();
+          navigate("/login", { replace: true });
+        }}
       />
 
       {!loading && rows.length === 0 ? null : (

@@ -333,7 +333,7 @@ describe("historical warehouse valuation", () => {
     );
   });
 
-  test("deactivated products and stored bakery membership are kept", async () => {
+  test("deactivated products stay, and an older date follows the current category", async () => {
     const gone = await makeProduct("موقوف");
     await postPurchase(gone, { qty: 3, total: 15, date: DAY1 });
     await ctx.db.run("UPDATE products SET is_active = 0 WHERE id = ?", [gone.id]);
@@ -342,18 +342,33 @@ describe("historical warehouse valuation", () => {
 
     const bakery = await makeProduct("دقيق تاريخي", { scope: "bakery", category: "مواد" });
     await postPurchase(bakery, { qty: 4, total: 8, date: DAY1 });
+    const snapshot = await ctx.db.get(
+      `SELECT inventory_scope, category FROM inventory_ledger WHERE product_id = ? ORDER BY id LIMIT 1`,
+      [bakery.id]
+    );
+    expect(snapshot.inventory_scope).toBe("bakery");
+    expect(snapshot.category).toBe("مواد");
     await ctx.db.run("UPDATE products SET inventory_scope = 'retail', category = 'ألبان' WHERE id = ?", [bakery.id]);
     const pastBakery = await val(DAY1, "bakery");
     const pastShop = await val(DAY1);
-    expect(line(pastBakery, bakery.id).quantity).toBeCloseTo(4, 3);
-    expect(line(pastShop, bakery.id)).toBeUndefined();
+    expect(line(pastBakery, bakery.id)).toBeUndefined();
+    expect(line(pastShop, bakery.id).quantity).toBeCloseTo(4, 3);
+    expect(line(pastShop, bakery.id).value).toBeCloseTo(8, 2);
+    expect(line(pastShop, bakery.id).category_label).toBe("ألبان");
+    expect(line(pastShop, bakery.id).grouping_label).toBe("التصنيف الحالي");
+    const unchanged = await ctx.db.get(
+      `SELECT inventory_scope, category FROM inventory_ledger WHERE product_id = ? ORDER BY id LIMIT 1`,
+      [bakery.id]
+    );
+    expect(unchanged).toEqual(snapshot);
     const todayName = unwrap(await request(ctx.app).get("/api/v1/warehouses/valuation").set(authHeader(adminToken))).shop_business_day;
     const today = await val(todayName);
     const todayBakery = await val(todayName, "bakery");
     expect(today.as_of_label).toBe("حتى الآن");
-    expect(today.costing_method).toBe(pastShop.costing_method);
-    expect(line(today, bakery.id)).toBeUndefined();
-    expect(line(todayBakery, bakery.id).quantity).toBeCloseTo(4, 3);
+    expect(today.costing_method).toBe("current_inventory_cost");
+    expect(pastShop.costing_method).toBe("recorded_posting");
+    expect(line(today, bakery.id).quantity).toBeCloseTo(4, 3);
+    expect(line(todayBakery, bakery.id)).toBeUndefined();
   });
 
   test("fractional average keeps the receipt value, and a backdated purchase uses one method for today and yesterday", async () => {
@@ -394,9 +409,9 @@ describe("historical warehouse valuation", () => {
     expect(estimate.estimate_value).toBeCloseTo(58.33, 2);
     expect(estimate.recorded_value).toBeCloseTo(60, 2);
     expect(day2.document_date_estimate.label).toBe("تقدير تاريخ المستند");
-    expect(today.costing_method).toBe("recorded_posting");
-    expect(today.costing_method).toBe(day1.costing_method);
-    expect(today.valuation_complete === false || today.grand_total == null || today.excluded_products.length > 0).toBe(true);
+    expect(today.costing_method).toBe("current_inventory_cost");
+    expect(day1.costing_method).toBe("recorded_posting");
+    expect(today.basis_label).toBe("القيمة الحالية حسب تكلفة المخزون");
   });
 
   test("depletion absorbs the last agora, and an overstated supplier return stays unreconciled", async () => {
@@ -557,5 +572,297 @@ describe("historical warehouse valuation", () => {
       .query({ as_of: DAY1 })
       .set(authHeader(allowedToken));
     expect(allowed.status).toBe(200);
+  });
+
+  test("current stock without an opening ledger is visible today and unavailable on a past date", async () => {
+    const product = await makeProduct("رصيد حالي بلا افتتاح", { stock: 6, cost: 4 });
+    await ctx.db.run("UPDATE products SET cost_known = 1 WHERE id = ?", [product.id]);
+    const todayName = unwrap(await request(ctx.app).get("/api/v1/warehouses/valuation").set(authHeader(adminToken))).shop_business_day;
+    const today = await val(todayName);
+    const past = await val(DAY1);
+    const current = line(today, product.id);
+    expect(today.costing_method).toBe("current_inventory_cost");
+    expect(current.quantity).toBeCloseTo(6, 3);
+    expect(current.unit_name).toBe("حبة");
+    expect(current.cost_known).toBe(true);
+    expect(current.value).toBeCloseTo(24, 2);
+    expect(line(past, product.id)).toBeUndefined();
+    expect((past.excluded_products || []).some((row) => Number(row.product_id) === Number(product.id) && row.reason === "no_opening_history")).toBe(true);
+    expect(past.costing_method).toBe("recorded_posting");
+
+    const unknown = await makeProduct("تكلفة غير محددة اليوم", { stock: 2, cost: 0 });
+    const withUnknown = await val(todayName);
+    const unknownLine = line(withUnknown, unknown.id);
+    expect(unknownLine.cost_known).toBe(false);
+    expect(unknownLine.value).toBeNull();
+    expect(unknownLine.unit_cost).toBeNull();
+  });
+
+  test("a quiet day keeps the prior balance, and a missing snapshot still shows that quantity", async () => {
+    const quiet = "2026-01-13";
+    const later = "2026-01-14";
+    const product = await makeProduct("رصيد يوم بلا حركة");
+    await postPurchase(product, { qty: 100, total: 500, date: DAY1 });
+    await ctx.db.run("UPDATE cashier_shifts SET business_day = ? WHERE status = 'open'", [DAY2]);
+    await sell(product, 20);
+    const day3 = await val(quiet);
+    const held = line(day3, product.id);
+    expect(held.quantity).toBeCloseTo(80, 3);
+    expect(held.value).toBeCloseTo(400, 2);
+    expect(held.unit_cost).toBeCloseTo(5, 2);
+
+    const draft = await request(ctx.app)
+      .post("/api/v1/warehouses/transfers")
+      .set(authHeader(adminToken))
+      .send({
+        from_warehouse_id: mainId,
+        to_warehouse_id: storeId,
+        transfer_date: DAY2,
+        items: [{ product_id: product.id, quantity: 15 }],
+      });
+    expect(draft.status).toBe(201);
+    const posted = await request(ctx.app)
+      .post(`/api/v1/warehouses/transfers/${unwrap(draft).id}/post`)
+      .set(authHeader(adminToken));
+    expect(posted.status).toBe(200);
+    const split = await val(quiet);
+    expect(line(split, product.id, mainId).quantity).toBeCloseTo(65, 3);
+    expect(line(split, product.id, storeId).quantity).toBeCloseTo(15, 3);
+    const company = (split.lines || [])
+      .filter((row) => Number(row.product_id) === product.id && row.cost_known)
+      .reduce((sum, row) => round2(sum + Number(row.value)), 0);
+    expect(company).toBeCloseTo(400, 2);
+
+    await postPurchase(product, { qty: 10, total: 80, date: later });
+    const still = await val(quiet);
+    expect(line(still, product.id, mainId).quantity).toBeCloseTo(65, 3);
+    expect(line(still, product.id, storeId).quantity).toBeCloseTo(15, 3);
+    const stillCompany = (still.lines || [])
+      .filter((row) => Number(row.product_id) === product.id && row.cost_known)
+      .reduce((sum, row) => round2(sum + Number(row.value)), 0);
+    expect(stillCompany).toBeCloseTo(400, 2);
+    const afterCutoff = await val(later);
+    const laterQty = (afterCutoff.lines || [])
+      .filter((row) => Number(row.product_id) === product.id)
+      .reduce((sum, row) => sum + Number(row.quantity), 0);
+    expect(laterQty).toBeCloseTo(90, 3);
+
+    await ctx.db.run(
+      "UPDATE inventory_ledger SET inventory_scope = NULL, category = NULL WHERE product_id = ?",
+      [product.id]
+    );
+    await ctx.db.run("UPDATE products SET inventory_scope = 'bakery', category = 'مواد' WHERE id = ?", [product.id]);
+    const stripped = await val(quiet);
+    const strippedBakery = await val(quiet, "bakery");
+    expect(line(stripped, product.id)).toBeUndefined();
+    expect((stripped.unclassified_lines || []).some((row) => Number(row.product_id) === product.id)).toBe(false);
+    const heldBakery = (strippedBakery.lines || []).filter((row) => Number(row.product_id) === product.id);
+    const heldQty = heldBakery.reduce((sum, row) => sum + Number(row.quantity), 0);
+    const heldValue = heldBakery.filter((row) => row.cost_known).reduce((sum, row) => round2(sum + Number(row.value)), 0);
+    expect(heldQty).toBeCloseTo(80, 3);
+    expect(heldValue).toBeCloseTo(400, 2);
+    expect(heldBakery.every((row) => row.category_label === "مواد" && row.grouping_label === "التصنيف الحالي")).toBe(true);
+    expect(heldBakery.every((row) => row.included_in_catalog_total !== false)).toBe(true);
+    expect((strippedBakery.unclassified_lines || []).some((row) => Number(row.product_id) === product.id)).toBe(false);
+    expect(strippedBakery.classification?.historical_category_snapshot).toBe(false);
+    expect(stripped.costing_method).toBe("recorded_posting");
+    expect(stripped.status).not.toBe("unavailable");
+  });
+
+  test("historical valuation groups by the current category and keeps as-of quantities", async () => {
+    const warehouses = unwrap(await request(ctx.app).get("/api/v1/warehouses").set(authHeader(adminToken)));
+    const damagedId = warehouses.find((w) => w.type === "damaged").id;
+    const returnsWh = warehouses.find((w) => w.type === "returns").id;
+
+    async function postTransfer(fromId, toId, productId, qty) {
+      const draft = await request(ctx.app)
+        .post("/api/v1/warehouses/transfers")
+        .set(authHeader(adminToken))
+        .send({
+          from_warehouse_id: fromId,
+          to_warehouse_id: toId,
+          transfer_date: DAY1,
+          items: [{ product_id: productId, quantity: qty }],
+        });
+      expect(draft.status).toBe(201);
+      const posted = await request(ctx.app)
+        .post(`/api/v1/warehouses/transfers/${unwrap(draft).id}/post`)
+        .set(authHeader(adminToken));
+      expect(posted.status).toBe(200);
+    }
+
+    function rowsOf(report, productId) {
+      return (report.lines || []).filter((row) => Number(row.product_id) === Number(productId));
+    }
+    function qtyOf(report, productId, warehouseId) {
+      return rowsOf(report, productId)
+        .filter((row) => Number(row.warehouse_id) === Number(warehouseId))
+        .reduce((sum, row) => sum + Number(row.quantity), 0);
+    }
+    function knownValue(report, productId) {
+      return rowsOf(report, productId)
+        .filter((row) => row.cost_known && row.value != null)
+        .reduce((sum, row) => round2(sum + Number(row.value)), 0);
+    }
+
+    const classified = await makeProduct("تصنيف حالي بلا لقطة", { category: "مشروبات" });
+    await postPurchase(classified, { qty: 10, total: 40, date: DAY1 });
+    await postTransfer(mainId, returnsWh, classified.id, 2);
+    await postTransfer(mainId, damagedId, classified.id, 1);
+
+    const changed = await makeProduct("تصنيف تغيّر", { category: "تصنيف قديم" });
+    await postPurchase(changed, { qty: 8, total: 24, date: DAY1 });
+    await ctx.db.run("UPDATE products SET category = ? WHERE id = ?", ["تصنيف حالي", changed.id]);
+
+    const bare = await makeProduct("بلا تصنيف", { category: null });
+    await postPurchase(bare, { qty: 5, total: 15, date: DAY1 });
+
+    const bakeryItem = await makeProduct("مخبوز حالي", { scope: "bakery", category: "مخبوزات" });
+    await postPurchase(bakeryItem, { qty: 6, total: 18, date: DAY1 });
+
+    const unknown = await makeProduct("تكلفة مجهولة", { category: null, stock: 0, cost: 0 });
+    await ctx.db.run(
+      "UPDATE products SET category = NULL, cost = 0, cost_known = 0, stock = 3 WHERE id = ?",
+      [unknown.id]
+    );
+    await ctx.db.run(
+      `INSERT INTO inventory_ledger
+         (product_id, movement_type, quantity_delta, qty_before, qty_after, business_day,
+          cost_known, unit_cost_after, inventory_scope, category, store_id)
+       VALUES (?, 'manual_adjustment', 3, 0, 3, ?, 0, NULL, NULL, NULL, 1)`,
+      [unknown.id, DAY1]
+    );
+
+    await ctx.db.run(
+      "UPDATE inventory_ledger SET inventory_scope = NULL, category = NULL WHERE product_id IN (?, ?, ?)",
+      [classified.id, bare.id, bakeryItem.id]
+    );
+
+    const ledgerBefore = await ctx.db.all(
+      `SELECT id, product_id, movement_type, quantity_delta, inventory_scope, category, cost_known, unit_cost_after, value_adjustment
+         FROM inventory_ledger
+        WHERE product_id IN (?, ?, ?, ?, ?)
+        ORDER BY id`,
+      [classified.id, changed.id, bare.id, bakeryItem.id, unknown.id]
+    );
+    const stockBefore = await ctx.db.all(
+      "SELECT id, stock, cost, cost_known, category, inventory_scope FROM products WHERE id IN (?, ?, ?, ?, ?) ORDER BY id",
+      [classified.id, changed.id, bare.id, bakeryItem.id, unknown.id]
+    );
+
+    const shop = await val(DAY1);
+    const bakery = await val(DAY1, "bakery");
+
+    const ledgerAfter = await ctx.db.all(
+      `SELECT id, product_id, movement_type, quantity_delta, inventory_scope, category, cost_known, unit_cost_after, value_adjustment
+         FROM inventory_ledger
+        WHERE product_id IN (?, ?, ?, ?, ?)
+        ORDER BY id`,
+      [classified.id, changed.id, bare.id, bakeryItem.id, unknown.id]
+    );
+    const stockAfter = await ctx.db.all(
+      "SELECT id, stock, cost, cost_known, category, inventory_scope FROM products WHERE id IN (?, ?, ?, ?, ?) ORDER BY id",
+      [classified.id, changed.id, bare.id, bakeryItem.id, unknown.id]
+    );
+    expect(ledgerAfter).toEqual(ledgerBefore);
+    expect(stockAfter).toEqual(stockBefore);
+
+    const classifiedLedger = ledgerAfter.filter((row) => Number(row.product_id) === classified.id);
+    expect(classifiedLedger.every((row) => row.inventory_scope == null && row.category == null)).toBe(true);
+    const classifiedQtyLedger = classifiedLedger.reduce((sum, row) => sum + Number(row.quantity_delta), 0);
+    expect(classifiedQtyLedger).toBeCloseTo(10, 3);
+    expect(qtyOf(shop, classified.id, mainId)).toBeCloseTo(7, 3);
+    expect(qtyOf(shop, classified.id, returnsWh)).toBeCloseTo(2, 3);
+    expect(qtyOf(shop, classified.id, damagedId)).toBeCloseTo(1, 3);
+    expect(knownValue(shop, classified.id)).toBeCloseTo(40, 2);
+    expect(rowsOf(shop, classified.id).every((row) => row.category_label === "مشروبات" && row.grouping_label === "التصنيف الحالي")).toBe(true);
+    expect(rowsOf(bakery, classified.id)).toHaveLength(0);
+    const stockRows = await ctx.db.all(
+      "SELECT warehouse_id, quantity FROM warehouse_stock WHERE product_id = ?",
+      [classified.id]
+    );
+    const stockQty = (id) => stockRows.filter((row) => Number(row.warehouse_id) === Number(id)).reduce((sum, row) => sum + Number(row.quantity), 0);
+    expect(stockQty(returnsWh)).toBeCloseTo(2, 3);
+    expect(stockQty(damagedId)).toBeCloseTo(1, 3);
+    const classifiedGroup = (shop.category_groups || []).find((group) => group.category_name === "مشروبات");
+    expect(classifiedGroup.grouping_label).toBe("التصنيف الحالي");
+    expect(classifiedGroup.warehouses.map((wh) => Number(wh.warehouse_id)).sort()).toEqual(
+      [mainId, returnsWh, damagedId].map(Number).sort()
+    );
+    const classifiedKnown = classifiedGroup.lines
+      .filter((row) => Number(row.product_id) === classified.id && row.cost_known)
+      .reduce((sum, row) => round2(sum + Number(row.value)), 0);
+    expect(classifiedKnown).toBeCloseTo(40, 2);
+    expect(Number(classifiedGroup.known_value)).toBeGreaterThanOrEqual(40);
+
+    const changedLedger = ledgerAfter.find((row) => Number(row.product_id) === changed.id);
+    expect(changedLedger.category).toBe("تصنيف قديم");
+    expect(rowsOf(shop, changed.id)).toHaveLength(1);
+    expect(rowsOf(shop, changed.id)[0].category_label).toBe("تصنيف حالي");
+    expect(rowsOf(shop, changed.id)[0].quantity).toBeCloseTo(8, 3);
+    expect(rowsOf(shop, changed.id)[0].value).toBeCloseTo(24, 2);
+    expect((shop.category_groups || []).some((group) => group.category_label === "تصنيف قديم")).toBe(false);
+
+    const bareRows = rowsOf(shop, bare.id);
+    expect(bareRows).toHaveLength(1);
+    expect(bareRows[0].category_label).toBe("غير مصنف");
+    expect(bareRows[0].category_name).toBeNull();
+    expect(bareRows[0].quantity).toBeCloseTo(5, 3);
+    expect(bareRows[0].cost_known).toBe(true);
+    expect(bareRows[0].value).toBeCloseTo(15, 2);
+    const bareLedgerQty = ledgerAfter
+      .filter((row) => Number(row.product_id) === bare.id)
+      .reduce((sum, row) => sum + Number(row.quantity_delta), 0);
+    expect(bareLedgerQty).toBeCloseTo(5, 3);
+    const uncategorized = (shop.category_groups || []).find((group) => group.category_label === "غير مصنف");
+    expect(uncategorized.grouping_label).toBe("التصنيف الحالي");
+    expect(uncategorized.lines.some((row) => Number(row.product_id) === bare.id)).toBe(true);
+    expect(uncategorized.lines.some((row) => Number(row.product_id) === unknown.id)).toBe(true);
+
+    const unknownRows = rowsOf(shop, unknown.id);
+    expect(unknownRows).toHaveLength(1);
+    expect(unknownRows[0].quantity).toBeCloseTo(3, 3);
+    expect(unknownRows[0].cost_known).toBe(false);
+    expect(unknownRows[0].value).toBeNull();
+    expect(unknownRows[0].unit_cost).toBeNull();
+    expect(unknownRows[0].category_label).toBe("غير مصنف");
+    const unknownWarehouse = uncategorized.warehouses.find((wh) => Number(wh.warehouse_id) === Number(unknownRows[0].warehouse_id));
+    const bareWarehouse = uncategorized.warehouses.find((wh) => Number(wh.warehouse_id) === mainId);
+    expect(bareWarehouse.known_value == null || Number(bareWarehouse.known_value) > 0).toBe(true);
+    if (Number(unknownRows[0].warehouse_id) === mainId) {
+      expect(bareWarehouse.known_value).not.toBeNull();
+      expect(Number(bareWarehouse.known_value)).toBeGreaterThanOrEqual(15);
+    } else if (unknownWarehouse) {
+      expect(unknownWarehouse.known_value).toBeNull();
+    }
+    const uncategorizedKnown = uncategorized.lines
+      .filter((row) => row.cost_known && row.value != null)
+      .reduce((sum, row) => round2(sum + Number(row.value)), 0);
+    expect(uncategorized.known_value).toBeCloseTo(uncategorizedKnown, 2);
+    expect(uncategorizedKnown).toBeGreaterThanOrEqual(15);
+    expect(uncategorized.lines.filter((row) => Number(row.product_id) === unknown.id).every((row) => row.value == null)).toBe(true);
+
+    const lineKnown = (shop.lines || [])
+      .filter((row) => row.cost_known && row.value != null)
+      .reduce((sum, row) => round2(sum + Number(row.value)), 0);
+    const warehouseKnown = (shop.warehouses || []).reduce((sum, row) => round2(sum + Number(row.total_value || 0)), 0);
+    expect(lineKnown).toBeCloseTo(warehouseKnown, 2);
+    expect(shop.known_subtotal).toBeCloseTo(
+      round2(warehouseKnown + (shop.unexplained_rounding || []).reduce((sum, row) => round2(sum + Number(row.amount)), 0)),
+      2
+    );
+    expect(shop.classification.mode).toBe("current_product_category");
+    expect(shop.classification.historical_category_snapshot).toBe(false);
+    expect(shop.classification.label).toBe("التصنيف الحالي");
+    expect(JSON.stringify(shop)).not.toMatch(/لا يتوفر تصنيف محفوظ/);
+    expect(JSON.stringify(shop)).not.toMatch(/مخزون بلا تصنيف محفوظ/);
+
+    const bakeryRows = rowsOf(bakery, bakeryItem.id);
+    expect(bakeryRows.reduce((sum, row) => sum + Number(row.quantity), 0)).toBeCloseTo(6, 3);
+    expect(bakeryRows.filter((row) => row.cost_known).reduce((sum, row) => round2(sum + Number(row.value)), 0)).toBeCloseTo(18, 2);
+    expect(bakeryRows.every((row) => row.category_label === "مخبوزات")).toBe(true);
+    expect(rowsOf(shop, bakeryItem.id)).toHaveLength(0);
+    expect(rowsOf(bakery, bare.id)).toHaveLength(0);
+    expect(rowsOf(bakery, unknown.id)).toHaveLength(0);
   });
 });

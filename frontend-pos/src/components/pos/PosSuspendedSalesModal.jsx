@@ -1,12 +1,12 @@
+import { dateTime } from "../../utils/format";
 import "../ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 function formatTime(createdAt) {
-  if (!createdAt) return "";
-  const d = new Date(String(createdAt).replace(" ", "T"));
-  if (Number.isNaN(d.getTime())) return String(createdAt).slice(11, 16);
-  return d.toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" });
+  const full = dateTime(createdAt);
+  if (!full || full === "—") return "";
+  return full.slice(-5);
 }
 
 export default function PosSuspendedSalesModal({

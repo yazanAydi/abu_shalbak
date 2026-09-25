@@ -93,6 +93,20 @@ async function countPendingAdvanceRequests(db) {
   return Number(row?.count) || 0;
 }
 
+async function countPendingSupplierPayments(db) {
+  const row = await db.get(
+    `SELECT COUNT(*) AS count FROM supplier_payment_approval_requests WHERE status = 'pending'`
+  );
+  return Number(row?.count) || 0;
+}
+
+async function countPendingShopConsumption(db) {
+  const row = await db.get(
+    `SELECT COUNT(*) AS count FROM shop_consumption_requests WHERE status = 'pending'`
+  );
+  return Number(row?.count) || 0;
+}
+
 async function countPendingShiftCount(db) {
   const row = await db.get(
     `SELECT COUNT(*) AS count FROM cashier_shifts WHERE status = 'pending_count'`
@@ -132,6 +146,8 @@ export function createOfficeRouter(db) {
     const showRefunds = allowed("refund_approvals");
     const showOnAccount = allowed("on_account_approvals");
     const showAdvances = allowed("advance_approvals");
+    const showSupplierPayments = allowed("suppliers");
+    const showShopConsumption = allowed("expenses");
     const showShifts = allowed("shift_audit");
 
     const [
@@ -142,6 +158,8 @@ export function createOfficeRouter(db) {
       pendingRefunds,
       pendingOnAccount,
       pendingAdvances,
+      pendingSupplierPayments,
+      pendingShopConsumption,
       pendingShiftCount,
     ] = await Promise.all([
       showStock ? countLowStockByScope(db, "retail") : 0,
@@ -151,6 +169,8 @@ export function createOfficeRouter(db) {
       showRefunds ? countPendingRefunds(db) : 0,
       showOnAccount ? countPendingOnAccountRequests(db) : 0,
       showAdvances ? countPendingAdvanceRequests(db) : 0,
+      showSupplierPayments ? countPendingSupplierPayments(db) : 0,
+      showShopConsumption ? countPendingShopConsumption(db) : 0,
       showShifts ? countPendingShiftCount(db) : 0,
     ]);
     const nearExpiry = expiryCounts.nearExpiry;
@@ -163,6 +183,8 @@ export function createOfficeRouter(db) {
       "/refund-approvals": pendingRefunds,
       "/on-account-approvals": pendingOnAccount,
       "/advance-approvals": pendingAdvances,
+      "/supplier-payment-approvals": pendingSupplierPayments,
+      "/shop-consumption-approvals": pendingShopConsumption,
       "/shift-audit": pendingShiftCount,
     };
 
@@ -193,6 +215,8 @@ export function createOfficeRouter(db) {
       pending_refunds: allowed("refund_approvals") ? pendingRefunds : 0,
       pending_on_account: allowed("on_account_approvals") ? pendingOnAccount : 0,
       pending_advances: allowed("advance_approvals") ? pendingAdvances : 0,
+      pending_supplier_payments: allowed("suppliers") ? pendingSupplierPayments : 0,
+      pending_shop_consumption: allowed("expenses") ? pendingShopConsumption : 0,
       pending_shift_count: allowed("shift_audit") ? pendingShiftCount : 0,
       by_path: byPath,
       total,

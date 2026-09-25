@@ -179,7 +179,7 @@ describe("weight-embedded scale barcodes", () => {
 
     expect(res.status).toBe(201);
     const total = res.body?.data?.total ?? res.body.total;
-    expect(total).toBe(38);
+    expect(total).toBe(37.5);
 
     const txId = res.body?.data?.transaction_id ?? res.body.transaction_id;
     const row = await ctx.db.get(
@@ -189,7 +189,7 @@ describe("weight-embedded scale barcodes", () => {
     expect(row.quantity).toBeCloseTo(1.25, 3);
     expect(row.unit_name).toBe("كغم");
     expect(Number(row.unit_price)).toBe(30);
-    expect(Number(row.line_gross)).toBe(38);
+    expect(Number(row.line_gross)).toBe(37.5);
   });
 
   test("receipt shows weight and price per kg for weighed lines", () => {

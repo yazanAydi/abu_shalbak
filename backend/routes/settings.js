@@ -17,10 +17,7 @@ export function createSettingsRouter(db) {
       const office = canViewReports(req.user?.role);
       const canPermissions =
         office && (await userHasAccountantPermission(db, req.user, "permissions"));
-      const canStoreSettings =
-        office && (await userHasAccountantPermission(db, req.user, "store_settings"));
       if (!canPermissions) delete settings.accountant_permissions;
-      if (!canStoreSettings) delete settings.refund_telegram_manager_user_id;
       return sendCachedJson(req, res, settings, { maxAgeSec: 30 });
     } catch (err) {
       if (err?.code === "PERMISSIONS_CORRUPT") {

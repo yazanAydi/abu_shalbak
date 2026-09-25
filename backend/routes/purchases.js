@@ -5,6 +5,7 @@ import { recordMovement } from "../utils/inventory.js";
 import { getAppSettings } from "../utils/settings.js";
 import { getDefaultUnit, toBaseQuantity, refreshUnitCostCache } from "../utils/productUnits.js";
 import { shopTodayYmd } from "../utils/shopTime.js";
+import { effectiveInventoryDay } from "../utils/businessDay.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { withTransaction } from "../utils/dbTx.js";
 import {
@@ -29,6 +30,13 @@ import {
 import { resolveSupplierPurchaseUnitPrice } from "../utils/supplierPurchasePrice.js";
 import { resolveBakeryReportCategories } from "../services/bakeryReportService.js";
 import { bakeryMembershipSql, BAKERY_KIND_WORKSPACE } from "../utils/bakeryMembership.js";
+
+/** Ledger inventory date. invoice_date / return_date themselves are not rewritten. */
+async function inventoryDayForDocument(db, documentDay) {
+  const settings = await getAppSettings(db);
+  const doc = String(documentDay || "").trim().slice(0, 10);
+  return effectiveInventoryDay(doc, new Date().toISOString(), settings.business_day_cutoff_hour);
+}
 
 async function nextNo(db, table, col) {
   // SQLINJECTION_REGRESSION: table/col must be hardcoded allowlist only — never user input
@@ -203,7 +211,7 @@ async function applyPurchaseInvoicePost(db, inv, items, userId) {
       notes: `فاتورة شراء #${inv.invoice_no ?? inv.id}`,
       userId,
       applyStock: true,
-      businessDay: String(inv.invoice_date || "").slice(0, 10),
+      businessDay: await inventoryDayForDocument(db, inv.invoice_date),
     });
   }
 
@@ -271,7 +279,7 @@ async function applyPurchaseReturnPost(db, ret, items, userId) {
       notes: `مرتجع شراء #${ret.return_no ?? ret.id}`,
       userId,
       applyStock: true,
-      businessDay: String(ret.return_date || "").slice(0, 10),
+      businessDay: await inventoryDayForDocument(db, ret.return_date),
     });
   }
   await db.run("UPDATE suppliers SET balance = balance - ? WHERE id = ?", [ret.total, ret.supplier_id]);

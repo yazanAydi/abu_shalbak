@@ -11,6 +11,7 @@ import {
   formatHoursAr,
   formatShiftStatus,
 } from "../utils/payrollHelpers";
+import { attendanceInstantFromFields, fieldsFromStoredInstant } from "../utils/attendanceDateTime";
 import FaceEnrollmentPanel from "../components/FaceEnrollmentPanel";
 import EmployeeRecordsPanel from "./EmployeeRecordsPanel";
 import "./CashierPayroll.css";
@@ -97,6 +98,8 @@ export default function CashierPayroll() {
   const [editingPunchId, setEditingPunchId] = useState(null);
   const [editPunchTime, setEditPunchTime] = useState("");
   const [editPunchType, setEditPunchType] = useState("in");
+  const [editPunchPin, setEditPunchPin] = useState(null);
+  const [editPunchAmbiguous, setEditPunchAmbiguous] = useState(null);
 
   const presets = useMemo(() => getDatePresets(), []);
 
@@ -225,14 +228,21 @@ export default function CashierPayroll() {
   }
 
   function toDatetimeLocalValue(sqlTime) {
-    if (!sqlTime) return "";
-    const normalized = String(sqlTime).trim().replace(" ", "T");
-    return normalized.slice(0, 16);
+    const wall = fieldsFromStoredInstant(sqlTime);
+    if (!wall) return "";
+    return `${wall.ymd}T${wall.time}`;
   }
 
-  function fromDatetimeLocalValue(value) {
-    if (!value) return "";
-    return `${value.replace("T", " ")}:00`.slice(0, 19);
+  function punchInstantFromEditor(value, pinMs = editPunchPin) {
+    if (!value) return { empty: true };
+    const [ymd, time] = String(value).split("T");
+    return attendanceInstantFromFields({ ymd, time, pinMs });
+  }
+
+  function fromDatetimeLocalValue(value, pinMs = editPunchPin) {
+    const instant = punchInstantFromEditor(value, pinMs);
+    if (!instant || instant.empty || instant.error || !Number.isFinite(instant.ms)) return "";
+    return new Date(instant.ms).toISOString().replace("T", " ").slice(0, 19);
   }
 
   const expandedEmployee = useMemo(
@@ -241,28 +251,36 @@ export default function CashierPayroll() {
   );
 
   function startEditPunch(punch) {
+    const wall = fieldsFromStoredInstant(punch.punch_time);
     setEditingPunchId(punch.id);
-    setEditPunchTime(toDatetimeLocalValue(punch.punch_time));
+    setEditPunchTime(wall ? `${wall.ymd}T${wall.time}` : "");
     setEditPunchType(punch.type);
+    setEditPunchPin(wall?.pinMs ?? null);
+    setEditPunchAmbiguous(null);
   }
 
   function cancelEditPunch() {
     setEditingPunchId(null);
     setEditPunchTime("");
     setEditPunchType("in");
+    setEditPunchPin(null);
+    setEditPunchAmbiguous(null);
   }
 
   async function saveEditPunch() {
-    if (!editingPunchId || !editPunchTime) {
-      toast.error("حدد وقت التسجيل");
+    const instant = punchInstantFromEditor(editPunchTime);
+    if (instant?.ambiguous) setEditPunchAmbiguous(instant.ambiguous);
+    if (!editingPunchId || !editPunchTime || instant?.empty || instant?.error || !Number.isFinite(instant?.ms)) {
+      toast.error(instant?.error || "حدد وقت التسجيل");
       return;
     }
+    const punchTime = new Date(instant.ms).toISOString().replace("T", " ").slice(0, 19);
     setPunchSaving(true);
     try {
       await api.patch(
         `/api/attendance/punch/${editingPunchId}`,
         {
-          punch_time: fromDatetimeLocalValue(editPunchTime),
+          punch_time: punchTime,
           type: editPunchType,
         },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
@@ -556,12 +574,33 @@ export default function CashierPayroll() {
                                   header: "الوقت",
                                   render: (p) =>
                                     editingPunchId === p.id ? (
-                                      <Input
-                                        type="datetime-local"
-                                        value={editPunchTime}
-                                        onChange={(e) => setEditPunchTime(e.target.value)}
-                                        onClick={(e) => e.stopPropagation()}
-                                      />
+                                      <div onClick={(e) => e.stopPropagation()}>
+                                        <Input
+                                          type="datetime-local"
+                                          value={editPunchTime}
+                                          onChange={(e) => {
+                                            setEditPunchTime(e.target.value);
+                                            setEditPunchPin(null);
+                                            setEditPunchAmbiguous(null);
+                                          }}
+                                        />
+                                        {editPunchAmbiguous?.length ? (
+                                          <div role="group" aria-label="اختيار التوقيت">
+                                            {editPunchAmbiguous.map((option) => (
+                                              <button
+                                                key={option.ms}
+                                                type="button"
+                                                onClick={() => {
+                                                  setEditPunchPin(option.ms);
+                                                  setEditPunchAmbiguous(null);
+                                                }}
+                                              >
+                                                {option.offset === "+03" ? "توقيت صيفي" : "توقيت شتوي"} {option.offset}
+                                              </button>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                      </div>
                                     ) : (
                                       formatDateTimeAr(p.punch_time)
                                     ),

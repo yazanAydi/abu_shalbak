@@ -17,6 +17,7 @@ import PosPaymentPanel from "../components/pos/PosPaymentPanel";
 import PosPaymentModal from "../components/pos/PosPaymentModal";
 import PosRefundNotifications from "../components/pos/PosRefundNotifications";
 import PosPrintQueue from "../components/pos/PosPrintQueue";
+import PosWindowCloseHost from "../components/pos/PosWindowCloseHost";
 import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
 import { requiresShiftForPos } from "../utils/roles";
 import ShiftStart from "../components/ShiftStart";
@@ -31,7 +32,7 @@ import {
 } from "../config/posShortcuts";
 import { matchesShortcut, shouldHandlePosShortcut } from "../utils/posKeyboard";
 import { resolveF9CheckoutAction } from "../utils/f9Checkout";
-import { focusBarcodeInput } from "../utils/focusBarcodeInput";
+import { focusBarcodeInput, isBarcodeFocusSurface } from "../utils/focusBarcodeInput";
 import { readWaitingRequestId, writeWaitingRequestId } from "../utils/posWaitingRequests";
 import { playScanSuccess, warmPosSounds } from "../utils/posSounds";
 import {
@@ -90,6 +91,7 @@ export default function Checkout() {
   const [suspendedCount, setSuspendedCount] = useState(0);
   const [suspendedSales, setSuspendedSales] = useState([]);
   const [endShiftOpen, setEndShiftOpen] = useState(false);
+  const [leaveChoiceOpen, setLeaveChoiceOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [advanceOpen, setAdvanceOpen] = useState(false);
   const [supplierPayOpen, setSupplierPayOpen] = useState(false);
@@ -104,9 +106,11 @@ export default function Checkout() {
   const [supplierWaitingId, setSupplierWaitingId] = useState(() =>
     readWaitingRequestId("supplierPayment")
   );
+  const [supplierTelegram, setSupplierTelegram] = useState(null);
   const [shopExpenseWaitingId, setShopExpenseWaitingId] = useState(() =>
     readWaitingRequestId("shopExpense")
   );
+  const [shopExpenseTelegram, setShopExpenseTelegram] = useState(null);
   const finalizedOnAccountRef = useRef(new Set());
   const [holdLoading, setHoldLoading] = useState(false);
   const [posActionError, setPosActionError] = useState("");
@@ -175,6 +179,61 @@ export default function Checkout() {
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [loadActivePromos]);
+
+  const checkoutDialogOpen =
+    payModalOpen ||
+    clearCartOpen ||
+    endShiftOpen ||
+    leaveChoiceOpen ||
+    refundOpen ||
+    advanceOpen ||
+    supplierPayOpen ||
+    shopExpenseOpen ||
+    suspendedModalOpen ||
+    detailModalOpen ||
+    restoreConflictOpen ||
+    !!advanceWaitingId ||
+    !!onAccountWaitingId ||
+    !!cashDebtWaitingId ||
+    !!supplierWaitingId ||
+    !!shopExpenseWaitingId;
+
+  useEffect(() => {
+    if (!shiftReady || checkoutDialogOpen) return;
+    focusBarcodeInput();
+  }, [shiftReady, checkoutDialogOpen]);
+
+  useEffect(() => {
+    const onWindowFocus = () => {
+      if (document.visibilityState === "hidden") return;
+      focusBarcodeInput();
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => window.removeEventListener("focus", onWindowFocus);
+  }, []);
+
+  useEffect(() => {
+    const root = document.querySelector(".pos-screen");
+    if (!root) return undefined;
+    let armed = false;
+    const onPointerDown = (event) => {
+      if (event.button != null && event.button !== 0) return;
+      armed = isBarcodeFocusSurface(event.target);
+    };
+    const onPointerUp = (event) => {
+      if (!armed) return;
+      armed = false;
+      if (event.button != null && event.button !== 0) return;
+      if (!isBarcodeFocusSurface(event.target)) return;
+      focusBarcodeInput({ releaseCartEdit: true });
+    };
+    root.addEventListener("pointerdown", onPointerDown);
+    root.addEventListener("pointerup", onPointerUp);
+    return () => {
+      root.removeEventListener("pointerdown", onPointerDown);
+      root.removeEventListener("pointerup", onPointerUp);
+    };
+  }, []);
 
   const loadSuspendedList = useCallback(async () => {
     if (!shiftReady) {
@@ -515,9 +574,23 @@ export default function Checkout() {
   }
 
   function handleCompleteClick() {
-    if (!cartItems.length || !shiftReady || isLoading) return;
+    if (isLoading) return;
+    if (!shiftReady) {
+      const message = "افتح الوردية قبل إتمام البيع";
+      dispatch({ type: "CHECKOUT_ERROR", fallback: message });
+      showPosActionError(message);
+      return;
+    }
+    if (!cartItems.length) {
+      const message = "أضف صنفاً قبل إتمام البيع";
+      dispatch({ type: "CHECKOUT_ERROR", fallback: message });
+      showPosActionError(message);
+      return;
+    }
     if (cartItems.some((it) => !(Number(it.quantity) > 0))) {
-      dispatch({ type: "CHECKOUT_ERROR", fallback: "أدخل الوزن بالكيلو قبل إتمام البيع" });
+      const message = "أدخل الوزن بالكيلو قبل إتمام البيع";
+      dispatch({ type: "CHECKOUT_ERROR", fallback: message });
+      showPosActionError(message);
       return;
     }
     dispatch({ type: "CLEAR_SALE_ERR" });
@@ -626,6 +699,7 @@ export default function Checkout() {
     isLoading ||
     payModalOpen ||
     endShiftOpen ||
+    leaveChoiceOpen ||
     refundOpen ||
     clearCartOpen ||
     suspendedModalOpen ||
@@ -677,18 +751,18 @@ export default function Checkout() {
           isSubmitting: isSubmittingRef.current,
           payModalOpen,
         });
-        if (decision.action === "ignore-repeat") {
-          ev.preventDefault();
+        if (decision.action === "ignore-repeat" || decision.action === "defer-to-modal") {
+          if (decision.action === "ignore-repeat") ev.preventDefault();
           return;
         }
-        if (decision.action !== "open-modal") return;
+        if (decision.action === "ignore" && (isLoading || isSubmittingRef.current)) return;
         ev.preventDefault();
         handleCompleteClickRef.current();
       }
     }
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [cartItems.length, shiftReady, isLoading, payModalOpen, shortcutsBlocked, shortcuts]);
 
   useEffect(() => {
@@ -724,7 +798,18 @@ export default function Checkout() {
     navigate("/login", { replace: true });
   }, [navigate]);
 
+  const openLeaveChoice = useCallback(() => setLeaveChoiceOpen(true), []);
+  const closeLeaveChoice = useCallback(() => setLeaveChoiceOpen(false), []);
+
+  useEffect(() => {
+    if (!activeShift?.id) setLeaveChoiceOpen(false);
+  }, [activeShift?.id]);
+
   function handleLogout() {
+    if (activeShift?.id) {
+      setLeaveChoiceOpen(true);
+      return;
+    }
     if (cartItems.length > 0) {
       const ok = window.confirm(
         "يوجد أصناف في السلة. هل تريد تسجيل الخروج؟ سيتم فقدان الفاتورة الحالية."
@@ -732,6 +817,16 @@ export default function Checkout() {
       if (!ok) return;
     }
     goToLogin();
+  }
+
+  function chooseLeaveLogout() {
+    setLeaveChoiceOpen(false);
+    goToLogin();
+  }
+
+  function chooseLeaveEndShift() {
+    setLeaveChoiceOpen(false);
+    setEndShiftOpen(true);
   }
 
   return (
@@ -763,6 +858,8 @@ export default function Checkout() {
           on_account: onAccountWaitingId,
           advance: advanceWaitingId,
           cash_debt: cashDebtWaitingId,
+          supplier: supplierWaitingId,
+          shop: shopExpenseWaitingId,
         }}
         onApprovedOnAccount={finalizeApprovedOnAccountSale}
       />
@@ -937,9 +1034,10 @@ export default function Checkout() {
               setShopExpenseOpen(false);
               resetInvoiceState();
             }}
-            onWaiting={(id) => {
+            onWaiting={(id, meta) => {
               writeWaitingRequestId("shopExpense", id);
               setShopExpenseWaitingId(id);
+              setShopExpenseTelegram(meta?.telegram === true);
               setShopExpenseOpen(false);
             }}
           />
@@ -952,9 +1050,10 @@ export default function Checkout() {
             onPaid={() => {
               loadShift();
             }}
-            onSupplierWaiting={(id) => {
+            onSupplierWaiting={(id, meta) => {
               writeWaitingRequestId("supplierPayment", id);
               setSupplierWaitingId(id);
+              setSupplierTelegram(meta?.telegram === true);
               setSupplierPayOpen(false);
             }}
             onCashDebtWaiting={(id) => {
@@ -989,6 +1088,7 @@ export default function Checkout() {
           <PosApprovalWaitingModal
             open
             requestId={shopExpenseWaitingId}
+            initialTelegram={shopExpenseTelegram}
             apiPath="/api/shop-consumption-requests"
             titlePrefix="مصاريف محل"
             statusLabels={{
@@ -1010,6 +1110,7 @@ export default function Checkout() {
           <PosApprovalWaitingModal
             open
             requestId={supplierWaitingId}
+            initialTelegram={supplierTelegram}
             apiPath="/api/supplier-payment-requests"
             titlePrefix="طلب دفع لمورد"
             statusLabels={{
@@ -1095,7 +1196,6 @@ export default function Checkout() {
         {endShiftOpen && activeShift?.id ? (
           <ShiftEnd
             shiftId={activeShift.id}
-            txCount={shiftTxCount}
             suspendedCount={suspendedCount}
             open={endShiftOpen}
             onClose={() => setEndShiftOpen(false)}
@@ -1103,6 +1203,17 @@ export default function Checkout() {
           />
         ) : null}
       </Suspense>
+
+      <PosWindowCloseHost
+        shiftId={activeShift?.id ?? null}
+        suspendedCount={suspendedCount}
+        cartDirty={cartItems.length > 0}
+        open={leaveChoiceOpen}
+        onOpen={openLeaveChoice}
+        onCancel={closeLeaveChoice}
+        onLogout={chooseLeaveLogout}
+        onEndShift={chooseLeaveEndShift}
+      />
 
       <PosPaymentModal
         open={payModalOpen}

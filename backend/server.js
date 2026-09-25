@@ -7,6 +7,7 @@ import { createApp } from "./app.js";
 import { createBackup, pruneBackups } from "./utils/backup.js";
 import { sendExpiryAlert } from "./services/expiryAlertService.js";
 import { startTelegramPolling } from "./services/telegramPolling.js";
+import { resendPendingTelegramApprovals } from "./services/telegramPendingResend.js";
 import { closeOverdueAttendanceSessions } from "./services/attendanceSessionService.js";
 import { resolveDatabasePath } from "./utils/dbPath.js";
 
@@ -104,6 +105,9 @@ if (process.env.NODE_ENV !== "test") {
   }
 
   startTelegramPolling(db);
+  resendPendingTelegramApprovals(db).catch((err) => {
+    console.error("[telegram-resend] startup resend failed:", err?.message || err);
+  });
 
   const runAttendanceClose = async () => {
     try {

@@ -260,15 +260,14 @@ async function resolveIdempotency(db, { key, fingerprint, userId }) {
   return loadResult(db, row.id, true);
 }
 
-async function postCore(db, { cashierId, items, reason, idempotencyKey, req }) {
+async function postShopConsumptionInTx(db, { cashierId, items, reason, idempotencyKey, req }) {
   const key = String(idempotencyKey || "").trim();
   if (key.length < 8 || key.length > 100) {
     throw badRequest("مفتاح التكرار مطلوب (8–100 حرفاً)", "VALIDATION_ERROR");
   }
   const note = reason != null && String(reason).trim() !== "" ? String(reason).trim().slice(0, 500) : null;
 
-  return withTransaction(db, async () => {
-    const { shift, error } = await requireOpenShiftForCashier(db, cashierId);
+  const { shift, error } = await requireOpenShiftForCashier(db, cashierId);
     if (!shift) throw conflict(error, "SHIFT_REQUIRED");
     const resolved = await resolveLines(db, items);
     const fingerprint = fingerprintShopConsumption(resolved.lines, note);
@@ -362,15 +361,168 @@ async function postCore(db, { cashierId, items, reason, idempotencyKey, req }) {
     }
 
     return loadResult(db, consumptionId, false);
-  });
+}
+
+async function postCore(db, params) {
+  return withTransaction(db, () => postShopConsumptionInTx(db, params));
 }
 
 export async function postShopConsumption(db, params) {
   return postCore(db, params);
 }
 
+const SHOP_REQUEST_SELECT = `
+  SELECT r.*,
+         cashier.username AS cashier_username,
+         manager.username AS manager_username
+    FROM shop_consumption_requests r
+    JOIN users cashier ON cashier.id = r.cashier_id
+    LEFT JOIN users manager ON manager.id = r.manager_id
+`;
+
+function queueFilter(status) {
+  const value = String(status || "pending").toLowerCase();
+  if (!["pending", "approved", "rejected", "all"].includes(value)) {
+    throw badRequest("حالة غير صالحة", "VALIDATION_ERROR");
+  }
+  return value;
+}
+
+async function displayLines(db, row) {
+  if (row.consumption_id) {
+    const items = await db.all(
+      `SELECT name, quantity, unit_name, line_cost
+         FROM shop_consumption_items WHERE consumption_id = ? ORDER BY id`,
+      [row.consumption_id]
+    );
+    const head = await db.get("SELECT total_cost FROM shop_consumptions WHERE id = ?", [row.consumption_id]);
+    return {
+      items: items.map((item) => ({
+        name: item.name,
+        quantity: item.quantity,
+        unit_name: item.unit_name,
+        line_cost: round2(Number(item.line_cost) || 0),
+      })),
+      amount: round2(Number(head?.total_cost) || 0),
+    };
+  }
+
+  let raw = [];
+  try {
+    raw = JSON.parse(row.items_json || "[]");
+  } catch {
+    raw = [];
+  }
+  if (!Array.isArray(raw)) raw = [];
+  const ids = [...new Set(raw.map((item) => Number(item.product_id)).filter((id) => id > 0))];
+  const placeholders = ids.map(() => "?").join(",");
+  const products = ids.length
+    ? await db.all(`SELECT id, name, cost, cost_known FROM products WHERE id IN (${placeholders})`, ids)
+    : [];
+  const units = ids.length
+    ? await db.all(
+        `SELECT id, product_id, unit_name, conversion_to_base, is_default
+           FROM product_units WHERE product_id IN (${placeholders})
+          ORDER BY is_default DESC, id ASC`,
+        ids
+      )
+    : [];
+  const productById = new Map(products.map((product) => [Number(product.id), product]));
+  const unitsByProduct = new Map();
+  for (const unit of units) {
+    const pid = Number(unit.product_id);
+    if (!unitsByProduct.has(pid)) unitsByProduct.set(pid, []);
+    unitsByProduct.get(pid).push(unit);
+  }
+
+  const items = [];
+  let amount = 0;
+  let complete = raw.length > 0;
+  for (const item of raw) {
+    const productId = Number(item.product_id);
+    const product = productById.get(productId);
+    const unitId =
+      item.unit_id != null ? Number(item.unit_id) : item.product_unit_id != null ? Number(item.product_unit_id) : null;
+    const productUnits = unitsByProduct.get(productId) || [];
+    const unit = (unitId && productUnits.find((entry) => Number(entry.id) === unitId)) || productUnits[0] || null;
+    const quantity = Number(item.quantity);
+    let lineCost = null;
+    if (product && unit && isProductCostKnown(product) && Number.isFinite(quantity)) {
+      const unitCost = resolveSoldUnitCost({ conversion_to_base: unit.conversion_to_base }, product);
+      lineCost = round2(unitCost * quantity);
+      amount = sumMoney([amount, lineCost]);
+    } else {
+      complete = false;
+    }
+    items.push({
+      name: product?.name || `صنف #${productId || "?"}`,
+      quantity: Number.isFinite(quantity) ? quantity : item.quantity,
+      unit_name: unit?.unit_name || null,
+      line_cost: lineCost,
+    });
+  }
+  return { items, amount: complete ? amount : null };
+}
+
+export async function presentShopConsumptionRequest(db, row) {
+  const lines = await displayLines(db, row);
+  const fromTelegram = row.decision_source === "telegram";
+  return {
+    id: row.id,
+    request_id: row.id,
+    created_at: row.created_at,
+    cashier_id: row.cashier_id,
+    cashier_username: row.cashier_username || null,
+    shift_id: row.shift_id,
+    reason: row.reason || null,
+    notes: row.reason || null,
+    status: row.status,
+    items: lines.items,
+    amount: lines.amount,
+    consumption_id: row.consumption_id || null,
+    manager_id: row.manager_id || null,
+    manager_username: row.manager_username || null,
+    telegram_actor_id: row.telegram_actor_id || null,
+    telegram_actor_username: row.telegram_actor_username || null,
+    telegram_message_id: row.telegram_message_id || null,
+    decision_source: row.decision_source || null,
+    decision_actor: fromTelegram
+      ? row.telegram_actor_username || (row.telegram_actor_id ? String(row.telegram_actor_id) : null)
+      : row.manager_username || null,
+    decision_at: row.approved_at || row.rejected_at || null,
+    can_reprint: row.status === "approved" && row.consumption_id != null,
+  };
+}
+
+export async function listUnreadShopConsumptionDecisions(db, cashierId) {
+  return db.all(
+    `SELECT r.id, r.status, r.reason, r.shift_id, r.consumption_id,
+            r.created_at, r.approved_at, r.rejected_at, r.decision_source
+     FROM shop_consumption_requests r
+     WHERE r.cashier_id = ?
+       AND r.status IN ('approved', 'rejected')
+       AND r.cashier_acknowledged_at IS NULL
+     ORDER BY COALESCE(r.approved_at, r.rejected_at) ASC, r.id ASC`,
+    [Number(cashierId)]
+  );
+}
+
+export async function listShopConsumptionRequests(db, status) {
+  const filter = queueFilter(status);
+  const where = filter === "all" ? "" : "WHERE r.status = ?";
+  const params = filter === "all" ? [] : [filter];
+  const order = filter === "pending" ? "r.created_at ASC, r.id ASC" : "r.created_at DESC, r.id DESC";
+  const rows = await db.all(`${SHOP_REQUEST_SELECT} ${where} ORDER BY ${order}`, params);
+  return Promise.all(rows.map((row) => presentShopConsumptionRequest(db, row)));
+}
+
 export async function getShopConsumptionRequestById(db, id) {
   return db.get("SELECT * FROM shop_consumption_requests WHERE id = ?", [id]);
+}
+
+export async function getPresentedShopConsumptionRequest(db, id) {
+  const row = await db.get(`${SHOP_REQUEST_SELECT} WHERE r.id = ?`, [id]);
+  return row ? presentShopConsumptionRequest(db, row) : null;
 }
 
 export async function createShopConsumptionRequest(db, params) {
@@ -421,6 +573,8 @@ export async function createShopConsumptionRequest(db, params) {
     }
   }
 
+  const { logApprovalStage: logSaved } = await import("../utils/telegram.js");
+  logSaved("saved", { request: created.request.id, kind: "consumption", shift: created.request.shift_id });
   let telegramMessageId = created.request.telegram_message_id || null;
   if (!created.replayed) {
     const { isApprovalsTelegramConfigured, sendShopConsumptionApprovalMessage } = await import("../utils/telegram.js");
@@ -438,10 +592,24 @@ export async function createShopConsumptionRequest(db, params) {
           telegramMessageId,
           created.request.id,
         ]);
+        const { logApprovalStage } = await import("../utils/telegram.js");
+        logApprovalStage("sent", { request: created.request.id, kind: "consumption", message: telegramMessageId });
       } catch (e) {
-        console.error("Telegram consumption approval send failed:", e.message);
+        const { telegramFailureLog, logApprovalStage } = await import("../utils/telegram.js");
+        logApprovalStage("send_failed", {
+          request: created.request.id,
+          kind: "consumption",
+          detail: telegramFailureLog(e),
+        });
         telegramMessageId = null;
       }
+    } else if (!created.replayed) {
+      const { logApprovalStage } = await import("../utils/telegram.js");
+      logApprovalStage("send_skipped", {
+        request: created.request.id,
+        kind: "consumption",
+        detail: "approvals bot not configured",
+      });
     }
   }
 
@@ -466,31 +634,42 @@ export async function approveShopConsumptionRequest(db, requestId, actor = {}) {
     const permitted = await userHasAccountantPermission(db, actor.officeUser, "expenses");
     if (!permitted) throw new HttpError(403, "حساب الموافق لا يملك صلاحية الموافقة", "FORBIDDEN");
   }
-  const request = await db.get("SELECT * FROM shop_consumption_requests WHERE id = ?", [requestId]);
-  if (!request) throw new HttpError(404, "الطلب غير موجود", "NOT_FOUND");
-  if (request.status !== "pending") {
-    const err = new HttpError(409, "تمت المعالجة مسبقاً", "ALREADY_HANDLED");
-    err.action = "already_handled";
-    throw err;
-  }
-  const posted = await postCore(db, {
-    cashierId: request.cashier_id,
-    items: JSON.parse(request.items_json),
-    reason: request.reason,
-    idempotencyKey: `consumption-approval-${request.id}`,
-    req: actor.req || null,
-  });
-  const info = await db.run(
+  const posted = await withTransaction(db, async () => {
+    const request = await db.get("SELECT * FROM shop_consumption_requests WHERE id = ?", [requestId]);
+    if (!request) throw new HttpError(404, "الطلب غير موجود", "NOT_FOUND");
+    if (request.status !== "pending") {
+      const err = new HttpError(409, "تمت المعالجة مسبقاً", "ALREADY_HANDLED");
+      err.action = "already_handled";
+      throw err;
+    }
+    const cashBefore = await db.get(
+      "SELECT COUNT(*) AS n FROM shift_cash_movements WHERE shift_id = ?",
+      [request.shift_id]
+    );
+    const created = await postShopConsumptionInTx(db, {
+      cashierId: request.cashier_id,
+      items: JSON.parse(request.items_json),
+      reason: request.reason,
+      idempotencyKey: `consumption-approval-${request.id}`,
+      req: actor.req || null,
+    });
+    if (actor.failAfterPost) {
+      const err = new Error("forced");
+      err.code = "FORCED_ROLLBACK";
+      throw err;
+    }
+    const info = await db.run(
       `UPDATE shop_consumption_requests
          SET status = 'approved', consumption_id = ?, manager_id = ?, decision_source = ?,
-             telegram_actor_id = ?, telegram_actor_username = ?, approved_at = datetime('now')
+             telegram_actor_id = ?, telegram_actor_username = ?, telegram_actor_name = ?, approved_at = datetime('now')
        WHERE id = ? AND status = 'pending'`,
       [
-        posted.id,
+        created.id,
         decisionSource === "telegram" ? null : actor.officeUser?.id ?? null,
         decisionSource,
         actor.telegramActor?.id || null,
         actor.telegramActor?.username || null,
+        actor.telegramActor?.name || null,
         request.id,
       ]
     );
@@ -499,12 +678,38 @@ export async function approveShopConsumptionRequest(db, requestId, actor = {}) {
       err.action = "already_handled";
       throw err;
     }
-    const moves = await db.get(
-      "SELECT COUNT(*) AS n FROM shift_cash_movements WHERE shift_id = ? AND description LIKE ?",
-      [request.shift_id, `%${posted.id}%`]
+    const cashAfter = await db.get(
+      "SELECT COUNT(*) AS n FROM shift_cash_movements WHERE shift_id = ?",
+      [request.shift_id]
     );
-  if (Number(moves.n) > 0) throw new Error("shop consumption must not move the drawer");
-  return { ...posted, request_id: request.id, pending_approval: false, status: "approved" };
+    if (Number(cashAfter.n) !== Number(cashBefore.n)) throw new Error("shop consumption must not move the drawer");
+    return { created, request };
+  });
+  await editConsumptionTelegram(
+    posted.request,
+    "approved",
+    actor.telegramActor?.name || actor.telegramActor?.username || actor.officeUser?.username || ""
+  );
+  return { ...posted.created, request_id: posted.request.id, pending_approval: false, status: "approved" };
+}
+
+async function editConsumptionTelegram(request, status, approverName) {
+  if (!request?.telegram_message_id) return;
+  const { isApprovalsTelegramConfigured, editGroupApprovalMessage, telegramFailureLog } = await import("../utils/telegram.js");
+  if (!isApprovalsTelegramConfigured()) return;
+  try {
+    await editGroupApprovalMessage({
+      kind: "consumption",
+      messageId: request.telegram_message_id,
+      requestId: request.id,
+      status,
+      approverName,
+    });
+  } catch (err) {
+    console.error(
+      `[telegram-approval] stage=edit_failed request=${request.id} kind=consumption ${telegramFailureLog(err)}`
+    );
+  }
 }
 
 export async function rejectShopConsumptionRequest(db, requestId, actor = {}) {
@@ -514,19 +719,20 @@ export async function rejectShopConsumptionRequest(db, requestId, actor = {}) {
     const permitted = await userHasAccountantPermission(db, actor.officeUser, "expenses");
     if (!permitted) throw new HttpError(403, "حساب الموافق لا يملك صلاحية الموافقة", "FORBIDDEN");
   }
-  return withTransaction(db, async () => {
+  const updated = await withTransaction(db, async () => {
     const beforeStock = await db.get("SELECT COUNT(*) AS n FROM inventory_ledger");
     const beforeExp = await db.get("SELECT COUNT(*) AS n FROM operating_expenses");
     const info = await db.run(
       `UPDATE shop_consumption_requests
          SET status = 'rejected', manager_id = ?, decision_source = ?,
-             telegram_actor_id = ?, telegram_actor_username = ?, rejected_at = datetime('now')
+             telegram_actor_id = ?, telegram_actor_username = ?, telegram_actor_name = ?, rejected_at = datetime('now')
        WHERE id = ? AND status = 'pending'`,
       [
         decisionSource === "telegram" ? null : actor.officeUser?.id ?? null,
         decisionSource,
         actor.telegramActor?.id || null,
         actor.telegramActor?.username || null,
+        actor.telegramActor?.name || null,
         requestId,
       ]
     );
@@ -543,4 +749,6 @@ export async function rejectShopConsumptionRequest(db, requestId, actor = {}) {
     }
     return db.get("SELECT * FROM shop_consumption_requests WHERE id = ?", [requestId]);
   });
+  await editConsumptionTelegram(updated, "rejected", actor.telegramActor?.name || actor.telegramActor?.username || actor.officeUser?.username || "");
+  return updated;
 }

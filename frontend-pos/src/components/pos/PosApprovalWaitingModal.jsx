@@ -42,10 +42,13 @@ export default function PosApprovalWaitingModal({
   detailLine,
   onClose,
   onTerminal,
+  initialTelegram = null,
 }) {
   const [status, setStatus] = useState("pending");
   const [detail, setDetail] = useState(null);
   const [err, setErr] = useState("");
+  const [connectionError, setConnectionError] = useState(false);
+  const [telegramDelivered, setTelegramDelivered] = useState(initialTelegram);
   const [minimized, setMinimized] = useState(false);
   const terminalRef = useRef(false);
   const onTerminalRef = useRef(onTerminal);
@@ -55,6 +58,8 @@ export default function PosApprovalWaitingModal({
     setStatus("pending");
     setDetail(null);
     setErr("");
+    setConnectionError(false);
+    setTelegramDelivered(initialTelegram);
     setMinimized(false);
     terminalRef.current = false;
   }, [open, requestId]);
@@ -72,14 +77,17 @@ export default function PosApprovalWaitingModal({
       const next = payload.status || "pending";
       setStatus(next);
       setErr("");
+      setConnectionError(false);
+      setTelegramDelivered(Boolean(payload.telegram_message_id));
       if (TERMINAL.includes(next) && !terminalRef.current) {
         terminalRef.current = true;
         setMinimized(false);
         playApprovalDecision(kindFromApiPath(apiPath), requestId);
         onTerminalRef.current?.(payload);
       }
-    } catch (e) {
-      setErr(e.response?.data?.error || e.message || "تعذّر التحقق من الحالة");
+    } catch {
+      setConnectionError(true);
+      setErr("تعذّر الاتصال. الطلب لم يُرفض؛ ستظهر النتيجة عند عودة الاتصال.");
     }
   }, [open, requestId, apiPath]);
 
@@ -106,7 +114,7 @@ export default function PosApprovalWaitingModal({
         className="pos-waiting-chip"
         onClick={() => setMinimized(false)}
       >
-        بانتظار الموافقة — {titlePrefix} #{requestId}
+        {telegramDelivered === false ? "حُفظ بدون تيليجرام" : "بانتظار الموافقة"} — {titlePrefix} #{requestId}
       </button>
     );
     const slot = typeof document !== "undefined" ? document.getElementById(WAITING_CHIP_SLOT_ID) : null;
@@ -124,12 +132,17 @@ export default function PosApprovalWaitingModal({
           {statusLabels[status] || status}
         </p>
         {extra ? <p className="shift-modal-meta">{extra}</p> : null}
-        {status === "pending" ? (
-          <p className="shift-modal-hint">جاري انتظار موافقة المدير عبر التيليجرام أو لوحة الإدارة…</p>
+        {connectionError ? (
+          <p className="shift-modal-hint">{err}</p>
+        ) : status === "pending" && telegramDelivered === false ? (
+          <p className="shift-modal-hint">حُفظ الطلب، لكن رسالة تيليجرام لم تُرسل. يمكن الموافقة من لوحة الإدارة.</p>
+        ) : status === "pending" && telegramDelivered === true ? (
+          <p className="shift-modal-hint">بانتظار الموافقة عبر تيليجرام أو لوحة الإدارة…</p>
+        ) : status === "pending" ? (
+          <p className="shift-modal-hint">بانتظار نتيجة الموافقة…</p>
         ) : null}
-        {err ? <div className="shift-modal-err">{err}</div> : null}
         <div className="shift-modal-actions">
-          <button type="button" className="shift-modal-primary" onClick={onClose} disabled={!isTerminal && !err}>
+          <button type="button" className="shift-modal-primary" onClick={onClose} disabled={!isTerminal}>
             {isTerminal ? "إغلاق" : "—"}
           </button>
           {!isTerminal ? (

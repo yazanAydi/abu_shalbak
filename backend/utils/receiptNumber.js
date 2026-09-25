@@ -3,6 +3,8 @@
  * Format: INV-YYYY-000001 (branch-ready via storeId)
  */
 
+import { shopYmdFromDate } from "./shopTime.js";
+
 export function formatReceiptNumber(year, seq) {
   const y = Number(year);
   const s = Number(seq);
@@ -17,7 +19,7 @@ export function formatReceiptNumber(year, seq) {
  */
 export async function nextReceiptNumber(db, storeId = 1) {
   const sid = Number(storeId) || 1;
-  const year = new Date().getFullYear();
+  const year = Number(shopYmdFromDate(new Date()).slice(0, 4));
 
   await db.run(
     `INSERT INTO receipt_sequences (store_id, year, last_seq)

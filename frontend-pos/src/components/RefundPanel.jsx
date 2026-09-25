@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { todayISO } from "../utils/format";
+import { dateTime, todayISO } from "../utils/format";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import PosRefundWaitingModal from "./pos/PosRefundWaitingModal";
@@ -14,9 +14,9 @@ const PM_AR = { cash: "نقد", visa: "بطاقة", on_account: "ذمة" };
 const SALES_PAGE_SIZE = 50;
 
 function formatSaleTime(createdAt) {
-  if (!createdAt) return "";
-  const s = String(createdAt).replace("T", " ");
-  return s.length >= 16 ? s.slice(11, 16) : s.slice(0, 16);
+  const full = dateTime(createdAt);
+  if (!full || full === "—") return "";
+  return full.slice(-5);
 }
 
 function saleLabel(sale) {
@@ -399,7 +399,7 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
             </button>
             <div className="rf-detail">
               <p className="rf-meta">
-                فاتورة #{lookup.transaction_id} — بتاريخ {lookup.created_at} — الدفع الأصلي:{" "}
+                فاتورة #{lookup.transaction_id} — وقت البيع {dateTime(lookup.created_at)} — الدفع الأصلي:{" "}
                 {PM_AR[lookup.payment_method] || lookup.payment_method} — {ils(lookup.total)}
               </p>
               <table className="rf-table">

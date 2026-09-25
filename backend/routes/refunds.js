@@ -14,7 +14,7 @@ import {
   resolvePrintBranding,
 } from "../utils/storeBranding.js";
 import { getAppSettings } from "../utils/settings.js";
-import { nextCalendarYmd, shopTodayYmd } from "../utils/shopTime.js";
+import { shopDaySqlBounds, shopTodayYmd, sqlUtcTimestampExpr } from "../utils/shopTime.js";
 import { round2 } from "../utils/money.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { productSkuLookupValues } from "../utils/entityCodes.js";
@@ -146,13 +146,17 @@ export function createRefundsRouter(db) {
       WHERE COALESCE(t.status, 'completed') = 'completed'`;
     const params = [];
 
-    if (dateFrom) {
-      sql += " AND date(t.created_at) >= ?";
-      params.push(dateFrom);
-    }
-    if (dateTo) {
-      sql += " AND date(t.created_at) <= ?";
-      params.push(dateTo);
+    if (dateFrom || dateTo) {
+      const bounds = shopDaySqlBounds(dateFrom || "1970-01-01", dateTo || "2100-12-31");
+      const created = sqlUtcTimestampExpr("t.created_at");
+      if (dateFrom) {
+        sql += ` AND ${created} >= datetime(?)`;
+        params.push(bounds.startSql);
+      }
+      if (dateTo) {
+        sql += ` AND ${created} <= datetime(?)`;
+        params.push(bounds.endSql);
+      }
     }
     if (minAmount != null && !Number.isNaN(minAmount)) {
       sql += " AND t.total >= ?";
@@ -287,11 +291,13 @@ export function createRefundsRouter(db) {
         COALESCE(SUM(CASE WHEN status IN ('approved','pending') THEN total ELSE 0 END),0) AS amount
        FROM refunds`
     );
+    const todayBounds = shopDaySqlBounds(today);
     const todayRow = await db.get(
       `SELECT COUNT(*) AS count,
         COALESCE(SUM(CASE WHEN status IN ('approved','pending') THEN total ELSE 0 END),0) AS amount
-       FROM refunds WHERE created_at >= ? AND created_at < ?`,
-      [today, nextCalendarYmd(today)]
+       FROM refunds WHERE ${sqlUtcTimestampExpr("created_at")} >= datetime(?)
+         AND ${sqlUtcTimestampExpr("created_at")} <= datetime(?)`,
+      [todayBounds.startSql, todayBounds.endSql]
     );
     const pendingRow = await db.get(
       `SELECT COUNT(*) AS count, COALESCE(SUM(total_amount),0) AS amount FROM refund_requests WHERE status = 'pending'`
@@ -401,13 +407,20 @@ export function createRefundsRouter(db) {
       JOIN transactions t ON t.id = r.original_transaction_id
       WHERE 1=1`;
     const params = [];
-    if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
-      sql += " AND date(r.created_at) >= ?";
-      params.push(from);
-    }
-    if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
-      sql += " AND date(r.created_at) <= ?";
-      params.push(to);
+    if ((from && /^\d{4}-\d{2}-\d{2}$/.test(from)) || (to && /^\d{4}-\d{2}-\d{2}$/.test(to))) {
+      const bounds = shopDaySqlBounds(
+        /^\d{4}-\d{2}-\d{2}$/.test(from || "") ? from : "1970-01-01",
+        /^\d{4}-\d{2}-\d{2}$/.test(to || "") ? to : "2100-12-31"
+      );
+      const created = sqlUtcTimestampExpr("r.created_at");
+      if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
+        sql += ` AND ${created} >= datetime(?)`;
+        params.push(bounds.startSql);
+      }
+      if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
+        sql += ` AND ${created} <= datetime(?)`;
+        params.push(bounds.endSql);
+      }
     }
     if (statusQ && ["pending", "approved", "rejected"].includes(statusQ)) {
       sql += " AND r.status = ?";

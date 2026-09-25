@@ -642,7 +642,8 @@ a,
 .ui-date > input[type="text"] {
   width: 100%;
   box-sizing: border-box;
-  padding-inline-end: 2.4rem;
+  padding-left: 0.75rem;
+  padding-right: 2.6rem;
   direction: ltr;
   unicode-bidi: isolate;
   text-align: left;
@@ -682,7 +683,8 @@ a,
 }
 .ui-date__cal {
   position: absolute;
-  inset-inline-end: 0.45rem;
+  right: 0.45rem;
+  left: auto;
   top: 50%;
   transform: translateY(-50%);
   width: 1.35rem;
@@ -695,7 +697,8 @@ a,
 }
 .ui-date__picker {
   position: absolute;
-  inset-inline-end: 0;
+  right: 0;
+  left: auto;
   top: 0;
   width: 2.4rem;
   height: 100%;
@@ -1202,7 +1205,13 @@ a,
 }
 
 .ui-field--date {
-  max-width: 10.5rem;
+  min-width: 12.5rem;
+  max-width: 14rem;
+}
+
+.ui-field--grow {
+  flex: 1;
+  min-width: 16rem;
 }
 
 .ui-toolbar--compact {
