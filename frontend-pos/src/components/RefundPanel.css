@@ -141,6 +141,25 @@
   max-width: 220px;
 }
 
+.rf-quote {
+  margin: 0.65rem 0;
+  font-weight: 700;
+}
+
+.rf-history {
+  margin: 0.5rem 0 0.75rem;
+  font-size: 0.9rem;
+}
+
+.rf-history ul {
+  margin: 0.25rem 0 0;
+  padding: 0 1.1rem 0 0;
+}
+
+.rf-history li {
+  margin: 0.2rem 0;
+}
+
 .rf-meta {
   font-size: 0.85rem;
   color: var(--pos-text-muted);

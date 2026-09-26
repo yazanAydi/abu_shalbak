@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseItemsJson } from "../utils/cogs.js";
 import { requireOpenShiftForCashier, getOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
@@ -145,14 +146,15 @@ export async function applyApprovedRefundEffects(db, refund) {
         const shiftDay = await db.get("SELECT business_day FROM cashier_shifts WHERE id = ?", [refund.shift_id]);
         refundDay = shiftDay?.business_day || null;
       }
+      const itemRef = L.transaction_item_id ? ` بند #${L.transaction_item_id}` : "";
       await recordMovement(db, {
         productId: pid,
         movementType: "refund",
         quantity: q * conversion,
         refType: "refund",
         refId: refund.id,
-        notes: `استرجاع #${refund.id}`,
-        userId: refund.approved_by_id || null,
+        notes: `استرجاع #${refund.id} من فاتورة #${refund.original_transaction_id}${itemRef}`,
+        userId: refund.cashier_id || refund.approved_by_id || null,
         applyStock: true,
         businessDay: refundDay,
       });
@@ -215,7 +217,7 @@ export async function applyApprovedRefundEffects(db, refund) {
   }
 }
 
-async function buildRefundLines(db, transactionId, lines, excludeRequestId = null) {
+async function loadRefundSaleContext(db, transactionId) {
   const tx = await db.get("SELECT * FROM transactions WHERE id = ?", [transactionId]);
   if (!tx) {
     const err = new Error("البيع الأصلي غير موجود");
@@ -230,22 +232,31 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
     err.status = 500;
     throw err;
   }
+  if (!Array.isArray(origItems)) {
+    const err = new Error("الأصناف غير صالحة");
+    err.status = 500;
+    throw err;
+  }
   const storedItems = await db.all(
-    `SELECT product_id, product_unit_id, quantity, line_net
+    `SELECT id, product_id, product_unit_id, quantity, line_net, discount_at_sale
        FROM transaction_items WHERE transaction_id = ? ORDER BY id`,
     [transactionId]
   );
   const usePostedNet = postedLineNetMatchesSaleTotal(tx, storedItems);
   const postedByKey = new Map();
+  const storedById = new Map();
   for (const row of storedItems) {
+    storedById.set(Number(row.id), row);
     const key = `${Number(row.product_id)}:${Number(row.product_unit_id) || 0}`;
-    const prev = postedByKey.get(key) || { quantity: 0, line_net: 0 };
+    const prev = postedByKey.get(key) || { quantity: 0, line_net: 0, discount_at_sale: 0, ids: [] };
     prev.quantity += Number(row.quantity) || 0;
     prev.line_net = round2(prev.line_net + (Number(row.line_net) || 0));
+    prev.discount_at_sale = round2(prev.discount_at_sale + (Number(row.discount_at_sale) || 0));
+    prev.ids.push(Number(row.id));
     postedByKey.set(key, prev);
   }
   const origMap = new Map();
-  for (const it of origItems || []) {
+  for (const it of origItems) {
     const pid = Number(it.product_id);
     if (!pid) continue;
     const key = lineKey(it);
@@ -259,19 +270,93 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
       quantity: Number(it.quantity) || 0,
       price: round2(Number(it.price) || 0),
       posted_unit_price: postedUnit,
+      discount_at_sale: posted?.discount_at_sale ?? Number(it.discount_at_sale || it.discount || 0),
       conversion_to_base: Math.max(0.0001, Number(it.conversion_to_base) || 1),
+      transaction_item_ids: posted?.ids || [],
     });
   }
+  return { tx, origItems, origMap, storedById };
+}
+
+function storedRowForLine(ctx, pid, key, requestedItemId) {
+  if (requestedItemId) {
+    const row = ctx.storedById.get(Number(requestedItemId));
+    if (!row || Number(row.product_id) !== Number(pid)) {
+      const err = new Error("البند المطلوب ليس في البيع الأصلي");
+      err.status = 400;
+      throw err;
+    }
+    return row;
+  }
+  const ids = ctx.origMap.get(key)?.transaction_item_ids || [];
+  if (ids.length === 1) return ctx.storedById.get(ids[0]) || null;
+  return null;
+}
+
+function normalizeIdempotencyKey(value) {
+  if (value == null) return null;
+  const key = String(value).trim();
+  return key || null;
+}
+
+function refundPayloadFingerprint({ transactionId, lines, paymentMethod }) {
+  const norm = (lines || [])
+    .map((line) => ({
+      product_id: Number(line.product_id) || 0,
+      unit_id: Number(line.unit_id ?? line.product_unit_id ?? 0) || 0,
+      transaction_item_id: Number(line.transaction_item_id) || 0,
+      quantity: round2(Number(line.quantity) || 0),
+    }))
+    .sort(
+      (a, b) =>
+        a.transaction_item_id - b.transaction_item_id ||
+        a.product_id - b.product_id ||
+        a.unit_id - b.unit_id ||
+        a.quantity - b.quantity
+    );
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        transactionId: Number(transactionId),
+        paymentMethod,
+        lines: norm,
+      })
+    )
+    .digest("hex");
+}
+
+async function processingBusinessDay(db, shiftId, nowIso) {
+  if (shiftId) {
+    const shift = await db.get("SELECT business_day FROM cashier_shifts WHERE id = ?", [shiftId]);
+    if (shift?.business_day) return shift.business_day;
+  }
+  const settings = await getAppSettings(db);
+  return businessDayFromTimestamp(nowIso, settings.business_day_cutoff_hour);
+}
+
+async function buildRefundLines(db, transactionId, lines, excludeRequestId = null) {
+  const ctx = await loadRefundSaleContext(db, transactionId);
+  const { tx, origItems, origMap, storedById } = ctx;
   const refundedSoFar = await refundedQtyByProduct(db, transactionId, excludeRequestId);
   const refundLines = [];
   for (const L of lines) {
     const pid = Number(L.product_id);
-    const unitId = Number(L.unit_id ?? L.product_unit_id ?? 0);
+    let unitId = Number(L.unit_id ?? L.product_unit_id ?? 0);
+    const requestedItemId = Number(L.transaction_item_id) || 0;
     const want = Math.max(0, Number(L.quantity) || 0);
     if (!pid || want <= 0) {
       const err = new Error("سطر إرجاع غير صالح");
       err.status = 400;
       throw err;
+    }
+    if (requestedItemId) {
+      const pinned = storedById.get(requestedItemId);
+      if (!pinned || Number(pinned.product_id) !== pid) {
+        const err = new Error("البند المطلوب ليس في البيع الأصلي");
+        err.status = 400;
+        throw err;
+      }
+      if (!unitId) unitId = Number(pinned.product_unit_id) || 0;
     }
     const key = `${pid}:${unitId}`;
     const orig = origMap.get(key) || (unitId === 0 ? origMap.get(`${pid}:0`) : null);
@@ -293,8 +378,10 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
         throw err;
       }
       const unitPrice = refundedUnitPrice(v, tx, origItems);
+      const stored = storedRowForLine(ctx, pid, onlyKey, requestedItemId);
       refundLines.push({
         product_id: pid,
+        transaction_item_id: stored?.id ?? null,
         unit_id: Number(onlyKey.split(":")[1]) || null,
         barcode: v.barcode,
         name: v.name,
@@ -321,8 +408,10 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
       throw err;
     }
     const unitPrice = refundedUnitPrice(orig, tx, origItems);
+    const stored = storedRowForLine(ctx, pid, key, requestedItemId);
     refundLines.push({
       product_id: pid,
+      transaction_item_id: stored?.id ?? null,
       unit_id: unitId || null,
       barcode: orig.barcode,
       name: orig.name,
@@ -385,6 +474,7 @@ async function buildRefundLines(db, transactionId, lines, excludeRequestId = nul
     itemsJson: JSON.stringify(
       refundLines.map((x) => ({
         product_id: x.product_id,
+        transaction_item_id: x.transaction_item_id || null,
         unit_id: x.unit_id,
         barcode: x.barcode,
         name: x.name,
@@ -430,6 +520,10 @@ export async function resolveRefundTargetShift(db, { cashierId, paymentMethod, f
 
 export async function createRefundRequest(db, params) {
   const { cashierId, transactionId, lines, paymentMethod, reason, req } = params;
+  const idempotencyKey = normalizeIdempotencyKey(params.idempotencyKey);
+  const fingerprint = idempotencyKey
+    ? refundPayloadFingerprint({ transactionId, lines, paymentMethod })
+    : null;
 
   const { shift, error: shiftErr } = await requireOpenShiftForCashier(db, cashierId);
   if (shiftErr || !shift) {
@@ -442,6 +536,34 @@ export async function createRefundRequest(db, params) {
   assertRefundPaymentMethod(payments, paymentMethod);
 
   const created = await withTransaction(db, async () => {
+    if (idempotencyKey) {
+      const existing = await db.get("SELECT * FROM refund_requests WHERE idempotency_key = ?", [
+        idempotencyKey,
+      ]);
+      if (existing) {
+        if (Number(existing.cashier_id) !== Number(cashierId)) {
+          const err = new Error("مفتاح التكرار لا يخص هذا الصندوق");
+          err.status = 403;
+          err.code = "IDEMPOTENCY_OWNER_MISMATCH";
+          throw err;
+        }
+        if (existing.payload_fingerprint && existing.payload_fingerprint !== fingerprint) {
+          const err = new Error("تم استخدام مفتاح التكرار مع محتوى مختلف. لا تُعد الإرسال بمحتوى جديد تحت نفس المفتاح.");
+          err.status = 409;
+          err.code = "IDEMPOTENCY_KEY_REUSE";
+          throw err;
+        }
+        return {
+          replay: true,
+          request: existing,
+          request_id: existing.id,
+          total: existing.total_amount,
+          transactionId,
+          reason,
+        };
+      }
+    }
+
     const { subtotal, tax, total, roundingAdjustment, itemsJson } = await buildRefundLines(
       db,
       transactionId,
@@ -450,8 +572,8 @@ export async function createRefundRequest(db, params) {
     const ins = await db.run(
       `INSERT INTO refund_requests (
         transaction_id, cashier_id, shift_id, items_json, subtotal, tax, total_amount,
-        rounding_adjustment, payment_method, reason, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        rounding_adjustment, payment_method, reason, status, idempotency_key, payload_fingerprint
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
       [
         transactionId,
         cashierId,
@@ -463,6 +585,8 @@ export async function createRefundRequest(db, params) {
         roundingAdjustment,
         paymentMethod,
         reason != null ? String(reason) : null,
+        idempotencyKey,
+        fingerprint,
       ]
     );
     const requestId = ins.lastID;
@@ -485,6 +609,16 @@ export async function createRefundRequest(db, params) {
       reason,
     };
   });
+
+  if (created.replay) {
+    return {
+      request: created.request,
+      request_id: created.request_id,
+      replayed: true,
+      telegram: false,
+      message: "طلب الاسترجاع مسجّل مسبقاً بهذا المفتاح.",
+    };
+  }
 
   let telegramMessageId = null;
   if (isRefundTelegramConfigured()) {
@@ -513,6 +647,166 @@ export async function createRefundRequest(db, params) {
     telegram: isRefundTelegramConfigured() && !!telegramMessageId,
     message:
       "سُجّل طلب الاسترجاع قيد المراجعة. لن يُحدَّث المخزون أو النقد حتى موافقة المسؤول.",
+  };
+}
+
+function returnHistoryLines(itemsJson) {
+  const arr = parseItemsJson(itemsJson);
+  if (!Array.isArray(arr)) return [];
+  return arr.map((it) => ({
+    product_id: Number(it.product_id) || null,
+    transaction_item_id: Number(it.transaction_item_id) || null,
+    name: it.name || "",
+    quantity: Number(it.quantity) || 0,
+    unit_price: round2(Number(it.price) || 0),
+  }));
+}
+
+/** Completed sale by internal id or receipt number (INV-…). */
+export async function findCompletedSale(db, rawKey) {
+  const key = String(rawKey ?? "").trim();
+  if (!key) return null;
+  if (/^\d+$/.test(key)) {
+    const byId = await db.get(
+      `SELECT * FROM transactions WHERE id = ? AND COALESCE(status, 'completed') = 'completed'`,
+      [Number(key)]
+    );
+    if (byId) return byId;
+  }
+  return db.get(
+    `SELECT * FROM transactions WHERE receipt_number = ? AND COALESCE(status, 'completed') = 'completed'`,
+    [key]
+  );
+}
+
+/**
+ * Cashier-safe view of a sale for a return.
+ * Prices are the amounts actually charged. Cost, profit, and supplier fields are omitted.
+ */
+export async function describeReturnableSale(db, tx) {
+  const ctx = await loadRefundSaleContext(db, tx.id);
+  const already = await refundedQtyByProduct(db, tx.id);
+  const lines = ctx.origItems.map((it) => {
+    const pid = Number(it.product_id);
+    const key = lineKey(it);
+    const orig = ctx.origMap.get(key);
+    const sold = Number(it.quantity) || 0;
+    const ref = already.get(key) || 0;
+    const ids = orig?.transaction_item_ids || [];
+    return {
+      transaction_item_id: ids.length === 1 ? ids[0] : null,
+      product_id: pid,
+      unit_id: Number(it.unit_id ?? it.product_unit_id) || null,
+      unit_name: it.unit_name ?? null,
+      name: it.name,
+      price: orig ? refundedUnitPrice(orig, tx, ctx.origItems) : round2(Number(it.price) || 0),
+      list_price: round2(Number(it.price) || 0),
+      line_discount: round2(Number(orig?.discount_at_sale) || 0),
+      quantity_sold: sold,
+      quantity_already_refunded: ref,
+      quantity_returnable: Math.max(0, sold - ref),
+    };
+  });
+  const cashier = await db.get("SELECT username FROM users WHERE id = ?", [tx.cashier_id]);
+  const shift = tx.shift_id
+    ? await db.get("SELECT id, business_day, cashier_id FROM cashier_shifts WHERE id = ?", [tx.shift_id])
+    : null;
+  const payments = await loadSalePayments(db, tx.id);
+  const refundRows = await db.all(
+    `SELECT r.id, r.total, r.payment_method, r.items_json, r.created_at, r.business_day, r.shift_id,
+            r.cashier_id, u.username AS cashier_username
+       FROM refunds r
+       LEFT JOIN users u ON u.id = r.cashier_id
+      WHERE r.original_transaction_id = ? AND r.status = 'approved'
+      ORDER BY r.id`,
+    [tx.id]
+  );
+  const pendingRows = await db.all(
+    `SELECT rr.id, rr.total_amount, rr.payment_method, rr.items_json, rr.created_at, rr.shift_id,
+            rr.cashier_id, u.username AS cashier_username, s.business_day
+       FROM refund_requests rr
+       LEFT JOIN users u ON u.id = rr.cashier_id
+       LEFT JOIN cashier_shifts s ON s.id = rr.shift_id
+      WHERE rr.transaction_id = ? AND rr.status = 'pending'
+      ORDER BY rr.id`,
+    [tx.id]
+  );
+  const returns = [
+    ...refundRows.map((row) => ({
+      kind: "refund",
+      id: row.id,
+      amount: round2(Number(row.total) || 0),
+      refund_method: row.payment_method,
+      created_at: row.created_at,
+      business_day: row.business_day || null,
+      shift_id: row.shift_id ?? null,
+      cashier_username: row.cashier_username || "",
+      lines: returnHistoryLines(row.items_json),
+    })),
+    ...pendingRows.map((row) => ({
+      kind: "pending",
+      id: row.id,
+      amount: round2(Number(row.total_amount) || 0),
+      refund_method: row.payment_method,
+      created_at: row.created_at,
+      business_day: row.business_day || null,
+      shift_id: row.shift_id ?? null,
+      cashier_username: row.cashier_username || "",
+      lines: returnHistoryLines(row.items_json),
+    })),
+  ];
+  return {
+    transaction_id: tx.id,
+    receipt_number: tx.receipt_number || null,
+    created_at: tx.created_at,
+    business_day: tx.business_day || shift?.business_day || null,
+    shift_id: tx.shift_id ?? null,
+    cashier_username: cashier?.username || "",
+    payment_method: tx.payment_method,
+    payments: payments.map((p) => ({
+      method: p.method,
+      amount: round2(Number(p.amount) || 0),
+    })),
+    has_on_account: payments.some((p) => p.method === "on_account"),
+    discount: round2(Number(tx.discount) || 0),
+    subtotal: tx.subtotal,
+    total: tx.total,
+    rounding_adjustment:
+      tx.rounding_adjustment != null && tx.rounding_adjustment !== ""
+        ? round2(Number(tx.rounding_adjustment) || 0)
+        : 0,
+    lines,
+    returns,
+  };
+}
+
+/** Quote the refund payable without writing a request. */
+export async function previewRefundRequest(db, params) {
+  const { cashierId, transactionId, lines, paymentMethod } = params;
+  const { shift, error: shiftErr } = await requireOpenShiftForCashier(db, cashierId);
+  if (shiftErr || !shift) {
+    const err = new Error(shiftErr || "لا توجد وردية مفتوحة");
+    err.status = 400;
+    throw err;
+  }
+  const payments = await loadSalePayments(db, transactionId);
+  assertRefundPaymentMethod(payments, paymentMethod);
+  const built = await buildRefundLines(db, transactionId, lines);
+  return {
+    transaction_id: Number(transactionId),
+    subtotal: built.subtotal,
+    tax: built.tax,
+    total: built.total,
+    rounding_adjustment: built.roundingAdjustment,
+    lines: built.refundLines.map((line) => ({
+      product_id: line.product_id,
+      transaction_item_id: line.transaction_item_id || null,
+      unit_id: line.unit_id,
+      name: line.name,
+      quantity: line.quantity,
+      price: line.price,
+      line_total: line.lineTotal,
+    })),
   };
 }
 
@@ -672,22 +966,17 @@ export async function approveRefundRequest(
 
     const locked = await lockOriginatingShift(db, request.shift_id);
     let targetShiftId;
-    let refundBusinessDay = null;
     const now = new Date().toISOString();
     if (locked.mode === "pending_count") {
       targetShiftId = locked.shift.id;
-      refundBusinessDay = locked.shift.business_day || null;
     } else {
       targetShiftId = await resolveRefundTargetShift(db, {
         cashierId: request.cashier_id,
         paymentMethod: request.payment_method,
         fallbackShiftId: request.shift_id,
       });
-      if (targetShiftId == null) {
-        const settings = await getAppSettings(db);
-        refundBusinessDay = businessDayFromTimestamp(now, settings.business_day_cutoff_hour);
-      }
     }
+    const refundBusinessDay = await processingBusinessDay(db, targetShiftId, now);
     const origTx = await db.get(
       "SELECT customer_id FROM transactions WHERE id = ?",
       [request.transaction_id]

@@ -2,11 +2,11 @@ import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { parseItemsJson } from "../utils/cogs.js";
 import {
-  refundedQtyByProduct,
-  refundLineKey,
   applyApprovedRefundEffects,
   createRefundRequest,
   resolveRefundTargetShift,
+  findCompletedSale,
+  describeReturnableSale,
 } from "../services/refundRequestService.js";
 import { buildSaleSummaries } from "../utils/saleSummary.js";
 import {
@@ -20,7 +20,6 @@ import { withTransaction } from "../utils/dbTx.js";
 import { productSkuLookupValues } from "../utils/entityCodes.js";
 import { HttpError } from "../utils/httpError.js";
 import { listLimitSql } from "../utils/listQuery.js";
-import { loadSalePayments } from "../utils/salePayments.js";
 import { partyBalanceForRefund } from "../utils/partyBalanceAroundMove.js";
 
 function refundRoundingLine(refund) {
@@ -128,6 +127,12 @@ export function createRefundsRouter(db) {
         : typeof req.query.barcode === "string" && req.query.barcode.trim()
           ? req.query.barcode.trim()
           : null;
+    const receiptQuery =
+      typeof req.query.receipt === "string" && req.query.receipt.trim()
+        ? req.query.receipt.trim()
+        : typeof req.query.invoice === "string" && req.query.invoice.trim()
+          ? req.query.invoice.trim()
+          : null;
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
 
     const hasFilter =
@@ -136,7 +141,8 @@ export function createRefundsRouter(db) {
       (minAmount != null && !Number.isNaN(minAmount)) ||
       (maxAmount != null && !Number.isNaN(maxAmount)) ||
       paymentMethod ||
-      productRaw;
+      productRaw ||
+      receiptQuery;
     if (!hasFilter) {
       return res.status(400).json({ error: "أدخل على الأقل فلتراً واحداً للبحث" });
     }
@@ -170,6 +176,15 @@ export function createRefundsRouter(db) {
       sql += " AND t.payment_method = ?";
       params.push(paymentMethod);
     }
+    if (receiptQuery) {
+      if (/^\d+$/.test(receiptQuery)) {
+        sql += " AND (t.id = ? OR t.receipt_number = ?)";
+        params.push(Number(receiptQuery), receiptQuery);
+      } else {
+        sql += " AND t.receipt_number = ?";
+        params.push(receiptQuery);
+      }
+    }
     if (productRaw) {
       const like = `%${productRaw.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
       const skuValues = productSkuLookupValues(productRaw);
@@ -197,49 +212,18 @@ export function createRefundsRouter(db) {
     res.json({ sales });
   });
 
-  router.get("/lookup/:transactionId", requireAuth, requireRefundLookup, async (req, res) => {
-    const tid = Number(req.params.transactionId);
-    if (!tid) return res.status(400).json({ error: "رقم العملية غير صالح" });
-    const tx = await db.get("SELECT * FROM transactions WHERE id = ?", [tid]);
-    if (!tx) return res.status(404).json({ error: "العملية غير موجودة" });
-    let items;
+  router.get("/lookup/:transactionId", requireAuth, requireRefundLookup, async (req, res, next) => {
+    const key = String(req.params.transactionId || "").trim();
+    if (!key) return res.status(400).json({ error: "رقم العملية غير صالح" });
     try {
-      items = JSON.parse(tx.items_json);
-    } catch {
-      return res.status(500).json({ error: "بيانات البيع غير صالحة" });
+      const tx = await findCompletedSale(db, key);
+      if (!tx) return res.status(404).json({ error: "العملية غير موجودة" });
+      const view = await describeReturnableSale(db, tx);
+      res.json(view);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message });
+      next(e);
     }
-    if (!Array.isArray(items)) return res.status(500).json({ error: "الأصناف غير صالحة" });
-    const already = await refundedQtyByProduct(db, tid);
-    const lines = items.map((it) => {
-      const pid = Number(it.product_id);
-      const key = refundLineKey(it);
-      const sold = Number(it.quantity) || 0;
-      const ref = already.get(key) || already.get(pid) || 0;
-      return {
-        product_id: pid,
-        unit_id: Number(it.unit_id ?? it.product_unit_id) || null,
-        unit_name: it.unit_name ?? null,
-        conversion_to_base: Math.max(0.0001, Number(it.conversion_to_base) || 1),
-        name: it.name,
-        price: Number(it.price) || 0,
-        quantity_sold: sold,
-        quantity_already_refunded: ref,
-        quantity_returnable: Math.max(0, sold - ref),
-      };
-    });
-    const cashier = await db.get("SELECT username FROM users WHERE id = ?", [tx.cashier_id]);
-    const payments = await loadSalePayments(db, tid);
-    const has_on_account = payments.some((l) => l.method === "on_account");
-    res.json({
-      transaction_id: tid,
-      created_at: tx.created_at,
-      payment_method: tx.payment_method,
-      has_on_account,
-      subtotal: tx.subtotal,
-      total: tx.total,
-      cashier_username: cashier?.username || "",
-      lines,
-    });
   });
 
   router.post("/", requireAuth, requirePosAccess, async (req, res, next) => {
@@ -262,9 +246,10 @@ export function createRefundsRouter(db) {
         lines,
         paymentMethod: payment_method,
         reason: reason != null ? String(reason) : null,
+        idempotencyKey: req.body?.idempotency_key,
         req,
       });
-      res.status(201).json({
+      res.status(result.replayed ? 200 : 201).json({
         success: true,
         request_id: result.request_id,
         request: result.request,

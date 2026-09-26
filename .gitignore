@@ -39,6 +39,13 @@ node_modules/
 /tmp/
 /dist/
 
+# ── Playwright smoke output (disposable) ────────────────
+/test-results/
+/playwright-report/
+/e2e/test-results/
+/e2e/playwright-report/
+/e2e/.runtime.json
+
 # ── Logs ────────────────────────────────────────────────
 *.log
 npm-debug.log*

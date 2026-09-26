@@ -2109,12 +2109,18 @@ async function migrateRefundRequestSyncColumns(db) {
     ["decision_source", "TEXT"],
     ["cashier_notified_at", "TEXT"],
     ["cashier_acknowledged_at", "TEXT"],
+    ["idempotency_key", "TEXT"],
+    ["payload_fingerprint", "TEXT"],
   ];
   for (const [col, type] of cols) {
     if (!(await tableHasColumn(db, "refund_requests", col))) {
       await db.run(`ALTER TABLE refund_requests ADD COLUMN ${col} ${type}`);
     }
   }
+  await db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_refund_requests_idempotency_key
+     ON refund_requests(idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
 }
 
 async function migrateLegacyPendingRefundsToRequests(db) {

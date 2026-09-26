@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { dateTime, todayISO } from "../utils/format";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { dateOnly, dateTime, todayISO } from "../utils/format";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import PosRefundWaitingModal from "./pos/PosRefundWaitingModal";
@@ -27,6 +27,15 @@ function todayIsoDate() {
   return todayISO();
 }
 
+function lineKey(line) {
+  if (line?.transaction_item_id) return `item:${line.transaction_item_id}`;
+  return `${line.product_id}:${line.unit_id || 0}`;
+}
+
+function newIdempotencyKey() {
+  return `ret-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function SaleResultsList({ sales, loading, onSelect, loadingLookup }) {
   if (loading) {
     return <p className="rf-muted">جاري التحميل…</p>;
@@ -37,13 +46,13 @@ function SaleResultsList({ sales, loading, onSelect, loadingLookup }) {
   return (
     <ul className="rf-sale-list">
       {sales.map((sale) => {
-        const disabled = !sale.returnable;
+        const fullyRefunded = !sale.returnable;
         return (
           <li key={sale.transaction_id}>
             <button
               type="button"
-              className={`rf-sale-row${disabled ? " rf-sale-row--disabled" : ""}`}
-              disabled={disabled || loadingLookup}
+              className={`rf-sale-row${fullyRefunded ? " rf-sale-row--disabled" : ""}`}
+              disabled={loadingLookup}
               onClick={() => onSelect(sale.transaction_id)}
             >
               <div className="rf-sale-row-top">
@@ -55,7 +64,7 @@ function SaleResultsList({ sales, loading, onSelect, loadingLookup }) {
                 {sale.item_count > 0 ? <span>{sale.item_count} صنف</span> : null}
               </div>
               {sale.items_preview ? <p className="rf-sale-preview">{sale.items_preview}</p> : null}
-              {disabled ? <span className="rf-sale-badge">مسترجع بالكامل</span> : null}
+              {fullyRefunded ? <span className="rf-sale-badge">مسترجع بالكامل</span> : null}
               <span className="rf-sale-time">{formatSaleTime(sale.created_at)}</span>
             </button>
           </li>
@@ -83,8 +92,12 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
   const [searchMinAmount, setSearchMinAmount] = useState("");
   const [searchMaxAmount, setSearchMaxAmount] = useState("");
   const [searchProduct, setSearchProduct] = useState("");
+  const [searchReceipt, setSearchReceipt] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [quote, setQuote] = useState(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const retryRef = useRef({ key: "", body: "" });
 
   const loadSales = useCallback(async () => {
     if (!shiftReady || !shiftId) {
@@ -118,8 +131,8 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
   }, [loadSales]);
 
   const loadLookup = useCallback(async (transactionId) => {
-    const id = Number(transactionId);
-    if (!id) {
+    const key = String(transactionId ?? "").trim();
+    if (!key) {
       setErr("رقم الفاتورة غير صالح");
       return;
     }
@@ -130,16 +143,18 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
     setErr("");
     setLoading(true);
     try {
-      const { data } = await api.get(`/api/refunds/lookup/${id}`, {
+      const { data } = await api.get(`/api/refunds/lookup/${encodeURIComponent(key)}`, {
         headers: getAuthHeaders(),
       });
       const payload = data?.data ?? data;
       setLookup(payload);
       const q = {};
       for (const L of payload.lines || []) {
-        q[L.product_id] = 0;
+        q[lineKey(L)] = 0;
       }
       setQtyByPid(q);
+      setQuote(null);
+      retryRef.current = { key: "", body: "" };
       setPm(payload.has_on_account ? "on_account" : "cash");
       setView("detail");
     } catch (e) {
@@ -158,24 +173,36 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
     if (!lookup) return;
     const lines = [];
     for (const L of lookup.lines) {
-      const q = Number(qtyByPid[L.product_id]) || 0;
-      if (q > 0) lines.push({ product_id: L.product_id, quantity: q });
+      const q = Number(qtyByPid[lineKey(L)]) || 0;
+      if (q > 0) {
+        lines.push({
+          product_id: L.product_id,
+          quantity: q,
+          unit_id: L.unit_id || undefined,
+          transaction_item_id: L.transaction_item_id || undefined,
+        });
+      }
     }
     if (lines.length === 0) {
       setErr("حدد كمية للإرجاع");
       return;
+    }
+    const bodyObj = {
+      original_transaction_id: lookup.transaction_id,
+      lines,
+      reason: reason || null,
+      payment_method: pm,
+    };
+    const bodyText = JSON.stringify(bodyObj);
+    if (retryRef.current.body !== bodyText) {
+      retryRef.current = { key: newIdempotencyKey(), body: bodyText };
     }
     setErr("");
     setLoading(true);
     try {
       const { data } = await api.post(
         "/api/refund-requests",
-        {
-          original_transaction_id: lookup.transaction_id,
-          lines,
-          reason: reason || null,
-          payment_method: pm,
-        },
+        { ...bodyObj, idempotency_key: retryRef.current.key },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       const payload = data?.data ?? data;
@@ -185,6 +212,7 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
       setReason("");
       setView("list");
       setWaitingRequestId(requestId);
+      retryRef.current = { key: "", body: "" };
       loadSales();
     } catch (e) {
       setErr(e.response?.data?.error || e.message || "فشل");
@@ -217,8 +245,13 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
     setSearchLoading(true);
     try {
       const params = new URLSearchParams();
-      if (searchDateFrom) params.set("date_from", searchDateFrom);
-      if (searchDateTo) params.set("date_to", searchDateTo);
+      const receipt = String(searchReceipt).trim();
+      if (receipt) {
+        params.set("receipt", receipt);
+      } else {
+        if (searchDateFrom) params.set("date_from", searchDateFrom);
+        if (searchDateTo) params.set("date_to", searchDateTo);
+      }
       if (String(searchMinAmount).trim() !== "") params.set("min_amount", String(searchMinAmount).trim());
       if (String(searchMaxAmount).trim() !== "") params.set("max_amount", String(searchMaxAmount).trim());
       if (String(searchProduct).trim() !== "") params.set("product", String(searchProduct).trim());
@@ -234,6 +267,60 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
       setSearchLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (view !== "detail" || !lookup) {
+      setQuote(null);
+      return undefined;
+    }
+    const lines = [];
+    for (const L of lookup.lines || []) {
+      const q = Number(qtyByPid[lineKey(L)]) || 0;
+      if (q > 0) {
+        lines.push({
+          product_id: L.product_id,
+          quantity: q,
+          unit_id: L.unit_id || undefined,
+          transaction_item_id: L.transaction_item_id || undefined,
+        });
+      }
+    }
+    if (lines.length === 0) {
+      setQuote(null);
+      setQuoteLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setQuoteLoading(true);
+      try {
+        const { data } = await api.post(
+          "/api/refund-requests/preview",
+          {
+            original_transaction_id: lookup.transaction_id,
+            lines,
+            payment_method: pm,
+          },
+          { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+        );
+        if (!cancelled) {
+          setQuote(data?.data ?? data);
+          setErr("");
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setQuote(null);
+          setErr(e.response?.data?.error || e.message || "تعذّر حساب مبلغ الاسترجاع");
+        }
+      } finally {
+        if (!cancelled) setQuoteLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [view, lookup, qtyByPid, pm]);
 
   return (
     <>
@@ -335,6 +422,14 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                 </label>
               </div>
               <label className="rf-reason">
+                رقم الإيصال أو الفاتورة
+                <input
+                  value={searchReceipt}
+                  onChange={(e) => setSearchReceipt(e.target.value)}
+                  placeholder="INV-2026-000001 أو رقم العملية"
+                />
+              </label>
+              <label className="rf-reason">
                 اسم الصنف أو الباركود
                 <input
                   value={searchProduct}
@@ -362,9 +457,8 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
             <div className="rf-row">
               <input
                 className="rf-input"
-                type="number"
-                min="1"
-                placeholder="رقم الفاتورة"
+                type="text"
+                placeholder="INV-… أو رقم العملية"
                 value={tid}
                 onChange={(e) => setTid(e.target.value)}
               />
@@ -399,8 +493,12 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
             </button>
             <div className="rf-detail">
               <p className="rf-meta">
-                فاتورة #{lookup.transaction_id} — وقت البيع {dateTime(lookup.created_at)} — الدفع الأصلي:{" "}
+                {lookup.receipt_number || `فاتورة #${lookup.transaction_id}`} — وقت البيع{" "}
+                {dateTime(lookup.created_at)}
+                {lookup.business_day ? ` — يوم العمل ${lookup.business_day}` : ""} — الوردية الأصلية #
+                {lookup.shift_id || "—"} — الكاشير {lookup.cashier_username || "—"} — الدفع الأصلي:{" "}
                 {PM_AR[lookup.payment_method] || lookup.payment_method} — {ils(lookup.total)}
+                {Number(lookup.discount) > 0 ? ` — خصم الفاتورة ${ils(lookup.discount)}` : ""}
               </p>
               <table className="rf-table">
                 <thead>
@@ -414,10 +512,23 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                   </tr>
                 </thead>
                 <tbody>
-                  {(lookup.lines || []).map((L) => (
-                    <tr key={L.product_id}>
-                      <td>{L.name}</td>
-                      <td>{ils(L.price)}</td>
+                  {(lookup.lines || []).map((L) => {
+                    const key = lineKey(L);
+                    const pricedApart =
+                      L.list_price != null && Number(L.list_price) !== Number(L.price);
+                    return (
+                    <tr key={key}>
+                      <td>
+                        {L.name}
+                        {L.unit_name ? ` (${L.unit_name})` : ""}
+                        {Number(L.line_discount) > 0 ? (
+                          <div className="rf-muted">خصم السطر {ils(L.line_discount)}</div>
+                        ) : null}
+                      </td>
+                      <td>
+                        {ils(L.price)}
+                        {pricedApart ? <div className="rf-muted">قبل الخصم {ils(L.list_price)}</div> : null}
+                      </td>
                       <td>{L.quantity_sold}</td>
                       <td>{L.quantity_already_refunded}</td>
                       <td>{L.quantity_returnable}</td>
@@ -425,11 +536,11 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                         <QtyStepper
                           min={0}
                           max={L.quantity_returnable}
-                          value={qtyByPid[L.product_id] ?? 0}
+                          value={qtyByPid[key] ?? 0}
                           onChange={(e) =>
                             setQtyByPid((p) => ({
                               ...p,
-                              [L.product_id]: Math.min(
+                              [key]: Math.min(
                                 L.quantity_returnable,
                                 Math.max(0, Number(e.target.value) || 0)
                               ),
@@ -439,7 +550,8 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                         />
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
               <div className="rf-row">
@@ -455,6 +567,33 @@ export default function RefundPanel({ shiftReady = true, shiftId = null, onRefun
                   </label>
                 )}
               </div>
+              <p className="rf-quote">
+                {quoteLoading
+                  ? "جاري حساب مبلغ الاسترجاع…"
+                  : quote
+                    ? `المبلغ المسترد: ${ils(quote.total)} بطريقة ${PM_AR[pm] || pm}`
+                    : "المبلغ المسترد: ₪0.00"}
+              </p>
+              {Array.isArray(lookup.returns) && lookup.returns.length > 0 ? (
+                <div className="rf-history">
+                  <p className="rf-meta">سجل الاسترجاع</p>
+                  <ul>
+                    {lookup.returns.map((row) => (
+                      <li key={`${row.kind}-${row.id}`}>
+                        {row.kind === "pending" ? `طلب #${row.id} قيد المراجعة` : `استرجاع #${row.id}`}
+                        {" — "}
+                        {(row.lines || []).map((line) => `${line.name} ×${line.quantity}`).join("، ")}
+                        {" — "}
+                        {ils(row.amount)} — {PM_AR[row.refund_method] || row.refund_method}
+                        {" — "}
+                        {dateTime(row.created_at)} — {row.cashier_username || "—"} — وردية #
+                        {row.shift_id || "—"}
+                        {row.business_day ? ` — يوم العمل ${dateOnly(row.business_day)}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               <label className="rf-reason">
                 السبب (اختياري)
                 <input value={reason} onChange={(e) => setReason(e.target.value)} />

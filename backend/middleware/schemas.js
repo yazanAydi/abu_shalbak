@@ -58,22 +58,32 @@ export const suspendedSaleCreateSchema = z.object({
   items: z.array(checkoutItemSchema).min(1),
 });
 
-export const refundItemSchema = z.object({
-  product_id: z.number().int().positive(),
-  quantity: z.number().positive(),
+const refundLineSchema = z.object({
+  product_id: z.coerce.number().int().positive(),
+  quantity: z.coerce.number().positive(),
+  unit_id: z.coerce.number().int().nonnegative().optional().nullable(),
+  product_unit_id: z.coerce.number().int().nonnegative().optional().nullable(),
+  transaction_item_id: z.coerce.number().int().positive().optional().nullable(),
 });
+
+export const refundItemSchema = refundLineSchema;
+
+const optionalIdempotencyKey = z.preprocess(
+  (v) => (v == null || String(v).trim() === "" ? undefined : String(v).trim()),
+  z.string().min(8).max(100).optional()
+);
 
 export const refundRequestCreateSchema = z.object({
   original_transaction_id: z.coerce.number().int().positive(),
-  lines: z
-    .array(
-      z.object({
-        product_id: z.coerce.number().int().positive(),
-        quantity: z.coerce.number().positive(),
-      })
-    )
-    .min(1),
+  lines: z.array(refundLineSchema).min(1),
   reason: z.string().max(500).optional().nullable(),
+  payment_method: z.enum(["cash", "visa", "on_account"]),
+  idempotency_key: optionalIdempotencyKey,
+});
+
+export const refundRequestPreviewSchema = z.object({
+  original_transaction_id: z.coerce.number().int().positive(),
+  lines: z.array(refundLineSchema).min(1),
   payment_method: z.enum(["cash", "visa", "on_account"]),
 });
 

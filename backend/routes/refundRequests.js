@@ -2,9 +2,10 @@ import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import { validate } from "../middleware/validate.js";
-import { handoverFollowUpSchema, refundRequestCreateSchema, refundRequestReviewSchema } from "../middleware/schemas.js";
+import { handoverFollowUpSchema, refundRequestCreateSchema, refundRequestPreviewSchema, refundRequestReviewSchema } from "../middleware/schemas.js";
 import {
   createRefundRequest,
+  previewRefundRequest,
   getRefundRequestById,
   listPendingRefundRequests,
   listRefundRequestHistory,
@@ -38,9 +39,26 @@ export function createRefundRequestsRouter(db) {
         lines: body.lines,
         paymentMethod: body.payment_method,
         reason: body.reason,
+        idempotencyKey: body.idempotency_key,
         req,
       });
-      res.status(201).json(result);
+      res.status(result.replayed ? 200 : 201).json(result);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, max_returnable: e.max_returnable, code: e.code });
+      next(e);
+    }
+  });
+
+  router.post("/preview", requireAuth, requirePosAccess, validate(refundRequestPreviewSchema), async (req, res, next) => {
+    try {
+      const body = req.body;
+      const quote = await previewRefundRequest(db, {
+        cashierId: req.user.id,
+        transactionId: body.original_transaction_id,
+        lines: body.lines,
+        paymentMethod: body.payment_method,
+      });
+      res.json(quote);
     } catch (e) {
       if (e.status) return res.status(e.status).json({ error: e.message, max_returnable: e.max_returnable, code: e.code });
       next(e);

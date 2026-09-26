@@ -30,9 +30,11 @@
     "production:start": "cross-env NODE_ENV=production PORT=3000 node backend/server.js",
     "start:prod": "npm run build:admin && npm run copy:builds && npm run start --prefix backend",
     "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend && npm install --prefix frontend-pos",
-    "package:cashier-print": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/package-cashier-print-helper.ps1"
+    "package:cashier-print": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/package-cashier-print-helper.ps1",
+    "test:e2e:return": "node e2e/run-return-smoke.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3"
   }
