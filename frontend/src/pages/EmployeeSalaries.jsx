@@ -36,6 +36,7 @@ import {
   useToast,
 } from "../components/ui";
 import { apiErrorMessage } from "../utils/apiError";
+import "./EmployeeSalaries.css";
 
 function lastOfMonth(ymd) {
   if (!ymd) return todayYmd();
@@ -144,15 +145,29 @@ export default function EmployeeSalaries() {
 
   useEffect(() => {
     if (!preview || payAmount !== "") return;
+    const net = preview.summary?.net_payable;
+    if (net != null && Number(net) > 0) {
+      setPayAmount(String(net));
+      return;
+    }
     const estimated = estimatedCashierPay(preview.hours, preview.live_hourly_rate);
     if (estimated != null && estimated > 0) {
       setPayAmount(String(estimated));
     }
   }, [preview, payAmount]);
 
+  const summary = preview?.summary;
+  const deductionAdvances = useMemo(
+    () => preview?.summary?.advances || preview?.advances || [],
+    [preview]
+  );
+  const deductionDebts = useMemo(
+    () => preview?.summary?.debts || preview?.debts || [],
+    [preview]
+  );
   const allocation = useMemo(
-    () => allocatePayrollDeductions(payAmount, preview?.advances || [], preview?.debts || []),
-    [payAmount, preview]
+    () => allocatePayrollDeductions(payAmount, deductionAdvances, deductionDebts),
+    [payAmount, deductionAdvances, deductionDebts]
   );
   const hours = preview?.hours;
   const isCashier = preview?.kind === "cashier";
@@ -283,7 +298,119 @@ export default function EmployeeSalaries() {
         <Link to="/employee-statements">كشف حساب الموظفين</Link>
         {" · "}
         <Link to="/cashier-payroll">أجور الساعة والدوام</Link>
+        {" · "}
+        <Link to="/device-attendance">جهاز البصمة</Link>
       </p>
+      {employees.find((emp) => String(emp.id) === String(employeeId))?.employment_duration ? (
+        <p className="ui-text-muted">
+          مدة العمل: {employees.find((emp) => String(emp.id) === String(employeeId)).employment_duration}
+        </p>
+      ) : null}
+
+      {preview?.summary ? (
+        <Card className="ui-mt-md">
+          <CardBody>
+            <h3 className="ui-card__title">ملخص الراتب للفترة</h3>
+            <div className="ui-stat-grid">
+              <StatCard
+                label={summary.basis === "daily" ? "الأيام المستحقة" : "الساعات المستحقة"}
+                value={
+                  summary.basis === "daily"
+                    ? summary.payable_days == null
+                      ? "—"
+                      : String(summary.payable_days)
+                    : formatHoursAr(summary.payable_hours)
+                }
+                icon="shifts"
+              />
+              <StatCard
+                label={summary.rate_unit === "day" ? "الأجر اليومي" : "أجر الساعة"}
+                value={summary.rate != null ? ils(summary.rate) : "—"}
+                icon="finance"
+              />
+              <StatCard
+                label="الراتب المستحق قبل الخصم"
+                value={summary.gross_known ? ils(summary.gross_salary) : "—"}
+                icon="finance"
+              />
+              <StatCard label="إجمالي السلف" value={ils(summary.advances_total || 0)} icon="finance" tone="orange" />
+              <StatCard label="إجمالي الذمم" value={ils(summary.debts_total || 0)} icon="alert" tone="orange" />
+            </div>
+            <div className="payroll-net">
+              <div className="payroll-net__label">صافي المستحق للدفع</div>
+              <div className="payroll-net__value num">
+                {summary.net_payable == null ? "—" : ils(summary.net_payable)}
+              </div>
+            </div>
+            {summary.note ? <p className="ui-text-muted ui-mt-md">{summary.note}</p> : null}
+            {summary.pos_hours != null && summary.pay_from_attendance_hours ? (
+              <p className="ui-text-muted">
+                مدة وردية نقطة البيع: {formatHoursAr(summary.pos_hours)} — لا تُضاف إلى الراتب.
+              </p>
+            ) : null}
+            {(summary.warnings || []).length ? (
+              <Notice tone="warning">{summary.warnings.join(" · ")}</Notice>
+            ) : null}
+            <DataTable
+              columns={
+                summary.basis === "daily"
+                  ? [
+                      { key: "date", header: "التاريخ", render: (row) => row.date || "—" },
+                      {
+                        key: "in_at",
+                        header: "حضور",
+                        render: (row) => (row.in_at ? formatDateTimeAr(row.in_at) : "—"),
+                      },
+                      {
+                        key: "out_at",
+                        header: "انصراف",
+                        render: (row) => (row.out_at ? formatDateTimeAr(row.out_at) : "—"),
+                      },
+                      {
+                        key: "payable",
+                        header: "اليوم المستحق",
+                        render: () => "غير محتسب تلقائياً",
+                      },
+                      { key: "amount", header: "المبلغ اليومي", render: () => "—" },
+                    ]
+                  : [
+                      { key: "date", header: "التاريخ", render: (row) => row.date || "—" },
+                      {
+                        key: "in_at",
+                        header: "حضور",
+                        render: (row) => (row.in_at ? formatDateTimeAr(row.in_at) : "—"),
+                      },
+                      {
+                        key: "out_at",
+                        header: "انصراف",
+                        render: (row) => (row.out_at ? formatDateTimeAr(row.out_at) : "—"),
+                      },
+                      { key: "hours", header: "الساعات", render: (row) => formatHoursAr(row.hours) },
+                      {
+                        key: "amount",
+                        header: "المبلغ",
+                        render: (row) => (row.amount == null ? "—" : ils(row.amount)),
+                      },
+                      {
+                        key: "status",
+                        header: "الحالة",
+                        render: (row) =>
+                          row.status === "closed"
+                            ? "مغلقة"
+                            : row.status === "open"
+                              ? "مفتوحة"
+                              : row.status === "missing_checkout"
+                                ? "بلا انصراف"
+                                : row.status || "—",
+                      },
+                    ]
+              }
+              rows={summary.lines || []}
+              empty="لا توجد بنود أجر في الفترة"
+            />
+          </CardBody>
+        </Card>
+      ) : null}
 
       {preview ? (
         <>
@@ -305,6 +432,21 @@ export default function EmployeeSalaries() {
                     ? ` — المؤهلة للترحيل: ${formatHoursAr(eligibleHoursOf(hours))}`
                     : ""}
                 </p>
+                {hours.attendance_authoritative ? (
+                  <>
+                    <p>
+                      ساعات الحضور المحتسبة للراتب: <strong className="num">{formatHoursAr(hours.attendance_hours)}</strong>
+                      {hours.shift_hours ? ` — ساعات الورديات قبل الاعتماد: ${formatHoursAr(hours.shift_hours)}` : ""}
+                    </p>
+                    <p>
+                      مدة وردية نقطة البيع: <strong className="num">{formatHoursAr(hours.pos_hours)}</strong>
+                      <span className="ui-text-muted"> — لا تُضاف إلى الراتب بعد {hours.cutover}</span>
+                    </p>
+                    {(hours.warning_labels || []).length ? (
+                      <Notice tone="warning">{hours.warning_labels.join(" · ")}</Notice>
+                    ) : null}
+                  </>
+                ) : null}
                 <p>
                   أجر الفترة:{" "}
                   {estimatedPay != null ? (
@@ -317,8 +459,9 @@ export default function EmployeeSalaries() {
                   ) : null}
                 </p>
                 <p className="ui-text-muted">
-                  الأجر = ساعات كل وردية مغلقة × أجرها. الورديات المفتوحة خارج الحساب. يمكنك تعديل
-                  المبلغ قبل الدفع.
+                  {hours.attendance_authoritative
+                    ? hours.comparison_note
+                    : "الأجر = ساعات كل وردية مغلقة × أجرها. الورديات المفتوحة خارج الحساب. يمكنك تعديل المبلغ قبل الدفع."}
                 </p>
                 {showRateEditor ? (
                   <div className="ui-mt-md">
@@ -350,9 +493,38 @@ export default function EmployeeSalaries() {
                   </Notice>
                 ) : null}
                 <Button variant="secondary" onClick={() => setShowShifts((v) => !v)}>
-                  {showShifts ? "إخفاء الورديات" : "عرض الورديات"}
+                  {showShifts
+                    ? "إخفاء التفاصيل"
+                    : hours.attendance_authoritative
+                      ? "عرض جلسات الحضور"
+                      : "عرض الورديات"}
                 </Button>
-                {showShifts ? (
+                {showShifts && hours.attendance_authoritative ? (
+                  <DataTable
+                    loading={loading}
+                    columns={[
+                      { key: "check_in_at", header: "حضور", render: (s) => formatDateTimeAr(s.check_in_at) },
+                      {
+                        key: "check_out_at",
+                        header: "انصراف",
+                        render: (s) => (s.check_out_at ? formatDateTimeAr(s.check_out_at) : "—"),
+                      },
+                      { key: "hours", header: "الساعات", render: (s) => formatHoursAr(s.hours) },
+                      { key: "pay", header: "الأجر", render: (s) => (s.pay > 0 ? ils(s.pay) : "0") },
+                      {
+                        key: "status",
+                        header: "الحالة",
+                        render: (s) =>
+                          `${s.status === "closed" ? "مغلقة" : s.status === "open" ? "مفتوحة" : "بلا انصراف"}${
+                            s.manual ? " · تصحيح يدوي" : ""
+                          }`,
+                      },
+                    ]}
+                    rows={hours.attendance_sessions || []}
+                    empty="لا توجد جلسات حضور في الفترة"
+                  />
+                ) : null}
+                {showShifts && !hours.attendance_authoritative ? (
                   <DataTable
                     loading={loading}
                     columns={[
@@ -395,17 +567,82 @@ export default function EmployeeSalaries() {
             </Card>
           ) : null}
 
+          {!isCashier && hours?.attendance_informational ? (
+            <Card className="ui-mt-md">
+              <CardBody>
+                <h3 className="ui-card__title">حضور الجهاز — للعرض</h3>
+                <p>
+                  المدة المسجّلة: {formatHoursAr(hours.attendance_hours)}
+                  {hours.daily_rate != null ? ` — أجر اليوم: ${ils(hours.daily_rate)}` : ""}
+                </p>
+                <p className="ui-text-muted">
+                  الأجر اليومي لا يُحسب من ساعات الحضور. الجلسات هنا للمراجعة فقط.
+                </p>
+                {(hours.attendance_warning_labels || []).length ? (
+                  <Notice tone="warning">{hours.attendance_warning_labels.join(" · ")}</Notice>
+                ) : null}
+                <DataTable
+                  columns={[
+                    { key: "check_in_at", header: "حضور", render: (s) => formatDateTimeAr(s.check_in_at) },
+                    {
+                      key: "check_out_at",
+                      header: "انصراف",
+                      render: (s) => (s.check_out_at ? formatDateTimeAr(s.check_out_at) : "—"),
+                    },
+                    { key: "hours", header: "المدة", render: (s) => formatHoursAr(s.hours) },
+                    {
+                      key: "status",
+                      header: "الحالة",
+                      render: (s) =>
+                        `${s.status === "closed" ? "مغلقة" : s.status === "open" ? "مفتوحة" : "بلا انصراف"}${
+                          s.manual ? " · تصحيح يدوي" : ""
+                        }`,
+                    },
+                  ]}
+                  rows={hours.informational_sessions || []}
+                  empty="لا توجد جلسات حضور في الفترة"
+                />
+              </CardBody>
+            </Card>
+          ) : null}
+
+          {!isCashier && hours?.attendance_authoritative ? (
+            <Card className="ui-mt-md">
+              <CardBody>
+                <h3 className="ui-card__title">ساعات الحضور</h3>
+                <p>
+                  الساعات المحتسبة: {formatHoursAr(hours.attendance_hours)} — الأجر:{" "}
+                  <strong className="num">{ils(hours.posted_pay || 0)}</strong>
+                  {hours.shift_hours ? ` — قبل الاعتماد: ${formatHoursAr(hours.shift_hours)}` : ""}
+                </p>
+                <p className="ui-text-muted">{hours.comparison_note}</p>
+                {(hours.warning_labels || []).length ? (
+                  <Notice tone="warning">{hours.warning_labels.join(" · ")}</Notice>
+                ) : null}
+              </CardBody>
+            </Card>
+          ) : null}
+
           <div className="ui-stat-grid ui-mt-md">
             <StatCard
-              label="إجمالي سلف قائمة"
-              value={ils(preview.advances_outstanding_total || 0)}
+              label="سلف الفترة"
+              value={ils(summary?.advances_total || 0)}
+              hint={
+                preview.advances_outstanding_total !== summary?.advances_total
+                  ? "السلف خارج الفترة لا تُحسب في هذا الملخص"
+                  : ""
+              }
               icon="finance"
               tone="orange"
             />
             <StatCard
-              label="إجمالي ذمم قائمة"
-              value={ils(preview.debts_outstanding_total || 0)}
-              hint={preview.customer_linked ? "" : "لا يوجد حساب ذمة لهذا الموظف"}
+              label="ذمم الفترة"
+              value={ils(summary?.debts_total || 0)}
+              hint={
+                preview.debts_outstanding_total !== summary?.debts_total
+                  ? "الذمم خارج الفترة لا تُحسب في هذا الملخص"
+                  : ""
+              }
               icon="alert"
               tone="orange"
             />
@@ -422,7 +659,7 @@ export default function EmployeeSalaries() {
                   { key: "remaining", header: "المتبقي", render: (r) => ils(r.remaining), className: "num" },
                   { key: "reason", header: "السبب", render: (r) => r.reason || "—" },
                 ]}
-                rows={preview.advances || []}
+                rows={deductionAdvances}
                 empty="لا توجد سلف قائمة"
               />
             </CardBody>
@@ -444,7 +681,7 @@ export default function EmployeeSalaries() {
                     { key: "original", header: "الأصل", render: (r) => ils(r.original), className: "num" },
                     { key: "remaining", header: "المتبقي", render: (r) => ils(r.remaining), className: "num" },
                   ]}
-                  rows={preview.debts || []}
+                  rows={deductionDebts}
                   empty="لا توجد ذمم قائمة"
                 />
               ) : (

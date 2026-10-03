@@ -2869,7 +2869,7 @@ async function migrateEmployeePayrollScreens(db) {
       period_from TEXT NOT NULL,
       period_to TEXT NOT NULL,
       salary_before_deductions REAL,
-      source TEXT NOT NULL CHECK (source IN ('cashier_shifts', 'manual', 'unspecified')),
+      source TEXT NOT NULL CHECK (source IN ('cashier_shifts', 'manual', 'unspecified', 'attendance', 'split')),
       incomplete INTEGER NOT NULL DEFAULT 0,
       hours_json TEXT,
       reason TEXT,
@@ -3084,6 +3084,136 @@ async function migrateAttendanceSessions(db) {
       dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (user_id, business_day)
     );
+  `);
+}
+
+async function migrateZkAttendance(db) {
+  const periodSql = await db.get(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'employee_salary_periods'"
+  );
+  if (periodSql?.sql && !String(periodSql.sql).includes("'attendance'")) {
+    await db.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE employee_salary_periods_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL REFERENCES employees(id),
+        period_from TEXT NOT NULL,
+        period_to TEXT NOT NULL,
+        salary_before_deductions REAL,
+        source TEXT NOT NULL CHECK (source IN ('cashier_shifts', 'manual', 'unspecified', 'attendance', 'split')),
+        incomplete INTEGER NOT NULL DEFAULT 0,
+        hours_json TEXT,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'reversed')),
+        payload_hash TEXT,
+        created_by INTEGER REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO employee_salary_periods_new (
+        id, employee_id, period_from, period_to, salary_before_deductions, source, incomplete,
+        hours_json, reason, status, payload_hash, created_by, created_at
+      )
+      SELECT
+        id, employee_id, period_from, period_to, salary_before_deductions, source, incomplete,
+        hours_json, reason, status, payload_hash, created_by, created_at
+      FROM employee_salary_periods;
+      DROP TABLE employee_salary_periods;
+      ALTER TABLE employee_salary_periods_new RENAME TO employee_salary_periods;
+      CREATE INDEX IF NOT EXISTS idx_employee_salary_periods_emp
+        ON employee_salary_periods(employee_id, period_from, period_to, status);
+      PRAGMA foreign_keys = ON;
+    `);
+  }
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS employee_device_mappings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      device_key TEXT NOT NULL,
+      device_user_id TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_device_mappings_emp
+      ON employee_device_mappings(employee_id, device_key, active);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_device_user_active
+      ON employee_device_mappings(device_key, device_user_id) WHERE active = 1;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_device_one_active
+      ON employee_device_mappings(employee_id, device_key) WHERE active = 1;
+
+    CREATE TABLE IF NOT EXISTS attendance_device_users (
+      device_key TEXT NOT NULL,
+      device_user_id TEXT NOT NULL,
+      display_name TEXT,
+      last_seen_at TEXT NOT NULL,
+      PRIMARY KEY (device_key, device_user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS attendance_device_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_key TEXT NOT NULL,
+      device_user_id TEXT NOT NULL,
+      employee_id INTEGER REFERENCES employees(id),
+      punched_at TEXT NOT NULL,
+      wall_clock TEXT,
+      raw_status TEXT,
+      raw_punch TEXT,
+      raw_record_id TEXT,
+      event_key TEXT NOT NULL UNIQUE,
+      imported_at TEXT NOT NULL DEFAULT (datetime('now')),
+      ignored_reason TEXT,
+      interpreted_punch_id INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_attendance_device_events_emp
+      ON attendance_device_events(employee_id, punched_at);
+    CREATE INDEX IF NOT EXISTS idx_attendance_device_events_user
+      ON attendance_device_events(device_key, device_user_id, punched_at);
+
+    CREATE TABLE IF NOT EXISTS attendance_interpreted_punches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      punched_at TEXT NOT NULL,
+      punch_type TEXT NOT NULL CHECK (punch_type IN ('in', 'out')),
+      source TEXT NOT NULL CHECK (source IN ('device', 'manual')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'void')),
+      device_event_id INTEGER UNIQUE REFERENCES attendance_device_events(id),
+      hourly_rate_snapshot REAL,
+      correction_note TEXT,
+      corrected_by INTEGER REFERENCES users(id),
+      corrected_at TEXT,
+      voided_by INTEGER REFERENCES users(id),
+      voided_at TEXT,
+      void_reason TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_attendance_interpreted_emp
+      ON attendance_interpreted_punches(employee_id, punched_at, status);
+
+    CREATE TABLE IF NOT EXISTS attendance_device_sync (
+      device_key TEXT PRIMARY KEY,
+      last_success_at TEXT,
+      last_error TEXT,
+      last_error_at TEXT,
+      last_attempt_at TEXT,
+      last_firmware TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS employee_period_device_sessions (
+      period_id INTEGER NOT NULL REFERENCES employee_salary_periods(id),
+      in_punch_id INTEGER NOT NULL REFERENCES attendance_interpreted_punches(id),
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      shop_start_on TEXT NOT NULL,
+      hours REAL NOT NULL,
+      hourly_rate REAL,
+      pay REAL NOT NULL,
+      session_status TEXT NOT NULL,
+      included_in_final INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (period_id, in_punch_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_period_device_punch
+      ON employee_period_device_sessions(in_punch_id, included_in_final);
   `);
 }
 
@@ -3381,6 +3511,7 @@ export async function initDatabase(dbPath) {
   await migrateOperationPrintJobs(db);
   await migrateAttendanceTables(db);
   await migrateAttendanceSessions(db);
+  await migrateZkAttendance(db);
   await migrateStoresTable(db);
   await migrateStoreIdColumns(db);
   await migrateProductBarcodesTable(db);

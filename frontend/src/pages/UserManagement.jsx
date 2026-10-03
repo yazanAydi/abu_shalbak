@@ -39,6 +39,7 @@ const emptyForm = {
   hourly_rate: "",
   wage_basis: "",
   daily_rate: "",
+  start_on: "",
 };
 
 export default function UserManagement() {
@@ -57,6 +58,7 @@ export default function UserManagement() {
   const [editHourlyRate, setEditHourlyRate] = useState("");
   const [editWageBasis, setEditWageBasis] = useState("");
   const [editDailyRate, setEditDailyRate] = useState("");
+  const [editStartOn, setEditStartOn] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -121,6 +123,7 @@ export default function UserManagement() {
       } else if (form.role === "cashier" && form.hourly_rate !== "") {
         body.hourly_rate = Number(form.hourly_rate);
       }
+      if (form.start_on) body.start_on = form.start_on;
       await api.post("/api/admin/users", body, {
         headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       });
@@ -142,6 +145,7 @@ export default function UserManagement() {
     setEditHourlyRate(u.hourly_rate != null && u.hourly_rate > 0 ? String(u.hourly_rate) : "");
     setEditWageBasis(u.wage_basis || "");
     setEditDailyRate(u.daily_rate != null ? String(u.daily_rate) : "");
+    setEditStartOn(u.start_on || "");
   }
 
   function cancelEdit() {
@@ -164,6 +168,7 @@ export default function UserManagement() {
       } else if (editRole === "cashier" && editHourlyRate !== "") {
         body.hourly_rate = Number(editHourlyRate);
       }
+      body.start_on = editStartOn || null;
       await api.patch(`/api/admin/users/${id}`, body, {
         headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       });
@@ -281,6 +286,25 @@ export default function UserManagement() {
           <span className="num">ساعة {ils(u.hourly_rate)}</span>
         ) : (
           "—"
+        ),
+    },
+    {
+      key: "start_on",
+      header: "بدء العمل",
+      value: (u) => u.start_on || "",
+      render: (u) =>
+        editing === u.id ? (
+          <Input
+            type="date"
+            value={editStartOn}
+            onChange={(e) => setEditStartOn(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span>
+            {u.start_on || "—"}
+            {u.employment_duration ? ` · ${u.employment_duration}` : ""}
+          </span>
         ),
     },
     {
@@ -404,6 +428,13 @@ export default function UserManagement() {
                   </option>
                 ))}
               </Select>
+            </FormField>
+            <FormField label="تاريخ بدء العمل" hint="اختياري. يُحفظ على سجل الموظف ولا يُفترض تاريخ اليوم إذا تُرك فارغاً">
+              <Input
+                type="date"
+                value={form.start_on}
+                onChange={(e) => setForm((f) => ({ ...f, start_on: e.target.value }))}
+              />
             </FormField>
             {form.role === "cashier" ? (
               <FormField label="أجر الساعة (₪)" hint="يُنسخ عند فتح وردية نقطة البيع">

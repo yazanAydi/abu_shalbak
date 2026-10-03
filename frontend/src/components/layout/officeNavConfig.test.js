@@ -166,6 +166,7 @@ describe("permission settings topics", () => {
       "/employee-salaries",
       "/cashier-payroll",
       "/employee-attendance",
+      "/device-attendance",
     ]);
     expect(pathsIn(navFor("admin", ALL), "finance")).not.toEqual(
       expect.arrayContaining(adminEmployees)
@@ -178,6 +179,7 @@ describe("permission settings topics", () => {
       "/employee-salaries",
       "/cashier-payroll",
       "/employee-attendance",
+      "/device-attendance",
     ]);
     expect(sectionsOf(payrollOnly)).not.toContain("finance");
 

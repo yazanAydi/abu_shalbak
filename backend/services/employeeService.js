@@ -1,4 +1,6 @@
 import { ATTENDANCE_ROLES } from "../utils/roles.js";
+import { shopTodayYmd } from "../utils/shopTime.js";
+import { formatEmploymentDuration } from "../utils/employmentDuration.js";
 import { round2 } from "../utils/money.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { badRequest, notFound, conflict } from "../utils/httpError.js";
@@ -170,14 +172,34 @@ function parseOptionalPositiveId(value, label = "معرّف الموظف") {
   return id;
 }
 
+export function parseEmploymentStartDate(value, today = shopTodayYmd()) {
+  if (value == null || value === "") return null;
+  const ymd = requireYmd(value, "تاريخ بدء العمل");
+  if (ymd > today) {
+    throw badRequest("تاريخ بدء العمل لا يمكن أن يكون في المستقبل");
+  }
+  return ymd;
+}
+
 export function parseUserEmployeeLinkBody(body = {}) {
-  return {
+  const parsed = {
     employee_id: parseOptionalPositiveId(body.employee_id, "معرّف الموظف"),
     employee_name: body.employee_name != null ? body.employee_name : body.name,
     phone: body.phone,
     start_on: body.start_on,
     end_on: body.end_on,
   };
+  if (
+    Object.prototype.hasOwnProperty.call(body, "start_on") ||
+    Object.prototype.hasOwnProperty.call(body, "employment_start_date")
+  ) {
+    const raw = Object.prototype.hasOwnProperty.call(body, "start_on")
+      ? body.start_on
+      : body.employment_start_date;
+    parsed.start_on = parseEmploymentStartDate(raw);
+    parsed.start_on_provided = true;
+  }
+  return parsed;
 }
 
 export function mapEmployeeIdentity(row) {
@@ -206,6 +228,8 @@ export function mapUserAccount(row) {
     employee_id: row.employee_id ?? null,
     employee_name: row.employee_name || null,
     employee_active: row.employee_id == null ? null : Number(row.employee_active) === 1,
+    start_on: row.employee_start_on || null,
+    employment_duration: formatEmploymentDuration(row.employee_start_on, shopTodayYmd()),
   };
 }
 
@@ -214,7 +238,8 @@ const USER_ACCOUNT_SELECT = `
          CASE WHEN u.permissions_json IS NOT NULL AND TRIM(u.permissions_json) != '' THEN 1 ELSE 0 END
            AS has_custom_permissions,
          e.id AS employee_id, e.name AS employee_name, e.active AS employee_active,
-         e.wage_basis AS wage_basis, e.daily_rate AS daily_rate
+         e.wage_basis AS wage_basis, e.daily_rate AS daily_rate,
+         e.start_on AS employee_start_on
   FROM users u
   LEFT JOIN employees e ON e.user_id = u.id
 `;
@@ -267,8 +292,15 @@ export async function attachEmployeeIdentityToUserInTx(db, user, body = {}, { au
     [user.id]
   );
   if (existing) {
+    if (body.start_on_provided) {
+      await db.run("UPDATE employees SET start_on = ?, updated_at = datetime('now') WHERE id = ?", [
+        body.start_on,
+        existing.id,
+      ]);
+    }
+    const fresh = await getEmployeeRow(db, existing.id);
     return {
-      employee: mapEmployeeIdentity({ ...existing, user_username: user.username, user_role: user.role }),
+      employee: mapEmployeeIdentity({ ...fresh, user_username: user.username, user_role: user.role }),
       created: false,
       linked: false,
     };
@@ -290,6 +322,12 @@ export async function attachEmployeeIdentityToUserInTx(db, user, body = {}, { au
       user.id,
       emp.id,
     ]);
+    if (body.start_on_provided) {
+      await db.run("UPDATE employees SET start_on = ?, updated_at = datetime('now') WHERE id = ?", [
+        body.start_on,
+        emp.id,
+      ]);
+    }
     const updated = await getEmployeeRow(db, emp.id);
     return { employee: mapEmployeeIdentity(updated), created: false, linked: true };
   }
@@ -303,7 +341,11 @@ export async function attachEmployeeIdentityToUserInTx(db, user, body = {}, { au
       ? requireName(body.employee_name)
       : requireName(user.username);
   const phone = optionalPhone(body.phone);
-  const startOn = body.start_on ? requireYmd(body.start_on, "تاريخ البداية") : null;
+  const startOn = body.start_on_provided
+    ? body.start_on
+    : body.start_on
+      ? parseEmploymentStartDate(body.start_on)
+      : null;
   const endOn = body.end_on ? requireYmd(body.end_on, "تاريخ الانتهاء") : null;
   assertDateRange(startOn, endOn);
   const ins = await insertEmployeeIdentity(db, {
@@ -443,6 +485,7 @@ function mapEmployee(row, extras = {}) {
     phone: row.phone,
     start_on: row.start_on,
     end_on: row.end_on,
+    employment_duration: formatEmploymentDuration(row.start_on, shopTodayYmd()),
     active: Number(row.active) === 1,
     user_id: row.user_id,
     user_username: row.user_username || null,
@@ -594,7 +637,7 @@ export async function getEmployee(db, id) {
 export async function createEmployee(db, body, req) {
   const name = requireName(body?.name);
   const phone = optionalPhone(body?.phone);
-  const startOn = body?.start_on ? requireYmd(body.start_on, "تاريخ البداية") : null;
+  const startOn = body?.start_on ? parseEmploymentStartDate(body.start_on) : null;
   const endOn = body?.end_on ? requireYmd(body.end_on, "تاريخ الانتهاء") : null;
   assertDateRange(startOn, endOn);
   const active = asActiveFlag(body?.active, 1);
@@ -629,11 +672,7 @@ export async function updateEmployee(db, id, body, req) {
   const name = body?.name !== undefined ? requireName(body.name) : existing.name;
   const phone = body?.phone !== undefined ? optionalPhone(body.phone) : existing.phone;
   const startOn =
-    body?.start_on !== undefined
-      ? body.start_on
-        ? requireYmd(body.start_on, "تاريخ البداية")
-        : null
-      : existing.start_on;
+    body?.start_on !== undefined ? parseEmploymentStartDate(body.start_on) : existing.start_on;
   const endOn =
     body?.end_on !== undefined
       ? body.end_on

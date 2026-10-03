@@ -9,6 +9,7 @@ import { sendExpiryAlert } from "./services/expiryAlertService.js";
 import { startTelegramPolling } from "./services/telegramPolling.js";
 import { resendPendingTelegramApprovals } from "./services/telegramPendingResend.js";
 import { closeOverdueAttendanceSessions } from "./services/attendanceSessionService.js";
+import { startZktecoSync } from "./services/zktecoSync.js";
 import { resolveDatabasePath } from "./utils/dbPath.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -119,6 +120,7 @@ if (process.env.NODE_ENV !== "test") {
   };
   await runAttendanceClose();
   cron.schedule("* * * * *", runAttendanceClose);
+  startZktecoSync(db);
 }
 
 export { app, db, dbPath };

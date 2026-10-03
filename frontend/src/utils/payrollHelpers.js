@@ -88,6 +88,9 @@ function rateForShift(shift, liveHourlyRate) {
 
 /** Hours that can be multiplied by a rate (ended shifts only). */
 export function payableHoursOf(hours, liveHourlyRate) {
+  if (hours?.attendance_authoritative && hours.posted_hours != null && hours.posted_hours !== "") {
+    return round2(Number(hours.posted_hours) || 0);
+  }
   const live = liveHourlyRate ?? hours?.live_hourly_rate;
   let total = 0;
   for (const shift of hours?.shifts || []) {
@@ -113,6 +116,10 @@ function shiftPayAmount(shift, liveHourlyRate) {
  * Open shifts stay out. This is a display/prefill number — payout remains manual.
  */
 export function estimatedCashierPay(hours, liveHourlyRate) {
+  if (hours?.attendance_authoritative) {
+    const posted = Number(hours.posted_pay);
+    return Number.isFinite(posted) ? round2(posted) : null;
+  }
   const live = liveHourlyRate ?? hours?.live_hourly_rate;
   const shifts = hours?.shifts || [];
   if (!shifts.length) {

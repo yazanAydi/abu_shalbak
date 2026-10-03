@@ -364,6 +364,7 @@ export default function EmployeeRecordsPanel() {
               {detail.active ? "نشط" : "غير نشط"}
               {detail.kind === "cashier" ? " · كاشير" : " · موظف"}
               {detail.start_on ? ` · من ${detail.start_on}` : ""}
+              {detail.employment_duration ? ` · مدة العمل ${detail.employment_duration}` : ""}
               {detail.end_on ? ` · إلى ${detail.end_on}` : ""}
               {detail.phone ? ` · ${detail.phone}` : ""}
               {detail.user_username ? ` · ${detail.user_username}` : ""}
@@ -585,7 +586,7 @@ export default function EmployeeRecordsPanel() {
           <FormField label="الهاتف">
             <Input value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} />
           </FormField>
-          <FormField label="تاريخ البداية">
+          <FormField label="تاريخ بدء العمل">
             <Input type="date" value={form.start_on} onChange={(e) => setForm((f) => ({ ...f, start_on: e.target.value }))} />
           </FormField>
           <FormField label="تاريخ الانتهاء">

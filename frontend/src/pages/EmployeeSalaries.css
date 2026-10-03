@@ -1,0 +1,19 @@
+.payroll-net {
+  margin-top: 12px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: #e8f6ee;
+  border: 1px solid #b7e0c8;
+}
+
+.payroll-net__label {
+  font-size: 15px;
+  color: #1f5c38;
+}
+
+.payroll-net__value {
+  margin-top: 4px;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.2;
+}

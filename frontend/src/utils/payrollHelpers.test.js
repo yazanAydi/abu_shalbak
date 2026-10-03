@@ -46,4 +46,15 @@ describe("estimatedCashierPay", () => {
       })
     ).toBeNull();
   });
+
+  test("after attendance cutover, payable hours ignore POS shift rows", () => {
+    const hours = {
+      attendance_authoritative: true,
+      posted_pay: 160,
+      posted_hours: 8,
+      shifts: [shift({ hours: 7.5, hourly_rate: 20 })],
+    };
+    expect(estimatedCashierPay(hours)).toBe(160);
+    expect(payableHoursOf(hours)).toBe(8);
+  });
 });

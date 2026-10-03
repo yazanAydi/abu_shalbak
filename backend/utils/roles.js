@@ -13,6 +13,34 @@ export const USER_ROLES = [
 /** Shop-floor roles tracked in employee attendance / payroll */
 export const ATTENDANCE_ROLES = ["cashier", "bakery_employee", "shelves_employee"];
 
+/**
+ * ZKTeco device attendance. Separate from hourly payroll eligibility
+ * (`ATTENDANCE_ROLES` / wage_basis).
+ */
+export const ATTENDANCE_TRACKED_ROLES = [
+  "cashier",
+  "bakery_employee",
+  "shelves_employee",
+  "admin",
+  "accountant",
+];
+
+export function isAttendanceTrackedRole(role) {
+  return ATTENDANCE_TRACKED_ROLES.includes(String(role || ""));
+}
+
+/**
+ * Any employees-table identity can be mapped to a device user.
+ * A login role, when present, must be attendance-tracked.
+ * @param {{ user_role?: string|null, role?: string|null }} row
+ */
+export function isAttendanceTrackableEmployee(row) {
+  if (!row) return false;
+  const role = row.user_role || row.role || null;
+  if (!role) return true;
+  return isAttendanceTrackedRole(role);
+}
+
 /** Roles that clock in/out via face kiosk punches */
 export const PUNCH_ROLES = ["bakery_employee", "shelves_employee"];
 

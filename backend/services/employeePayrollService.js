@@ -7,6 +7,7 @@ import { shopTodayYmd } from "../utils/shopTime.js";
 import { employeeKind, parseYmd, requireEmployee } from "./employeeService.js";
 import { previewCashierHours, rangesOverlap } from "./employeeEntitlementService.js";
 import { linkPostedAttendanceSessions, previewHourlyAttendance } from "./attendanceSessionService.js";
+import { buildPayableAttendance, composeCutoverPayrollHours, cutoverForPeriod, linkPostedDeviceSessions } from "./payableAttendance.js";
 import { listEmployeeAdvances } from "./employeeHistoryStatementService.js";
 import { applyCustomerDebtDeltaInTx, listEmployeeDebts, withEmployeeDebtLock } from "./employeeDebtService.js";
 import { postEmployeePaymentInTx } from "./employeePaymentService.js";
@@ -218,23 +219,40 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
   const kind = employeeKind(emp);
   const asOf = query.as_of ? requireYmd(query.as_of, "تاريخ التسوية") : shopTodayYmd();
 
+  const cutover = await cutoverForPeriod(db, periodTo);
+  const pricedFromAttendance =
+    emp.wage_basis === "hourly" ||
+    (emp.wage_basis !== "daily" && Number(emp.hourly_rate) > 0);
   let hours = { applicable: false };
   if (kind === "cashier") {
-    hours = decorateHoursReview(await previewCashierHours(db, emp.id, periodFrom, periodTo));
-  } else if (emp.wage_basis === "hourly") {
-    const attendance = await previewHourlyAttendance(db, emp.id, periodFrom, periodTo);
-    hours = {
-      applicable: attendance.applicable,
-      ...attendance,
-      calculation_final: attendance.final === true,
-      review_required: attendance.final !== true,
-    };
+    hours = cutover
+      ? await composeCutoverPayrollHours(db, emp, { periodFrom, periodTo, kind, cutover })
+      : decorateHoursReview(await previewCashierHours(db, emp.id, periodFrom, periodTo));
+  } else if (pricedFromAttendance) {
+    if (cutover) {
+      hours = await composeCutoverPayrollHours(db, emp, { periodFrom, periodTo, kind, cutover });
+    } else if (emp.wage_basis === "hourly") {
+      const attendance = await previewHourlyAttendance(db, emp.id, periodFrom, periodTo);
+      hours = {
+        applicable: attendance.applicable,
+        ...attendance,
+        calculation_final: attendance.final === true,
+        review_required: attendance.final !== true,
+      };
+    }
   } else if (emp.wage_basis === "daily") {
+    const attendance = await buildPayableAttendance(db, emp.id, { from: periodFrom, to: periodTo });
     hours = {
       applicable: false,
       wage_basis: "daily",
       daily_rate: emp.daily_rate == null ? null : Number(emp.daily_rate),
       daily_accrual: false,
+      attendance_informational: true,
+      pay_from_attendance_hours: false,
+      informational_sessions: attendance.sessions,
+      attendance_hours: attendance.recorded_hours,
+      attendance_warnings: attendance.warnings,
+      attendance_warning_labels: attendance.warning_labels,
     };
   }
 
@@ -252,9 +270,22 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
   const progress = samePeriod ? await periodProgress(db, samePeriod) : null;
 
   const calculatedSalary =
-    hours.calculation_final && (kind === "cashier" || emp.wage_basis === "hourly")
+    hours.calculation_final &&
+    (kind === "cashier" || emp.wage_basis === "hourly" || hours.attendance_authoritative === true)
       ? round2(Number(hours.posted_pay) || 0)
       : null;
+
+  const summary = buildPayrollSummary({
+    emp,
+    kind,
+    periodFrom,
+    periodTo,
+    hours,
+    liveHourlyRate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
+    advances: advances.items.filter((row) => row.remaining > 0),
+    debts: (debts.invoices || []).filter((row) => row.remaining > 0),
+    calculatedSalary,
+  });
 
   return {
     employee_id: emp.id,
@@ -269,6 +300,7 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
     calculated_salary: calculatedSalary,
     salary_known: calculatedSalary != null || (progress && samePeriod?.salary_before_deductions != null),
     calculation_final: hours.calculation_final === true,
+    summary,
     advances: advances.items.filter((row) => row.remaining > 0),
     advances_outstanding_total: advances.outstanding_as_of,
     debts: (debts.invoices || []).filter((row) => row.remaining > 0),
@@ -291,6 +323,139 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
       period_from: row.period_from,
       period_to: row.period_to,
     })),
+  };
+}
+
+function inPayrollPeriod(date, from, to) {
+  const day = String(date || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) && day >= from && day <= to;
+}
+
+function wageLines(hours) {
+  if (hours?.attendance_informational) {
+    return (hours.informational_sessions || []).map((session) => ({
+      date: session.shop_start_on,
+      in_at: session.check_in_at,
+      out_at: session.check_out_at,
+      hours: session.hours,
+      amount: null,
+      payable: false,
+      status: session.status,
+    }));
+  }
+  const lines = [];
+  for (const shift of hours?.shifts || []) {
+    if (shift.pay_excluded) continue;
+    lines.push({
+      date: shift.shop_start_on,
+      in_at: shift.start_time,
+      out_at: shift.end_time,
+      hours: shift.hours,
+      amount: shift.included_in_final ? round2(Number(shift.pay) || 0) : 0,
+      payable: Boolean(shift.included_in_final),
+      status: shift.status,
+    });
+  }
+  for (const session of hours?.attendance_sessions || []) {
+    lines.push({
+      date: session.shop_start_on,
+      in_at: session.check_in_at,
+      out_at: session.check_out_at,
+      hours: session.hours,
+      amount: session.included_in_final ? round2(Number(session.pay) || 0) : 0,
+      payable: Boolean(session.included_in_final),
+      status: session.status,
+    });
+  }
+  return lines;
+}
+
+/**
+ * Period summary for the payroll screen. Gross pay follows the existing hour
+ * or daily rule. سلف and ذمم are the same employee ledgers, limited to dates
+ * inside the selected period. Open and missing-checkout rows stay at zero pay.
+ */
+export function buildPayrollSummary({
+  emp,
+  kind,
+  periodFrom,
+  periodTo,
+  hours,
+  liveHourlyRate,
+  advances,
+  debts,
+  calculatedSalary,
+}) {
+  const periodAdvances = (advances || []).filter((row) => inPayrollPeriod(row.date, periodFrom, periodTo));
+  const periodDebts = (debts || []).filter((row) => inPayrollPeriod(row.date, periodFrom, periodTo));
+  const advancesTotal = round2(sumMoney(periodAdvances.map((row) => row.remaining)));
+  const debtsTotal = round2(sumMoney(periodDebts.map((row) => row.remaining)));
+  const daily = emp?.wage_basis === "daily" || hours?.wage_basis === "daily";
+  const warnings = [
+    ...(hours?.warning_labels || []),
+    ...(hours?.attendance_warning_labels || []),
+    ...(hours?.review_flag_labels || []),
+  ];
+  const lines = wageLines(hours || {});
+
+  if (daily) {
+    return {
+      basis: "daily",
+      payable_hours: null,
+      payable_days: null,
+      daily_accrual: false,
+      rate: hours?.daily_rate == null ? null : Number(hours.daily_rate),
+      rate_unit: "day",
+      gross_salary: null,
+      gross_known: false,
+      pay_from_attendance_hours: false,
+      pos_hours: null,
+      pos_affects_gross: false,
+      advances_total: advancesTotal,
+      debts_total: debtsTotal,
+      net_payable: null,
+      warnings: [...new Set(warnings)],
+      lines,
+      advances: periodAdvances,
+      debts: periodDebts,
+      note: "الأجر اليومي لا يُحتسب من ساعات الحضور، والأيام لا تُجمع تلقائياً.",
+    };
+  }
+
+  const payableHours = round2(Number(hours?.posted_hours) || 0);
+  const gross = calculatedSalary != null ? calculatedSalary : round2(Number(hours?.posted_pay) || 0);
+  const missingRate = Number(hours?.missing_snapshot_count || 0) > 0;
+  const wageApplies =
+    kind === "cashier" || emp?.wage_basis === "hourly" || hours?.attendance_authoritative === true;
+  const grossKnown = wageApplies && !missingRate && hours?.applicable !== false;
+  const net = grossKnown ? round2(gross - advancesTotal - debtsTotal) : null;
+  const rate =
+    liveHourlyRate != null && Number(liveHourlyRate) > 0
+      ? round2(Number(liveHourlyRate))
+      : null;
+  return {
+    basis: hours?.payroll_source || (kind === "cashier" ? "cashier_shifts" : "hourly"),
+    payable_hours: payableHours,
+    payable_days: null,
+    daily_accrual: false,
+    rate,
+    rate_unit: "hour",
+    gross_salary: grossKnown ? gross : null,
+    gross_known: grossKnown,
+    pay_from_attendance_hours: hours?.attendance_authoritative === true || hours?.payroll_source === "attendance",
+    pos_hours: hours?.pos_hours == null ? null : round2(Number(hours.pos_hours) || 0),
+    pos_affects_gross: false,
+    advances_total: advancesTotal,
+    debts_total: debtsTotal,
+    net_payable: net,
+    warnings: [...new Set(warnings.filter(Boolean))],
+    lines,
+    advances: periodAdvances,
+    debts: periodDebts,
+    note:
+      hours?.attendance_authoritative
+        ? "بعد تاريخ الاعتماد يُحسب الراتب من ساعات الحضور فقط. مدة وردية نقطة البيع لا تدخل في الراتب."
+        : null,
   };
 }
 
@@ -426,7 +591,11 @@ export async function confirmPayrollPayout(db, employeeId, body, req) {
         Math.abs(submittedSalary - calculated) < 0.009;
       if (matchesCalculated) {
         salaryBefore = calculated;
-        source = "cashier_shifts";
+        const payrollSource = preview.hours?.payroll_source;
+        source =
+          payrollSource === "attendance" || payrollSource === "split" || payrollSource === "cashier_shifts"
+            ? payrollSource
+            : "cashier_shifts";
       } else {
         if (!confirmManual || !reason) {
           throw badRequest("تعديل أجر الكاشير يتطلب تأكيداً وسبباً", "MANUAL_CONFIRM_REQUIRED");
@@ -498,8 +667,13 @@ export async function confirmPayrollPayout(db, employeeId, body, req) {
     }
 
     if (emp.wage_basis === "hourly") {
-      await linkPostedAttendanceSessions(db, period.id, preview.hours?.sessions);
+      await linkPostedAttendanceSessions(
+        db,
+        period.id,
+        preview.hours?.legacy_sessions || preview.hours?.sessions
+      );
     }
+    await linkPostedDeviceSessions(db, period.id, emp.id, preview.hours?.attendance_sessions);
 
     const liveEmp = await requireEmployee(db, emp.id);
     if (liveEmp.customer_id) {

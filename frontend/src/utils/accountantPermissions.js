@@ -181,6 +181,7 @@ export const HOME_PATH_NAV_ORDER = [
   { path: "/employee-salaries", key: "employee_payroll" },
   { path: "/cashier-payroll", key: "employee_payroll" },
   { path: "/employee-attendance", key: "employee_payroll" },
+  { path: "/device-attendance", key: "employee_payroll" },
   { path: "/settings", key: "store_settings" },
   { path: "/settings/currency", key: "currencies" },
   { path: "/permissions", key: "permissions" },

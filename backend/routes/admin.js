@@ -47,7 +47,7 @@ import {
   setZeroAllStockPasswordHash,
   clearZeroAllStockPassword,
 } from "../utils/settings.js";
-import { shopYmdToUtcBounds } from "../utils/shopTime.js";
+import { badRequest } from "../utils/httpError.js";
 import { assignEntityCodeIfMissing, ensureEntityCode, renumberAllEntityCodesBatch } from "../utils/entityCodes.js";
 import { createBackup } from "../utils/backup.js";
 import { syncProductsPrimaryBarcode } from "../utils/productBarcodes.js";
@@ -901,6 +901,9 @@ export function createAdminRouter(db, dbPath) {
           { ...linkBody, createdBy: req.user?.id ?? null },
           { autoCreate: ATTENDANCE_ROLES.includes(role) }
         );
+        if (linkBody.start_on_provided && linkBody.start_on && !attach.employee) {
+          throw badRequest("لا يوجد سجل موظف لحفظ تاريخ بدء العمل");
+        }
         if (hourlyRateInput.provided) {
           await updateEmployeeHourlyRate(db, user.id, hourlyRateInput.value);
         }
@@ -967,7 +970,10 @@ export function createAdminRouter(db, dbPath) {
     const hourlyRateInput = readHourlyRateInput(req.body);
     const hasPassword = password !== undefined && String(password) !== "";
     const wageBasis = req.body?.wage_basis;
-    if (role === undefined && !hasPassword && !hourlyRateInput.provided && !wageBasis) {
+    const startProvided =
+      Object.prototype.hasOwnProperty.call(req.body || {}, "start_on") ||
+      Object.prototype.hasOwnProperty.call(req.body || {}, "employment_start_date");
+    if (role === undefined && !hasPassword && !hourlyRateInput.provided && !wageBasis && !startProvided) {
       return res.status(400).json({ error: "مطلوب تعديل الدور و/أو كلمة مرور جديدة و/أو أجر الساعة" });
     }
     const roleForWage = role !== undefined ? role : ex.role;
@@ -1044,6 +1050,17 @@ export function createAdminRouter(db, dbPath) {
         if (wageBasis) {
           const linked = await db.get("SELECT id FROM employees WHERE user_id = ?", [id]);
           if (linked) await setEmployeeWageBasis(db, linked.id, req.body, req);
+        }
+        if (linkBody.start_on_provided) {
+          const linked = await db.get("SELECT id FROM employees WHERE user_id = ?", [id]);
+          if (!linked) {
+            if (linkBody.start_on) throw badRequest("لا يوجد سجل موظف لحفظ تاريخ بدء العمل");
+          } else {
+            await db.run("UPDATE employees SET start_on = ?, updated_at = datetime('now') WHERE id = ?", [
+              linkBody.start_on,
+              linked.id,
+            ]);
+          }
         }
         if (role !== undefined || passwordHash) {
           await bumpSessionVersion(db, id);
