@@ -90,3 +90,37 @@ export function sumMoney(values) {
   for (const v of values) total = round2(total + Number(v || 0));
   return total;
 }
+
+/**
+ * Split a money amount across weights so the shares sum to the amount exactly.
+ * Weights are converted to agorot first. Remainder agorot go to the largest
+ * fractional parts; equal fractions prefer the earlier line.
+ * A non-positive amount, or a zero weight total, allocates nothing.
+ */
+export function allocateProportionalMoney(weights, amount) {
+  const list = Array.isArray(weights) ? weights : [];
+  const total = round2(amount);
+  const agorot = Math.round(total * 100);
+  if (list.length === 0) return [];
+  if (!(agorot > 0)) return list.map(() => 0);
+  const weightAgorot = list.map((w) => {
+    const n = round2(w);
+    return n > 0 ? Math.round(n * 100) : 0;
+  });
+  const weightSum = weightAgorot.reduce((sum, n) => sum + n, 0);
+  if (!(weightSum > 0)) return list.map(() => 0);
+  const capped = Math.min(agorot, weightSum);
+  const raw = weightAgorot.map((w) => (capped * w) / weightSum);
+  const floors = raw.map((x) => Math.floor(x + 1e-8));
+  let remainder = capped - floors.reduce((sum, n) => sum + n, 0);
+  const order = raw
+    .map((x, i) => ({ i, frac: x - floors[i] }))
+    .sort((a, b) => (b.frac - a.frac) || (a.i - b.i));
+  let cursor = 0;
+  while (remainder > 0 && order.length > 0) {
+    floors[order[cursor % order.length].i] += 1;
+    remainder -= 1;
+    cursor += 1;
+  }
+  return floors.map((n) => round2(n / 100));
+}

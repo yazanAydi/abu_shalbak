@@ -6,10 +6,13 @@ import { Link, useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
+import { UNDATED_BATCH_LABEL } from "../utils/stockBatchLabels";
 import InvoiceLineProductCell from "../components/invoice/InvoiceLineProductCell";
+import DuplicateProductDialog from "../components/invoice/DuplicateProductDialog";
 import { fetchLastPurchaseCost, fetchSupplierPurchaseUnitPrice, supplierPurchasePriceHint } from "../utils/productSearch";
 import {
   completeInvoiceLines,
+  findDuplicateProductLine,
   focusInvoiceField,
   focusInvoiceProduct,
   handleInvoiceTableEnterKeyDown,
@@ -23,8 +26,9 @@ import {
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
 import { printPurchaseDoc } from "../utils/purchaseDocPrint";
+import { clearPurchaseReturnPrefill, readPurchaseReturnPrefill } from "../utils/purchaseReturnPrefill";
 import QtyStepper from "../components/QtyStepper";
-import { computePurchaseEditorTotals, computePurchaseLinePayable, computePurchaseLineVat, computePurchaseSimpleTotal, deriveEffectiveUnitCost, deriveTotalCost, deriveUnitCost, formatCostInput, formatDiscountPercent, formatTaxRatePercent, lineHasPurchaseDiscount, purchaseQtyStepForUnit } from "../utils/purchaseTotals";
+import { computePurchaseEditorTotals, computePurchaseSimpleTotal, deriveEffectiveUnitCost, deriveTotalCost, deriveUnitCost, formatCostInput, formatDiscountPercent, formatTaxRatePercent, lineHasPurchaseDiscount, purchaseDiscountError, purchaseQtyStepForUnit, summarizeStoredPurchaseDocument } from "../utils/purchaseTotals";
 import PurchaseDocDetailItems from "./PurchaseDocDetailItems";
 import "./purchase-item-editor.css";
 
@@ -67,41 +71,95 @@ function pickDefaultPurchaseUnit(units) {
   return def ? def.id : null;
 }
 
-/** Supplier-style summary block (matches PALCO invoice layout). */
-function PurchaseSummaryFooter({ withVat, vatTotals, simpleTotals }) {
-  const listTotal = withVat ? vatTotals?.listGrossTotal : simpleTotals?.listGrossTotal;
-  const discountSaved = withVat ? vatTotals?.discountSaved : simpleTotals?.discountSaved;
-  const discountPct = withVat ? vatTotals?.effectiveDiscountPct : simpleTotals?.effectiveDiscountPct;
-  const afterDiscount = withVat ? vatTotals?.grossTotal : simpleTotals?.total;
-  const hasDiscount = (discountSaved ?? 0) > 0;
-
-  if (listTotal == null && afterDiscount == null) return null;
-
+/** Supplier-style summary. Line discounts and the invoice discount stay separate. */
+function PurchaseSummaryFooter({
+  withVat,
+  totals,
+  invoiceDiscountPct,
+  onInvoiceDiscountPctChange,
+  invoiceDiscountError,
+}) {
+  if (!totals) return null;
+  const listLabel = withVat ? "المجموع قبل الخصم (يشمل ض.ق.م)" : "المجموع قبل الخصم";
   const rows = [
-    { label: "المجموع (يشمل ض.ق.م)", value: ils(listTotal ?? 0), muted: false },
-    ...(hasDiscount
-      ? [
-          { label: `الخصم ${formatDiscountPercent(discountPct)}%`, value: ils(discountSaved), muted: true },
-          { label: "بعد الخصم", value: ils(afterDiscount ?? 0), muted: true },
-        ]
+    { key: "list", label: listLabel, value: ils(totals.listGrossTotal ?? 0) },
+    { key: "lines", label: "خصومات البنود", value: ils(totals.lineDiscountTotal ?? 0), muted: true },
+    {
+      key: "invoice",
+      label: `خصم الفاتورة ${formatDiscountPercent(totals.invoiceDiscountPct)}%`,
+      value: ils(totals.invoiceDiscountAmount ?? 0),
+      muted: true,
+    },
+    ...(withVat
+      ? [{ key: "vat", label: `ضريبة ${formatTaxRatePercent(totals.rate)}%`, value: ils(totals.vat), muted: true }]
       : []),
-    ...(withVat && vatTotals
-      ? [{ label: `ضريبة ${formatTaxRatePercent(vatTotals.rate)}%`, value: ils(vatTotals.vat), muted: true }]
-      : []),
-    { label: "الصافي", value: ils(afterDiscount ?? 0), grand: true },
+    { key: "net", label: "الصافي", value: ils(withVat ? totals.grossTotal : totals.total), grand: true },
   ];
 
+  return (
+    <div>
+      <div className="purchase-summary-discount">
+        <label htmlFor="invoice-discount-pct">خصم الفاتورة (%)</label>
+        <input
+          id="invoice-discount-pct"
+          className="ui-input"
+          type="number"
+          min="0"
+          max="100"
+          step="0.01"
+          placeholder="0"
+          data-testid="invoice-discount-pct"
+          value={invoiceDiscountPct ?? ""}
+          onFocus={selectInputOnFocus}
+          onChange={(e) => onInvoiceDiscountPctChange?.(e.target.value)}
+        />
+      </div>
+      {invoiceDiscountError ? <div className="purchase-item-editor__error">{invoiceDiscountError}</div> : null}
+      <table className="purchase-summary-table" style={{ marginTop: "0.75rem", marginInlineStart: "auto", borderCollapse: "collapse", fontSize: "0.95rem" }}>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key} style={row.grand ? { background: "var(--office-panel-muted-bg, #eef2f7)", fontWeight: 700 } : undefined}>
+              <td style={{ padding: "0.35rem 1rem 0.35rem 0", textAlign: "right", color: row.muted ? "var(--office-panel-muted)" : undefined, whiteSpace: "nowrap" }}>
+                {row.label}
+              </td>
+              <td className="num" data-testid={row.key === "net" ? "purchase-final-total" : undefined} style={{ padding: "0.35rem 0", textAlign: "left", fontWeight: row.grand ? 700 : 500, minWidth: 90 }}>
+                {row.value}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function PurchaseStoredSummary({ doc, withVat = false, taxRate = 0 }) {
+  const summary = summarizeStoredPurchaseDocument(doc);
+  const rows = [
+    { key: "list", label: withVat ? "المجموع قبل الخصم (يشمل ض.ق.م)" : "المجموع قبل الخصم", value: ils(summary.listGrossTotal) },
+    ...(summary.lineDiscountTotal > 0
+      ? [{ key: "lines", label: "خصومات البنود", value: ils(summary.lineDiscountTotal), muted: true }]
+      : []),
+    ...(summary.invoiceDiscountAmount > 0 || summary.invoiceDiscountPct > 0
+      ? [{
+          key: "invoice",
+          label: `خصم الفاتورة ${formatDiscountPercent(summary.invoiceDiscountPct)}%`,
+          value: ils(summary.invoiceDiscountAmount),
+          muted: true,
+        }]
+      : []),
+    ...(withVat && doc?.vat != null
+      ? [{ key: "vat", label: `ضريبة ${formatTaxRatePercent(taxRate)}%`, value: ils(doc.vat), muted: true }]
+      : []),
+    { key: "net", label: "الصافي", value: ils(summary.total), grand: true },
+  ];
   return (
     <table className="purchase-summary-table" style={{ marginTop: "0.75rem", marginInlineStart: "auto", borderCollapse: "collapse", fontSize: "0.95rem" }}>
       <tbody>
         {rows.map((row) => (
-          <tr key={row.label} style={row.grand ? { background: "var(--office-panel-muted-bg, #eef2f7)", fontWeight: 700 } : undefined}>
-            <td style={{ padding: "0.35rem 1rem 0.35rem 0", textAlign: "right", color: row.muted ? "var(--office-panel-muted)" : undefined, whiteSpace: "nowrap" }}>
-              {row.label}
-            </td>
-            <td className="num" style={{ padding: "0.35rem 0", textAlign: "left", fontWeight: row.grand ? 700 : 500, minWidth: 90 }}>
-              {row.value}
-            </td>
+          <tr key={row.key} style={row.grand ? { background: "var(--office-panel-muted-bg, #eef2f7)", fontWeight: 700 } : undefined}>
+            <td style={{ padding: "0.35rem 1rem 0.35rem 0", textAlign: "right", color: row.muted ? "var(--office-panel-muted)" : undefined, whiteSpace: "nowrap" }}>{row.label}</td>
+            <td className="num" style={{ padding: "0.35rem 0", textAlign: "left", fontWeight: row.grand ? 700 : 500, minWidth: 90 }}>{row.value}</td>
           </tr>
         ))}
       </tbody>
@@ -144,10 +202,27 @@ function returnPriceContextKey(pricing, productId, unitId) {
   return [pricing.supplierId, productId, unitId || "", pricing.asOf || "", pricing.invoiceId || ""].join("|");
 }
 
-function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "retail", membership = null, showExpiry = true, priceMode = "last-any", pricing = null }) {
+function returnSourceKey(source) {
+  if (source?.source_lot_id) return `lot:${source.source_lot_id}`;
+  return `${source.batch_source || "dated"}:${source.expiry_date || ""}`;
+}
+
+function returnSourceLabel(source) {
+  const expiry = source.batch_source === "undated" || !source.expiry_date
+    ? "بدون تاريخ صلاحية"
+    : dateOnly(source.expiry_date);
+  const qty = fmtQty(source.quantity ?? source.available);
+  const receipt = source.show_receipt_reference && source.receipt_reference ? ` — ${source.receipt_reference}` : "";
+  return `${expiry} — ${qty}${receipt}`;
+}
+
+function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "retail", membership = null, showExpiry = true, priceMode = "last-any", pricing = null, sourceWarehouseId = null, invoiceDiscountPct = "", onInvoiceDiscountPctChange }) {
   const [sellPricePrompt, setSellPricePrompt] = useState(null);
   const [lineError, setLineError] = useState(null);
+  const [pendingDuplicate, setPendingDuplicate] = useState(null);
   const pendingFocusRef = useRef(null);
+  const duplicateGateRef = useRef(false);
+  const duplicateCommitRef = useRef(false);
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
@@ -250,7 +325,85 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
     return () => controllers.forEach((c) => c.abort());
   }, [priceMode, pricing?.supplierId, pricing?.asOf, pricing?.invoiceId, lineLookupSig, setItems]);
 
+  useEffect(() => {
+    if (!sourceWarehouseId) return undefined;
+    let cancelled = false;
+    const supplierKey = pricing?.supplierId || "";
+    const pending = itemsRef.current.filter((it) => it.product_id && it.return_sources_for !== supplierKey);
+    if (pending.length === 0) return undefined;
+    (async () => {
+      for (const it of pending) {
+        try {
+          const { data } = await api.get(`/api/warehouses/${sourceWarehouseId}/sources`, {
+            headers: getAuthHeaders(),
+            params: {
+              product_id: it.product_id,
+              supplier_id: pricing?.supplierId || undefined,
+            },
+          });
+          if (cancelled) return;
+          const sources = Array.isArray(data) ? data : [];
+          setItems((prev) => prev.map((x) => {
+            if (x.line_key !== it.line_key || x.return_sources_for === supplierKey) return x;
+            const matched = x.source_lot_id
+              ? sources.find((source) => Number(source.source_lot_id) === Number(x.source_lot_id))
+              : (x.batch_source
+                ? sources.find((source) => returnSourceKey(source) === returnSourceKey(x))
+                : sources[0]);
+            return {
+              ...x,
+              return_sources: sources,
+              return_sources_for: supplierKey,
+              batch_source: matched?.batch_source || null,
+              expiry_date: matched?.batch_source === "dated" ? (matched.expiry_date || "") : "",
+              source_lot_id: matched?.source_lot_id || null,
+            };
+          }));
+        } catch {
+          if (!cancelled) {
+            setItems((prev) => prev.map((x) => (
+              x.line_key === it.line_key ? { ...x, return_sources: [], return_sources_for: supplierKey } : x
+            )));
+          }
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sourceWarehouseId, pricing?.supplierId, lineLookupSig, setItems]);
+
+  function requestProduct(i, p) {
+    if (!p || duplicateGateRef.current) return false;
+    const current = itemsRef.current[i];
+    if (current && Number(current.product_id) === Number(p.id)) return true;
+    const duplicate = findDuplicateProductLine(itemsRef.current, p.id, i);
+    if (duplicate) {
+      duplicateGateRef.current = true;
+      duplicateCommitRef.current = false;
+      setPendingDuplicate({
+        lineKey: current?.line_key,
+        index: i,
+        product: p,
+      });
+      return false;
+    }
+    applyProduct(i, p);
+    return true;
+  }
+
+  function closeDuplicate(commit) {
+    if (commit && duplicateCommitRef.current) return;
+    const pending = pendingDuplicate;
+    duplicateGateRef.current = false;
+    setPendingDuplicate(null);
+    if (!commit || !pending) return;
+    duplicateCommitRef.current = true;
+    const idx = itemsRef.current.findIndex((it) => it.line_key === pending.lineKey);
+    if (idx < 0) return;
+    applyProduct(idx, pending.product);
+  }
+
   async function applyProduct(i, p) {
+    const lineKey = itemsRef.current[i]?.line_key;
     const useSupplierPrice = priceMode === "supplier";
     const [units, pricingInfo] = await Promise.all([
       fetchProductUnits(p.id),
@@ -263,8 +416,22 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
       unitId = Number(last.product_unit_id);
     }
     const unitCostStr = !useSupplierPrice && lastCost != null ? formatCostInput(lastCost) : "";
-    setItems((prev) => prev.map((x, idx) => {
-      if (idx !== i) return x;
+    let returnSources = null;
+    if (sourceWarehouseId) {
+      try {
+        const { data } = await api.get(`/api/warehouses/${sourceWarehouseId}/sources`, {
+          headers: getAuthHeaders(),
+          params: { product_id: p.id, supplier_id: pricing?.supplierId || undefined },
+        });
+        returnSources = Array.isArray(data) ? data : [];
+      } catch {
+        returnSources = [];
+      }
+    }
+    const firstSource = returnSources?.[0] || null;
+    if (!lineKey) return;
+    setItems((prev) => prev.map((x) => {
+      if (x.line_key !== lineKey) return x;
       const nextQty = x.quantity === "" || x.quantity == null ? 1 : Number(x.quantity) || 1;
       const totalCostStr = unitCostStr !== "" ? deriveTotalCost(unitCostStr, nextQty) : "";
       return {
@@ -290,6 +457,11 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
         suggestedKey: null,
         priceHint: "",
         priceMissing: false,
+        return_sources: returnSources,
+        return_sources_for: pricing?.supplierId || "",
+        batch_source: firstSource?.batch_source || null,
+        source_lot_id: firstSource?.source_lot_id || null,
+        expiry_date: firstSource?.batch_source === "dated" ? firstSource.expiry_date : (x.expiry_date || ""),
       };
     }));
     setLineError(null);
@@ -433,8 +605,10 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
   }
   function remove(i) { setItems((prev) => prev.filter((_, idx) => idx !== i)); }
 
-  const simpleTotals = !withVat ? computePurchaseSimpleTotal(items) : null;
-  const vatTotals = withVat ? computePurchaseEditorTotals(items, defaultTaxRate) : null;
+  const simpleTotals = !withVat ? computePurchaseSimpleTotal(items, invoiceDiscountPct) : null;
+  const vatTotals = withVat ? computePurchaseEditorTotals(items, defaultTaxRate, invoiceDiscountPct) : null;
+  const pricedLines = (withVat ? vatTotals?.lines : simpleTotals?.lines) || [];
+  const invoiceDiscountError = purchaseDiscountError(invoiceDiscountPct);
   const colSpan = showExpiry ? 10 : 9;
 
   return (
@@ -477,10 +651,10 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
               <th>الوحدة</th>
               <th>الكمية</th>
               {showExpiry ? <th>تاريخ الصلاحية</th> : null}
-              <th title="خصم %">خصم</th>
+              <th title="خصم البند (%)">خصم البند %</th>
               <th title="بونص مجاني">بونص</th>
               <th title="إجمالي الكلفة قبل الخصم">إجمالي</th>
-              <th title="الإجمالي بعد الخصم">الإجمالي</th>
+              <th title="صافي البند بعد خصم البند">صافي البند</th>
               <th></th>
             </tr>
           </thead>
@@ -489,14 +663,12 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
             {items.map((it, i) => {
               const qtyNum = Number(it.quantity) || 0;
               const bonusNum = Number(it.bonus_quantity) || 0;
-              const totalNum = Number(it.total_cost) || 0;
-              const lineVat = withVat
-                ? computePurchaseLineVat(it.total_cost, it.discount_pct, "", defaultTaxRate)
-                : null;
-              const linePayable = !withVat ? computePurchaseLinePayable(it.total_cost, it.discount_pct) : null;
-              const payable = lineVat ? lineVat.lineTotal : linePayable ? linePayable.payable : totalNum;
-              const effectiveUnitCost = deriveEffectiveUnitCost(payable, qtyNum);
-              const showEffective = lineHasPurchaseDiscount(it.discount_pct) && effectiveUnitCost !== "";
+              const priced = pricedLines[i];
+              const lineNet = priced?.afterLineDiscount ?? (Number(it.total_cost) || 0);
+              const linePayable = priced?.payable ?? lineNet;
+              const lineDiscountError = purchaseDiscountError(it.discount_pct);
+              const effectiveUnitCost = deriveEffectiveUnitCost(linePayable, qtyNum);
+              const showEffective = (lineHasPurchaseDiscount(it.discount_pct) || (priced?.invoiceDiscountAmount || 0) > 0) && effectiveUnitCost !== "";
               const units = Array.isArray(it.units) ? it.units : [];
               const purchasable = units.filter((u) => u.purchase_enabled !== false);
               const selectable = purchasable.length ? purchasable : units;
@@ -523,7 +695,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                   <InvoiceLineProductCell
                     value={it.product_id}
                     productName={it.name}
-                    onPick={(p) => applyProduct(i, p)}
+                    onPick={(p) => requestProduct(i, p)}
                     scope={scope}
                     membership={membership}
                     kind={membership ? "workspace" : null}
@@ -548,7 +720,7 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                   ) : <span style={{ color: "var(--office-panel-muted)" }}>—</span>}
                 </td>
                 <td>
-                  <QtyStepper className="ui-input" min={0} step={purchaseQtyStepForUnit(selectedUnit)} value={it.quantity} data-invoice-field="qty" onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
+                  <QtyStepper className="ui-input" min={0} max={it.available || undefined} step={purchaseQtyStepForUnit(selectedUnit)} value={it.quantity} data-invoice-field="qty" onFocus={selectInputOnFocus} onChange={(e) => updateQuantity(i, e.target.value)} />
                   {conv > 1 && qtyNum > 0 ? <div className="purchase-item-editor__meta">= {fmtQty(baseQty)} {itemBaseUnitName(it)}</div> : null}
                   {suggestion ? (
                     <button
@@ -562,16 +734,41 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                 </td>
                 {showExpiry ? (
                   <td>
-                    <Input
-                      type="date"
-                      data-invoice-field="expiry"
-                      value={it.expiry_date || ""}
-                      onChange={(e) => update(i, "expiry_date", e.target.value)}
-                    />
-                    <div className="purchase-item-editor__meta">اختياري — فارغ = غير محدد</div>
+                    {sourceWarehouseId ? (
+                      <select
+                        className="ui-input"
+                        value={it.batch_source ? returnSourceKey(it) : ""}
+                        onChange={(e) => {
+                          const source = (it.return_sources || []).find((row) => returnSourceKey(row) === e.target.value);
+                          update(i, "batch_source", source?.batch_source || null);
+                          update(i, "source_lot_id", source?.source_lot_id || null);
+                          update(i, "expiry_date", source?.batch_source === "dated" ? source.expiry_date : "");
+                        }}
+                      >
+                        <option value="">— اختر من المرتجعات —</option>
+                        {(it.return_sources || []).map((source) => (
+                          <option key={returnSourceKey(source)} value={returnSourceKey(source)}>
+                            {returnSourceLabel(source)}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <>
+                        <Input
+                          type="date"
+                          data-invoice-field="expiry"
+                          value={it.expiry_date || ""}
+                          onChange={(e) => update(i, "expiry_date", e.target.value)}
+                        />
+                        <div className="purchase-item-editor__meta">اختياري — فارغ = {UNDATED_BATCH_LABEL}</div>
+                      </>
+                    )}
                   </td>
                 ) : null}
-                <td><input className="ui-input" type="number" min="0" max="100" step="0.1" placeholder="0" value={it.discount_pct ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "discount_pct", e.target.value)} /></td>
+                <td>
+                  <input className="ui-input" type="number" min="0" max="100" step="0.01" placeholder="0" data-invoice-field="discount" data-testid="line-discount-pct" aria-label="خصم البند (%)" value={it.discount_pct ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "discount_pct", e.target.value)} />
+                  {lineDiscountError ? <div className="purchase-item-editor__meta purchase-item-editor__meta--accent">{lineDiscountError}</div> : null}
+                </td>
                 <td>
                   <QtyStepper className="ui-input" min={0} step={purchaseQtyStepForUnit(selectedUnit)} value={it.bonus_quantity ?? ""} onFocus={selectInputOnFocus} onChange={(e) => update(i, "bonus_quantity", e.target.value)} />
                   {bonusNum > 0 ? (
@@ -581,7 +778,12 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
                   ) : null}
                 </td>
                 <td><input className="ui-input" type="number" min="0" step="0.01" placeholder="0" value={it.total_cost} onFocus={selectInputOnFocus} onChange={(e) => updateTotalCost(i, e.target.value)} /></td>
-                <td className="num purchase-item-editor__total-final">{ils(lineVat ? lineVat.lineTotal : linePayable ? linePayable.payable : totalNum)}</td>
+                <td className="num purchase-item-editor__total-final">
+                  {ils(lineNet)}
+                  {(priced?.invoiceDiscountAmount || 0) > 0 ? (
+                    <div className="purchase-item-editor__meta">بعد خصم الفاتورة {ils(linePayable)}</div>
+                  ) : null}
+                </td>
                 <td className="purchase-item-editor__actions"><Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => remove(i)} /></td>
               </tr>
               );
@@ -589,7 +791,19 @@ function ItemEditor({ items, setItems, withVat, defaultTaxRate = 0, scope = "ret
           </tbody>
         </table>
       </div>
-      <PurchaseSummaryFooter withVat={withVat} vatTotals={vatTotals} simpleTotals={simpleTotals} />
+      <PurchaseSummaryFooter
+        withVat={withVat}
+        totals={withVat ? vatTotals : simpleTotals}
+        invoiceDiscountPct={invoiceDiscountPct}
+        onInvoiceDiscountPctChange={onInvoiceDiscountPctChange}
+        invoiceDiscountError={invoiceDiscountError}
+      />
+      <DuplicateProductDialog
+        open={pendingDuplicate != null}
+        productName={pendingDuplicate?.product?.name}
+        onConfirm={() => closeDuplicate(true)}
+        onCancel={() => closeDuplicate(false)}
+      />
       <SellPriceUpdateModal
         open={sellPricePrompt != null}
         onClose={() => setSellPricePrompt(null)}
@@ -631,8 +845,10 @@ export default function Purchases({
   const [refText, setRefText] = useState("");
   const [notes, setNotes] = useState("");
   const [sourceInvoiceId, setSourceInvoiceId] = useState("");
+  const [returnsWarehouseId, setReturnsWarehouseId] = useState("");
   const [supplierInvoices, setSupplierInvoices] = useState([]);
   const [items, setItems] = useState([]);
+  const [invoiceDiscountPct, setInvoiceDiscountPct] = useState("");
   const [saving, setSaving] = useState(false);
   const [editId, setEditId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -668,6 +884,17 @@ export default function Purchases({
 
   useEffect(() => { loadSuppliers(); loadSettings(); }, [loadSuppliers, loadSettings]);
   useEffect(() => { loadList(tab); }, [tab, loadList]);
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/api/warehouses", { headers: getAuthHeaders() })
+      .then(({ data }) => {
+        if (cancelled) return;
+        const row = (Array.isArray(data) ? data : []).find((warehouse) => warehouse.type === "returns");
+        setReturnsWarehouseId(row ? String(row.id) : "");
+      })
+      .catch(() => { if (!cancelled) setReturnsWarehouseId(""); });
+    return () => { cancelled = true; };
+  }, []);
   useEffect(() => {
     if (forcedTab && forcedTab !== tab) setTab(forcedTab);
   }, [forcedTab, tab]);
@@ -709,10 +936,61 @@ export default function Purchases({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (searchParams.get("prefill") !== "1") return;
+    const payload = readPurchaseReturnPrefill();
+    const next = new URLSearchParams(searchParams);
+    next.delete("prefill");
+    setSearchParams(next, { replace: true });
+    if (!payload) return;
+    if (!forcedTab) setTab("returns");
+    setEditId(null);
+    setSupplierId(String(payload.supplierId));
+    setDocDate(todayISO());
+    setNotes("");
+    setSourceInvoiceId("");
+    setInvoiceDiscountPct("");
+    let cancelled = false;
+    (async () => {
+      const mapped = await Promise.all(payload.lines.map(async (line) => {
+        const units = await fetchProductUnits(line.product_id);
+        const source = {
+          source_lot_id: line.source_lot_id,
+          batch_source: line.batch_source,
+          expiry_date: line.expiry_date,
+          quantity: line.available ?? line.quantity,
+          receipt_reference: line.receipt_reference,
+          show_receipt_reference: line.show_receipt_reference,
+        };
+        return {
+          ...emptyPurchaseLine(),
+          product_id: line.product_id,
+          name: line.product_name || line.name || "",
+          barcode: line.barcode || "",
+          quantity: line.quantity,
+          unit_id: pickDefaultPurchaseUnit(units),
+          units,
+          expiry_date: line.batch_source === "dated" ? (line.expiry_date || "") : "",
+          batch_source: line.batch_source,
+          source_lot_id: line.source_lot_id,
+          available: line.available ?? line.quantity,
+          return_sources: [source],
+          return_sources_for: String(payload.supplierId),
+        };
+      }));
+      if (cancelled) return;
+      clearPurchaseReturnPrefill();
+      setItems(mapped);
+      setShowForm(true);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function openForm() {
     setEditId(null);
     setSupplierId(""); setDocDate(todayISO());
-    setRefText(""); setNotes(""); setSourceInvoiceId(""); setItems([]); setShowForm(true);
+    setRefText(""); setNotes(""); setSourceInvoiceId(""); setItems([]); setInvoiceDiscountPct(""); setShowForm(true);
   }
 
   async function fillFormFromDoc(which, data, id) {
@@ -722,6 +1000,7 @@ export default function Purchases({
     setRefText(data.ref_text || "");
     setNotes(data.notes || "");
     setSourceInvoiceId(data.invoice_id ? String(data.invoice_id) : "");
+    setInvoiceDiscountPct(data.discount_pct != null && Number(data.discount_pct) !== 0 ? String(data.discount_pct) : "");
     const docItems = data.items || [];
     const mapped = await Promise.all(
       docItems.map(async (it) => {
@@ -747,7 +1026,9 @@ export default function Purchases({
           cost_mode: "total",
           discount_pct: it.discount_pct != null && it.discount_pct !== 0 ? it.discount_pct : "",
           bonus_quantity: it.bonus_quantity != null && it.bonus_quantity !== 0 ? it.bonus_quantity : "",
-          expiry_date: it.expiry_date || "",
+          expiry_date: it.batch_source === "undated" ? "" : (it.expiry_date || ""),
+          batch_source: it.batch_source || null,
+          source_lot_id: it.source_lot_id || null,
           last_purchase_cost: pricing?.last_purchase?.unit_cost ?? null,
           sell_price: pricing?.sell_price ?? null,
           min_price: pricing?.min_price ?? null,
@@ -783,18 +1064,40 @@ export default function Purchases({
       toast.error("أدخل كمية أكبر من صفر لكل صنف");
       return null;
     }
+    const missingPrice = lines.find((it) => (it.total_cost === "" || it.total_cost == null) && (it.unit_cost === "" || it.unit_cost == null));
+    if (missingPrice) {
+      toast.error("سعر الوحدة مطلوب");
+      return null;
+    }
+    const headerDiscountError = purchaseDiscountError(invoiceDiscountPct);
+    const lineDiscountError = lines.map((it) => purchaseDiscountError(it.discount_pct)).find(Boolean);
+    if (headerDiscountError || lineDiscountError) {
+      toast.error(headerDiscountError || lineDiscountError);
+      return null;
+    }
+    if (tab === "returns") {
+      const unpriced = lines.find((it) => it.total_cost === "" || it.total_cost == null || !Number.isFinite(Number(it.total_cost)));
+      if (unpriced) {
+        toast.error("أدخل سعر الشراء لكل صنف");
+        return null;
+      }
+    }
     setSaving(true);
     const payload = {
       supplier_id: Number(supplierId),
       notes,
+      invoice_discount_pct: invoiceDiscountPct === "" ? 0 : Number(invoiceDiscountPct),
       items: lines.map((it) => ({
         product_id: it.product_id,
         quantity: Number(it.quantity),
         unit_id: it.unit_id != null ? Number(it.unit_id) : undefined,
-        total_cost: Number(it.total_cost),
-        discount_pct: it.discount_pct === "" ? undefined : Number(it.discount_pct),
+        total_cost: it.total_cost === "" || it.total_cost == null ? undefined : Number(it.total_cost),
+        unit_cost: it.unit_cost === "" || it.unit_cost == null ? undefined : Number(it.unit_cost),
+        discount_pct: it.discount_pct === "" || it.discount_pct == null ? 0 : Number(it.discount_pct),
         bonus_quantity: it.bonus_quantity === "" ? undefined : Number(it.bonus_quantity),
-        expiry_date: it.expiry_date || undefined,
+        expiry_date: it.batch_source === "undated" ? undefined : (it.expiry_date || undefined),
+        batch_source: it.batch_source || undefined,
+        source_lot_id: it.source_lot_id || undefined,
       })),
     };
     try {
@@ -819,11 +1122,13 @@ export default function Purchases({
   }
 
   async function save() {
-    const id = await persist();
-    if (id == null) return;
-    setShowForm(false);
-    setEditId(null);
-    loadList(tab);
+    await guardSubmit(async () => {
+      const id = await persist();
+      if (id == null) return;
+      setShowForm(false);
+      setEditId(null);
+      loadList(tab);
+    });
   }
 
   async function saveAndPost() {
@@ -1124,7 +1429,14 @@ export default function Purchases({
         </>}>
         <FormGrid>
           <FormField label="المورد" required>
-            <Select value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setSourceInvoiceId(""); }}>
+            <Select value={supplierId} onChange={(e) => {
+              const next = e.target.value;
+              setSupplierId(next);
+              setSourceInvoiceId("");
+              if (tab === "returns" && String(next) !== String(supplierId)) {
+                setItems((prev) => prev.filter((it) => !it.source_lot_id));
+              }
+            }}>
               <option value="">— اختر —</option>
               {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </Select>
@@ -1155,6 +1467,9 @@ export default function Purchases({
           membership={isBakery ? "bakery" : null}
           priceMode={tab === "returns" ? "supplier" : "last-any"}
           pricing={tab === "returns" ? { supplierId, asOf: docDate, invoiceId: sourceInvoiceId } : null}
+          sourceWarehouseId={tab === "returns" ? returnsWarehouseId : null}
+          invoiceDiscountPct={invoiceDiscountPct}
+          onInvoiceDiscountPctChange={setInvoiceDiscountPct}
         />
         {isBakery ? (
           <p className="ui-field__hint">البحث لا يحذف أصنافاً أخرى — يمكن خلط أصناف المخبز والمتجر في فاتورة واحدة.</p>
@@ -1192,6 +1507,11 @@ export default function Purchases({
               </p>
             ) : null}
             <PurchaseDocDetailItems items={detail.doc.items} />
+            <PurchaseStoredSummary
+              doc={detail.doc}
+              withVat={detail.which === "invoices"}
+              taxRate={store.default_tax_rate}
+            />
           </div>
         )}
       </Modal>

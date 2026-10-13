@@ -1,3 +1,4 @@
+import { jest } from "@jest/globals";
 import request from "supertest";
 import {
   createTestContext,
@@ -9,6 +10,7 @@ import {
   createAccountantUser,
 } from "./helpers.js";
 import { defaultAccountantPermissions } from "../utils/accountantPermissions.js";
+import { shopTodayYmd, shopYmdToUtcBounds } from "../utils/shopTime.js";
 
 function unwrap(body) {
   return body?.data ?? body;
@@ -66,6 +68,29 @@ describe("employee on-account (ذمة) checkout", () => {
           key
         )
       );
+  }
+
+  async function withFixedShopDay(ymd, fn) {
+    const open = await ctx.db.get(
+      "SELECT id, business_day FROM cashier_shifts WHERE status = 'open' ORDER BY id DESC LIMIT 1"
+    );
+    const noon = new Date(shopYmdToUtcBounds(ymd).startIso).getTime() + 12 * 60 * 60 * 1000;
+    jest.useFakeTimers({
+      now: noon,
+      doNotFake: ["nextTick", "setImmediate", "setTimeout", "setInterval", "queueMicrotask"],
+    });
+    if (open) {
+      await ctx.db.run("UPDATE cashier_shifts SET business_day = ? WHERE id = ?", [ymd, open.id]);
+    }
+    try {
+      expect(shopTodayYmd()).toBe(ymd);
+      return await fn();
+    } finally {
+      jest.useRealTimers();
+      if (open) {
+        await ctx.db.run("UPDATE cashier_shifts SET business_day = ? WHERE id = ?", [open.business_day, open.id]);
+      }
+    }
   }
 
   async function approve(requestId) {
@@ -433,6 +458,7 @@ describe("employee on-account (ذمة) checkout", () => {
   });
 
   test("salary deduction reduces the same invoice outstanding once", async () => {
+    await withFixedShopDay("2026-09-15", async () => {
     const emp = await createLinkedEmployee("__zimma_payroll__");
     const product = await ctx.db.get("SELECT * FROM products WHERE id = ?", [ctx.productId]);
     const pending = await checkoutOnAccount({ employee_id: emp.id }, `oa-emp-pay-${emp.id}`);
@@ -497,9 +523,11 @@ describe("employee on-account (ذمة) checkout", () => {
     expect(
       Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [emp.customer_id])).balance)
     ).toBe(0);
+    });
   });
 
   test("authorized posting of an unlinked employee is available for salary deduction", async () => {
+    await withFixedShopDay("2026-09-15", async () => {
     const emp = await createTestEmployee(ctx.db, { name: "__zimma_auto_pay__" });
     const product = await ctx.db.get("SELECT * FROM products WHERE id = ?", [ctx.productId]);
     const pending = await checkoutOnAccount({ employee_id: emp.id }, `oa-emp-autopay-${emp.id}`);
@@ -517,6 +545,129 @@ describe("employee on-account (ذمة) checkout", () => {
     expect(debt).toBeTruthy();
     expect(debt.remaining).toBe(Number(product.price));
     expect(debt.selectable).toBe(true);
+    });
+  });
+
+  test("purchase, advance, partial repayment, and salary deduction are not applied twice", async () => {
+    await withFixedShopDay("2026-09-15", async () => {
+      const emp = await createLinkedEmployee("__zimma_chain__");
+      const product = await ctx.db.get("SELECT price FROM products WHERE id = ?", [ctx.productId]);
+      const purchase = Number(product.price);
+      const pending = await checkoutOnAccount({ employee_id: emp.id }, `oa-emp-chain-${emp.id}`);
+      const approved = await approve(unwrap(pending.body).request_id);
+      const txId = approved.checkout?.transaction_id || approved.request?.transaction_id;
+      expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [emp.customer_id])).balance)).toBe(
+        purchase
+      );
+
+      const advance = await request(ctx.app)
+        .post(`/api/v1/employees/${emp.id}/payments`)
+        .set(authHeader(adminToken))
+        .send({
+          purpose: "salary_advance",
+          amount: 40,
+          occurred_on: "2026-09-10",
+          payment_method: "cash",
+          reference_note: "سلفة السيناريو",
+        });
+      expect(advance.status).toBe(201);
+      const advanceId = unwrap(advance.body).id;
+
+      const receipt = await request(ctx.app)
+        .post("/api/v1/vouchers")
+        .set(authHeader(adminToken))
+        .send({
+          voucher_type: "receipt",
+          voucher_date: "2026-09-20",
+          lines: [{ line_type: "cash", amount: 4, currency: "NIS", customer_id: emp.customer_id }],
+        });
+      expect(receipt.status).toBe(201);
+      const posted = await request(ctx.app)
+        .post(`/api/v1/vouchers/${unwrap(receipt.body).id}/post`)
+        .set(authHeader(adminToken))
+        .send({});
+      expect(posted.status).toBe(200);
+      expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [emp.customer_id])).balance)).toBe(
+        6
+      );
+
+      const preview = unwrap(
+        (
+          await request(ctx.app)
+            .get(`/api/v1/employees/${emp.id}/payroll-preview`)
+            .query({ period_from: "2026-09-01", period_to: "2026-09-30", as_of: "2026-09-30" })
+            .set(authHeader(adminToken))
+        ).body
+      );
+      const debt = preview.debts.find((row) => row.source_id === txId);
+      expect(debt.remaining).toBe(6);
+      const advanceRow = preview.advances.find((row) => row.id === advanceId);
+      expect(advanceRow.remaining).toBe(40);
+
+      const payoutBody = {
+        period_from: "2026-09-01",
+        period_to: "2026-09-30",
+        occurred_on: "2026-09-30",
+        salary_before_deductions: 200,
+        cash_paid: 179,
+        payment_method: "transfer",
+        deductions: [
+          { kind: "debt", source_type: "pos_sale", source_id: txId, amount: 6 },
+          { kind: "advance", source_type: "ledger_entry", source_id: advanceId, amount: 15 },
+        ],
+        idempotency_key: `chain-once-${emp.id}`,
+      };
+      const payout = await request(ctx.app)
+        .post(`/api/v1/employees/${emp.id}/payroll-payouts`)
+        .set(authHeader(adminToken))
+        .send(payoutBody);
+      expect(payout.status).toBe(201);
+      expect(unwrap(payout.body).breakdown.product_debt_deducted).toBe(6);
+      expect(unwrap(payout.body).breakdown.advance_deducted).toBe(15);
+      expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [emp.customer_id])).balance)).toBe(
+        0
+      );
+
+      const replay = await request(ctx.app)
+        .post(`/api/v1/employees/${emp.id}/payroll-payouts`)
+        .set(authHeader(adminToken))
+        .send(payoutBody);
+      expect(replay.status).toBe(201);
+      expect(unwrap(replay.body).id).toBe(unwrap(payout.body).id);
+      expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [emp.customer_id])).balance)).toBe(
+        0
+      );
+
+      const again = await request(ctx.app)
+        .post(`/api/v1/employees/${emp.id}/payroll-payouts`)
+        .set(authHeader(adminToken))
+        .send({
+          period_from: "2026-10-01",
+          period_to: "2026-10-31",
+          occurred_on: "2026-10-16",
+          salary_before_deductions: 200,
+          cash_paid: 200,
+          payment_method: "transfer",
+          deductions: [{ kind: "debt", source_type: "pos_sale", source_id: txId, amount: 6 }],
+          idempotency_key: `chain-twice-${emp.id}`,
+        });
+      expect(again.status).toBe(201);
+      expect(unwrap(again.body).breakdown.product_debt_deducted).toBe(0);
+      expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [emp.customer_id])).balance)).toBe(
+        0
+      );
+
+      const after = unwrap(
+        (
+          await request(ctx.app)
+            .get(`/api/v1/employees/${emp.id}/payroll-preview`)
+            .query({ period_from: "2026-09-01", period_to: "2026-09-30", as_of: "2026-09-30" })
+            .set(authHeader(adminToken))
+        ).body
+      );
+      expect(after.debts.some((row) => row.source_id === txId)).toBe(false);
+      expect(after.advances.find((row) => row.id === advanceId).remaining).toBe(25);
+    });
   });
 
   test("rejected unlinked employee ذمة creates no account or financial records", async () => {

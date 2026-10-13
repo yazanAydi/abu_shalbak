@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  moveStockToReturns,
 } from "./helpers.js";
 import { upsertProductUnit } from "../utils/productUnits.js";
 import { convertPurchaseUnitCost } from "../utils/supplierPurchasePrice.js";
@@ -99,6 +100,7 @@ describe("supplier purchase returns and balances", () => {
     expect(created.status).toBe(201);
     const ret = unwrap(created);
     if (post) {
+      await moveStockToReturns(ctx.app, ctx.db, adminToken, items, supplierId);
       const posted = await request(ctx.app)
         .post(`/api/v1/purchases/returns/${ret.id}/post`)
         .set(authHeader(adminToken));

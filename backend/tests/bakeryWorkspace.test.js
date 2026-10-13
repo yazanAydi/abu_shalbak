@@ -418,6 +418,11 @@ describe("bakery office workspace", () => {
       });
     expect(created.status).toBe(201);
     const ret = unwrap(created);
+    const { moveStockToReturns } = await import("./helpers.js");
+    await moveStockToReturns(ctx.app, ctx.db, adminToken, [
+      { product_id: breadId, quantity: 1 },
+      { product_id: milkId, quantity: 1 },
+    ], supplierId);
 
     const bakeryReturns = unwrapList(
       await request(ctx.app)

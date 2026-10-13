@@ -13,7 +13,6 @@ import { getDefaultUnit, ensureDefaultProductUnit, resolveSoldUnitCost, isProduc
 import {
   resolveCheckoutPayments,
   loadSalePayments,
-  assertDrawerCanGiveChange,
 } from "../utils/salePayments.js";
 import {
   loadSuspendedSaleItemMap,
@@ -217,6 +216,12 @@ export function createCheckoutRouter(db) {
         return res.status(409).json({
           error: "الفاتورة المعلقة مكتملة أو غير موجودة",
           code: "SUSPENDED_ALREADY_COMPLETED",
+        });
+      }
+      if (Number(hold.cashier_id) !== Number(req.user.id)) {
+        return res.status(403).json({
+          error: "لا يمكن إتمام فاتورة معلقة لكاشير آخر",
+          code: "SUSPENDED_NOT_OWNER",
         });
       }
       const { sale, itemMap } = await loadSuspendedSaleItemMap(db, suspendedSaleId);
@@ -513,7 +518,6 @@ export function createCheckoutRouter(db) {
       changeNis,
       changeOriginal,
       changeCurrencyId,
-      changeCurrencyCode,
     } = paymentResolved;
 
     if (onAccountTotal > 0) {
@@ -536,7 +540,7 @@ export function createCheckoutRouter(db) {
       }
     }
 
-    // Credit + drawer checks run inside the write transaction below.
+    // The customer credit check runs inside the write transaction below.
 
     const itemsForJson = normalized.map((L) => ({
       product_id: L.product_id,
@@ -560,8 +564,6 @@ export function createCheckoutRouter(db) {
     if (shiftErr || !shift) {
       return res.status(400).json({ error: shiftErr || "لا توجد وردية مفتوحة", code: "NO_OPEN_SHIFT" });
     }
-
-    // Drawer availability is re-checked under the serialized write lock.
 
     if (suspendedContext && Number(suspendedContext.sale.shift_id) !== Number(shift.id)) {
       return res.status(403).json({
@@ -651,17 +653,6 @@ export function createCheckoutRouter(db) {
           const err = new Error(creditErr.error);
           err.status = creditErr.status;
           err.code = creditErr.code;
-          throw err;
-        }
-        const changeErr = await assertDrawerCanGiveChange(db, shift.id, shift.opening_cash, paymentLines, {
-          changeOriginal,
-          changeNis,
-          changeCurrencyCode,
-        });
-        if (changeErr) {
-          const err = new Error(changeErr.error);
-          err.status = 400;
-          err.code = changeErr.code;
           throw err;
         }
         const sale = await executeCheckoutSale(db, {

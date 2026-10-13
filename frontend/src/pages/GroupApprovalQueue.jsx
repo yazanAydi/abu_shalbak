@@ -46,7 +46,11 @@ function ItemsList({ row }) {
         <li key={`${item.name}-${index}`}>
           {item.name} × {item.quantity}
           {item.unit_name ? ` ${item.unit_name}` : ""}
-          {item.line_cost != null ? ` — ${ils(item.line_cost)}` : ""}
+          {item.line_amount != null
+            ? ` — ${ils(item.line_amount)}`
+            : item.line_cost != null
+              ? ` — ${ils(item.line_cost)}`
+              : ""}
         </li>
       ))}
     </ul>

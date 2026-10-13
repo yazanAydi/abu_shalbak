@@ -10,6 +10,7 @@ import { seedUnitNamesCatalog } from "../utils/unitNameCatalog.js";
 import { cacheInvalidate } from "../utils/cache.js";
 import { incrementQueryCount, maybeLogSlowQuery } from "../utils/queryStats.js";
 import { openSqliteConnection } from "./sqliteDriver.js";
+import { assignStockCountDepartments } from "../utils/countDepartment.js";
 
 function txKeyword(sql) {
   const s = String(sql || "").trim();
@@ -487,7 +488,9 @@ async function migrateStockCountTables(db) {
       notes        TEXT,
       created_by   INTEGER REFERENCES users(id),
       posted_at    TEXT,
-      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      department   TEXT CHECK (department IS NULL OR department IN ('retail','bakery')),
+      split_from_session_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS stock_count_lines (
@@ -503,6 +506,143 @@ async function migrateStockCountTables(db) {
     CREATE INDEX IF NOT EXISTS idx_sc_lines_session ON stock_count_lines(session_id);
     CREATE INDEX IF NOT EXISTS idx_sc_lines_product ON stock_count_lines(product_id);
   `);
+  if (!(await tableHasColumn(db, "stock_count_lines", "batch_source"))) {
+    await db.run(
+      `ALTER TABLE stock_count_lines ADD COLUMN batch_source TEXT
+       CHECK (batch_source IS NULL OR batch_source IN ('dated', 'undated'))`
+    );
+  }
+  if (!(await tableHasColumn(db, "stock_count_lines", "expiry_date"))) {
+    await db.run("ALTER TABLE stock_count_lines ADD COLUMN expiry_date TEXT");
+  }
+  if (!(await tableHasColumn(db, "stock_count_lines", "line_origin"))) {
+    await db.run(
+      "ALTER TABLE stock_count_lines ADD COLUMN line_origin TEXT NOT NULL DEFAULT 'current'"
+    );
+  }
+  // Rows already stored before this index stay as written. They are marked
+  // legacy once, including duplicate product-only lines, and are left out of
+  // the unique index. Later inserts stay 'current' and cannot reuse 'legacy'.
+  const indexRow = await db.get(
+    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sc_line_source'"
+  );
+  const partialIndex = /where\s+line_origin\s*=\s*'current'/i.test(String(indexRow?.sql || ""));
+  if (!partialIndex) {
+    await db.run("DROP TRIGGER IF EXISTS stock_count_lines_lock_line_origin");
+    await db.run(
+      `UPDATE stock_count_lines
+          SET line_origin = 'legacy'
+        WHERE line_origin = 'current'
+          AND batch_source IS NULL
+          AND (expiry_date IS NULL OR TRIM(expiry_date) = '')`
+    );
+    if (indexRow) await db.run("DROP INDEX idx_sc_line_source");
+  }
+  await db.exec(`
+    CREATE TRIGGER IF NOT EXISTS stock_count_lines_reject_legacy_insert
+    BEFORE INSERT ON stock_count_lines
+    WHEN NEW.line_origin IS NOT 'current'
+    BEGIN
+      SELECT RAISE(ABORT, 'stock count line origin must be current');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS stock_count_lines_lock_line_origin
+    BEFORE UPDATE OF line_origin ON stock_count_lines
+    WHEN NEW.line_origin IS NOT OLD.line_origin
+    BEGIN
+      SELECT RAISE(ABORT, 'stock count line origin is immutable');
+    END;
+  `);
+  await db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_sc_line_source
+     ON stock_count_lines(
+       session_id,
+       product_id,
+       IFNULL(batch_source, 'product'),
+       IFNULL(expiry_date, '')
+     )
+     WHERE line_origin = 'current'`
+  );
+}
+
+/**
+ * One open count per inventory department. Mixed open drafts are split by
+ * products.inventory_scope without posting. Ambiguous lines stay on the
+ * original open session and are reported in stock_count_department_holds.
+ */
+async function migrateStockCountDepartments(db) {
+  if (!(await tableHasColumn(db, "stock_count_sessions", "department"))) {
+    await db.run("ALTER TABLE stock_count_sessions ADD COLUMN department TEXT");
+  }
+  if (!(await tableHasColumn(db, "stock_count_sessions", "split_from_session_id"))) {
+    await db.run("ALTER TABLE stock_count_sessions ADD COLUMN split_from_session_id INTEGER");
+  }
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS stock_count_department_holds (
+      session_id INTEGER PRIMARY KEY REFERENCES stock_count_sessions(id) ON DELETE CASCADE,
+      reason TEXT NOT NULL,
+      detail_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await db.run("DROP TRIGGER IF EXISTS stock_count_lines_one_open_product_insert");
+  await db.run("DROP TRIGGER IF EXISTS stock_count_lines_one_open_product_update");
+  await db.run("DROP TRIGGER IF EXISTS stock_count_sessions_department_insert");
+  await db.run("DROP TRIGGER IF EXISTS stock_count_sessions_department_update");
+  await assignStockCountDepartments(db);
+  await db.exec(`
+    CREATE TRIGGER IF NOT EXISTS stock_count_sessions_department_insert
+    BEFORE INSERT ON stock_count_sessions
+    WHEN NEW.department IS NOT NULL AND NEW.department NOT IN ('retail', 'bakery')
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid count department');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS stock_count_sessions_department_update
+    BEFORE UPDATE OF department ON stock_count_sessions
+    WHEN NEW.department IS NOT NULL AND NEW.department NOT IN ('retail', 'bakery')
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid count department');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS stock_count_lines_one_open_product_insert
+    BEFORE INSERT ON stock_count_lines
+    WHEN EXISTS (
+      SELECT 1
+        FROM stock_count_lines l
+        JOIN stock_count_sessions s ON s.id = l.session_id
+        JOIN stock_count_sessions cur ON cur.id = NEW.session_id
+       WHERE l.product_id = NEW.product_id
+         AND s.status = 'open'
+         AND cur.status = 'open'
+         AND s.id != NEW.session_id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'product is already on another open count');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS stock_count_lines_one_open_product_update
+    BEFORE UPDATE OF product_id, session_id ON stock_count_lines
+    WHEN EXISTS (
+      SELECT 1
+        FROM stock_count_lines l
+        JOIN stock_count_sessions s ON s.id = l.session_id
+        JOIN stock_count_sessions cur ON cur.id = NEW.session_id
+       WHERE l.product_id = NEW.product_id
+         AND s.status = 'open'
+         AND cur.status = 'open'
+         AND s.id != NEW.session_id
+         AND l.id != NEW.id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'product is already on another open count');
+    END;
+  `);
+  await db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_sc_open_department
+     ON stock_count_sessions(department)
+     WHERE status = 'open' AND department IS NOT NULL`
+  );
 }
 
 async function migrateTransactionsDiscount(db) {
@@ -932,6 +1072,27 @@ async function migratePurchaseItemsDiscountBonus(db) {
   }
 }
 
+/**
+ * Header percentage discount, applied after line percentages.
+ * Stored money is the computed allocation, not a separate fixed-amount input.
+ * Existing rows keep 0 and their already posted totals.
+ */
+async function migratePurchaseInvoiceDiscount(db) {
+  for (const t of ["purchase_orders", "purchase_invoices", "purchase_returns"]) {
+    if (!(await tableHasColumn(db, t, "discount_pct"))) {
+      await db.run(`ALTER TABLE ${t} ADD COLUMN discount_pct REAL NOT NULL DEFAULT 0`);
+    }
+    if (!(await tableHasColumn(db, t, "invoice_discount_amount"))) {
+      await db.run(`ALTER TABLE ${t} ADD COLUMN invoice_discount_amount REAL NOT NULL DEFAULT 0`);
+    }
+  }
+  for (const t of ["purchase_order_items", "purchase_invoice_items", "purchase_return_items"]) {
+    if (!(await tableHasColumn(db, t, "invoice_discount_amount"))) {
+      await db.run(`ALTER TABLE ${t} ADD COLUMN invoice_discount_amount REAL NOT NULL DEFAULT 0`);
+    }
+  }
+}
+
 async function migrateStockAdjustmentsTables(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS stock_adjustments (
@@ -955,6 +1116,15 @@ async function migrateStockAdjustmentsTables(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_adj_items_adj ON stock_adjustment_items(adjustment_id);
   `);
+  if (!(await tableHasColumn(db, "stock_adjustment_items", "batch_source"))) {
+    await db.run(
+      `ALTER TABLE stock_adjustment_items ADD COLUMN batch_source TEXT
+       CHECK (batch_source IS NULL OR batch_source IN ('dated', 'undated'))`
+    );
+  }
+  if (!(await tableHasColumn(db, "stock_adjustment_items", "expiry_date"))) {
+    await db.run("ALTER TABLE stock_adjustment_items ADD COLUMN expiry_date TEXT");
+  }
 }
 
 async function migrateInventoryDocumentsTables(db) {
@@ -990,6 +1160,17 @@ async function migrateInventoryDocumentsTables(db) {
     CREATE INDEX IF NOT EXISTS idx_inv_docs_status ON inventory_documents(status);
     CREATE INDEX IF NOT EXISTS idx_inv_doc_items_doc ON inventory_document_items(document_id);
     CREATE INDEX IF NOT EXISTS idx_inv_doc_items_product ON inventory_document_items(product_id);
+  `);
+  if (!(await tableHasColumn(db, "inventory_document_items", "batch_source"))) {
+    await db.run(
+      `ALTER TABLE inventory_document_items ADD COLUMN batch_source TEXT
+       CHECK (batch_source IS NULL OR batch_source IN ('dated', 'undated'))`
+    );
+  }
+  if (!(await tableHasColumn(db, "inventory_document_items", "expiry_date"))) {
+    await db.run("ALTER TABLE inventory_document_items ADD COLUMN expiry_date TEXT");
+  }
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS inventory_document_sequences (
       doc_type TEXT PRIMARY KEY CHECK (doc_type IN ('receipt','issue')),
       last_seq INTEGER NOT NULL DEFAULT 0
@@ -1293,6 +1474,42 @@ async function migratePromotionsExtended(db) {
   `);
 }
 
+const OPERATIONAL_WAREHOUSES = [
+  { type: "main", name: "المخزن الرئيسي", code: "MAIN" },
+  { type: "returns", name: "مرتجعات", code: "RET" },
+];
+
+async function ensureOperationalWarehouses(db) {
+  const rows = await db.all("SELECT * FROM warehouses ORDER BY id");
+  const keepIds = [];
+  for (const spec of OPERATIONAL_WAREHOUSES) {
+    const existing =
+      rows.find((row) => row.type === spec.type && Number(row.active) !== 0) ||
+      rows.find((row) => row.type === spec.type);
+    if (existing) {
+      keepIds.push(existing.id);
+      await db.run(
+        "UPDATE warehouses SET name = ?, code = COALESCE(NULLIF(code, ''), ?), active = 1 WHERE id = ?",
+        [spec.name, spec.code, existing.id]
+      );
+    } else {
+      const ins = await db.run(
+        "INSERT INTO warehouses (name, code, type, active) VALUES (?, ?, ?, 1)",
+        [spec.name, spec.code, spec.type]
+      );
+      keepIds.push(ins.lastID);
+    }
+  }
+  if (!keepIds.length) return;
+  const extras = await db.all(
+    `SELECT id FROM warehouses WHERE id NOT IN (${keepIds.map(() => "?").join(",")})`,
+    keepIds
+  );
+  for (const extra of extras) {
+    await db.run("UPDATE warehouses SET active = 0 WHERE id = ?", [extra.id]);
+  }
+}
+
 async function migrateWarehousesTables(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS warehouses (
@@ -1333,18 +1550,7 @@ async function migrateWarehousesTables(db) {
     CREATE INDEX IF NOT EXISTS idx_wh_stock_prod ON warehouse_stock(product_id);
     CREATE INDEX IF NOT EXISTS idx_wh_tr_items   ON warehouse_transfer_items(transfer_id);
   `);
-  const count = await db.get("SELECT COUNT(*) AS c FROM warehouses");
-  if (count.c === 0) {
-    const seed = [
-      ["المستودع الرئيسي", "MAIN", "main"],
-      ["مستودع المتجر", "STORE", "store"],
-      ["مستودع المرتجعات", "RET", "returns"],
-      ["مستودع التالف", "DMG", "damaged"],
-    ];
-    for (const [name, code, type] of seed) {
-      await db.run("INSERT INTO warehouses (name, code, type) VALUES (?, ?, ?)", [name, code, type]);
-    }
-  }
+  await ensureOperationalWarehouses(db);
   if (!(await tableHasColumn(db, "warehouse_transfers", "inventory_business_day"))) {
     await db.run("ALTER TABLE warehouse_transfers ADD COLUMN inventory_business_day TEXT");
   }
@@ -2075,6 +2281,29 @@ async function migrateSuspendedSalesTables(db) {
   `);
 }
 
+async function migrateSuspendedSaleConcurrency(db) {
+  const cols = [
+    ["version", "INTEGER NOT NULL DEFAULT 1"],
+    ["idempotency_key", "TEXT"],
+    ["payload_fingerprint", "TEXT"],
+    ["customer_id", "INTEGER REFERENCES customers(id)"],
+    ["employee_id", "INTEGER REFERENCES employees(id)"],
+  ];
+  for (const [col, type] of cols) {
+    if (!(await tableHasColumn(db, "suspended_sales", col))) {
+      await db.run(`ALTER TABLE suspended_sales ADD COLUMN ${col} ${type}`);
+    }
+  }
+  await db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_suspended_sales_idempotency
+      ON suspended_sales(idempotency_key) WHERE idempotency_key IS NOT NULL
+  `);
+  await db.run(`
+    CREATE INDEX IF NOT EXISTS idx_transactions_cashier_created
+      ON transactions(cashier_id, created_at, id)
+  `);
+}
+
 async function migrateRefundRequestsTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS refund_requests (
@@ -2212,6 +2441,8 @@ async function migrateShopConsumption(db) {
       business_day TEXT NOT NULL,
       reason TEXT,
       total_cost REAL NOT NULL,
+      discount REAL NOT NULL DEFAULT 0,
+      rounding_adjustment REAL NOT NULL DEFAULT 0,
       operating_expense_id INTEGER UNIQUE REFERENCES operating_expenses(id),
       idempotency_key TEXT UNIQUE,
       payload_fingerprint TEXT,
@@ -2228,8 +2459,10 @@ async function migrateShopConsumption(db) {
       unit_name TEXT,
       conversion_to_base REAL NOT NULL,
       base_quantity REAL NOT NULL,
-      unit_cost REAL NOT NULL,
-      line_cost REAL NOT NULL
+      unit_cost REAL,
+      line_cost REAL,
+      unit_price REAL,
+      line_amount REAL
     );
     CREATE INDEX IF NOT EXISTS idx_shop_consumptions_shift ON shop_consumptions(shift_id);
     CREATE INDEX IF NOT EXISTS idx_shop_consumption_items_consumption
@@ -2240,6 +2473,60 @@ async function migrateShopConsumption(db) {
     await db.run(
       "INSERT INTO expense_categories (name, name_ar, active) VALUES ('shop_consumption', 'مصاريف محل', 1)"
     );
+  }
+}
+
+/**
+ * Expense amount is the selling price. Acquisition cost stays on unit_cost
+ * and may be null when the product cost is unknown.
+ */
+async function migrateShopConsumptionExpensePrice(db) {
+  const info = await db.all("PRAGMA table_info(shop_consumption_items)");
+  if (info.length) {
+    const unitCost = info.find((column) => column.name === "unit_cost");
+    const hasPrice = info.some((column) => column.name === "unit_price");
+    if (unitCost && Number(unitCost.notnull) === 1) {
+      await db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE shop_consumption_items_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          consumption_id INTEGER NOT NULL REFERENCES shop_consumptions(id),
+          product_id INTEGER NOT NULL REFERENCES products(id),
+          product_unit_id INTEGER,
+          barcode TEXT,
+          name TEXT NOT NULL,
+          quantity REAL NOT NULL,
+          unit_name TEXT,
+          conversion_to_base REAL NOT NULL,
+          base_quantity REAL NOT NULL,
+          unit_cost REAL,
+          line_cost REAL,
+          unit_price REAL,
+          line_amount REAL
+        );
+        INSERT INTO shop_consumption_items_new (
+          id, consumption_id, product_id, product_unit_id, barcode, name, quantity, unit_name,
+          conversion_to_base, base_quantity, unit_cost, line_cost, unit_price, line_amount
+        )
+        SELECT id, consumption_id, product_id, product_unit_id, barcode, name, quantity, unit_name,
+               conversion_to_base, base_quantity, unit_cost, line_cost, NULL, NULL
+        FROM shop_consumption_items;
+        DROP TABLE shop_consumption_items;
+        ALTER TABLE shop_consumption_items_new RENAME TO shop_consumption_items;
+        CREATE INDEX IF NOT EXISTS idx_shop_consumption_items_consumption
+          ON shop_consumption_items(consumption_id);
+        PRAGMA foreign_keys = ON;
+      `);
+    } else if (!hasPrice) {
+      await db.run("ALTER TABLE shop_consumption_items ADD COLUMN unit_price REAL");
+      await db.run("ALTER TABLE shop_consumption_items ADD COLUMN line_amount REAL");
+    }
+  }
+  if (!(await tableHasColumn(db, "shop_consumptions", "discount"))) {
+    await db.run("ALTER TABLE shop_consumptions ADD COLUMN discount REAL NOT NULL DEFAULT 0");
+  }
+  if (!(await tableHasColumn(db, "shop_consumptions", "rounding_adjustment"))) {
+    await db.run("ALTER TABLE shop_consumptions ADD COLUMN rounding_adjustment REAL NOT NULL DEFAULT 0");
   }
 }
 
@@ -3310,6 +3597,141 @@ async function seedSampleProducts(db) {
  * @param {string} dbPath Absolute path to SQLite file
  * @returns {Promise<ReturnType<typeof wrapDb>>}
  */
+async function migrateWarehouseBatchStock(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS warehouse_batch_stock (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+      product_id   INTEGER NOT NULL REFERENCES products(id),
+      expiry_date  TEXT NOT NULL DEFAULT '',
+      quantity     REAL NOT NULL DEFAULT 0,
+      UNIQUE(warehouse_id, product_id, expiry_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wbs_product ON warehouse_batch_stock(product_id);
+  `);
+  if (!(await tableHasColumn(db, "products", "location_status"))) {
+    await db.run("ALTER TABLE products ADD COLUMN location_status TEXT NOT NULL DEFAULT 'located'");
+  }
+  if (!(await tableHasColumn(db, "warehouse_transfer_items", "expiry_date"))) {
+    await db.run("ALTER TABLE warehouse_transfer_items ADD COLUMN expiry_date TEXT");
+  }
+  if (!(await tableHasColumn(db, "warehouse_transfer_items", "batch_source"))) {
+    await db.run("ALTER TABLE warehouse_transfer_items ADD COLUMN batch_source TEXT");
+  }
+  if (!(await tableHasColumn(db, "stock_batch_allocations", "warehouse_id"))) {
+    await db.run("ALTER TABLE stock_batch_allocations ADD COLUMN warehouse_id INTEGER");
+  }
+  if (!(await tableHasColumn(db, "purchase_returns", "warehouse_id"))) {
+    await db.run("ALTER TABLE purchase_returns ADD COLUMN warehouse_id INTEGER");
+  }
+  if (!(await tableHasColumn(db, "purchase_return_items", "batch_source"))) {
+    await db.run("ALTER TABLE purchase_return_items ADD COLUMN batch_source TEXT");
+  }
+  if (!(await tableHasColumn(db, "stock_count_lines", "warehouse_id"))) {
+    await db.run("ALTER TABLE stock_count_lines ADD COLUMN warehouse_id INTEGER");
+  }
+  const indexRow = await db.get(
+    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sc_line_source'"
+  );
+  if (indexRow && !/warehouse_id/i.test(String(indexRow.sql))) {
+    await db.run("DROP INDEX idx_sc_line_source");
+  }
+  await db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_sc_line_source
+     ON stock_count_lines(
+       session_id,
+       product_id,
+       IFNULL(warehouse_id, 0),
+       IFNULL(batch_source, 'product'),
+       IFNULL(expiry_date, '')
+     )
+     WHERE line_origin = 'current'`
+  );
+
+  const moved = await db.all(
+    `SELECT ws.product_id
+       FROM warehouse_stock ws
+       JOIN warehouses w ON w.id = ws.warehouse_id
+      WHERE w.type != 'main' AND ABS(ws.quantity) > 0.0000001
+      GROUP BY ws.product_id`
+  );
+  for (const row of moved) {
+    const placed = await db.get(
+      "SELECT id FROM warehouse_batch_stock WHERE product_id = ? LIMIT 1",
+      [row.product_id]
+    );
+    if (placed) continue;
+    await db.run(
+      "UPDATE products SET location_status = 'needs_reconciliation' WHERE id = ? AND COALESCE(location_status, 'located') = 'located'",
+      [row.product_id]
+    );
+  }
+}
+
+/**
+ * Supplier/receipt quantities under the existing batch and warehouse totals.
+ * Repeated runs keep lots that already exist and do not rebuild them from purchases.
+ */
+async function migrateStockSourceLots(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS stock_source_lots (
+      id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id                INTEGER NOT NULL REFERENCES products(id),
+      warehouse_id              INTEGER NOT NULL REFERENCES warehouses(id),
+      expiry_date               TEXT NOT NULL DEFAULT '',
+      supplier_id               INTEGER REFERENCES suppliers(id),
+      purchase_invoice_id       INTEGER,
+      purchase_invoice_item_id  INTEGER,
+      quantity                  REAL NOT NULL DEFAULT 0,
+      provenance                TEXT NOT NULL CHECK (provenance IN ('receipt', 'unknown', 'assigned')),
+      received_at               TEXT NOT NULL DEFAULT (datetime('now')),
+      assigned_by               INTEGER,
+      assigned_at               TEXT,
+      assignment_note           TEXT,
+      created_at                TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_source_lots_product ON stock_source_lots(product_id, warehouse_id, expiry_date);
+    CREATE INDEX IF NOT EXISTS idx_source_lots_supplier ON stock_source_lots(supplier_id);
+    CREATE TABLE IF NOT EXISTS stock_source_assignments (
+      id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id                INTEGER NOT NULL,
+      from_lot_id               INTEGER NOT NULL,
+      to_lot_id                 INTEGER NOT NULL,
+      supplier_id               INTEGER NOT NULL,
+      purchase_invoice_item_id  INTEGER,
+      quantity                  REAL NOT NULL,
+      expiry_date               TEXT NOT NULL DEFAULT '',
+      warehouse_id              INTEGER NOT NULL,
+      note                      TEXT,
+      assigned_by               INTEGER,
+      created_at                TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  const allocationColumns = [
+    ["source_lot_id", "INTEGER"],
+    ["supplier_id", "INTEGER"],
+    ["purchase_invoice_id", "INTEGER"],
+    ["purchase_invoice_item_id", "INTEGER"],
+    ["source_provenance", "TEXT"],
+  ];
+  for (const [name, type] of allocationColumns) {
+    if (!(await tableHasColumn(db, "stock_batch_allocations", name))) {
+      await db.run(`ALTER TABLE stock_batch_allocations ADD COLUMN ${name} ${type}`);
+    }
+  }
+  if (!(await tableHasColumn(db, "warehouse_transfer_items", "source_lot_id"))) {
+    await db.run("ALTER TABLE warehouse_transfer_items ADD COLUMN source_lot_id INTEGER");
+  }
+  if (!(await tableHasColumn(db, "warehouse_transfer_items", "supplier_id"))) {
+    await db.run("ALTER TABLE warehouse_transfer_items ADD COLUMN supplier_id INTEGER");
+  }
+  if (!(await tableHasColumn(db, "purchase_return_items", "source_lot_id"))) {
+    await db.run("ALTER TABLE purchase_return_items ADD COLUMN source_lot_id INTEGER");
+  }
+  const { backfillAllSourceLots } = await import("../services/stockSourceService.js");
+  await backfillAllSourceLots(db);
+}
+
 export async function initDatabase(dbPath) {
   cacheInvalidate();
   const dir = path.dirname(path.resolve(dbPath));
@@ -3508,6 +3930,7 @@ export async function initDatabase(dbPath) {
   await migrateAdvanceRequestEmployeeLink(db);
   await migrateOperatingExpenseSource(db);
   await migrateShopConsumption(db);
+  await migrateShopConsumptionExpensePrice(db);
   await migrateOperationPrintJobs(db);
   await migrateAttendanceTables(db);
   await migrateAttendanceSessions(db);
@@ -3524,6 +3947,7 @@ export async function initDatabase(dbPath) {
   await migrateProductsBarcodeNullable(db);
   await migrateProductUnitsBarcodeNullable(db);
   await migratePurchaseItemsDiscountBonus(db);
+  await migratePurchaseInvoiceDiscount(db);
   await migrateTransactionItemsScannedBarcode(db);
   await migrateTransactionItemsProductUnit(db);
   await migrateAccountStatementIndexes(db);
@@ -3540,6 +3964,7 @@ export async function initDatabase(dbPath) {
   await migrateSalesInvoicesTables(db);
   await migrateInventoryDocumentsTables(db);
   await migrateSuspendedSalesTables(db);
+  await migrateSuspendedSaleConcurrency(db);
   await migrateFractionalInventoryQuantityTypes(db);
   await migrateRefundPaymentMethodOnAccount(db);
   await migrateCheckoutIdempotencyFingerprint(db);
@@ -3548,6 +3973,9 @@ export async function initDatabase(dbPath) {
   await migrateOnAccountCheckoutNotes(db);
   await migrateTelegramPollRecoveryTables(db);
   await migrateStockBatchesOperational(db);
+  await migrateWarehouseBatchStock(db);
+  await migrateStockSourceLots(db);
+  await migrateStockCountDepartments(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);
@@ -3582,7 +4010,7 @@ export async function initDatabase(dbPath) {
  * database/migrations/archive are never executed. We record the current
  * baseline version so operators can confirm which schema the live DB is on.
  */
-const SCHEMA_VERSION = "2026.09-depletion-adjustment";
+const SCHEMA_VERSION = "2026.10-pos-cashier-history";
 
 async function migratePerfIndexes(db) {
   await db.exec(`

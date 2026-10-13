@@ -138,6 +138,10 @@ describe("known zero cost is separate from unknown cost", () => {
         items: [{ product_id: product.id, unit_id: product.unitId, quantity: 5, total_cost: 58 }],
       });
     expect(created.status).toBe(201);
+    const { moveStockToReturns } = await import("./helpers.js");
+    await moveStockToReturns(ctx.app, ctx.db, adminToken, [
+      { product_id: product.id, unit_id: product.unitId, quantity: 5 },
+    ], supplierId);
     const posted = await request(ctx.app)
       .post(`/api/v1/purchases/returns/${unwrap(created).id}/post`)
       .set(authHeader(adminToken))

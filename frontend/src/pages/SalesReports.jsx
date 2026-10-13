@@ -317,12 +317,10 @@ export default function SalesReports() {
             />
             <CardBody>
               <div className="ui-stat-grid ui-mt-sm">
-                <StatCard label="نقد (إجمالي)" value={ils(dailyReport.cash_total)} icon="finance" />
                 <StatCard label="بطاقة (إجمالي)" value={ils(dailyReport.card_total)} icon="finance" />
                 <StatCard label="مبيعات الذمة" value={ils(dailyReport.on_account_total)} icon="vouchers" />
                 <StatCard label="صافي النقد" value={ils(dailyReport.net_cash_total)} icon="finance" />
                 <StatCard label="صافي البطاقة" value={ils(dailyReport.net_card_total)} icon="finance" />
-                <StatCard label="الباقي المُرجَع" value={ils(dailyReport.change_total)} icon="finance" />
               </div>
             </CardBody>
           </Card>

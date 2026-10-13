@@ -1,9 +1,11 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import Login from "./components/Login";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { SkeletonRows } from "./components/ui/Skeleton";
-import { isAuthenticated, getUser, removeToken } from "./utils/auth";
+import { renewPosSession } from "./apiClient";
+import { isAuthenticated, getToken, getUser, removeToken } from "./utils/auth";
+import { shouldRenewAccessToken } from "./utils/sessionRefresh";
 import { canLoginPos, homePathForRole } from "./utils/roles";
 import "./App.css";
 
@@ -34,9 +36,31 @@ function AuthenticatedHomeRedirect() {
   return <Navigate to={homePathForRole(u?.role)} replace />;
 }
 
+function PosSessionRenewal() {
+  useEffect(() => {
+    const tick = () => {
+      const token = getToken();
+      if (!token || !shouldRenewAccessToken(token)) return;
+      renewPosSession().catch(() => {});
+    };
+    tick();
+    const timer = window.setInterval(tick, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+  return null;
+}
+
 function App() {
   return (
     <div className="app-root">
+      <PosSessionRenewal />
       <Suspense fallback={<PageFallback />}>
         <Routes>
           <Route path="/login" element={<Login />} />

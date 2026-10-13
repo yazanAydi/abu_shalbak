@@ -77,8 +77,38 @@
   padding: 0.25rem;
 }
 
+.purchase-item-editor .stock-count-expiry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
 .purchase-item-editor .purchase-item-editor__total-final {
   font-weight: 600;
+}
+
+.duplicate-product-dialog__focus {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.purchase-summary-discount {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+
+.purchase-summary-discount input {
+  width: 5.5rem;
 }
 
 .purchase-item-editor__toolbar {

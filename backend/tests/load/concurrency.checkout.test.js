@@ -65,8 +65,9 @@ describe("C1/C2/C12 concurrent checkouts", () => {
     60000
   );
 
-  test("C2: limited stock of 5 with 20 concurrent sales records exact oversell", async () => {
-    await h.db.run("UPDATE products SET stock = 5 WHERE id = ?", [h.productId]);
+  test("C2: limited stock of 5 with 20 concurrent sales sells only the eligible units", async () => {
+    await h.db.run("DELETE FROM warehouse_batch_stock WHERE product_id = ?", [h.productId]);
+    await h.db.run("UPDATE products SET stock = 5, location_status = 'located' WHERE id = ?", [h.productId]);
     const baseline = await captureBaseline(h.db);
     const N = 20;
     const results = await Promise.all(
@@ -84,10 +85,10 @@ describe("C1/C2/C12 concurrent checkouts", () => {
     );
 
     const ok = results.filter((r) => r.status === 201);
-    expect(ok).toHaveLength(N);
+    expect(ok).toHaveLength(5);
+    expect(results.filter((r) => r.status >= 400)).toHaveLength(N - 5);
     const stock = await h.db.get("SELECT stock FROM products WHERE id = ?", [h.productId]);
-    expect(Number(stock.stock)).toBe(5 - ok.length);
-    expect(Number(stock.stock)).toBe(-15);
+    expect(Number(stock.stock)).toBe(0);
 
     const receipts = ok.map((r) => unwrap(r).receipt_number);
     await runAndCheckInvariants(h.db, baseline, {
@@ -96,7 +97,7 @@ describe("C1/C2/C12 concurrent checkouts", () => {
     });
 
     // eslint-disable-next-line no-console
-    console.log(`[C2] oversold_units=${ok.length - 5} final_stock=${stock.stock}`);
+    console.log(`[C2] accepted=${ok.length} rejected=${N - ok.length} final_stock=${stock.stock}`);
   }, 30000);
 
   test("C12: same idempotency_key sent 10x concurrently creates one sale", async () => {

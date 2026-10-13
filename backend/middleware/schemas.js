@@ -53,9 +53,18 @@ export const checkoutSchema = z
     message: "payment_method أو payments مطلوب",
   });
 
+const optionalIdempotencyKey = z.preprocess(
+  (v) => (v == null || String(v).trim() === "" ? undefined : String(v).trim()),
+  z.string().min(8).max(100).optional()
+);
+
 export const suspendedSaleCreateSchema = z.object({
   note: z.string().trim().max(500).optional().nullable(),
   items: z.array(checkoutItemSchema).min(1),
+  idempotency_key: optionalIdempotencyKey,
+  version: z.number().int().positive().optional(),
+  customer_id: z.number().int().positive().optional().nullable(),
+  employee_id: z.number().int().positive().optional().nullable(),
 });
 
 const refundLineSchema = z.object({
@@ -67,11 +76,6 @@ const refundLineSchema = z.object({
 });
 
 export const refundItemSchema = refundLineSchema;
-
-const optionalIdempotencyKey = z.preprocess(
-  (v) => (v == null || String(v).trim() === "" ? undefined : String(v).trim()),
-  z.string().min(8).max(100).optional()
-);
 
 export const refundRequestCreateSchema = z.object({
   original_transaction_id: z.coerce.number().int().positive(),
@@ -110,6 +114,14 @@ const shopConsumptionItemSchema = z.object({
     invalid_type_error: "الكمية غير صالحة",
     required_error: "الكمية مطلوبة",
   }),
+  price: z.preprocess(
+    (value) => (value == null || value === "" ? undefined : value),
+    z.coerce
+      .number({ invalid_type_error: "سعر البيع غير صالح" })
+      .finite({ message: "سعر البيع غير صالح" })
+      .nonnegative({ message: "سعر البيع غير صالح" })
+      .optional()
+  ),
 });
 
 export const shopConsumptionPreviewSchema = z.object({
@@ -261,6 +273,8 @@ const inventoryDocumentItemSchema = z
     quantity: z.coerce.number({ invalid_type_error: "الكمية يجب أن تكون أكبر من صفر" }).positive({
       message: "الكمية يجب أن تكون أكبر من صفر",
     }),
+    batch_source: z.enum(["dated", "undated"]).nullish(),
+    expiry_date: z.string().nullish(),
   })
   .superRefine((data, ctx) => {
     if (!data.product_unit_id && !data.unit_id) {

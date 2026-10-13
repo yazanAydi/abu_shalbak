@@ -465,7 +465,7 @@ describe("physical multi-currency drawer", () => {
     expect(Math.abs(Number(reconBody.variance))).toBeLessThan(0.02);
   });
 
-  test("blocks ILS change when the shekel drawer is short", async () => {
+  test("posts ILS change when the shekel drawer cannot cover it", async () => {
     const usd = await ctx.db.get("SELECT * FROM currencies WHERE code = 'USD'");
     await ctx.db.run("UPDATE cashier_shifts SET status = 'closed' WHERE id = ?", [shiftId]);
     await ctx.db.run("INSERT INTO app_settings (key, value) VALUES ('default_opening_cash', '10') ON CONFLICT(key) DO UPDATE SET value = '10'");
@@ -476,7 +476,7 @@ describe("physical multi-currency drawer", () => {
     const shortShift = start.body.data?.shift_id ?? start.body.shift_id;
     await ctx.db.run("UPDATE cashier_shifts SET opening_cash = 10 WHERE id = ?", [shortShift]);
 
-    const blocked = await request(ctx.app)
+    const posted = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
       .send(withCheckoutKey({
@@ -484,8 +484,16 @@ describe("physical multi-currency drawer", () => {
         payment_method: "cash",
         payments: [{ method: "cash", currency_id: usd.id, original_amount: 10 }],
       }));
-    expect(blocked.status).toBe(400);
-    expect(blocked.body.code || blocked.body.data?.code).toBe("INSUFFICIENT_CHANGE");
+    expect(posted.status).toBe(201);
+    const postedBody = posted.body.data ?? posted.body;
+    expect(postedBody.total).toBe(5);
+    expect(JSON.stringify(posted.body)).not.toMatch(/INSUFFICIENT_CHANGE|غير كاف/);
+    const tx = await ctx.db.get(
+      "SELECT change_amount, change_original_amount FROM transactions WHERE id = ?",
+      [postedBody.transaction_id]
+    );
+    expect(Number(tx.change_amount)).toBeCloseTo(31, 2);
+    expect(Number(tx.change_original_amount)).toBeCloseTo(31, 2);
 
     const withUsdChange = await request(ctx.app)
       .post("/api/v1/checkout")

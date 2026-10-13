@@ -5,6 +5,7 @@ import {
   login,
   authHeader,
   withCheckoutKey,
+  moveStockToReturns,
 } from "./helpers.js";
 import { upsertProductUnit } from "../utils/productUnits.js";
 import { round2 } from "../utils/money.js";
@@ -55,6 +56,7 @@ describe("purchase inventory policy (returns, discount, fractional)", () => {
       .set(authHeader(adminToken))
       .send({ supplier_id: supplierId, items });
     expect(create.status).toBe(201);
+    await moveStockToReturns(ctx.app, ctx.db, adminToken, items, supplierId);
     const post = await request(ctx.app)
       .post(`/api/purchases/returns/${create.body.id}/post`)
       .set(authHeader(adminToken))

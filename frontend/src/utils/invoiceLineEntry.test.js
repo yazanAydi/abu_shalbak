@@ -1,4 +1,4 @@
-import { completeInvoiceLines, validateInvoiceLine } from "./invoiceLineEntry";
+import { completeInvoiceLines, findDuplicateProductLine, validateInvoiceLine } from "./invoiceLineEntry";
 
 describe("invoiceLineEntry", () => {
   test("requires a product then a positive quantity", () => {
@@ -15,5 +15,16 @@ describe("invoiceLineEntry", () => {
     ]);
     expect(lines).toHaveLength(2);
     expect(lines.map((l) => l.expiry_date)).toEqual(["2027-01-01", "2028-06-01"]);
+  });
+
+  test("duplicate detection uses product id and skips the line being edited", () => {
+    const items = [
+      { product_id: 4, name: "حليب" },
+      { product_id: 9, name: "خبز" },
+    ];
+    expect(findDuplicateProductLine(items, 4, 0)).toBeNull();
+    expect(findDuplicateProductLine(items, "4", 1)?.name).toBe("حليب");
+    expect(findDuplicateProductLine(items, 9, 1)).toBeNull();
+    expect(findDuplicateProductLine(items, "nope", 0)).toBeNull();
   });
 });

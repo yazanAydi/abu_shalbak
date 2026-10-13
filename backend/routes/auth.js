@@ -102,6 +102,33 @@ export function createAuthRouter(db) {
     }
   });
 
+  router.post("/refresh", requireAuth, async (req, res, next) => {
+    try {
+      const row = await db.get("SELECT * FROM users WHERE id = ?", [req.user.id]);
+      if (!row) {
+        return res.status(401).json({
+          success: false,
+          error: "انتهت الجلسة. سجّل الدخول من جديد",
+          code: "SESSION_REVOKED",
+        });
+      }
+      const token = signAccessToken(row);
+      await revokePresentedSession(db, req.auth);
+      res.json({
+        token,
+        user: {
+          id: row.id,
+          username: row.username,
+          role: row.role,
+          must_change_password: !!row.must_change_password,
+          permissions: await resolveUserPermissions(db, row),
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.post("/logout", requireAuth, async (req, res, next) => {
     try {
       await revokePresentedSession(db, req.auth);

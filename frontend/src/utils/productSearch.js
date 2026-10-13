@@ -26,7 +26,7 @@ export async function searchProductsApi(query, opts = {}) {
 
   let rows = Array.isArray(data?.data ?? data) ? (data?.data ?? data) : [];
 
-  if (rows.length === 0 && /^\d+$/.test(normalizeBarcode(q))) {
+  if (rows.length === 0 && !opts.scope && !opts.membership && /^\d+$/.test(normalizeBarcode(q))) {
     try {
       const hit = await lookupProductByBarcode(q);
       if (hit) rows = [hit];

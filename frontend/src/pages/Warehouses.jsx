@@ -1,6 +1,9 @@
 import { apiErrorMessage } from "../utils/apiError";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useSubmitGuard } from "../hooks/useSubmitGuard";
 import { todayISO } from "../utils/format";
+import { storePurchaseReturnPrefill } from "../utils/purchaseReturnPrefill";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
@@ -13,8 +16,8 @@ import {
   FormField, FormGrid, Input, Select, Textarea, Icon, ReportToolbar, FilterBar, HelpPanel, useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
-
-const WH_TYPES = { main: "رئيسي", store: "متجر", returns: "مرتجعات", damaged: "تالف" };
+import { batchSourceLabel } from "../utils/stockBatchLabels";
+import { warehouseChoiceLabel, warehouseDisplayName, warehouseTypeLabel } from "../utils/inventoryLabels";
 
 function formatUnitCost(value) {
   const n = Number(value);
@@ -27,9 +30,13 @@ function qtyWithUnit(row) {
   return row.unit_name ? `${qty} ${row.unit_name}` : qty;
 }
 
+const RETURN_PAGE_SIZE = 25;
+
 export default function Warehouses({ workspace = null }) {
   const isBakery = workspace === "bakery";
   const toast = useToast();
+  const navigate = useNavigate();
+  const guardSubmit = useSubmitGuard();
   const [tab, setTab] = useState("warehouses");
   const [warehouses, setWarehouses] = useState([]);
   const [stock, setStock] = useState([]);
@@ -39,9 +46,19 @@ export default function Warehouses({ workspace = null }) {
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [qDebounced, setQDebounced] = useState("");
-
-  const [showWh, setShowWh] = useState(false);
-  const [whForm, setWhForm] = useState({ name: "", code: "", type: "store" });
+  const [returnSupplier, setReturnSupplier] = useState(null);
+  const [supplierQuery, setSupplierQuery] = useState("");
+  const [supplierHits, setSupplierHits] = useState([]);
+  const [returnRows, setReturnRows] = useState([]);
+  const [returnTotal, setReturnTotal] = useState(0);
+  const [returnPage, setReturnPage] = useState(0);
+  const [returnLoading, setReturnLoading] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedLots, setSelectedLots] = useState({});
+  const [assignLot, setAssignLot] = useState(null);
+  const [assignSuppliers, setAssignSuppliers] = useState([]);
+  const [assignSupplierId, setAssignSupplierId] = useState("");
+  const [assignQty, setAssignQty] = useState("");
 
   const [showTransfer, setShowTransfer] = useState(false);
   const [transferForm, setTransferForm] = useState({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: todayISO(), notes: "" });
@@ -86,21 +103,158 @@ export default function Warehouses({ workspace = null }) {
   useEffect(() => { loadWarehouses(); }, [loadWarehouses]);
   useEffect(() => { if (tab !== "warehouses") loadTab(tab); else setLoading(false); }, [tab, loadTab]);
 
-  async function saveWh() {
-    if (!whForm.name.trim()) { toast.error("الاسم مطلوب"); return; }
-    try {
-      await api.post("/api/warehouses", whForm, { headers: getAuthHeaders() });
-      toast.success("تمت الإضافة"); setShowWh(false); setWhForm({ name: "", code: "", type: "store" }); loadWarehouses();
-    } catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
-  }
-  async function removeWh(id) {
-    if (!window.confirm("حذف المستودع؟")) return;
-    try { await api.delete(`/api/warehouses/${id}`, { headers: getAuthHeaders() }); toast.success("تم"); loadWarehouses(); }
-    catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
+  useEffect(() => {
+    setSelectedLots({});
+    setSelectMode(false);
+    setReturnPage(0);
+    setReturnRows([]);
+    setReturnTotal(0);
+  }, [returnSupplier, qDebounced, isBakery]);
+
+  useEffect(() => {
+    if (!assignLot) return undefined;
+    let cancelled = false;
+    api.get("/api/suppliers", { headers: getAuthHeaders(), params: { all: "1" } })
+      .then(({ data }) => { if (!cancelled) setAssignSuppliers(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancelled) setAssignSuppliers([]); });
+    return () => { cancelled = true; };
+  }, [assignLot]);
+
+  useEffect(() => {
+    if (tab !== "stock") return undefined;
+    const query = supplierQuery.trim();
+    if (query.length < 1) {
+      setSupplierHits([]);
+      return undefined;
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        const { data } = await api.get("/api/suppliers", {
+          headers: getAuthHeaders(),
+          params: { q: query },
+        });
+        setSupplierHits(Array.isArray(data) ? data : []);
+      } catch {
+        setSupplierHits([]);
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [supplierQuery, tab]);
+
+  const loadReturnLots = useCallback(async (page = returnPage) => {
+    if (!returnSupplier) return { rows: [], total: 0 };
+    const params = {
+      limit: RETURN_PAGE_SIZE,
+      offset: page * RETURN_PAGE_SIZE,
+    };
+    if (isBakery) params.membership = "bakery";
+    if (qDebounced) params.q = qDebounced;
+    if (returnSupplier.unknown) params.unknown = "1";
+    else params.supplier_id = returnSupplier.id;
+    const { data } = await api.get("/api/warehouses/returns-stock", { headers: getAuthHeaders(), params });
+    return { rows: data?.rows || [], total: Number(data?.total) || 0 };
+  }, [returnSupplier, returnPage, isBakery, qDebounced]);
+
+  useEffect(() => {
+    if (tab !== "stock" || !returnSupplier) return undefined;
+    let cancelled = false;
+    setReturnLoading(true);
+    loadReturnLots(returnPage)
+      .then((result) => {
+        if (cancelled) return;
+        setReturnRows(result.rows);
+        setReturnTotal(result.total);
+      })
+      .catch((e) => {
+        if (!cancelled) toast.error(apiErrorMessage(e, "تعذّر تحميل مرتجعات المورد"));
+      })
+      .finally(() => {
+        if (!cancelled) setReturnLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [tab, returnSupplier, returnPage, loadReturnLots, toast]);
+
+  async function fetchAllReturnLots() {
+    const params = { limit: "all", offset: 0 };
+    if (isBakery) params.membership = "bakery";
+    if (qDebounced) params.q = qDebounced;
+    params.supplier_id = returnSupplier.id;
+    const { data } = await api.get("/api/warehouses/returns-stock", { headers: getAuthHeaders(), params });
+    return data?.rows || [];
   }
 
-  function addItem(p) {
-    setTransferItems((prev) => prev.some((x) => x.product_id === p.id) ? prev : [...prev, { product_id: p.id, name: p.name, quantity: 1 }]);
+  function openPurchaseReturn(rows) {
+    const lines = rows.filter((row) => row.eligible && Number(row.quantity) > 0);
+    if (!returnSupplier?.id || lines.length === 0) return;
+    storePurchaseReturnPrefill({
+      supplierId: returnSupplier.id,
+      lines: lines.map((row) => ({
+        product_id: row.product_id,
+        product_name: row.product_name,
+        barcode: row.barcode,
+        quantity: row.quantity,
+        available: row.quantity,
+        expiry_date: row.expiry_date,
+        batch_source: row.batch_source,
+        source_lot_id: row.source_lot_id,
+        receipt_reference: row.receipt_reference,
+        show_receipt_reference: row.show_receipt_reference,
+      })),
+    });
+    navigate(`${isBakery ? "/bakery/returns" : "/purchases"}?prefill=1`);
+  }
+
+  const selectedList = Object.values(selectedLots);
+  const pageEligible = returnRows.filter((row) => row.eligible);
+  const pageAllSelected = pageEligible.length > 0 && pageEligible.every((row) => selectedLots[row.source_lot_id]);
+  const returnPageCount = Math.max(1, Math.ceil(returnTotal / RETURN_PAGE_SIZE));
+
+  function sourceLabel(it) {
+    if (it.supplier_name || it.source_lot_id || it.supplier_id) {
+      const who = it.supplier_name || "غير معروف";
+      const expiry = it.batch_source === "undated" || !it.expiry_date ? "بدون تاريخ صلاحية" : dateOnly(it.expiry_date);
+      const receipt = (it.show_receipt_reference && it.receipt_reference)
+        ? ` — ${it.receipt_reference}`
+        : (it.invoice_no ? ` — فاتورة ${it.invoice_no}` : "");
+      return `${who} — ${expiry}${receipt}`;
+    }
+    const source = it.batch_source === "dated" || it.batch_source === "undated"
+      ? it.batch_source
+      : (it.expiry_date ? "dated" : "undated");
+    return batchSourceLabel(source, it.expiry_date);
+  }
+  async function addItem(p) {
+    if (!transferForm.from_warehouse_id) { toast.error("اختر المستودع المصدر أولاً"); return; }
+    try {
+      const { data } = await api.get(`/api/warehouses/${transferForm.from_warehouse_id}/sources`, {
+        headers: getAuthHeaders(),
+        params: { product_id: p.id },
+      });
+      const sources = Array.isArray(data) ? data : [];
+      if (sources.length === 0) { toast.error("لا توجد كمية في المستودع المصدر"); return; }
+      setTransferItems((prev) => {
+        const next = [...prev];
+        for (const source of sources) {
+          const key = `${p.id}:${source.source_lot_id || source.batch_source}:${source.expiry_date || ""}`;
+          if (next.some((row) => row.key === key)) continue;
+          next.push({
+            key,
+            product_id: p.id,
+            name: p.name,
+            batch_source: source.batch_source,
+            expiry_date: source.expiry_date,
+            source_lot_id: source.source_lot_id || null,
+            supplier_id: source.supplier_id || null,
+            supplier_name: source.supplier_name || (source.supplier_id ? "" : "غير معروف"),
+            receipt_reference: source.receipt_reference || null,
+            show_receipt_reference: Boolean(source.show_receipt_reference),
+            available: source.quantity,
+            quantity: source.quantity,
+          });
+        }
+        return next;
+      });
+    } catch (e) { toast.error(apiErrorMessage(e, "تعذّر تحميل المصادر")); }
   }
   async function saveTransfer() {
     if (!transferForm.from_warehouse_id || !transferForm.to_warehouse_id) { toast.error("حدّد المستودعين"); return; }
@@ -108,7 +262,13 @@ export default function Warehouses({ workspace = null }) {
     try {
       const payload = {
         ...transferForm,
-        items: transferItems.map((it) => ({ product_id: it.product_id, quantity: Number(it.quantity) })),
+        items: transferItems.map((it) => ({
+          product_id: it.product_id,
+          quantity: Number(it.quantity),
+          batch_source: it.batch_source || undefined,
+          expiry_date: it.batch_source === "dated" ? it.expiry_date : undefined,
+          source_lot_id: it.source_lot_id || undefined,
+        })),
       };
       if (editId) {
         await api.put(`/api/warehouses/transfers/${editId}`, payload, { headers: getAuthHeaders() });
@@ -145,25 +305,30 @@ export default function Warehouses({ workspace = null }) {
       transfer_date: data.transfer_date?.slice(0, 10) || todayISO(),
       notes: data.notes || "",
     });
-    setTransferItems((data.items || []).map((it) => ({ product_id: it.product_id, name: it.name, quantity: it.quantity })));
+    setTransferItems((data.items || []).map((it) => ({
+      key: `${it.product_id}:${it.batch_source || "auto"}:${it.expiry_date || ""}:${it.id || ""}`,
+      product_id: it.product_id,
+      name: it.name,
+      quantity: it.quantity,
+      batch_source: it.batch_source,
+      expiry_date: it.expiry_date,
+      available: it.quantity,
+    })));
     setEditId(data.id);
     setShowTransfer(true);
   }
 
   const warehouseColumns = [
-    { key: "name", header: "الاسم", value: (w) => w.name, render: (w) => <strong>{w.name}</strong> },
+    { key: "name", header: "الاسم", value: (w) => warehouseDisplayName(w.name, w.type), render: (w) => <strong>{warehouseDisplayName(w.name, w.type)}</strong> },
     { key: "code", header: "الكود", value: (w) => w.code || "—", render: (w) => w.code || "—" },
-    { key: "type", header: "النوع", value: (w) => WH_TYPES[w.type] || w.type, render: (w) => <StatusPill tone="blue" noDot>{WH_TYPES[w.type] || w.type}</StatusPill> },
+    { key: "type", header: "النوع", value: (w) => warehouseTypeLabel(w.type), render: (w) => <StatusPill tone="blue" noDot>{warehouseTypeLabel(w.type)}</StatusPill> },
     { key: "active", header: "الحالة", value: (w) => (w.active ? "مفعّل" : "معطّل"), render: (w) => <StatusPill tone={w.active ? "green" : "neutral"}>{w.active ? "مفعّل" : "معطّل"}</StatusPill> },
-    { key: "actions", header: "", render: (w) => (
-      isBakery ? null : <Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => removeWh(w.id)} />
-    ) },
   ];
 
   const transferColumns = [
     { key: "transfer_no", header: "رقم", value: (t) => `#${t.transfer_no ?? t.id}`, render: (t) => `#${t.transfer_no ?? t.id}` },
-    { key: "from_name", header: "من" },
-    { key: "to_name", header: "إلى" },
+    { key: "from_name", header: "من", value: (t) => warehouseDisplayName(t.from_name), render: (t) => warehouseDisplayName(t.from_name) },
+    { key: "to_name", header: "إلى", value: (t) => warehouseDisplayName(t.to_name), render: (t) => warehouseDisplayName(t.to_name) },
     { key: "transfer_date", header: "التاريخ", value: (t) => dateOnly(t.transfer_date), render: (t) => dateOnly(t.transfer_date) },
     { key: "item_count", header: "الأصناف" },
     { key: "status", header: "الحالة", value: (t) => (t.status === "posted" ? "مرحّل" : "مسودة"), render: (t) => <StatusPill tone={t.status === "posted" ? "green" : "neutral"}>{t.status === "posted" ? "مرحّل" : "مسودة"}</StatusPill> },
@@ -177,7 +342,7 @@ export default function Warehouses({ workspace = null }) {
   ];
 
   const stockColumns = [
-    { key: "warehouse_name", header: "المستودع" },
+    { key: "warehouse_name", header: "المستودع", value: (r) => warehouseDisplayName(r.warehouse_name, r.type), render: (r) => warehouseDisplayName(r.warehouse_name, r.type) },
     { key: "product_name", header: "الصنف" },
     { key: "barcode", header: "الباركود", value: (r) => displayProductBarcode(r), render: (r) => displayProductBarcode(r) },
     { key: "sku", header: "رقم المنتج", value: (r) => displayProductSku(r.sku), render: (r) => displayProductSku(r.sku) },
@@ -188,7 +353,7 @@ export default function Warehouses({ workspace = null }) {
   const valuationColumns = [
     { key: "category_label", header: "التصنيف الحالي", value: (r) => r.category_label || "غير مصنف", render: (r) => r.category_label || "غير مصنف" },
     { key: "product_name", header: "الصنف", value: (r) => r.cross_scope_label ? `${r.product_name || "—"} — ${r.cross_scope_label}` : (r.product_name || "—"), render: (r) => r.cross_scope_label ? `${r.product_name || "—"} — ${r.cross_scope_label}` : (r.product_name || "—") },
-    { key: "warehouse_name", header: "المستودع" },
+    { key: "warehouse_name", header: "المستودع", value: (r) => warehouseDisplayName(r.warehouse_name, r.warehouse_type || r.type), render: (r) => warehouseDisplayName(r.warehouse_name, r.warehouse_type || r.type) },
     { key: "quantity", header: "الكمية", value: (r) => qtyWithUnit(r), render: (r) => qtyWithUnit(r) },
     { key: "unit_cost", header: "تكلفة المخزون", value: (r) => (r.cost_known ? formatUnitCost(r.unit_cost) : "التكلفة غير محددة"), render: (r) => (r.cost_known ? formatUnitCost(r.unit_cost) : "التكلفة غير محددة") },
     { key: "value", header: "القيمة", value: (r) => (r.cost_known ? ils(r.value) : "—"), render: (r) => (r.cost_known ? ils(r.value) : "—") },
@@ -243,8 +408,8 @@ export default function Warehouses({ workspace = null }) {
         icon="warehouses"
         title={isBakery ? "مستودعات المخبز" : "المستودعات"}
         subtitle={isBakery
-          ? "مخزون المخبز المملوك في المستودع الرئيسي. مرتجع المورد المرحّل خرج من الملكية، والتحويل إلى المرتجع أو التالف يبقى مملوكاً."
-          : "مخزون السوبرماركت المملوك في المستودع الرئيسي. مرتجع المورد المرحّل خرج من الملكية، والتحويل إلى المرتجع أو التالف يبقى مملوكاً."}
+          ? "مواد المخبز وأصناف البيع تستخدم المخزن الرئيسي والمرتجعات. مرتجع المورد المرحّل خرج من الملكية."
+          : "السوبرماركت يستخدم المخزن الرئيسي والمرتجعات. مرتجع المورد المرحّل خرج من الملكية."}
         actions={
           <>
             <ReportToolbar
@@ -257,15 +422,14 @@ export default function Warehouses({ workspace = null }) {
               meta={reportConfig.meta}
               disabled={loading && tab !== "warehouses"}
             />
-            {!isBakery && tab === "warehouses" ? <Button icon="plus" onClick={() => setShowWh(true)}>مستودع جديد</Button>
-              : tab === "transfers" ? <Button icon="plus" onClick={() => { setEditId(null); setTransferForm({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: todayISO(), notes: "" }); setTransferItems([]); setShowTransfer(true); }}>تحويل جديد</Button> : null}
+            {tab === "transfers" ? <Button icon="plus" onClick={() => { setEditId(null); setTransferForm({ from_warehouse_id: "", to_warehouse_id: "", transfer_date: todayISO(), notes: "" }); setTransferItems([]); setShowTransfer(true); }}>تحويل جديد</Button> : null}
           </>
         } />
 
       <Tabs active={tab} onChange={setTab} tabs={[
         { id: "warehouses", label: "المستودعات", icon: "warehouses" },
-        ...(isBakery ? [] : [{ id: "transfers", label: "التحويلات", icon: "deliveries" }]),
-        { id: "stock", label: isBakery ? "الرئيسي والمرتجع والتالف" : "تقرير المخزون", icon: "inventory" },
+        { id: "transfers", label: "التحويلات", icon: "deliveries" },
+        { id: "stock", label: "المخزن الرئيسي والمرتجعات", icon: "inventory" },
         { id: "valuation", label: "تقييم المخزون", icon: "finance" },
       ]} />
 
@@ -291,7 +455,61 @@ export default function Warehouses({ workspace = null }) {
               aria-label="بحث بالاسم أو الباركود أو رقم المنتج"
             />
           </FormField>
+          {tab === "stock" && (
+            <FormField label="المورد" className="ui-field--grow">
+              <Input
+                value={returnSupplier ? returnSupplier.name : supplierQuery}
+                onChange={(e) => {
+                  setReturnRows([]);
+                  setReturnTotal(0);
+                  setReturnSupplier(null);
+                  setSupplierQuery(e.target.value);
+                }}
+                placeholder="ابحث عن مورد"
+                aria-label="المورد"
+              />
+            </FormField>
+          )}
         </FilterBar>
+      )}
+
+      {tab === "stock" && supplierHits.length > 0 && !returnSupplier && (
+        <div className="ui-table-wrap" style={{ marginBottom: "0.75rem" }}>
+          {supplierHits.map((supplier) => (
+            <button
+              key={supplier.id}
+              type="button"
+              className="ui-button ui-button--ghost"
+              onClick={() => {
+                setReturnRows([]);
+                setReturnTotal(0);
+                setReturnSupplier({ id: supplier.id, name: supplier.name, unknown: false });
+                setSupplierQuery("");
+                setSupplierHits([]);
+              }}
+            >
+              {supplier.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === "stock" && (
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+          <Button
+            variant={returnSupplier?.unknown ? "primary" : "outline"}
+            onClick={() => {
+              setReturnRows([]);
+              setReturnTotal(0);
+              setReturnSupplier({ id: null, name: "غير معروف", unknown: true });
+            }}
+          >
+            غير معروف
+          </Button>
+          {returnSupplier && (
+            <Button variant="ghost" onClick={() => { setReturnSupplier(null); setSupplierQuery(""); }}>إلغاء اختيار المورد</Button>
+          )}
+        </div>
       )}
 
       {tab === "warehouses" && (
@@ -314,7 +532,7 @@ export default function Warehouses({ workspace = null }) {
         />
       )}
 
-      {tab === "stock" && (
+      {tab === "stock" && !returnSupplier && (
         <DataTable
           loading={loading}
           columns={stockColumns}
@@ -326,6 +544,162 @@ export default function Warehouses({ workspace = null }) {
             : "مخزون السوبرماركت المملوك يظهر في المستودع الرئيسي. مرتجع المورد المرحّل لا يظهر كمخزون مملوك."}
         />
       )}
+
+      {tab === "stock" && returnSupplier && (
+        <>
+          <p style={{ margin: "0 0 0.75rem" }}>
+            {returnSupplier.unknown
+              ? "مخزون مرتجعات بلا مورد. عيّن المورد قبل إنشاء مرتجع شراء."
+              : `بضاعة ${returnSupplier.name} الموجودة في مرتجعات. ${returnTotal} مصدر.`}
+          </p>
+          {!returnSupplier.unknown && (
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+              <Button
+                disabled={returnTotal === 0 || returnLoading}
+                onClick={() => guardSubmit(async () => openPurchaseReturn(await fetchAllReturnLots()))}
+              >
+                {`إنشاء مرتجع شراء للكل (${returnTotal})`}
+              </Button>
+              <Button variant="outline" onClick={() => { setSelectMode((on) => !on); setSelectedLots({}); }}>
+                تحديد أصناف
+              </Button>
+              {selectMode && (
+                <>
+                  <Button
+                    variant="outline"
+                    disabled={returnTotal === 0}
+                    onClick={() => guardSubmit(async () => {
+                      const rows = await fetchAllReturnLots();
+                      const next = {};
+                      rows.filter((row) => row.eligible).forEach((row) => { next[row.source_lot_id] = row; });
+                      setSelectedLots(next);
+                    })}
+                  >
+                    {`تحديد كل النتائج (${returnTotal})`}
+                  </Button>
+                  <Button
+                    disabled={selectedList.length === 0}
+                    onClick={() => guardSubmit(async () => openPurchaseReturn(selectedList))}
+                  >
+                    {`إنشاء مرتجع شراء للمحدد (${selectedList.length})`}
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+          <div className="ui-table-wrap">
+            <table className="ui-table">
+              <thead>
+                <tr>
+                  {selectMode && !returnSupplier.unknown && (
+                    <th>
+                      <label>
+                        <input
+                          type="checkbox"
+                          aria-label="تحديد الصفحة"
+                          checked={pageAllSelected}
+                          onChange={() => {
+                            setSelectedLots((prev) => {
+                              const next = { ...prev };
+                              if (pageAllSelected) pageEligible.forEach((row) => { delete next[row.source_lot_id]; });
+                              else pageEligible.forEach((row) => { next[row.source_lot_id] = row; });
+                              return next;
+                            });
+                          }}
+                        />
+                        {" "}تحديد الصفحة
+                      </label>
+                    </th>
+                  )}
+                  <th>الصنف</th>
+                  <th>الباركود</th>
+                  <th>تاريخ الصلاحية</th>
+                  <th>الكمية المتاحة للإرجاع</th>
+                  {returnSupplier.unknown && <th></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {returnLoading && <tr><td colSpan={6}>جاري التحميل…</td></tr>}
+                {!returnLoading && returnRows.length === 0 && <tr><td colSpan={6}>لا توجد كمية لهذا المورد في مرتجعات</td></tr>}
+                {!returnLoading && returnRows.map((row) => (
+                  <tr key={row.source_lot_id}>
+                    {selectMode && !returnSupplier.unknown && (
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`تحديد ${row.product_name}`}
+                          checked={Boolean(selectedLots[row.source_lot_id])}
+                          onChange={() => setSelectedLots((prev) => {
+                            const next = { ...prev };
+                            if (next[row.source_lot_id]) delete next[row.source_lot_id];
+                            else next[row.source_lot_id] = row;
+                            return next;
+                          })}
+                        />
+                      </td>
+                    )}
+                    <td>{row.product_name}</td>
+                    <td>{displayProductBarcode(row)}</td>
+                    <td>
+                      {row.batch_source === "undated" || !row.expiry_date ? "بدون تاريخ صلاحية" : dateOnly(row.expiry_date)}
+                      {row.show_receipt_reference && row.receipt_reference ? <div>{row.receipt_reference}</div> : null}
+                      {row.supplier_name === "غير معروف" ? <div>غير معروف</div> : null}
+                    </td>
+                    <td>{fmtQty(row.quantity)}</td>
+                    {returnSupplier.unknown && (
+                      <td>
+                        <Button size="sm" variant="outline" onClick={() => {
+                          setAssignLot(row);
+                          setAssignSupplierId("");
+                          setAssignQty(String(row.quantity));
+                        }}>تعيين المورد</Button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {returnTotal > RETURN_PAGE_SIZE && (
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.75rem" }}>
+              <Button variant="outline" disabled={returnPage <= 0} onClick={() => setReturnPage((page) => Math.max(0, page - 1))}>السابق</Button>
+              <span>{`صفحة ${returnPage + 1} من ${returnPageCount}`}</span>
+              <Button variant="outline" disabled={returnPage + 1 >= returnPageCount} onClick={() => setReturnPage((page) => page + 1)}>التالي</Button>
+            </div>
+          )}
+        </>
+      )}
+
+      <Modal open={!!assignLot} title="تعيين مورد للمخزون غير المعروف" onClose={() => setAssignLot(null)}
+        footer={<><Button onClick={() => guardSubmit(async () => {
+          if (!assignLot || !assignSupplierId) { toast.error("اختر المورد"); return; }
+          try {
+            await api.post("/api/inventory/source-lots/assign", {
+              source_lot_id: assignLot.source_lot_id,
+              supplier_id: Number(assignSupplierId),
+              quantity: Number(assignQty),
+              note: "تعيين من مرتجعات",
+            }, { headers: getAuthHeaders() });
+            toast.success("تم تعيين المورد");
+            setAssignLot(null);
+            const result = await loadReturnLots(returnPage);
+            setReturnRows(result.rows);
+            setReturnTotal(result.total);
+          } catch (e) { toast.error(apiErrorMessage(e, "تعذّر التعيين")); }
+        })}>حفظ التعيين</Button><Button variant="secondary" onClick={() => setAssignLot(null)}>إلغاء</Button></>}>
+        {assignLot && (
+          <FormGrid>
+            <FormField label="الصنف"><Input value={assignLot.product_name} readOnly /></FormField>
+            <FormField label="الكمية"><Input type="number" min="0" value={assignQty} onChange={(e) => setAssignQty(e.target.value)} /></FormField>
+            <FormField label="المورد" required>
+              <Select value={assignSupplierId} onChange={(e) => setAssignSupplierId(e.target.value)}>
+                <option value="">— اختر —</option>
+                {assignSuppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
+              </Select>
+            </FormField>
+          </FormGrid>
+        )}
+      </Modal>
 
       {tab === "valuation" && valuation && (
         <>
@@ -375,7 +749,7 @@ export default function Warehouses({ workspace = null }) {
                 <div style={{ marginBottom: "0.35rem" }}>
                   {(group.warehouses || []).map((wh) => (
                     <span key={wh.warehouse_id} style={{ marginInlineEnd: "0.85rem" }}>
-                      {wh.warehouse_name}: {fmtQty(wh.total_qty)}
+                      {warehouseDisplayName(wh.warehouse_name, wh.type)}: {fmtQty(wh.total_qty)}
                       {" — "}
                       {wh.known_value == null
                         ? "التكلفة غير محددة"
@@ -445,28 +819,19 @@ export default function Warehouses({ workspace = null }) {
         </>
       )}
 
-      <Modal open={showWh} title="مستودع جديد" onClose={() => setShowWh(false)}
-        footer={<><Button onClick={saveWh}>حفظ</Button><Button variant="secondary" onClick={() => setShowWh(false)}>إلغاء</Button></>}>
-        <FormGrid>
-          <FormField label="الاسم" required><Input value={whForm.name} onChange={(e) => setWhForm((f) => ({ ...f, name: e.target.value }))} /></FormField>
-          <FormField label="الكود"><Input value={whForm.code} onChange={(e) => setWhForm((f) => ({ ...f, code: e.target.value }))} /></FormField>
-          <FormField label="النوع"><Select value={whForm.type} onChange={(e) => setWhForm((f) => ({ ...f, type: e.target.value }))}>{Object.entries(WH_TYPES).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></FormField>
-        </FormGrid>
-      </Modal>
-
       <Modal open={showTransfer} title={editId ? "تعديل التحويل" : "تحويل بين المستودعات"} onClose={() => { setShowTransfer(false); setEditId(null); }} size="lg"
         footer={<><Button onClick={saveTransfer}>{editId ? "حفظ التعديلات" : "حفظ كمسودة"}</Button><Button variant="secondary" onClick={() => { setShowTransfer(false); setEditId(null); }}>إلغاء</Button></>}>
         <FormGrid>
           <FormField label="من مستودع" required>
-            <Select value={transferForm.from_warehouse_id} onChange={(e) => setTransferForm((f) => ({ ...f, from_warehouse_id: e.target.value }))}>
+            <Select value={transferForm.from_warehouse_id} onChange={(e) => { setTransferForm((f) => ({ ...f, from_warehouse_id: e.target.value })); setTransferItems([]); }}>
               <option value="">— اختر —</option>
-              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+              {warehouses.map((w) => <option key={w.id} value={w.id}>{warehouseChoiceLabel(w)}</option>)}
             </Select>
           </FormField>
           <FormField label="إلى مستودع" required>
             <Select value={transferForm.to_warehouse_id} onChange={(e) => setTransferForm((f) => ({ ...f, to_warehouse_id: e.target.value }))}>
               <option value="">— اختر —</option>
-              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+              {warehouses.map((w) => <option key={w.id} value={w.id}>{warehouseChoiceLabel(w)}</option>)}
             </Select>
           </FormField>
           <FormField label="التاريخ"><Input type="date" value={transferForm.transfer_date} onChange={(e) => setTransferForm((f) => ({ ...f, transfer_date: e.target.value }))} /></FormField>
@@ -483,12 +848,14 @@ export default function Warehouses({ workspace = null }) {
         </div>
         <div className="ui-table-wrap" style={{ marginBottom: "0.75rem" }}>
           <table className="ui-table">
-            <thead><tr><th>الصنف</th><th>الكمية</th><th></th></tr></thead>
+            <thead><tr><th>الصنف</th><th>المورد والصلاحية</th><th>المتاح</th><th>الكمية</th><th></th></tr></thead>
             <tbody>
-              {transferItems.length === 0 && <tr><td colSpan={3} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً</td></tr>}
+              {transferItems.length === 0 && <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>أضف أصنافاً</td></tr>}
               {transferItems.map((it, i) => (
-                <tr key={it.product_id}>
+                <tr key={it.key || `${it.product_id}-${i}`}>
                   <td>{it.name}</td>
+                  <td>{sourceLabel(it)}</td>
+                  <td>{fmtQty(it.available)}</td>
                   <td><QtyStepper className="ui-input" style={{ width: 140 }} min={0} value={it.quantity} onChange={(e) => setTransferItems((prev) => prev.map((x, idx) => idx === i ? { ...x, quantity: e.target.value } : x))} /></td>
                   <td><Button variant="ghost" size="sm" icon="trash" aria-label="حذف" onClick={() => setTransferItems((p) => p.filter((_, idx) => idx !== i))} /></td>
                 </tr>
@@ -504,11 +871,12 @@ export default function Warehouses({ workspace = null }) {
         {detail && (
           <>
             <div className="detail-header">
-              <div>من: <strong>{detail.from_name}</strong> ← إلى: <strong>{detail.to_name}</strong></div>
+              <div>من: <strong>{warehouseDisplayName(detail.from_name)}</strong> ← إلى: <strong>{warehouseDisplayName(detail.to_name)}</strong></div>
             </div>
             <DataTable
               columns={[
                 { key: "name", header: "الصنف" },
+                { key: "source", header: "المورد والصلاحية", render: (it) => sourceLabel(it) },
                 { key: "quantity", header: "الكمية", align: "left", render: (it) => fmtQty(it.quantity) },
               ]}
               rows={detail.items || []}

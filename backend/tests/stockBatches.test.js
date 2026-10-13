@@ -67,12 +67,12 @@ describe("stock batches across purchase, sales invoice, POS, refund", () => {
       (await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId])).stock
     );
     await postPurchase([
-      { product_id: ctx.productId, quantity: 4, total_cost: 40, expiry_date: "2026-01-15" },
-      { product_id: ctx.productId, quantity: 6, total_cost: 60, expiry_date: "2026-08-20" },
+      { product_id: ctx.productId, quantity: 4, total_cost: 40, expiry_date: "2027-01-15" },
+      { product_id: ctx.productId, quantity: 6, total_cost: 60, expiry_date: "2027-08-20" },
     ]);
     const listed = await listStockBatches(ctx.db, ctx.productId);
-    const jan = listed.rows.find((r) => r.expiry_date === "2026-01-15");
-    const aug = listed.rows.find((r) => r.expiry_date === "2026-08-20");
+    const jan = listed.rows.find((r) => r.expiry_date === "2027-01-15");
+    const aug = listed.rows.find((r) => r.expiry_date === "2027-08-20");
     expect(jan.quantity).toBe(4);
     expect(aug.quantity).toBe(6);
     const stockAfter = Number(
@@ -85,7 +85,7 @@ describe("stock batches across purchase, sales invoice, POS, refund", () => {
 
   test("sales invoice FEFO allocates earliest lot first and keeps both dates", async () => {
     const listedBefore = await listStockBatches(ctx.db, ctx.productId);
-    const janBefore = listedBefore.rows.find((r) => r.expiry_date === "2026-01-15")?.quantity || 0;
+    const janBefore = listedBefore.rows.find((r) => r.expiry_date === "2027-01-15")?.quantity || 0;
     const draft = await request(ctx.app)
       .post("/api/v1/sales/invoices")
       .set(authHeader(adminToken))
@@ -103,8 +103,8 @@ describe("stock batches across purchase, sales invoice, POS, refund", () => {
     expect(posted.status).toBe(200);
 
     const listed = await listStockBatches(ctx.db, ctx.productId);
-    const jan = listed.rows.find((r) => r.expiry_date === "2026-01-15");
-    const aug = listed.rows.find((r) => r.expiry_date === "2026-08-20");
+    const jan = listed.rows.find((r) => r.expiry_date === "2027-01-15");
+    const aug = listed.rows.find((r) => r.expiry_date === "2027-08-20");
     expect(jan?.quantity || 0).toBe(Math.max(0, janBefore - 5));
     expect(aug.quantity).toBe(5);
     const detail = await request(ctx.app)
@@ -113,8 +113,8 @@ describe("stock batches across purchase, sales invoice, POS, refund", () => {
     const item = unwrapData(detail.body).items[0];
     const alloc = JSON.parse(item.batch_allocations_json);
     expect(alloc.length).toBeGreaterThanOrEqual(2);
-    expect(alloc.some((a) => a.expiry_date === "2026-01-15")).toBe(true);
-    expect(alloc.some((a) => a.expiry_date === "2026-08-20")).toBe(true);
+    expect(alloc.some((a) => a.expiry_date === "2027-01-15")).toBe(true);
+    expect(alloc.some((a) => a.expiry_date === "2027-08-20")).toBe(true);
   });
 
   test("POS checkout uses the same FEFO lots and duplicate idempotency does not restock", async () => {
@@ -174,12 +174,18 @@ describe("stock batches across purchase, sales invoice, POS, refund", () => {
         items: [{ product_id: pid, quantity: 6, price: 8 }],
         payment_method: "cash",
       }));
-    expect(sell.status).toBe(201);
+    expect(sell.status).toBe(400);
+    expect(sell.body.code || sell.body.error?.code).toBe("INSUFFICIENT_SELLABLE");
     const listed = await listStockBatches(ctx.db, pid);
-    expect(listed.product_stock).toBe(-2);
+    expect(listed.product_stock).toBe(4);
     const unknown = listed.rows.find((r) => r.virtual);
-    expect(unknown.quantity).toBe(-2);
+    expect(unknown.quantity).toBe(4);
     expect(unknown.expiry_date).toBeNull();
+    const sales = await ctx.db.get(
+      "SELECT COUNT(*) AS n FROM transaction_items WHERE product_id = ?",
+      [pid]
+    );
+    expect(Number(sales.n)).toBe(0);
   });
 
   test("refund restores dated lots instead of inventing a new expiry", async () => {

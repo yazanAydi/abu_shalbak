@@ -1,6 +1,7 @@
 import { barcodeLookupKeys, digitsOnly, normalizeBarcodeInput, parseWeightBarcode, findProductByBarcode } from "./barcode.js";
 import { formatProductUnit, findKgUnit, isKgUnit, loadUnitsForProduct, resolveScaleCode } from "./productUnits.js";
 import { isBakeryMaterial, isUnitSaleEnabled } from "./bakeryMembership.js";
+import { sellableQuantity } from "../services/warehouseBatchStock.js";
 
 /**
  * @param {object} db
@@ -192,12 +193,13 @@ export async function buildBarcodeLookupResponse(db, rawCode, options = {}) {
   if (!effectiveUnit) return null;
   if (forPos && bakery && !isUnitSaleEnabled(effectiveUnit)) return null;
 
+  const stock = forPos ? await sellableQuantity(db, product.id) : product.stock;
   const baseResponse = {
     product: {
       id: product.id,
       name: product.name,
       name_en: product.name_en ?? null,
-      stock: product.stock,
+      stock,
       category: product.category,
       tax_rate: product.tax_rate ?? null,
       barcode: product.barcode,
@@ -221,7 +223,7 @@ export async function buildBarcodeLookupResponse(db, rawCode, options = {}) {
     barcode: effectiveUnit.barcode,
     name: product.name,
     price: effectiveUnit.price,
-    stock: product.stock,
+    stock,
     tax_rate: product.tax_rate ?? null,
     inventory_scope: product.inventory_scope || "retail",
     unit_id: effectiveUnit.id,

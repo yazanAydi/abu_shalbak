@@ -25,7 +25,6 @@ describe("historical warehouse valuation", () => {
   let cashierToken;
   let supplierId;
   let mainId;
-  let storeId;
   let returnsId;
   let shiftId;
   let seq = 1000;
@@ -41,7 +40,6 @@ describe("historical warehouse valuation", () => {
     ).lastID;
     const warehouses = unwrap(await request(ctx.app).get("/api/v1/warehouses").set(authHeader(adminToken)));
     mainId = warehouses.find((w) => w.type === "main").id;
-    storeId = warehouses.find((w) => w.type === "store").id;
     returnsId = warehouses.find((w) => w.type === "returns").id;
     const shift = await request(ctx.app).post("/api/v1/shifts/start").set(authHeader(cashierToken)).send({});
     expect(shift.status).toBe(201);
@@ -151,7 +149,7 @@ describe("historical warehouse valuation", () => {
       .set(authHeader(adminToken))
       .send({
         from_warehouse_id: mainId,
-        to_warehouse_id: storeId,
+        to_warehouse_id: returnsId,
         transfer_date: DAY1,
         items: [{ product_id: moved.id, quantity: 4 }],
       });
@@ -165,9 +163,9 @@ describe("historical warehouse valuation", () => {
       .filter((row) => Number(row.product_id) === moved.id && row.cost_known)
       .reduce((sum, row) => round2(sum + Number(row.value)), 0);
     expect(line(after, moved.id, mainId).quantity).toBeCloseTo(6, 3);
-    expect(line(after, moved.id, storeId).quantity).toBeCloseTo(4, 3);
+    expect(line(after, moved.id, returnsId).quantity).toBeCloseTo(4, 3);
     expect(afterCompany).toBeCloseTo(beforeCompany, 2);
-    expect(line(after, moved.id, storeId).unit_cost).toBeCloseTo(5, 2);
+    expect(line(after, moved.id, returnsId).unit_cost).toBeCloseTo(5, 2);
   });
 
   test("supplier return leaves main stock, and customer return, consumption, and damage keep the average", async () => {
@@ -221,6 +219,10 @@ describe("historical warehouse valuation", () => {
         items: [{ product_id: product.id, unit_id: product.unitId, quantity: 2, total_cost: 10 }],
       });
     expect(ret.status).toBe(201);
+    const { moveStockToReturns } = await import("./helpers.js");
+    await moveStockToReturns(ctx.app, ctx.db, adminToken, [
+      { product_id: product.id, unit_id: product.unitId, quantity: 2 },
+    ], supplierId);
     const retPost = await request(ctx.app)
       .post(`/api/v1/purchases/returns/${unwrap(ret).id}/post`)
       .set(authHeader(adminToken));
@@ -506,6 +508,10 @@ describe("historical warehouse valuation", () => {
         items: [{ product_id: over.id, unit_id: over.unitId, quantity: 2, total_cost: 80 }],
       });
     expect(created.status).toBe(201);
+    const { moveStockToReturns } = await import("./helpers.js");
+    await moveStockToReturns(ctx.app, ctx.db, adminToken, [
+      { product_id: over.id, unit_id: over.unitId, quantity: 2 },
+    ], supplierId);
     const posted = await request(ctx.app)
       .post(`/api/v1/purchases/returns/${unwrap(created).id}/post`)
       .set(authHeader(adminToken));
@@ -616,7 +622,7 @@ describe("historical warehouse valuation", () => {
       .set(authHeader(adminToken))
       .send({
         from_warehouse_id: mainId,
-        to_warehouse_id: storeId,
+        to_warehouse_id: returnsId,
         transfer_date: DAY2,
         items: [{ product_id: product.id, quantity: 15 }],
       });
@@ -627,7 +633,7 @@ describe("historical warehouse valuation", () => {
     expect(posted.status).toBe(200);
     const split = await val(quiet);
     expect(line(split, product.id, mainId).quantity).toBeCloseTo(65, 3);
-    expect(line(split, product.id, storeId).quantity).toBeCloseTo(15, 3);
+    expect(line(split, product.id, returnsId).quantity).toBeCloseTo(15, 3);
     const company = (split.lines || [])
       .filter((row) => Number(row.product_id) === product.id && row.cost_known)
       .reduce((sum, row) => round2(sum + Number(row.value)), 0);
@@ -636,7 +642,7 @@ describe("historical warehouse valuation", () => {
     await postPurchase(product, { qty: 10, total: 80, date: later });
     const still = await val(quiet);
     expect(line(still, product.id, mainId).quantity).toBeCloseTo(65, 3);
-    expect(line(still, product.id, storeId).quantity).toBeCloseTo(15, 3);
+    expect(line(still, product.id, returnsId).quantity).toBeCloseTo(15, 3);
     const stillCompany = (still.lines || [])
       .filter((row) => Number(row.product_id) === product.id && row.cost_known)
       .reduce((sum, row) => round2(sum + Number(row.value)), 0);
@@ -670,9 +676,7 @@ describe("historical warehouse valuation", () => {
   });
 
   test("historical valuation groups by the current category and keeps as-of quantities", async () => {
-    const warehouses = unwrap(await request(ctx.app).get("/api/v1/warehouses").set(authHeader(adminToken)));
-    const damagedId = warehouses.find((w) => w.type === "damaged").id;
-    const returnsWh = warehouses.find((w) => w.type === "returns").id;
+    const returnsWh = returnsId;
 
     async function postTransfer(fromId, toId, productId, qty) {
       const draft = await request(ctx.app)
@@ -707,8 +711,7 @@ describe("historical warehouse valuation", () => {
 
     const classified = await makeProduct("تصنيف حالي بلا لقطة", { category: "مشروبات" });
     await postPurchase(classified, { qty: 10, total: 40, date: DAY1 });
-    await postTransfer(mainId, returnsWh, classified.id, 2);
-    await postTransfer(mainId, damagedId, classified.id, 1);
+    await postTransfer(mainId, returnsWh, classified.id, 3);
 
     const changed = await makeProduct("تصنيف تغيّر", { category: "تصنيف قديم" });
     await postPurchase(changed, { qty: 8, total: 24, date: DAY1 });
@@ -772,8 +775,7 @@ describe("historical warehouse valuation", () => {
     const classifiedQtyLedger = classifiedLedger.reduce((sum, row) => sum + Number(row.quantity_delta), 0);
     expect(classifiedQtyLedger).toBeCloseTo(10, 3);
     expect(qtyOf(shop, classified.id, mainId)).toBeCloseTo(7, 3);
-    expect(qtyOf(shop, classified.id, returnsWh)).toBeCloseTo(2, 3);
-    expect(qtyOf(shop, classified.id, damagedId)).toBeCloseTo(1, 3);
+    expect(qtyOf(shop, classified.id, returnsWh)).toBeCloseTo(3, 3);
     expect(knownValue(shop, classified.id)).toBeCloseTo(40, 2);
     expect(rowsOf(shop, classified.id).every((row) => row.category_label === "مشروبات" && row.grouping_label === "التصنيف الحالي")).toBe(true);
     expect(rowsOf(bakery, classified.id)).toHaveLength(0);
@@ -782,12 +784,11 @@ describe("historical warehouse valuation", () => {
       [classified.id]
     );
     const stockQty = (id) => stockRows.filter((row) => Number(row.warehouse_id) === Number(id)).reduce((sum, row) => sum + Number(row.quantity), 0);
-    expect(stockQty(returnsWh)).toBeCloseTo(2, 3);
-    expect(stockQty(damagedId)).toBeCloseTo(1, 3);
+    expect(stockQty(returnsWh)).toBeCloseTo(3, 3);
     const classifiedGroup = (shop.category_groups || []).find((group) => group.category_name === "مشروبات");
     expect(classifiedGroup.grouping_label).toBe("التصنيف الحالي");
     expect(classifiedGroup.warehouses.map((wh) => Number(wh.warehouse_id)).sort()).toEqual(
-      [mainId, returnsWh, damagedId].map(Number).sort()
+      [mainId, returnsWh].map(Number).sort()
     );
     const classifiedKnown = classifiedGroup.lines
       .filter((row) => Number(row.product_id) === classified.id && row.cost_known)

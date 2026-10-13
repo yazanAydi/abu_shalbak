@@ -1,4 +1,5 @@
 import { FormField, Input } from "./ui";
+import { formatSignedMoney } from "../utils/shiftVisa";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
@@ -97,9 +98,11 @@ export default function CashCountFields({ countRows, values, onChange }) {
           <div key={row.code}>
             <FormField
               label={`${row.name} (${row.symbol})`}
-              hint={`المتوقع: ${formatCurrencyAmount(row.symbol, row.expected_original)}${
-                !row.is_base ? ` — سعر الصرف ${Number(row.rate).toFixed(4)}` : ""
-              }`}
+              hint={
+                row.is_base
+                  ? undefined
+                  : `المتوقع: ${formatSignedMoney(row.expected_original, row.symbol)} — سعر الصرف ${Number(row.rate).toFixed(4)}`
+              }
             >
               <Input
                 type="text"

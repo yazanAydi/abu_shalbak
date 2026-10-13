@@ -1,5 +1,6 @@
 import axios from "axios";
-import { getToken, removeToken } from "./utils/auth";
+import { getToken, removeToken, setToken, setUser } from "./utils/auth";
+import { isAccessTokenExpired } from "./utils/sessionRefresh";
 
 /**
  * POS API root. Store/production must be "" (same host that served /pos).
@@ -55,6 +56,44 @@ function unwrapResponse(data) {
   return data;
 }
 
+function authorizationHeader(config) {
+  const headers = config?.headers;
+  if (!headers) return "";
+  const value = headers.Authorization || headers.authorization;
+  return typeof value === "string" ? value : "";
+}
+
+let renewal = null;
+
+/** Issue a new access token from one that is still valid. Does not touch the cashier shift. */
+export function renewPosSession() {
+  if (renewal) return renewal;
+  const token = getToken();
+  if (!token || isAccessTokenExpired(token)) return Promise.resolve(null);
+  renewal = api
+    .post("/api/auth/refresh", {}, { _skipAuthRefresh: true, headers: { Authorization: `Bearer ${token}` } })
+    .then(({ data }) => {
+      const next = data?.token;
+      if (!next) throw new Error("انتهت الجلسة");
+      setToken(next);
+      if (data.user) setUser(data.user);
+      window.dispatchEvent(new Event("pos-token-changed"));
+      return next;
+    })
+    .finally(() => {
+      renewal = null;
+    });
+  return renewal;
+}
+
+function redirectToExpiredLogin() {
+  clearApiCache();
+  removeToken();
+  const loginPath = `${process.env.PUBLIC_URL || ""}/login`;
+  const onLogin = window.location.pathname === loginPath || window.location.pathname.endsWith("/login");
+  if (!onLogin) window.location.replace(`${loginPath}?session=expired`);
+}
+
 api.interceptors.response.use(
   (r) => {
     r.data = unwrapResponse(r.data);
@@ -65,17 +104,37 @@ api.interceptors.response.use(
     }
     return r;
   },
-  (e) => {
-    if (e?.response?.status === 401) {
-      clearApiCache();
-      const url = String(e.config?.url || "");
-      if (!url.includes("/auth/login") && !url.includes("/auth/change-password")) {
-        removeToken();
-        const loginPath = `${process.env.PUBLIC_URL || ""}/login`;
-        const onLogin = window.location.pathname === loginPath || window.location.pathname.endsWith("/login");
-        if (!onLogin) {
-          window.location.replace(`${loginPath}?session=expired`);
+  async (e) => {
+    const status = e?.response?.status;
+    const config = e?.config;
+    const code = e?.response?.data?.code;
+    if (status === 401 && config && !config._skipAuthRefresh && !config._retried) {
+      const current = getToken();
+      const sent = authorizationHeader(config);
+      if (current && sent !== `Bearer ${current}`) {
+        config._retried = true;
+        config.headers = config.headers || {};
+        config.headers.Authorization = `Bearer ${current}`;
+        return api(config);
+      }
+      if (code !== "SESSION_REVOKED" && current && !isAccessTokenExpired(current)) {
+        try {
+          const next = await renewPosSession();
+          if (next) {
+            config._retried = true;
+            config.headers = config.headers || {};
+            config.headers.Authorization = `Bearer ${next}`;
+            return api(config);
+          }
+        } catch {
+          /* the refresh itself failed; fall through to login */
         }
+      }
+    }
+    if (status === 401) {
+      const url = String(config?.url || "");
+      if (!url.includes("/auth/login") && !url.includes("/auth/change-password")) {
+        redirectToExpiredLogin();
       }
     }
     if (e?.response?.data && typeof e.response.data === "object") {

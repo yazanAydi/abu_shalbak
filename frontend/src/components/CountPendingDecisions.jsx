@@ -2,7 +2,7 @@ import { useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { apiErrorMessage } from "../utils/apiError";
-import { ils } from "../utils/format";
+import { formatSignedMoney } from "../utils/shiftVisa";
 import { FormField, Select, PrimaryButton, SecondaryButton, Notice } from "./ui";
 
 const REVIEW_PATH = {
@@ -76,8 +76,10 @@ export default function CountPendingDecisions({
     }
   }
 
+  const empty = pendingRequests.length === 0 && discrepancies.length === 0;
+
   return (
-    <div style={{ marginBottom: "1rem" }}>
+    <div data-testid="count-pending" className={empty ? undefined : "shift-count-card"}>
       {balanced ? null : (
         <Notice tone="warn">
           الوردية غير متوازنة: يوجد نقد أو بضاعة سُلّمت ولم تُسجَّل كحركة، أو قُبل عجزها دون عكس القيد.
@@ -85,20 +87,26 @@ export default function CountPendingDecisions({
       )}
       {error ? <Notice tone="warn">{error}</Notice> : null}
 
-      <h3 className="dashboard-subtitle">طلبات معلّقة على هذه الوردية</h3>
       {pendingRequests.length === 0 ? (
-        <p className="shift-section-empty">لا توجد طلبات معلّقة</p>
+        discrepancies.length === 0 ? (
+          <p className="shift-count-quiet">لا توجد طلبات معلّقة</p>
+        ) : null
       ) : (
-        <ul className="dashboard-stock-list">
+        <>
+          <h3 className="shift-count-card__title">طلبات معلّقة على هذه الوردية</h3>
+          <ul className="shift-pay-list">
           {pendingRequests.map((row) => {
             const key = `${row.kind}:${row.request_id}`;
             return (
-              <li key={key} style={{ display: "block", marginBottom: "0.75rem" }}>
-                <div>
-                  {row.label} — <span className="num">{ils(row.amount)}</span>
+              <li key={key} className="shift-count-pending-item">
+                <div className="shift-count-line">
+                  <span className="shift-count-line__label">{row.label}</span>
+                  <span className="shift-count-money" dir="ltr">
+                    {formatSignedMoney(row.amount)}
+                  </span>
                 </div>
                 {row.can_decide ? (
-                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.35rem" }}>
+                  <div className="shift-count-pending-actions">
                     <PrimaryButton
                       size="sm"
                       type="button"
@@ -132,7 +140,8 @@ export default function CountPendingDecisions({
               </li>
             );
           })}
-        </ul>
+          </ul>
+        </>
       )}
 
       {discrepancies.length === 0 ? null : (
@@ -146,7 +155,7 @@ export default function CountPendingDecisions({
                 <li key={`${row.kind}:${row.request_id}`} style={{ display: "block", marginBottom: "0.75rem" }}>
                   <div>
                     {row.label}
-                    {row.cash_amount != null ? ` — نقد ${ils(row.cash_amount)}` : ""}
+                    {row.cash_amount != null ? ` — نقد ${formatSignedMoney(row.cash_amount)}` : ""}
                     {goods ? ` — بضاعة: ${goods}` : ""}
                     {row.disposition === "loss_accepted" ? " — عجز مقبول" : " — لم يُعد"}
                   </div>

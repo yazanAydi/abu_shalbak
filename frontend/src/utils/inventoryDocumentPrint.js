@@ -1,6 +1,8 @@
 import { buildPrintBrandingHtml, buildPrintedByHtml, A4_PRINT_SHEET_CSS, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
 import { dateOnly, formatDateTimeShopAr, qty as fmtQty } from "./format";
+import { batchSourceLabel } from "./stockBatchLabels";
+import { reasonLabel } from "../pages/inventoryDocuments/constants";
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -23,7 +25,7 @@ export function buildInventoryDocumentPrintHtml(doc, store = {}) {
   const docNo = doc.document_number ?? doc.id;
   const storeName = store.store_name_ar || store.store_name || STORE_NAME_AR;
   const items = doc.items || [];
-  const reason = doc.reason_label || doc.reason || "—";
+  const reason = doc.reason_label || reasonLabel(doc.document_type, doc.reason);
 
   const bodyRows = items
     .map(
@@ -33,6 +35,7 @@ export function buildInventoryDocumentPrintHtml(doc, store = {}) {
         <td>${escapeHtml(it.sku || it.sku_snapshot || "—")}</td>
         <td>${escapeHtml(it.barcode || it.barcode_snapshot || "—")}</td>
         <td>${escapeHtml(it.unit_name || it.unit_name_snapshot || "—")}</td>
+        <td>${escapeHtml(it.batch_source === "dated" || it.batch_source === "undated" ? batchSourceLabel(it.batch_source, it.expiry_date) : (it.expiry_date ? batchSourceLabel("dated", it.expiry_date) : "—"))}</td>
         <td class="num">${escapeHtml(fmtQty(it.quantity))}</td>
         <td class="num">${escapeHtml(fmtQty(it.base_quantity != null ? it.base_quantity : it.quantity))} ${escapeHtml(it.unit_name || "")}</td>
       </tr>`
@@ -69,11 +72,12 @@ export function buildInventoryDocumentPrintHtml(doc, store = {}) {
         <th>الرقم</th>
         <th>الباركود</th>
         <th>الوحدة</th>
+        <th>المصدر</th>
         <th class="num">الكمية</th>
         <th class="num">الكمية الأساسية</th>
       </tr>
     </thead>
-    <tbody>${bodyRows || `<tr><td colspan="7" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
+    <tbody>${bodyRows || `<tr><td colspan="8" style="text-align:center">لا توجد أصناف</td></tr>`}</tbody>
   </table>
   ${buildPrintedByHtml()}
   ${doc.notes ? `<div class="notes"><strong>ملاحظات:</strong> ${escapeHtml(doc.notes)}</div>` : ""}

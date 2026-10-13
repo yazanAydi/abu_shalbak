@@ -1,6 +1,12 @@
 import { Router } from "express";
 import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
-import { round2, computePurchaseInvoiceTotals, applyPurchaseDiscount } from "../utils/tax.js";
+import {
+  round2,
+  computePurchaseInvoiceTotals,
+  applyPurchaseDocumentDiscount,
+  parsePurchaseDiscountPercent,
+  resolvePurchaseListCost,
+} from "../utils/tax.js";
 import { recordMovement } from "../utils/inventory.js";
 import { getAppSettings } from "../utils/settings.js";
 import { getDefaultUnit, toBaseQuantity, refreshUnitCostCache } from "../utils/productUnits.js";
@@ -22,7 +28,7 @@ import {
 } from "../utils/purchaseInventoryCost.js";
 import { parseOverviewRange } from "../utils/financeOverview.js";
 import { postedPurchaseTotalsForDateRange } from "../utils/purchasePeriodTotals.js";
-import { normalizeExpiryDate } from "../utils/expiryDate.js";
+import { interpretExpiryInput } from "../utils/expiryDate.js";
 import {
   applyPurchaseReceiveBatches,
   applyPurchaseReturnBatches,
@@ -136,29 +142,30 @@ async function annotateDocItemsMembership(db, items) {
   return items;
 }
 
-async function normalizeItems(db, items) {
-  if (!Array.isArray(items) || items.length === 0) return null;
+async function normalizeItems(db, items, invoiceDiscountRaw) {
+  const headerDiscount = parsePurchaseDiscountPercent(invoiceDiscountRaw);
+  if (!headerDiscount.ok) return { error: headerDiscount.error };
+  if (!Array.isArray(items) || items.length === 0) return { error: "أصناف غير صالحة" };
   const out = [];
   for (const it of items) {
     const pid = Number(it.product_id);
     const qty = Number(it.quantity);
-    // total_cost is the supplier cost for the whole line quantity (not per unit).
-    // Accept unit_cost (per entered unit) as a fallback for clients that send it.
-    const hasTotal = it.total_cost != null && it.total_cost !== "";
-    const totalCost = hasTotal
-      ? round2(Number(it.total_cost) || 0)
-      : round2((Number(it.unit_cost) || 0) * (Number(qty) || 0));
-    if (!pid || !Number.isFinite(qty) || qty <= 0) return null;
+    if (!pid || !Number.isFinite(qty) || qty <= 0) return { error: "أصناف غير صالحة" };
+    const price = resolvePurchaseListCost(it, qty);
+    if (!price.ok) return { error: price.error };
+    const totalCost = price.totalCost;
+    const expiry = interpretExpiryInput(it.expiry_date);
+    if (!expiry.ok) return { error: "أصناف غير صالحة" };
     const rawUnitId = it.unit_id != null ? Number(it.unit_id) : it.product_unit_id != null ? Number(it.product_unit_id) : null;
     const unit = await resolvePurchaseUnit(db, pid, rawUnitId);
-    const discountPct = Math.min(100, Math.max(0, Number(it.discount_pct) || 0));
+    const lineDiscount = parsePurchaseDiscountPercent(it.discount_pct);
+    if (!lineDiscount.ok) return { error: lineDiscount.error };
     const bonusQty = Math.max(0, Number(it.bonus_quantity) || 0);
     const baseQuantity = toBaseQuantity(qty + bonusQty, unit.conversion);
-    // unit_cost = cost per entered unit (display); base_unit_cost = cost per base
-    // unit (used for weighted-average cost + inventory ledger at posting).
+    // unit_cost stays the pre-discount list price. Posting values stock from
+    // the payable line_total, which already includes line and invoice discounts.
     const unitCost = round6(totalCost / qty);
     const baseUnitCost = baseQuantity > 0 ? round6(totalCost / baseQuantity) : 0;
-    const payableTotal = applyPurchaseDiscount(totalCost, discountPct);
     out.push({
       product_id: pid,
       quantity: qty,
@@ -169,14 +176,15 @@ async function normalizeItems(db, items) {
       unit_name: unit.unit_name,
       conversion_used: unit.conversion,
       base_quantity: baseQuantity,
-      discount_pct: discountPct,
+      discount_pct: lineDiscount.value,
       bonus_quantity: bonusQty,
-      payable_total: payableTotal,
       vat_rate: Number(it.vat_rate),
-      expiry_date: normalizeExpiryDate(it.expiry_date),
+      expiry_date: expiry.date,
+      batch_source: it.batch_source === "dated" || it.batch_source === "undated" ? it.batch_source : null,
+      source_lot_id: Number(it.source_lot_id) > 0 ? Number(it.source_lot_id) : null,
     });
   }
-  return out;
+  return { items: out, invoiceDiscountPct: headerDiscount.value };
 }
 
 async function applyPurchaseInvoicePost(db, inv, items, userId) {
@@ -200,6 +208,8 @@ async function applyPurchaseInvoicePost(db, inv, items, userId) {
       cost: baseUnitCost,
       referenceId: inv.id,
       invoiceItemId: it.id,
+      supplierId: inv.supplier_id,
+      purchaseInvoiceId: inv.id,
     });
     await recordMovement(db, {
       productId: it.product_id,
@@ -252,6 +262,15 @@ async function postPurchaseInvoice(db, invoiceId, userId) {
 }
 
 async function applyPurchaseReturnPost(db, ret, items, userId) {
+  const { operationalWarehouses } = await import("../services/warehouseBatchStock.js");
+  const { returns } = await operationalWarehouses(db);
+  const returnsWarehouseId = returns?.id || null;
+  if (!returnsWarehouseId) {
+    const err = new Error("مستودع المرتجعات غير موجود");
+    err.status = 400;
+    err.code = "WAREHOUSE_NOT_OPERATIONAL";
+    throw err;
+  }
   for (const it of items) {
     const product = await db.get("SELECT stock, cost FROM products WHERE id = ?", [it.product_id]);
     if (!product) continue;
@@ -265,9 +284,12 @@ async function applyPurchaseReturnPost(db, ret, items, userId) {
     await applyPurchaseReturnBatches(db, {
       productId: it.product_id,
       expiryDate: it.expiry_date,
+      batchSource: it.batch_source,
       quantity: baseQty,
       referenceId: ret.id,
       invoiceItemId: it.id,
+      supplierId: ret.supplier_id,
+      sourceLotId: it.source_lot_id,
     });
     await recordMovement(db, {
       productId: it.product_id,
@@ -280,10 +302,14 @@ async function applyPurchaseReturnPost(db, ret, items, userId) {
       userId,
       applyStock: true,
       businessDay: await inventoryDayForDocument(db, ret.return_date),
+      warehouseId: returnsWarehouseId,
     });
   }
   await db.run("UPDATE suppliers SET balance = balance - ? WHERE id = ?", [ret.total, ret.supplier_id]);
-  await db.run("UPDATE purchase_returns SET status = 'posted', posted_at = datetime('now') WHERE id = ?", [ret.id]);
+  await db.run(
+    "UPDATE purchase_returns SET status = 'posted', posted_at = datetime('now'), warehouse_id = ? WHERE id = ?",
+    [returnsWarehouseId, ret.id]
+  );
   return db.get("SELECT * FROM purchase_returns WHERE id = ?", [ret.id]);
 }
 
@@ -339,26 +365,27 @@ export function createPurchasesRouter(db) {
   });
 
   router.post("/orders", requireAuth, requirePurchases, async (req, res, next) => {
-    const { supplier_id, order_date, notes, items } = req.body || {};
+    const { supplier_id, order_date, notes, items, invoice_discount_pct } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = await normalizeItems(db, items);
-    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
-    const total = round2(norm.reduce((s, i) => s + i.payable_total, 0));
+    const norm = await normalizeItems(db, items, invoice_discount_pct);
+    if (!norm?.items) return res.status(400).json({ error: norm?.error || "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const priced = applyPurchaseDocumentDiscount(norm.items, norm.invoiceDiscountPct);
     try {
       const row = await withTransaction(db, async () => {
         const no = await nextNo(db, "purchase_orders", "order_no");
         const ins = await db.run(
-          `INSERT INTO purchase_orders (order_no, supplier_id, order_date, total_amount, notes, created_by)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [no, sid, order_date || shopTodayYmd(), total, notes || null, req.user.id]
+          `INSERT INTO purchase_orders
+             (order_no, supplier_id, order_date, total_amount, discount_pct, invoice_discount_amount, notes, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [no, sid, order_date || shopTodayYmd(), priced.payableTotal, priced.invoiceDiscountPct, priced.invoiceDiscountAmount, notes || null, req.user.id]
         );
-        for (const i of norm) {
+        for (const i of priced.lines) {
           await db.run(
             `INSERT INTO purchase_order_items
-               (order_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity]
+               (order_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, invoice_discount_amount)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.invoice_discount_amount]
           );
         }
         return db.get("SELECT * FROM purchase_orders WHERE id = ?", [ins.lastID]);
@@ -373,25 +400,27 @@ export function createPurchasesRouter(db) {
     const order = await db.get("SELECT * FROM purchase_orders WHERE id = ?", [req.params.id]);
     if (!order) return res.status(404).json({ error: "أمر الشراء غير موجود", code: "NOT_FOUND" });
     if (order.status === "received") return res.status(400).json({ error: "لا يمكن تعديل أمر مستلم", code: "LOCKED" });
-    const { supplier_id, order_date, notes, items } = req.body || {};
+    const { supplier_id, order_date, notes, items, invoice_discount_pct } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = await normalizeItems(db, items);
-    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
-    const total = round2(norm.reduce((s, i) => s + i.payable_total, 0));
+    const norm = await normalizeItems(db, items, invoice_discount_pct);
+    if (!norm?.items) return res.status(400).json({ error: norm?.error || "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const priced = applyPurchaseDocumentDiscount(norm.items, norm.invoiceDiscountPct);
     try {
       const row = await withTransaction(db, async () => {
         await db.run(
-          `UPDATE purchase_orders SET supplier_id = ?, order_date = ?, total_amount = ?, notes = ? WHERE id = ?`,
-          [sid, order_date || order.order_date, total, notes || null, order.id]
+          `UPDATE purchase_orders
+             SET supplier_id = ?, order_date = ?, total_amount = ?, discount_pct = ?, invoice_discount_amount = ?, notes = ?
+           WHERE id = ?`,
+          [sid, order_date || order.order_date, priced.payableTotal, priced.invoiceDiscountPct, priced.invoiceDiscountAmount, notes || null, order.id]
         );
         await db.run("DELETE FROM purchase_order_items WHERE order_id = ?", [order.id]);
-        for (const i of norm) {
+        for (const i of priced.lines) {
           await db.run(
             `INSERT INTO purchase_order_items
-               (order_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [order.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity]
+               (order_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, invoice_discount_amount)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [order.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.invoice_discount_amount]
           );
         }
         return db.get("SELECT * FROM purchase_orders WHERE id = ?", [order.id]);
@@ -530,36 +559,36 @@ export function createPurchasesRouter(db) {
     }
   });
 
-  async function computeInvoiceTotals(db, norm) {
+  async function computeInvoiceTotals(db, items, invoiceDiscountPct) {
     const settings = await getAppSettings(db);
     const def = Number(settings.default_tax_rate) || 0;
-    const { subtotal, vat, total, lines } = computePurchaseInvoiceTotals(norm, def);
-    return { subtotal, vat, total, lines };
+    return computePurchaseInvoiceTotals(items, def, { invoiceDiscountPct });
   }
 
   router.post("/invoices", requireAuth, requirePurchasesOrBakery, async (req, res, next) => {
-    const { supplier_id, order_id, ref_text, invoice_date, notes, items } = req.body || {};
+    const { supplier_id, order_id, ref_text, invoice_date, notes, items, invoice_discount_pct } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = await normalizeItems(db, items);
-    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
-    const { subtotal, vat, total, lines } = await computeInvoiceTotals(db, norm);
+    const norm = await normalizeItems(db, items, invoice_discount_pct);
+    if (!norm?.items) return res.status(400).json({ error: norm?.error || "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const totals = await computeInvoiceTotals(db, norm.items, norm.invoiceDiscountPct);
     try {
       const row = await withTransaction(db, async () => {
         const no = await nextNo(db, "purchase_invoices", "invoice_no");
         const ins = await db.run(
           `INSERT INTO purchase_invoices
-             (invoice_no, supplier_id, order_id, ref_text, invoice_date, status, subtotal, vat, total, notes, created_by)
-           VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`,
+             (invoice_no, supplier_id, order_id, ref_text, invoice_date, status, subtotal, vat, total, discount_pct, invoice_discount_amount, notes, created_by)
+           VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
           [no, sid, order_id ? Number(order_id) : null, ref_text || null,
-           invoice_date || shopTodayYmd(), subtotal, vat, total, notes || null, req.user.id]
+           invoice_date || shopTodayYmd(), totals.subtotal, totals.vat, totals.total,
+           totals.invoiceDiscountPct, totals.invoiceDiscountAmount, notes || null, req.user.id]
         );
-        for (const i of lines) {
+        for (const i of totals.lines) {
           await db.run(
             `INSERT INTO purchase_invoice_items
-               (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date]
+               (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date, invoice_discount_amount)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date, i.invoice_discount_amount]
           );
         }
         return db.get("SELECT * FROM purchase_invoices WHERE id = ?", [ins.lastID]);
@@ -574,27 +603,29 @@ export function createPurchasesRouter(db) {
     const inv = await db.get("SELECT * FROM purchase_invoices WHERE id = ?", [req.params.id]);
     if (!inv) return res.status(404).json({ error: "الفاتورة غير موجودة", code: "NOT_FOUND" });
     if (inv.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل فاتورة مرحّلة", code: "ALREADY_POSTED" });
-    const { supplier_id, ref_text, invoice_date, notes, items } = req.body || {};
+    const { supplier_id, ref_text, invoice_date, notes, items, invoice_discount_pct } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = await normalizeItems(db, items);
-    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
-    const { subtotal, vat, total, lines } = await computeInvoiceTotals(db, norm);
+    const norm = await normalizeItems(db, items, invoice_discount_pct);
+    if (!norm?.items) return res.status(400).json({ error: norm?.error || "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const totals = await computeInvoiceTotals(db, norm.items, norm.invoiceDiscountPct);
     try {
       const row = await withTransaction(db, async () => {
         await db.run(
           `UPDATE purchase_invoices
-             SET supplier_id = ?, ref_text = ?, invoice_date = ?, notes = ?, subtotal = ?, vat = ?, total = ?
+             SET supplier_id = ?, ref_text = ?, invoice_date = ?, notes = ?, subtotal = ?, vat = ?, total = ?,
+                 discount_pct = ?, invoice_discount_amount = ?
            WHERE id = ?`,
-          [sid, ref_text || null, invoice_date || inv.invoice_date, notes || null, subtotal, vat, total, inv.id]
+          [sid, ref_text || null, invoice_date || inv.invoice_date, notes || null, totals.subtotal, totals.vat, totals.total,
+           totals.invoiceDiscountPct, totals.invoiceDiscountAmount, inv.id]
         );
         await db.run("DELETE FROM purchase_invoice_items WHERE invoice_id = ?", [inv.id]);
-        for (const i of lines) {
+        for (const i of totals.lines) {
           await db.run(
             `INSERT INTO purchase_invoice_items
-               (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [inv.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date]
+               (invoice_id, product_id, quantity, total_cost, unit_cost, vat_rate, line_net, line_vat, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date, invoice_discount_amount)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [inv.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.vat_rate, i.line_net, i.line_vat, i.line_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date, i.invoice_discount_amount]
           );
         }
         return db.get("SELECT * FROM purchase_invoices WHERE id = ?", [inv.id]);
@@ -716,26 +747,28 @@ export function createPurchasesRouter(db) {
   });
 
   router.post("/returns", requireAuth, requirePurchases, async (req, res, next) => {
-    const { supplier_id, invoice_id, return_date, notes, items } = req.body || {};
+    const { supplier_id, invoice_id, return_date, notes, items, invoice_discount_pct } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = await normalizeItems(db, items);
-    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
-    const { total, lines } = await computeInvoiceTotals(db, norm);
+    const norm = await normalizeItems(db, items, invoice_discount_pct);
+    if (!norm?.items) return res.status(400).json({ error: norm?.error || "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const totals = await computeInvoiceTotals(db, norm.items, norm.invoiceDiscountPct);
     try {
       const row = await withTransaction(db, async () => {
         const no = await nextNo(db, "purchase_returns", "return_no");
         const ins = await db.run(
-          `INSERT INTO purchase_returns (return_no, supplier_id, invoice_id, return_date, status, total, notes, created_by)
-           VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)`,
-          [no, sid, invoice_id ? Number(invoice_id) : null, return_date || shopTodayYmd(), total, notes || null, req.user.id]
+          `INSERT INTO purchase_returns
+             (return_no, supplier_id, invoice_id, return_date, status, total, discount_pct, invoice_discount_amount, notes, created_by)
+           VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`,
+          [no, sid, invoice_id ? Number(invoice_id) : null, return_date || shopTodayYmd(), totals.total,
+           totals.invoiceDiscountPct, totals.invoiceDiscountAmount, notes || null, req.user.id]
         );
-        for (const i of lines) {
+        for (const i of totals.lines) {
           await db.run(
             `INSERT INTO purchase_return_items
-               (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date]
+               (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date, batch_source, source_lot_id, invoice_discount_amount)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [ins.lastID, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date, i.batch_source || null, i.source_lot_id || null, i.invoice_discount_amount]
           );
         }
         return db.get("SELECT * FROM purchase_returns WHERE id = ?", [ins.lastID]);
@@ -750,12 +783,12 @@ export function createPurchasesRouter(db) {
     const ret = await db.get("SELECT * FROM purchase_returns WHERE id = ?", [req.params.id]);
     if (!ret) return res.status(404).json({ error: "المرتجع غير موجود", code: "NOT_FOUND" });
     if (ret.status === "posted") return res.status(400).json({ error: "لا يمكن تعديل مرتجع مرحّل", code: "ALREADY_POSTED" });
-    const { supplier_id, return_date, notes, items } = req.body || {};
+    const { supplier_id, return_date, notes, items, invoice_discount_pct } = req.body || {};
     const sid = Number(supplier_id);
     if (!sid) return res.status(400).json({ error: "المورد مطلوب", code: "VALIDATION_ERROR" });
-    const norm = await normalizeItems(db, items);
-    if (!norm) return res.status(400).json({ error: "أصناف غير صالحة", code: "VALIDATION_ERROR" });
-    const { total, lines } = await computeInvoiceTotals(db, norm);
+    const norm = await normalizeItems(db, items, invoice_discount_pct);
+    if (!norm?.items) return res.status(400).json({ error: norm?.error || "أصناف غير صالحة", code: "VALIDATION_ERROR" });
+    const totals = await computeInvoiceTotals(db, norm.items, norm.invoiceDiscountPct);
     try {
       const row = await withTransaction(db, async () => {
         const nextInvoiceId =
@@ -766,17 +799,19 @@ export function createPurchasesRouter(db) {
               : null;
         await db.run(
           `UPDATE purchase_returns
-             SET supplier_id = ?, invoice_id = ?, return_date = ?, notes = ?, total = ?
+             SET supplier_id = ?, invoice_id = ?, return_date = ?, notes = ?, total = ?,
+                 discount_pct = ?, invoice_discount_amount = ?
            WHERE id = ?`,
-          [sid, nextInvoiceId, return_date || ret.return_date, notes || null, total, ret.id]
+          [sid, nextInvoiceId, return_date || ret.return_date, notes || null, totals.total,
+           totals.invoiceDiscountPct, totals.invoiceDiscountAmount, ret.id]
         );
         await db.run("DELETE FROM purchase_return_items WHERE return_id = ?", [ret.id]);
-        for (const i of lines) {
+        for (const i of totals.lines) {
           await db.run(
             `INSERT INTO purchase_return_items
-               (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [ret.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date]
+               (return_id, product_id, quantity, total_cost, unit_cost, line_total, product_unit_id, unit_name, conversion_used, base_quantity, discount_pct, bonus_quantity, expiry_date, batch_source, source_lot_id, invoice_discount_amount)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [ret.id, i.product_id, i.quantity, i.total_cost, i.unit_cost, i.payable_total, i.product_unit_id, i.unit_name, i.conversion_used, i.base_quantity, i.discount_pct, i.bonus_quantity, i.expiry_date, i.batch_source || null, i.source_lot_id || null, i.invoice_discount_amount]
           );
         }
         return db.get("SELECT * FROM purchase_returns WHERE id = ?", [ret.id]);

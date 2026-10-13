@@ -12,6 +12,16 @@ import {
   documentTypeTitleAr,
   reasonLabelAr,
 } from "../utils/inventoryDocumentReasons.js";
+import { interpretExpiryInput, normalizeExpiryDate } from "../utils/expiryDate.js";
+import { batchSourceLabelAr } from "../utils/batchSourceLabel.js";
+import {
+  listPhysicalSources,
+  takeExactDatedQuantity,
+  assertUndatedAvailable,
+  recordBatchAllocation,
+  receiveDatedBatch,
+  moveUndatedOnMain,
+} from "./stockBatchService.js";
 
 function isYmd(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
@@ -44,7 +54,14 @@ function mapItemRow(row) {
     barcode_snapshot: row.barcode_snapshot,
     unit_name: row.unit_name_snapshot,
     unit_name_snapshot: row.unit_name_snapshot,
+    batch_source: row.batch_source || null,
+    expiry_date: row.expiry_date || null,
+    source_label: issueSourceLabel(row.batch_source, row.expiry_date),
   };
+}
+
+function issueSourceLabel(source, expiryDate) {
+  return batchSourceLabelAr(source, expiryDate);
 }
 
 export async function getInventoryDocumentById(db, id) {
@@ -173,6 +190,33 @@ async function resolveLine(db, item) {
   };
 }
 
+function parseIssueSource(raw, hasDated) {
+  const source = raw?.batch_source == null || String(raw.batch_source).trim() === ""
+    ? null
+    : String(raw.batch_source).trim();
+  if (!hasDated) {
+    if (source) {
+      throw badRequest("هذا الصنف بلا دفعات مؤرخة", "BATCH_SOURCE_UNEXPECTED");
+    }
+    return { batch_source: null, expiry_date: null };
+  }
+  if (source !== "dated" && source !== "undated") {
+    throw badRequest(
+      "حدد الدفعة أو المخزون غير المحدد. لا يُختار مصدر تلقائياً",
+      "BATCH_SOURCE_REQUIRED"
+    );
+  }
+  if (source === "undated") {
+    if (raw.expiry_date != null && String(raw.expiry_date).trim() !== "") {
+      throw badRequest("المخزون غير المحدد لا يحمل تاريخ صلاحية", "EXPIRY_UNEXPECTED");
+    }
+    return { batch_source: "undated", expiry_date: null };
+  }
+  const ymd = normalizeExpiryDate(raw.expiry_date);
+  if (!ymd) throw badRequest("تاريخ صلاحية الدفعة غير صالح", "INVALID_EXPIRY");
+  return { batch_source: "dated", expiry_date: ymd };
+}
+
 /**
  * Create and complete an inventory document in one atomic transaction.
  * Ledger + stock-cache updates happen inside the same transaction.
@@ -207,11 +251,67 @@ export async function createInventoryDocument(db, req, documentType, body) {
 
     for (const raw of items) {
       const line = await resolveLine(db, raw);
+      if (documentType === "receipt" && (raw?.batch_source != null && String(raw.batch_source).trim() !== "")) {
+        throw badRequest("سند الإدخال لا يخصص دفعة", "BATCH_SOURCE_UNEXPECTED");
+      }
+      let source = documentType === "issue"
+        ? parseIssueSource(raw, (await listPhysicalSources(db, line.product_id)).has_dated_batches)
+        : { batch_source: null, expiry_date: null };
+      if (documentType === "receipt") {
+        const parsed = interpretExpiryInput(raw?.expiry_date);
+        if (!parsed.ok) throw badRequest("تاريخ الصلاحية غير صالح", "INVALID_EXPIRY");
+        const ymd = parsed.date;
+        if (ymd) {
+          await receiveDatedBatch(db, {
+            productId: line.product_id,
+            expiryDate: ymd,
+            quantity: line.base_quantity,
+          });
+          source = { batch_source: "dated", expiry_date: ymd };
+        } else {
+          await moveUndatedOnMain(db, line.product_id, line.base_quantity);
+        }
+        await recordBatchAllocation(
+          db,
+          { expiry_date: ymd, quantity: line.base_quantity },
+          {
+            productId: line.product_id,
+            direction: "in",
+            referenceType: "inventory_receipt",
+            referenceId: docId,
+          }
+        );
+      }
+      if (documentType === "issue" && source.batch_source === "dated") {
+        const taken = await takeExactDatedQuantity(db, line.product_id, source.expiry_date, line.base_quantity);
+        const parts = taken.parts?.length ? taken.parts : [{ expiry_date: source.expiry_date, quantity: line.base_quantity }];
+        for (const part of parts) {
+          await recordBatchAllocation(db, part, {
+            productId: line.product_id,
+            direction: "out",
+            referenceType: "inventory_issue",
+            referenceId: docId,
+          });
+        }
+      } else if (documentType === "issue" && source.batch_source === "undated") {
+        await assertUndatedAvailable(db, line.product_id, line.base_quantity);
+        const parts = await moveUndatedOnMain(db, line.product_id, -line.base_quantity);
+        const rows = parts?.length ? parts : [{ expiry_date: null, quantity: line.base_quantity }];
+        for (const part of rows) {
+          await recordBatchAllocation(db, part, {
+            productId: line.product_id,
+            direction: "out",
+            referenceType: "inventory_issue",
+            referenceId: docId,
+          });
+        }
+      }
       await db.run(
         `INSERT INTO inventory_document_items
            (document_id, product_id, product_unit_id, quantity, conversion_to_base, base_quantity,
-            product_name_snapshot, sku_snapshot, barcode_snapshot, unit_name_snapshot)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            product_name_snapshot, sku_snapshot, barcode_snapshot, unit_name_snapshot,
+            batch_source, expiry_date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           docId,
           line.product_id,
@@ -223,6 +323,8 @@ export async function createInventoryDocument(db, req, documentType, body) {
           line.sku_snapshot,
           line.barcode_snapshot,
           line.unit_name_snapshot,
+          source.batch_source,
+          source.expiry_date,
         ]
       );
       await recordMovement(db, {

@@ -1,6 +1,6 @@
 import { buildPrintBrandingHtml, buildPartyBalanceHtml, buildPrintedByHtml, A4_PRINT_SHEET_CSS, PRINT_BRANDING_CSS, STORE_NAME_AR } from "./printBranding";
 import { printDocumentWhenReady } from "./printDocument";
-import { deriveEffectiveUnitCost, formatDiscountPercent, formatTaxRatePercent, lineHasPurchaseDiscount } from "./purchaseTotals";
+import { deriveEffectiveUnitCost, formatDiscountPercent, formatTaxRatePercent, lineHasPurchaseDiscount, summarizeStoredPurchaseDocument } from "./purchaseTotals";
 import { dateOnly, formatDateTimeShopAr } from "./format";
 
 const STATUS_LABEL = {
@@ -39,6 +39,10 @@ function formatTimestamp(value) {
   return formatDateTimeShopAr(value || new Date());
 }
 
+function lineShowsEffective(it) {
+  return lineHasPurchaseDiscount(it.discount_pct) || Number(it.invoice_discount_amount) > 0;
+}
+
 function itemRowHtml(it, i) {
   return `<tr>
         <td class="num">${i + 1}</td>
@@ -50,7 +54,7 @@ function itemRowHtml(it, i) {
         <td class="num">${money(it.total_cost)}</td>
         <td class="num">${it.discount_pct ? `${escapeHtml(it.discount_pct)}%` : "—"}</td>
         <td class="num">${money(it.unit_cost)}</td>
-        <td class="num">${lineHasPurchaseDiscount(it.discount_pct) ? money(deriveEffectiveUnitCost(it.line_total, it.quantity) || 0) : "—"}</td>
+        <td class="num">${lineShowsEffective(it) ? money(deriveEffectiveUnitCost(it.line_total, it.quantity) || 0) : "—"}</td>
         <td class="num">${money(it.line_total)}</td>
       </tr>`;
 }
@@ -73,28 +77,22 @@ export function buildPurchaseDocPrintHtml(doc, which, store = {}, opts = {}) {
   const vatPercent = formatTaxRatePercent(store.default_tax_rate);
   const storeName = store.store_name_ar || store.store_name || STORE_NAME_AR;
 
-  const listGrossTotal = items.reduce((s, it) => s + (Number(it.total_cost) || 0), 0);
-  const afterDiscount = total;
-  const discountSaved = Math.round((listGrossTotal - afterDiscount) * 100) / 100;
-  const effectiveDiscountPct = listGrossTotal > 0
-    ? Math.round((discountSaved / listGrossTotal) * 10000) / 100
-    : 0;
-  const hasDiscount = discountSaved > 0.005;
-
+  const summary = summarizeStoredPurchaseDocument({ ...doc, total });
   const bodyRows = items.map(itemRowHtml).join("");
+  const listLabel = which === "invoices" ? "المجموع قبل الخصم (يشمل ض.ق.م)" : "المجموع قبل الخصم";
 
   const totalsRows = [
-    `<tr><td>المجموع (يشمل ض.ق.م)</td><td class="num">${money(listGrossTotal)}</td></tr>`,
-    ...(hasDiscount
-      ? [
-          `<tr><td>الخصم ${formatDiscountPercent(effectiveDiscountPct)}%</td><td class="num">${money(discountSaved)}</td></tr>`,
-          `<tr><td>بعد الخصم</td><td class="num">${money(afterDiscount)}</td></tr>`,
-        ]
+    `<tr><td>${listLabel}</td><td class="num">${money(summary.listGrossTotal)}</td></tr>`,
+    ...(summary.lineDiscountTotal > 0.005
+      ? [`<tr><td>خصومات البنود</td><td class="num">${money(summary.lineDiscountTotal)}</td></tr>`]
+      : []),
+    ...(summary.invoiceDiscountAmount > 0.005 || summary.invoiceDiscountPct > 0
+      ? [`<tr><td>خصم الفاتورة ${formatDiscountPercent(summary.invoiceDiscountPct)}%</td><td class="num">${money(summary.invoiceDiscountAmount)}</td></tr>`]
       : []),
     ...(which === "invoices" && vat != null
       ? [`<tr><td>ضريبة ${vatPercent}%</td><td class="num">${money(vat)}</td></tr>`]
       : []),
-    `<tr class="grand"><td>الصافي</td><td class="num">${money(afterDiscount)}</td></tr>`,
+    `<tr class="grand"><td>الصافي</td><td class="num">${money(summary.total)}</td></tr>`,
   ].join("");
 
   return `<!DOCTYPE html>
@@ -155,7 +153,7 @@ export function buildPurchaseDocPrintHtml(doc, which, store = {}, opts = {}) {
         <th class="num">بونص</th>
         <th class="num">كمية الأساس</th>
         <th class="num">إجمالي الكلفة</th>
-        <th class="num">خصم</th>
+        <th class="num">خصم البند</th>
         <th class="num">كلفة الوحدة</th>
         <th class="num">الكلفة الفعلية</th>
         <th class="num">الإجمالي</th>

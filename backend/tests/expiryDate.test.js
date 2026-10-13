@@ -1,5 +1,7 @@
 import {
   calendarDaysBetween,
+  interpretExpiryInput,
+  isRealCalendarYmd,
   normalizeExpiryDate,
   parsePreferredExpiry,
   PREFERRED_AUTO,
@@ -18,6 +20,18 @@ describe("expiryDate", () => {
   test("calendar day difference does not use local Date parse", () => {
     expect(calendarDaysBetween("2026-01-01", "2026-01-08")).toBe(7);
     expect(calendarDaysBetween("2026-01-10", "2026-01-01")).toBe(-9);
+  });
+
+  test("a real calendar date is kept and an impossible one is not", () => {
+    expect(isRealCalendarYmd("2024-02-29")).toBe(true);
+    expect(isRealCalendarYmd("2025-02-29")).toBe(false);
+    expect(isRealCalendarYmd("2026-02-31")).toBe(false);
+    expect(interpretExpiryInput(null)).toEqual({ ok: true, date: null });
+    expect(interpretExpiryInput("")).toEqual({ ok: true, date: null });
+    expect(interpretExpiryInput("2026-03-01T23:00:00.000Z")).toEqual({ ok: true, date: "2026-03-01" });
+    expect(interpretExpiryInput("2026-02-31").ok).toBe(false);
+    expect(interpretExpiryInput("not-a-date").ok).toBe(false);
+    expect(interpretExpiryInput("2026-13-01").ok).toBe(false);
   });
 
   test("preferred expiry parsing", () => {

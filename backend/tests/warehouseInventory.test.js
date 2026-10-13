@@ -69,6 +69,32 @@ describe("warehouse supermarket stock and purchase returns", () => {
     await destroyTestContext(ctx);
   });
 
+  async function attributeReturnsStock(productIdToAssign, quantity) {
+    const lots = await ctx.db.all(
+      `SELECT id, quantity FROM stock_source_lots
+        WHERE product_id = ? AND warehouse_id = ? AND provenance = 'unknown' AND quantity > 0.0000001
+        ORDER BY id`,
+      [productIdToAssign, returnsWarehouse.id]
+    );
+    let need = quantity;
+    for (const lot of lots) {
+      if (need <= 0.0000001) break;
+      const take = Math.min(Number(lot.quantity) || 0, need);
+      const assigned = await request(ctx.app)
+        .post("/api/v1/inventory/source-lots/assign")
+        .set(authHeader(adminToken))
+        .send({
+          source_lot_id: lot.id,
+          supplier_id: supplierId,
+          quantity: take,
+          note: "إسناد مخزون افتتاحي قبل مرتجع المورد",
+        });
+      expect(assigned.status).toBe(200);
+      need -= take;
+    }
+    expect(need).toBeCloseTo(0, 6);
+  }
+
   function findWh(rows, type) {
     const warehouses = Array.isArray(rows) ? rows : rows?.warehouses || [];
     const wanted = type === "main" ? mainWarehouse : returnsWarehouse;
@@ -148,13 +174,24 @@ describe("warehouse supermarket stock and purchase returns", () => {
       unwrap(await request(ctx.app).get("/api/v1/warehouses/valuation").set(authHeader(adminToken))),
       "main"
     );
+    const move = await request(ctx.app)
+      .post("/api/v1/warehouses/transfers")
+      .set(authHeader(adminToken))
+      .send({
+        from_warehouse_id: mainWarehouse.id,
+        to_warehouse_id: returnsWarehouse.id,
+        items: [{ product_id: productId, quantity: 6, batch_source: "undated" }],
+      });
+    expect(move.status).toBe(201);
+    expect((await request(ctx.app).post(`/api/v1/warehouses/transfers/${unwrap(move).id}/post`).set(authHeader(adminToken))).status).toBe(200);
+    await attributeReturnsStock(productId, 6);
     const created = await request(ctx.app)
       .post("/api/v1/purchases/returns")
       .set(authHeader(adminToken))
       .send({
         supplier_id: supplierId,
         return_date: "2026-09-17",
-        items: [{ product_id: productId, unit_id: pieceId, quantity: 6, total_cost: 30 }],
+        items: [{ product_id: productId, unit_id: pieceId, quantity: 6, total_cost: 30, batch_source: "undated" }],
       });
     expect(created.status).toBe(201);
     const ret = unwrap(created);
@@ -244,13 +281,24 @@ describe("warehouse supermarket stock and purchase returns", () => {
     );
     expect(named.some((r) => Number(r.product_id) === Number(bakeryProductId))).toBe(true);
 
+    const move = await request(ctx.app)
+      .post("/api/v1/warehouses/transfers")
+      .set(hdr)
+      .send({
+        from_warehouse_id: mainWarehouse.id,
+        to_warehouse_id: returnsWarehouse.id,
+        items: [{ product_id: bakeryProductId, quantity: 5, batch_source: "undated" }],
+      });
+    expect(move.status).toBe(201);
+    expect((await request(ctx.app).post(`/api/v1/warehouses/transfers/${unwrap(move).id}/post`).set(hdr)).status).toBe(200);
+    await attributeReturnsStock(bakeryProductId, 5);
     const created = await request(ctx.app)
       .post("/api/v1/purchases/returns")
       .set(hdr)
       .send({
         supplier_id: supplierId,
         return_date: "2026-09-17",
-        items: [{ product_id: bakeryProductId, unit_id: ctx.bakeryUnitId, quantity: 5, total_cost: 15 }],
+        items: [{ product_id: bakeryProductId, unit_id: ctx.bakeryUnitId, quantity: 5, total_cost: 15, batch_source: "undated" }],
       });
     expect(created.status).toBe(201);
     const posted = await request(ctx.app)
@@ -283,8 +331,7 @@ describe("warehouse supermarket stock and purchase returns", () => {
   test("transfers out and back keep one company value, including returns and another location", async () => {
     const hdr = authHeader(adminToken);
     const warehouses = unwrap(await request(ctx.app).get("/api/v1/warehouses").set(hdr));
-    const store = warehouses.find((w) => w.type === "store");
-    const damaged = warehouses.find((w) => w.type === "damaged");
+    const returnsWh = warehouses.find((w) => w.type === "returns");
     const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [productId]);
     const stockBefore = Number(product.stock);
     const before = unwrap(await request(ctx.app).get("/api/v1/warehouses/valuation").set(hdr));
@@ -318,10 +365,8 @@ describe("warehouse supermarket stock and purchase returns", () => {
         .reduce((sum, row) => sum + Number(row.quantity), 0);
     }
 
-    await postTransfer(mainWarehouse.id, store.id, 10);
-    await postTransfer(store.id, mainWarehouse.id, 4);
-    await postTransfer(mainWarehouse.id, returnsWarehouse.id, 2);
-    await postTransfer(mainWarehouse.id, damaged.id, 1);
+    await postTransfer(mainWarehouse.id, returnsWh.id, 10);
+    await postTransfer(returnsWh.id, mainWarehouse.id, 4);
 
     const after = unwrap(await request(ctx.app).get("/api/v1/warehouses/valuation").set(hdr));
     const lines = unwrap(await request(ctx.app).get("/api/v1/warehouses/stock").set(hdr));
@@ -329,9 +374,7 @@ describe("warehouse supermarket stock and purchase returns", () => {
     expect(Number(live.stock)).toBeCloseTo(stockBefore, 3);
     expect(after.costing_method).toBe("current_inventory_cost");
     expect(after.known_subtotal).toBeCloseTo(before.known_subtotal, 2);
-    expect(productQty(lines, mainWarehouse.id)).toBeCloseTo(stockBefore - 6 - 2 - 1, 3);
-    expect(productQty(lines, store.id)).toBeCloseTo(6, 3);
-    expect(productQty(lines, returnsWarehouse.id)).toBeCloseTo(2, 3);
-    expect(productQty(lines, damaged.id)).toBeCloseTo(1, 3);
+    expect(productQty(lines, mainWarehouse.id)).toBeCloseTo(stockBefore - 6, 3);
+    expect(productQty(lines, returnsWh.id)).toBeCloseTo(6, 3);
   });
 });

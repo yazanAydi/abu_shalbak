@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { apiErrorMessage } from "../utils/apiError";
-import { ils } from "../utils/format";
+import { formatSignedMoney } from "../utils/shiftVisa";
 import { FormField, Input, Select, PrimaryButton, SecondaryButton } from "./ui";
 import { sanitizeCountAmount } from "./CashCountFields";
 import {
@@ -115,25 +115,33 @@ export default function CountAdvanceSection({
   const total = Number(advancesTotal) || rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
 
   return (
-    <section style={{ marginBottom: "1rem" }} data-testid="count-advances">
-      <h3 className="dashboard-subtitle" style={{ marginBottom: "0.5rem" }}>
-        سلف
-      </h3>
+    <section className="shift-count-card" data-testid="count-advances">
+      <h3 className="shift-count-card__title">السلف</h3>
       {rows.length ? (
-        <ul style={{ listStyle: "none", padding: 0, margin: "0 0 0.5rem" }}>
+        <ul className="shift-pay-list">
           {rows.map((row) => (
-            <li key={row.request_id || row.movement_id} style={{ marginBottom: "0.35rem" }}>
-              {row.employee_name || "موظف"} — {ils(row.amount)}
-              {row.request_id != null ? ` — طلب #${row.request_id}` : ""}
+            <li key={row.request_id || row.movement_id} className="shift-pay-row">
+              <span className="shift-pay-main">
+                <span className="shift-pay-name">{row.employee_name || "موظف"}</span>
+                {row.request_id != null ? <span className="shift-pay-ref">طلب #{row.request_id}</span> : null}
+              </span>
+              <span className="shift-count-money" dir="ltr">
+                {formatSignedMoney(row.amount)}
+              </span>
             </li>
           ))}
         </ul>
       ) : (
-        <p style={{ color: "var(--office-text-muted)", marginBottom: "0.5rem" }}>لا توجد سلف مسجّلة على هذه الوردية.</p>
+        <p className="shift-count-quiet">لا توجد سلف مسجّلة على هذه الوردية.</p>
       )}
-      <p style={{ marginBottom: "0.5rem" }}>
-        الإجمالي: <span className="num">{ils(total)}</span>
-      </p>
+      {rows.length ? (
+        <div className="shift-pay-total">
+          <span>الإجمالي</span>
+          <span className="shift-count-money" dir="ltr">
+            {formatSignedMoney(total)}
+          </span>
+        </div>
+      ) : null}
       {formOpen ? (
         <div>
           <p style={{ color: "var(--office-text-muted)", lineHeight: 1.6 }}>
@@ -173,7 +181,7 @@ export default function CountAdvanceSection({
             <Input value={notes} disabled={saving} onChange={(e) => setNotes(e.target.value)} />
           </FormField>
           {error ? <p className="negative">{error}</p> : null}
-          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+          <div className="shift-count-pending-actions">
             <PrimaryButton type="button" disabled={saving} onClick={saveAdvance}>
               {saving ? "جاري التسجيل…" : "تسجيل السلفة"}
             </PrimaryButton>
@@ -183,9 +191,11 @@ export default function CountAdvanceSection({
           </div>
         </div>
       ) : (
-        <SecondaryButton type="button" onClick={() => setFormOpen(true)}>
-          تسجيل سلف من هذه الوردية
-        </SecondaryButton>
+        <div className="shift-pay-action">
+          <SecondaryButton type="button" onClick={() => setFormOpen(true)}>
+            تسجيل سلف من هذه الوردية
+          </SecondaryButton>
+        </div>
       )}
     </section>
   );

@@ -1,7 +1,12 @@
 import { DataTable } from "../components/ui";
 import { ils, dateOnly, qty as fmtQty } from "../utils/format";
+import { batchSourceLabel, UNDATED_BATCH_LABEL } from "../utils/stockBatchLabels";
 import { deriveEffectiveUnitCost, lineHasPurchaseDiscount } from "../utils/purchaseTotals";
 import "./purchase-doc-detail.css";
+
+function lineShowsEffective(it) {
+  return lineHasPurchaseDiscount(it.discount_pct) || Number(it.invoice_discount_amount) > 0;
+}
 
 const COMPACT = "purchase-doc-detail__compact";
 const COMPACT_NUM = `num ${COMPACT}`;
@@ -15,7 +20,12 @@ export function purchaseDocDetailColumns() {
       key: "expiry_date",
       header: "تاريخ الصلاحية",
       className: COMPACT,
-      render: (it) => (it.expiry_date ? dateOnly(it.expiry_date) : "غير محدد"),
+      render: (it) => {
+        if (it.batch_source === "dated" || it.batch_source === "undated") {
+          return batchSourceLabel(it.batch_source, it.expiry_date);
+        }
+        return it.expiry_date ? dateOnly(it.expiry_date) : UNDATED_BATCH_LABEL;
+      },
     },
     {
       key: "base_quantity",
@@ -33,7 +43,7 @@ export function purchaseDocDetailColumns() {
     },
     {
       key: "discount_pct",
-      header: "خصم %",
+      header: "خصم البند %",
       align: "left",
       className: COMPACT_NUM,
       render: (it) => (it.discount_pct ? `${it.discount_pct}%` : "—"),
@@ -59,7 +69,7 @@ export function purchaseDocDetailColumns() {
       className: COMPACT_NUM,
       render: (it) => {
         const effective = deriveEffectiveUnitCost(it.line_total, it.quantity);
-        if (!lineHasPurchaseDiscount(it.discount_pct) || effective === "") return "—";
+        if (!lineShowsEffective(it) || effective === "") return "—";
         return ils(effective);
       },
     },

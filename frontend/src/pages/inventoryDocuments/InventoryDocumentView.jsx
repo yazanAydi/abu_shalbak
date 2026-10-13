@@ -13,6 +13,7 @@ import {
   useToast,
 } from "../../components/ui";
 import { docConfig, reasonLabel } from "./constants";
+import { batchSourceLabel } from "../../utils/stockBatchLabels";
 
 export default function InventoryDocumentView({ docType }) {
   const cfg = docConfig(docType);
@@ -125,6 +126,7 @@ export default function InventoryDocumentView({ docType }) {
               <th>الرقم</th>
               <th>الباركود</th>
               <th>الوحدة</th>
+              <th>المصدر</th>
               <th>الكمية</th>
               <th>التحويل</th>
               <th>الكمية الأساسية</th>
@@ -137,6 +139,7 @@ export default function InventoryDocumentView({ docType }) {
                 <td>{displayProductSku(it.sku || it.sku_snapshot)}</td>
                 <td>{it.barcode || it.barcode_snapshot || "—"}</td>
                 <td>{it.unit_name || it.unit_name_snapshot || "—"}</td>
+                <td>{it.batch_source === "dated" || it.batch_source === "undated" ? batchSourceLabel(it.batch_source, it.expiry_date) : (it.expiry_date ? batchSourceLabel("dated", it.expiry_date) : "—")}</td>
                 <td className="num">
                   {fmtQty(it.quantity)} {it.unit_name || it.unit_name_snapshot || ""}
                 </td>

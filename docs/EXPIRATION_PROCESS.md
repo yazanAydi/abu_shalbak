@@ -4,13 +4,15 @@
 
 In this codebase, **expiration is a monitoring and alerting system**, not an automatic disposal pipeline. The system:
 
-- Stores `expiry_date` on products (and optionally on `product_batches`)
+- Stores `expiry_date` on products (a single legacy date) and on `product_batches` (one remaining quantity per expiry)
 - Computes **days until expiry** with SQLite `julianday()`
-- Shows **expiry reports** in the office and POS UIs
+- Shows the office expiry report from remaining lot quantities, plus the undated remainder when the product still has its own date
 - Sends **daily Telegram alerts** for items nearing expiry (plus manual send from store settings)
-- Allows **manual stock write-off** via inventory adjustment type `damage` → ledger type `expiry_writeoff`
+- Deducts dated lots on sale in earliest-expiry order, and restores the same lots on refund
+- Lets an inventory issue name the dated lot or the undated remainder it takes from
+- Lets a stock count record a quantity for every dated lot and for undated stock
 
-It does **not** automatically remove expired stock, block checkout for expired products, or deduct `product_batches` on sale.
+It does **not** automatically remove expired stock or block checkout for expired products. A damage adjustment still uses ledger type `expiry_writeoff`, and it now reduces the lot or undated remainder the user names.
 
 ---
 
@@ -59,7 +61,7 @@ CAST(julianday(expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
 - `stock > 0` (products) or `quantity > 0` (batches)
 - Expires within **N days** (including already expired: `days_until_expiry` can be negative)
 
-**Reports** (`GET /api/inventory/expiry` in `backend/routes/inventory.js`) use the same date window but only query `products` (not batches). Default window: 30 days (UI-configurable).
+**Office report** (`GET /api/inventory/expiry`, `listOfficeExpiryReport`), **dashboard** (`GET /api/reports/near-expiry`), and **Telegram alerts** (`fetchNearExpiryItems`) use that same window. The office default is 30 days. Each dated lot with remaining quantity above zero is one row. A product-level `expiry_date` is a separate row only for the undated remainder (`products.stock` minus the sum of every dated lot). A depleted lot is omitted. An already-expired lot is included while it still has quantity. If the dated sum is already above on-hand, the negative remainder is not shown and the lot quantities are left as stored.
 
 **Label formatting** (`formatDaysLabel` in `backend/utils/telegram.js`):
 
@@ -140,7 +142,7 @@ sequenceDiagram
 
   User->>UI: Open expiry report, set days window
   UI->>API: GET /api/inventory/expiry?days=N
-  API->>DB: Query products with julianday filter
+  API->>DB: Query remaining lots and undated product remainder
   DB-->>API: rows + days_until_expiry
   API-->>UI: JSON array
   UI->>User: Table with styling\nexpired red, expiring-soon highlight
@@ -148,8 +150,7 @@ sequenceDiagram
 
 **UI locations:**
 
-- Office: `frontend/src/pages/ExpiryReports.jsx`
-- POS: `frontend-pos/src/pages/ExpiryReports.jsx`
+- Office: `frontend/src/pages/ExpiryReports.jsx` (one row per lot, plus a product-date row for unassigned quantity)
 
 **Product dashboard** also shows expiry on a single product: `GET /api/products/:id/overview` in `backend/routes/products.js` returns `expiry.expiry_date` and `days_until_expiry`.
 
@@ -157,16 +158,24 @@ sequenceDiagram
 
 ## 5. Manual Expired Stock Handling
 
-When staff physically disposes of expired goods, they use **inventory adjustment type `damage`**:
+An inventory issue (every reason on that document, including damaged) writes ledger type `manual_adjustment`. When the product has dated lots, each line must name `batch_source`: `dated` with that lot's expiry, or `undated` with an explicit null expiry. A missing source is rejected. The named lot quantity, the allocation row, the product stock, and the ledger move in one transaction. A product with no dated lots keeps a product-only line and does not write a lot allocation.
+
+A stock count of a product with dated lots stores a counted quantity for every lot, including zero, and for undated stock. An empty input is not a count of zero. Posting replaces those sources with the counted quantities and writes one company stock movement for the net change. A reshuffle that keeps the same total writes lot allocation history and no company stock movement. If a source quantity changed after the line was saved, posting is rejected and the session stays open. A product with no dated lots still uses one counted quantity and the previous live-stock rule.
+
+Older issue lines have `batch_source` null. That null is not an undated allocation. A lot row is not deleted while it still has quantity or allocation history. A complete count is what reconciles a case where dated quantities already exceed on-hand stock; it does not invent an expiry or rewrite old documents.
+
+Stock-count lines that already exist when source uniqueness is introduced stay stored as they were, including two product-only lines for the same session and product with different counted quantities. Those rows are marked `line_origin = legacy` and sit outside `idx_sc_line_source`. Lines inserted afterward are `current`. The unique index applies to them, and an insert or update cannot label a new line as legacy. A second initialization does not change the stored rows.
+
+A stock adjustment of type `damage`, `out`, or `correction` names the same dated lot or undated remainder as an inventory issue. `correction` uses the signed quantity on that source. An adjustment of type `in`, and an inventory receipt, increase a dated lot when an expiry is supplied and increase undated stock when it is not. Bakery consumption (`adjustment_type = consumption`) does not ask for a lot; it uses the same earliest-expiry allocation as a sale and shop consumption. Zero-all-stock sets every dated lot to zero, writes the undated remainder into allocation history, and records the product stock change once. A second zero-all finds nothing left to move. Pre-existing inconsistencies are still corrected by a complete physical count, not by rewriting old documents.
 
 ```mermaid
 flowchart LR
-  Admin["Admin posts\nstock adjustment type damage"]
-  Move["recordMovement()\nmovement_type damage"]
+  Admin["Admin posts damage\nand names a source"]
+  Batch["named lot or undated remainder"]
   Ledger["inventory_ledger\nexpiry_writeoff"]
-  Stock["products.stock reduced"]
+  Stock["products.stock reduced once"]
 
-  Admin --> Move --> Ledger --> Stock
+  Admin --> Batch --> Ledger --> Stock
 ```
 
 Mapping in `backend/utils/inventory.js`: `damage` → ledger type `expiry_writeoff`.  
@@ -180,7 +189,8 @@ There is **no cron or automatic job** that creates these write-offs when `expiry
 |-------------------|-------------------|
 | Auto write-off at midnight when expired | Not implemented |
 | Block POS sale of expired product | Not implemented |
-| Deduct `product_batches` on checkout (FEFO) | Not implemented — batches are alert/report only |
+| Deduct `product_batches` on checkout (FEFO) | Implemented in `stockBatchService.js`: earliest dated lot, then undated stock. Refunds restore the original allocation |
+| Inventory issue, stock count, damage, correction, or receipt by lot | Implemented. Damage, out, and correction name a source. Consumption follows earliest expiry. A receipt uses the expiry on the line, or stays undated |
 | Expiry bot interactive commands | Not implemented — alerts are outbound only |
 
 ---

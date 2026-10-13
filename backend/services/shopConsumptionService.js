@@ -3,7 +3,9 @@ import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { HttpError, badRequest, conflict } from "../utils/httpError.js";
 import { recordMovement } from "../utils/inventory.js";
-import { round2, sumMoney } from "../utils/money.js";
+import { allocateProportionalMoney, round2, roundPosPayable, sumMoney } from "../utils/money.js";
+import { computeSaleTotals } from "../utils/tax.js";
+import { computeCartDiscount, getActivePromotions } from "../utils/promotions.js";
 import {
   getDefaultUnit,
   isKgUnit,
@@ -12,27 +14,29 @@ import {
   toBaseQuantity,
 } from "../utils/productUnits.js";
 import { applyOutboundBatches } from "./stockBatchService.js";
+import { sellableQuantity } from "./warehouseBatchStock.js";
 import { shopTodayYmd, shopYmdFromTimestamp } from "../utils/shopTime.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { enqueueOperationPrint, shopConsumptionPrintSnapshot } from "./operationPrintService.js";
 
 const SOURCE = "shop_consumption";
 
-export function unknownCostBlockMessage(names) {
-  const listed = names.join("، ");
-  return (
-    `لا يمكن ترحيل مصاريف المحل قبل تسجيل تكلفة الشراء من المكتب ` +
-    `(بطاقة الصنف أو فاتورة شراء مرحّلة) لهذه الأصناف: ${listed}`
-  );
+export function missingSellingPriceMessage(name) {
+  return `سعر البيع غير مسجّل للصنف: ${name}`;
 }
 
 export function fingerprintShopConsumption(lines, reason) {
   const payload = {
     reason: reason || null,
-    items: lines.map((line) => ({
-      product_id: line.product_id,
-      product_unit_id: line.product_unit_id,
-      quantity: line.quantity,
+    items: (lines || []).map((line) => ({
+      product_id: Number(line.product_id) || 0,
+      unit_id:
+        line.unit_id != null
+          ? Number(line.unit_id)
+          : line.product_unit_id != null
+            ? Number(line.product_unit_id)
+            : null,
+      quantity: Number(line.quantity),
     })),
   };
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
@@ -73,7 +77,7 @@ async function resolveLines(db, rawItems) {
   }
   const placeholders = productIds.map(() => "?").join(",");
   const products = await db.all(
-    `SELECT id, name, barcode, sku, price, cost, cost_known, stock, is_active, is_weighed
+    `SELECT id, name, barcode, sku, price, cost, cost_known, stock, is_active, is_weighed, category
        FROM products WHERE id IN (${placeholders})`,
     productIds
   );
@@ -117,44 +121,128 @@ async function resolveLines(db, rawItems) {
     if (!unit) throw conflict(`لا توجد وحدة للمنتج: ${product.name}`, "NO_UNIT");
     unitId = Number(unit.id);
 
+    const explicitUnit = raw.unit_id != null || raw.product_unit_id != null;
     const qty = parseQuantity(product, unit, Number(raw.quantity));
     const conversion = Math.max(0.0001, Number(unit.conversion_to_base) || 1);
     const baseQuantity = toBaseQuantity(qty, conversion);
     if (!(baseQuantity > 0)) throw badRequest("الكمية غير صالحة", "INVALID_QTY");
+    const unitPrice = authorizedSellingPrice(product, unit, explicitUnit);
+    if (raw.price != null && raw.price !== "") {
+      const submitted = Number(raw.price);
+      if (!Number.isFinite(submitted) || submitted < 0) {
+        throw badRequest(`سعر البيع غير صالح للصنف: ${product.name}`, "INVALID_SELLING_PRICE");
+      }
+      if (Math.abs(round2(submitted) - unitPrice) > 0.009) {
+        throw conflict(
+          `عدم تطابق السعر مع أحدث سعر في النظام للصنف: ${product.name}`,
+          "PRICE_MISMATCH"
+        );
+      }
+    }
+    const acquisition = acquisitionAmounts(product, conversion, qty);
 
     lines.push({
       product_id: productId,
       product_unit_id: unitId,
       barcode: unit.barcode || product.barcode || null,
       name: product.name,
+      category: product.category || null,
       quantity: qty,
       unit_name: unit.unit_name,
       conversion_to_base: conversion,
       base_quantity: baseQuantity,
-      stock: Number(product.stock) || 0,
-      product,
+      stock: await sellableQuantity(db, product.id),
+      unit_price: unitPrice,
+      unit_cost: acquisition.unit_cost,
+      line_cost: acquisition.line_cost,
     });
   }
 
-  const unknown = [];
-  for (const line of lines) {
-    if (!isProductCostKnown(line.product)) {
-      if (!unknown.includes(line.name)) unknown.push(line.name);
-      continue;
-    }
-    const unitCost = resolveSoldUnitCost(
-      { conversion_to_base: line.conversion_to_base },
-      line.product
-    );
-    line.unit_cost = unitCost;
-    line.line_cost = round2(unitCost * line.quantity);
-  }
-  if (unknown.length) {
-    throw badRequest(unknownCostBlockMessage(unknown), "UNKNOWN_COST");
-  }
+  return priceExpenseDocument(db, lines);
+}
 
-  const published = lines.map(({ product, ...line }) => line);
-  return { lines: published, total_cost: sumMoney(published.map((line) => line.line_cost)) };
+/**
+ * Shelf price for this action. A default unit without an explicit id follows
+ * products.price when the unit cache has drifted, the same rule as checkout.
+ * Explicit zero is a real price. Null or non-finite is not turned into zero.
+ */
+function authorizedSellingPrice(product, unit, explicitUnit) {
+  let raw = unit?.price;
+  if (!explicitUnit && Number(unit?.is_default) === 1 && product?.price != null && product.price !== "") {
+    const live = Number(product.price);
+    const cached = Number(unit?.price);
+    if (Number.isFinite(live) && (!Number.isFinite(cached) || Math.abs(round2(live) - round2(cached)) > 0.009)) {
+      raw = product.price;
+    }
+  }
+  if (raw == null || raw === "") {
+    throw badRequest(missingSellingPriceMessage(product.name), "MISSING_SELLING_PRICE");
+  }
+  const price = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (!Number.isFinite(price)) {
+    throw badRequest(missingSellingPriceMessage(product.name), "MISSING_SELLING_PRICE");
+  }
+  if (price < 0) {
+    throw badRequest(`سعر البيع غير صالح للصنف: ${product.name}`, "INVALID_SELLING_PRICE");
+  }
+  return round2(price);
+}
+
+function acquisitionAmounts(product, conversion, quantity) {
+  if (!isProductCostKnown(product)) return { unit_cost: null, line_cost: null };
+  const unitCost = resolveSoldUnitCost({ conversion_to_base: conversion }, product);
+  return { unit_cost: unitCost, line_cost: round2(unitCost * quantity) };
+}
+
+async function priceExpenseDocument(db, lines) {
+  const totals = computeSaleTotals(
+    lines.map((line) => ({ quantity: line.quantity, unitPrice: line.unit_price, taxRate: 0 })),
+    {}
+  );
+  lines.forEach((line, index) => {
+    line.line_gross = totals.lines[index].lineGross;
+  });
+  let discount = 0;
+  try {
+    const promos = await getActivePromotions(db);
+    if (promos.length) {
+      const promo = computeCartDiscount(
+        promos,
+        lines.map((line) => ({
+          product_id: line.product_id,
+          product_unit_id: line.product_unit_id,
+          category: line.category,
+          quantity: line.quantity,
+          unitPrice: line.unit_price,
+        }))
+      );
+      discount = Math.min(promo.discount, totals.total);
+    }
+  } catch (err) {
+    const wrapped = new Error(err?.message || "فشل احتساب العرض");
+    wrapped.status = 409;
+    wrapped.code = "PROMO_FAILED";
+    throw wrapped;
+  }
+  const shares = allocateProportionalMoney(
+    lines.map((line) => line.line_gross),
+    discount
+  );
+  lines.forEach((line, index) => {
+    line.line_discount = shares[index] || 0;
+    line.line_amount = round2(line.line_gross - line.line_discount);
+  });
+  const before = sumMoney(lines.map((line) => line.line_amount));
+  const payable = roundPosPayable(before);
+  return {
+    lines,
+    subtotal: totals.subtotal,
+    tax: 0,
+    discount: round2(discount),
+    amount_before_rounding: payable.calculated,
+    rounding_adjustment: payable.adjustment,
+    total_cost: payable.payable,
+  };
 }
 
 function assertStockAvailable(lines) {
@@ -180,9 +268,25 @@ function publicLines(lines) {
     name: line.name,
     quantity: line.quantity,
     unit_name: line.unit_name,
-    unit_cost: line.unit_cost,
-    line_cost: line.line_cost,
+    unit_price: line.unit_price == null ? null : round2(Number(line.unit_price)),
+    line_amount: line.line_amount == null ? null : round2(Number(line.line_amount)),
+    line_gross: line.line_gross == null ? null : round2(Number(line.line_gross)),
+    line_discount: round2(Number(line.line_discount) || 0),
+    unit_cost: line.unit_cost == null ? null : round2(Number(line.unit_cost)),
+    line_cost: line.line_cost == null ? null : round2(Number(line.line_cost)),
   }));
+}
+
+function expenseSummary(resolved) {
+  return {
+    lines: publicLines(resolved.lines),
+    subtotal: resolved.subtotal,
+    tax: 0,
+    discount: resolved.discount,
+    amount_before_rounding: resolved.amount_before_rounding,
+    rounding_adjustment: resolved.rounding_adjustment,
+    total_cost: resolved.total_cost,
+  };
 }
 
 export async function previewShopConsumption(db, { cashierId, items }) {
@@ -193,8 +297,7 @@ export async function previewShopConsumption(db, { cashierId, items }) {
   return {
     business_day: businessDayForShift(shift),
     shift_id: shift.id,
-    lines: publicLines(resolved.lines),
-    total_cost: resolved.total_cost,
+    ...expenseSummary(resolved),
   };
 }
 
@@ -218,7 +321,7 @@ async function loadResult(db, id, replayed) {
     [id]
   );
   const items = await db.all(
-    `SELECT product_id, name, quantity, unit_name, unit_cost, line_cost
+    `SELECT product_id, name, quantity, unit_name, unit_cost, line_cost, unit_price, line_amount
        FROM shop_consumption_items WHERE consumption_id = ? ORDER BY id`,
     [id]
   );
@@ -230,15 +333,57 @@ async function loadResult(db, id, replayed) {
     business_day: row.business_day,
     reason: row.reason,
     total_cost: round2(Number(row.total_cost) || 0),
+    discount: round2(Number(row.discount) || 0),
+    rounding_adjustment: round2(Number(row.rounding_adjustment) || 0),
     operating_expense_id: row.operating_expense_id,
     payment_method: row.payment_method,
     created_at: row.created_at,
     lines: items.map((item) => ({
       ...item,
-      unit_cost: round2(Number(item.unit_cost) || 0),
-      line_cost: round2(Number(item.line_cost) || 0),
+      unit_price: item.unit_price == null ? null : round2(Number(item.unit_price)),
+      line_amount: item.line_amount == null ? null : round2(Number(item.line_amount)),
+      unit_cost: item.unit_cost == null ? null : round2(Number(item.unit_cost)),
+      line_cost: item.line_cost == null ? null : round2(Number(item.line_cost)),
     })),
   };
+}
+
+export function parseStoredConsumption(raw) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw || "null");
+  } catch {
+    parsed = null;
+  }
+  if (parsed && parsed.v === 2 && Array.isArray(parsed.lines)) {
+    return {
+      v: 2,
+      lines: parsed.lines,
+      total_cost: round2(Number(parsed.total_cost) || 0),
+      discount: round2(Number(parsed.discount) || 0),
+      rounding_adjustment: round2(Number(parsed.rounding_adjustment) || 0),
+      amount_before_rounding: round2(Number(parsed.amount_before_rounding) || 0),
+      subtotal: round2(Number(parsed.subtotal) || 0),
+    };
+  }
+  const lines = Array.isArray(parsed) ? parsed : [];
+  return { v: 1, lines, total_cost: null, discount: 0, rounding_adjustment: 0 };
+}
+
+function assertSnapshotMoney(stored) {
+  if (!Array.isArray(stored.lines) || !stored.lines.length) {
+    throw badRequest("السلة فارغة", "EMPTY_CART");
+  }
+  if (!Number.isFinite(Number(stored.total_cost)) || Number(stored.total_cost) < 0) {
+    throw badRequest("مبلغ المصروف المحفوظ غير صالح", "INVALID_SELLING_PRICE");
+  }
+  for (const line of stored.lines) {
+    const price = Number(line.unit_price);
+    const amount = Number(line.line_amount);
+    if (!Number.isFinite(price) || price < 0 || !Number.isFinite(amount) || amount < 0) {
+      throw badRequest(`سعر البيع المحفوظ غير صالح للصنف: ${line.name || ""}`.trim(), "INVALID_SELLING_PRICE");
+    }
+  }
 }
 
 async function resolveIdempotency(db, { key, fingerprint, userId }) {
@@ -260,7 +405,36 @@ async function resolveIdempotency(db, { key, fingerprint, userId }) {
   return loadResult(db, row.id, true);
 }
 
-async function postShopConsumptionInTx(db, { cashierId, items, reason, idempotencyKey, req }) {
+async function attachLiveInventory(db, lines) {
+  const ids = [...new Set(lines.map((line) => Number(line.product_id)).filter((id) => id > 0))];
+  const placeholders = ids.map(() => "?").join(",");
+  const products = ids.length
+    ? await db.all(
+        `SELECT id, name, cost, cost_known, is_active FROM products WHERE id IN (${placeholders})`,
+        ids
+      )
+    : [];
+  const byId = new Map(products.map((row) => [Number(row.id), row]));
+  const stockById = new Map();
+  for (const id of ids) stockById.set(id, await sellableQuantity(db, id));
+  return lines.map((line) => {
+    const product = byId.get(Number(line.product_id));
+    if (!product) throw new HttpError(404, `المنتج غير موجود: ${line.product_id}`, "NOT_FOUND");
+    if (Number(product.is_active) === 0) {
+      throw conflict(`المنتج غير نشط: ${product.name}`, "PRODUCT_INACTIVE");
+    }
+    const acquisition = acquisitionAmounts(product, line.conversion_to_base, line.quantity);
+    return {
+      ...line,
+      name: line.name || product.name,
+      unit_cost: acquisition.unit_cost,
+      line_cost: acquisition.line_cost,
+      stock: stockById.get(Number(line.product_id)) || 0,
+    };
+  });
+}
+
+async function postShopConsumptionInTx(db, { cashierId, items, priced, reason, idempotencyKey, req }) {
   const key = String(idempotencyKey || "").trim();
   if (key.length < 8 || key.length > 100) {
     throw badRequest("مفتاح التكرار مطلوب (8–100 حرفاً)", "VALIDATION_ERROR");
@@ -268,72 +442,91 @@ async function postShopConsumptionInTx(db, { cashierId, items, reason, idempoten
   const note = reason != null && String(reason).trim() !== "" ? String(reason).trim().slice(0, 500) : null;
 
   const { shift, error } = await requireOpenShiftForCashier(db, cashierId);
-    if (!shift) throw conflict(error, "SHIFT_REQUIRED");
-    const resolved = await resolveLines(db, items);
-    const fingerprint = fingerprintShopConsumption(resolved.lines, note);
-    const existing = await resolveIdempotency(db, { key, fingerprint, userId: cashierId });
-    if (existing) return existing;
-    assertStockAvailable(resolved.lines);
+  if (!shift) throw conflict(error, "SHIFT_REQUIRED");
+  let resolved = priced;
+  if (!resolved) {
+    resolved = await resolveLines(db, items);
+  } else {
+    assertSnapshotMoney(resolved);
+    resolved = { ...resolved, lines: await attachLiveInventory(db, resolved.lines) };
+  }
+  const fingerprint = fingerprintShopConsumption(resolved.lines, note);
+  const existing = await resolveIdempotency(db, { key, fingerprint, userId: cashierId });
+  if (existing) return existing;
+  assertStockAvailable(resolved.lines);
 
-    const businessDay = businessDayForShift(shift);
-    const cat = await ensureCategory(db);
-    const reference = note ? `استهلاك محل — ${note}` : "استهلاك محل";
+  const businessDay = businessDayForShift(shift);
+  const cat = await ensureCategory(db);
+  const reference = note ? `استهلاك محل — ${note}` : "استهلاك محل";
 
-    const exp = await db.run(
-      `INSERT INTO operating_expenses
-         (category, category_id, amount, paid_on, payment_method, reference_note, recorded_by_id, source)
-       VALUES (?, ?, ?, ?, 'other', ?, ?, ?)`,
-      [cat.name, cat.id, resolved.total_cost, businessDay, reference, cashierId, SOURCE]
+  const exp = await db.run(
+    `INSERT INTO operating_expenses
+       (category, category_id, amount, paid_on, payment_method, reference_note, recorded_by_id, source)
+     VALUES (?, ?, ?, ?, 'other', ?, ?, ?)`,
+    [cat.name, cat.id, resolved.total_cost, businessDay, reference, cashierId, SOURCE]
+  );
+
+  const ins = await db.run(
+    `INSERT INTO shop_consumptions
+       (shift_id, user_id, business_day, reason, total_cost, discount, rounding_adjustment,
+        operating_expense_id, idempotency_key, payload_fingerprint)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      shift.id,
+      cashierId,
+      businessDay,
+      note,
+      resolved.total_cost,
+      resolved.discount || 0,
+      resolved.rounding_adjustment || 0,
+      exp.lastID,
+      key,
+      fingerprint,
+    ]
+  );
+  const consumptionId = ins.lastID;
+  await db.run("UPDATE operating_expenses SET source_id = ? WHERE id = ?", [consumptionId, exp.lastID]);
+
+  for (const line of resolved.lines) {
+    await db.run(
+      `INSERT INTO shop_consumption_items
+         (consumption_id, product_id, product_unit_id, barcode, name, quantity, unit_name,
+          conversion_to_base, base_quantity, unit_cost, line_cost, unit_price, line_amount)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        consumptionId,
+        line.product_id,
+        line.product_unit_id,
+        line.barcode,
+        line.name,
+        line.quantity,
+        line.unit_name,
+        line.conversion_to_base,
+        line.base_quantity,
+        line.unit_cost,
+        line.line_cost,
+        line.unit_price,
+        line.line_amount,
+      ]
     );
-
-    const ins = await db.run(
-      `INSERT INTO shop_consumptions
-         (shift_id, user_id, business_day, reason, total_cost, operating_expense_id, idempotency_key, payload_fingerprint)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [shift.id, cashierId, businessDay, note, resolved.total_cost, exp.lastID, key, fingerprint]
-    );
-    const consumptionId = ins.lastID;
-    await db.run("UPDATE operating_expenses SET source_id = ? WHERE id = ?", [consumptionId, exp.lastID]);
-
-    for (const line of resolved.lines) {
-      await db.run(
-        `INSERT INTO shop_consumption_items
-           (consumption_id, product_id, product_unit_id, barcode, name, quantity, unit_name,
-            conversion_to_base, base_quantity, unit_cost, line_cost)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          consumptionId,
-          line.product_id,
-          line.product_unit_id,
-          line.barcode,
-          line.name,
-          line.quantity,
-          line.unit_name,
-          line.conversion_to_base,
-          line.base_quantity,
-          line.unit_cost,
-          line.line_cost,
-        ]
-      );
-      await applyOutboundBatches(db, {
-        productId: line.product_id,
-        quantity: line.base_quantity,
-        referenceType: SOURCE,
-        referenceId: consumptionId,
-      });
-      await recordMovement(db, {
-        productId: line.product_id,
-        movementType: "consumption",
-        quantity: -line.base_quantity,
-        unitCost: line.unit_cost,
-        refType: SOURCE,
-        refId: consumptionId,
-        notes: `مصاريف محل #${consumptionId}`,
-        userId: cashierId,
-        applyStock: true,
-        businessDay,
-      });
-    }
+    await applyOutboundBatches(db, {
+      productId: line.product_id,
+      quantity: line.base_quantity,
+      referenceType: SOURCE,
+      referenceId: consumptionId,
+    });
+    await recordMovement(db, {
+      productId: line.product_id,
+      movementType: "consumption",
+      quantity: -line.base_quantity,
+      refType: SOURCE,
+      refId: consumptionId,
+      notes: `مصاريف محل #${consumptionId}`,
+      userId: cashierId,
+      applyStock: true,
+      businessDay,
+    });
+  }
 
     const saved = await loadResult(db, consumptionId, false);
     const cashier = await db.get("SELECT username FROM users WHERE id = ?", [cashierId]);
@@ -388,80 +581,60 @@ function queueFilter(status) {
   return value;
 }
 
+function presentedLine(line) {
+  const selling = line.line_amount == null ? null : round2(Number(line.line_amount));
+  const historical = line.line_cost == null ? null : round2(Number(line.line_cost));
+  return {
+    name: line.name,
+    quantity: line.quantity,
+    unit_name: line.unit_name || null,
+    unit_price: line.unit_price == null ? null : round2(Number(line.unit_price)),
+    line_amount: selling,
+    line_cost: selling != null ? selling : historical,
+  };
+}
+
 async function displayLines(db, row) {
   if (row.consumption_id) {
     const items = await db.all(
-      `SELECT name, quantity, unit_name, line_cost
+      `SELECT name, quantity, unit_name, line_cost, unit_price, line_amount
          FROM shop_consumption_items WHERE consumption_id = ? ORDER BY id`,
       [row.consumption_id]
     );
     const head = await db.get("SELECT total_cost FROM shop_consumptions WHERE id = ?", [row.consumption_id]);
     return {
-      items: items.map((item) => ({
-        name: item.name,
-        quantity: item.quantity,
-        unit_name: item.unit_name,
-        line_cost: round2(Number(item.line_cost) || 0),
-      })),
+      items: items.map(presentedLine),
       amount: round2(Number(head?.total_cost) || 0),
     };
   }
 
-  let raw = [];
+  const stored = parseStoredConsumption(row.items_json);
+  if (stored.v === 2) {
+    return {
+      items: stored.lines.map(presentedLine),
+      amount: stored.total_cost,
+    };
+  }
+  if (!stored.lines.length) return { items: [], amount: null };
   try {
-    raw = JSON.parse(row.items_json || "[]");
+    const resolved = await resolveLines(db, stored.lines);
+    return {
+      items: publicLines(resolved.lines).map(presentedLine),
+      amount: resolved.total_cost,
+    };
   } catch {
-    raw = [];
+    return {
+      items: stored.lines.map((item) => ({
+        name: item.name || `صنف #${item.product_id || "?"}`,
+        quantity: item.quantity,
+        unit_name: item.unit_name || null,
+        unit_price: null,
+        line_amount: null,
+        line_cost: null,
+      })),
+      amount: null,
+    };
   }
-  if (!Array.isArray(raw)) raw = [];
-  const ids = [...new Set(raw.map((item) => Number(item.product_id)).filter((id) => id > 0))];
-  const placeholders = ids.map(() => "?").join(",");
-  const products = ids.length
-    ? await db.all(`SELECT id, name, cost, cost_known FROM products WHERE id IN (${placeholders})`, ids)
-    : [];
-  const units = ids.length
-    ? await db.all(
-        `SELECT id, product_id, unit_name, conversion_to_base, is_default
-           FROM product_units WHERE product_id IN (${placeholders})
-          ORDER BY is_default DESC, id ASC`,
-        ids
-      )
-    : [];
-  const productById = new Map(products.map((product) => [Number(product.id), product]));
-  const unitsByProduct = new Map();
-  for (const unit of units) {
-    const pid = Number(unit.product_id);
-    if (!unitsByProduct.has(pid)) unitsByProduct.set(pid, []);
-    unitsByProduct.get(pid).push(unit);
-  }
-
-  const items = [];
-  let amount = 0;
-  let complete = raw.length > 0;
-  for (const item of raw) {
-    const productId = Number(item.product_id);
-    const product = productById.get(productId);
-    const unitId =
-      item.unit_id != null ? Number(item.unit_id) : item.product_unit_id != null ? Number(item.product_unit_id) : null;
-    const productUnits = unitsByProduct.get(productId) || [];
-    const unit = (unitId && productUnits.find((entry) => Number(entry.id) === unitId)) || productUnits[0] || null;
-    const quantity = Number(item.quantity);
-    let lineCost = null;
-    if (product && unit && isProductCostKnown(product) && Number.isFinite(quantity)) {
-      const unitCost = resolveSoldUnitCost({ conversion_to_base: unit.conversion_to_base }, product);
-      lineCost = round2(unitCost * quantity);
-      amount = sumMoney([amount, lineCost]);
-    } else {
-      complete = false;
-    }
-    items.push({
-      name: product?.name || `صنف #${productId || "?"}`,
-      quantity: Number.isFinite(quantity) ? quantity : item.quantity,
-      unit_name: unit?.unit_name || null,
-      line_cost: lineCost,
-    });
-  }
-  return { items, amount: complete ? amount : null };
 }
 
 export async function presentShopConsumptionRequest(db, row) {
@@ -533,12 +706,39 @@ export async function createShopConsumptionRequest(db, params) {
   const note = params.reason != null && String(params.reason).trim() !== "" ? String(params.reason).trim().slice(0, 500) : null;
   const { shift, error } = await requireOpenShiftForCashier(db, params.cashierId);
   if (!shift) throw conflict(error, "SHIFT_REQUIRED");
+  const fingerprint = fingerprintShopConsumption(params.items, note);
+  const already = await db.get("SELECT * FROM shop_consumption_requests WHERE idempotency_key = ?", [key]);
+  if (already) {
+    if (Number(already.cashier_id) !== Number(params.cashierId)) {
+      throw new HttpError(403, "مفتاح التكرار لا يخص هذا الصندوق", "IDEMPOTENCY_OWNER_MISMATCH");
+    }
+    if (already.payload_fingerprint !== fingerprint) {
+      throw new HttpError(409, "تم استخدام مفتاح التكرار مع محتوى مختلف", "IDEMPOTENCY_KEY_REUSE");
+    }
+    const stored = parseStoredConsumption(already.items_json);
+    return {
+      request_id: already.id,
+      status: already.status,
+      pending_approval: already.status === "pending",
+      replayed: true,
+      shift_id: already.shift_id,
+      total_cost: stored.total_cost,
+      discount: stored.discount,
+      rounding_adjustment: stored.rounding_adjustment,
+      amount_before_rounding: stored.amount_before_rounding,
+      lines: publicLines(stored.lines),
+      consumption_id: already.consumption_id || null,
+      operating_expense_id: null,
+      telegram: Boolean(already.telegram_message_id),
+    };
+  }
   const resolved = await resolveLines(db, params.items);
   assertStockAvailable(resolved.lines);
-  const fingerprint = fingerprintShopConsumption(resolved.lines, note);
   const stockBefore = await db.get("SELECT stock FROM products WHERE id = ?", [resolved.lines[0].product_id]);
 
-  const created = await withTransaction(db, async () => {
+  let created;
+  try {
+    created = await withTransaction(db, async () => {
     const existing = await db.get("SELECT * FROM shop_consumption_requests WHERE idempotency_key = ?", [key]);
     if (existing) {
       if (Number(existing.cashier_id) !== Number(params.cashierId)) {
@@ -555,7 +755,22 @@ export async function createShopConsumptionRequest(db, params) {
       `INSERT INTO shop_consumption_requests
          (cashier_id, shift_id, items_json, reason, idempotency_key, payload_fingerprint, status)
        VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-      [params.cashierId, shift.id, JSON.stringify(params.items), note, key, fingerprint]
+      [
+        params.cashierId,
+        shift.id,
+        JSON.stringify({
+          v: 2,
+          lines: resolved.lines,
+          subtotal: resolved.subtotal,
+          discount: resolved.discount,
+          amount_before_rounding: resolved.amount_before_rounding,
+          rounding_adjustment: resolved.rounding_adjustment,
+          total_cost: resolved.total_cost,
+        }),
+        note,
+        key,
+        fingerprint,
+      ]
     );
     if (Number(expenses.n) !== Number((await db.get("SELECT COUNT(*) AS n FROM operating_expenses")).n)) {
       throw new Error("pending consumption must not post an expense");
@@ -565,6 +780,23 @@ export async function createShopConsumptionRequest(db, params) {
     }
     return { request: await db.get("SELECT * FROM shop_consumption_requests WHERE id = ?", [ins.lastID]), replayed: false };
   });
+  } catch (err) {
+    const code = String(err?.code || "");
+    const message = String(err?.message || "");
+    if (code.startsWith("SQLITE_CONSTRAINT") && message.includes("idempotency_key")) {
+      const existing = await db.get("SELECT * FROM shop_consumption_requests WHERE idempotency_key = ?", [key]);
+      if (!existing) throw err;
+      if (Number(existing.cashier_id) !== Number(params.cashierId)) {
+        throw new HttpError(403, "مفتاح التكرار لا يخص هذا الصندوق", "IDEMPOTENCY_OWNER_MISMATCH");
+      }
+      if (existing.payload_fingerprint !== fingerprint) {
+        throw new HttpError(409, "تم استخدام مفتاح التكرار مع محتوى مختلف", "IDEMPOTENCY_KEY_REUSE");
+      }
+      created = { request: existing, replayed: true };
+    } else {
+      throw err;
+    }
+  }
 
   if (stockBefore) {
     const stockAfter = await db.get("SELECT stock FROM products WHERE id = ?", [resolved.lines[0].product_id]);
@@ -613,14 +845,20 @@ export async function createShopConsumptionRequest(db, params) {
     }
   }
 
+  const shown = created.replayed ? parseStoredConsumption(created.request.items_json) : resolved;
+  const shownLines = shown.v === 2 ? shown.lines : resolved.lines;
+  const shownTotal = shown.v === 2 ? shown.total_cost : resolved.total_cost;
   return {
     request_id: created.request.id,
     status: created.request.status,
     pending_approval: created.request.status === "pending",
     replayed: created.replayed,
     shift_id: created.request.shift_id,
-    total_cost: resolved.total_cost,
-    lines: publicLines(resolved.lines),
+    total_cost: shownTotal,
+    discount: shown.v === 2 ? shown.discount : resolved.discount,
+    rounding_adjustment: shown.v === 2 ? shown.rounding_adjustment : resolved.rounding_adjustment,
+    amount_before_rounding: shown.v === 2 ? shown.amount_before_rounding : resolved.amount_before_rounding,
+    lines: publicLines(shownLines),
     consumption_id: created.request.consumption_id || null,
     operating_expense_id: null,
     telegram: Boolean(telegramMessageId),
@@ -646,9 +884,11 @@ export async function approveShopConsumptionRequest(db, requestId, actor = {}) {
       "SELECT COUNT(*) AS n FROM shift_cash_movements WHERE shift_id = ?",
       [request.shift_id]
     );
+    const stored = parseStoredConsumption(request.items_json);
+    const priced = stored.v === 2 ? stored : await resolveLines(db, stored.lines);
     const created = await postShopConsumptionInTx(db, {
       cashierId: request.cashier_id,
-      items: JSON.parse(request.items_json),
+      priced,
       reason: request.reason,
       idempotencyKey: `consumption-approval-${request.id}`,
       req: actor.req || null,

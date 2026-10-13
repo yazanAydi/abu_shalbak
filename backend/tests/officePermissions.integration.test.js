@@ -137,7 +137,7 @@ describe("office permission consistency", () => {
         .send({ name: "تصنيف صلاحيات الكل" });
       expect(category.status).toBe(201);
 
-      const counts = await request(ctx.app).get("/api/v1/inventory/counts").set(hdr);
+      const counts = await request(ctx.app).get("/api/v1/inventory/counts?department=retail").set(hdr);
       expect(counts.status).toBe(200);
 
       const warehouses = await request(ctx.app).get("/api/v1/warehouses/stock").set(hdr);

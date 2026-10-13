@@ -20,6 +20,7 @@ import {
   useToast,
 } from "../../components/ui";
 import { docConfig, pickDefaultInventoryUnit, inventorySelectableUnits, lineBaseQuantity } from "./constants";
+import { DATED_BATCH_LABEL, UNDATED_BATCH_LABEL, batchSourceLabel } from "../../utils/stockBatchLabels";
 
 function unitConversion(units, unitId) {
   const unit = (units || []).find((u) => Number(u.id) === Number(unitId));
@@ -51,6 +52,9 @@ export default function InventoryDocumentForm({ docType }) {
     units: [],
     unitId: null,
     quantity: "",
+    sources: null,
+    sourceKey: "",
+    receiptExpiry: "",
   });
 
   const draftBase = useMemo(() => {
@@ -79,12 +83,38 @@ export default function InventoryDocumentForm({ docType }) {
   async function onPickProduct(product) {
     const units = inventorySelectableUnits(await fetchProductUnits(product.id));
     const def = pickDefaultInventoryUnit(units);
+    let sources = null;
+    if (cfg.type === "issue") {
+      try {
+        const { data } = await api.get(`/api/inventory/stock-sources?product_id=${product.id}`, {
+          headers: getAuthHeaders(),
+        });
+        sources = data;
+      } catch {
+        sources = null;
+      }
+    }
     setDraft({
       product,
       units,
       unitId: def?.id ?? null,
       quantity: "",
+      sources,
+      sourceKey: "",
+      receiptExpiry: "",
     });
+  }
+
+  function sourceFromKey(sources, sourceKey) {
+    if (!sources?.has_dated_batches) return null;
+    if (sourceKey === "undated") {
+      return sources.sources.find((row) => row.batch_source === "undated") || null;
+    }
+    if (sourceKey.startsWith("dated:")) {
+      const expiry = sourceKey.slice("dated:".length);
+      return sources.sources.find((row) => row.batch_source === "dated" && row.expiry_date === expiry) || null;
+    }
+    return null;
   }
 
   function addDraftLine() {
@@ -101,13 +131,18 @@ export default function InventoryDocumentForm({ docType }) {
       toast.error("الكمية يجب أن تكون أكبر من صفر");
       return;
     }
+    const chosen = sourceFromKey(draft.sources, draft.sourceKey);
+    if (draft.sources?.has_dated_batches && !chosen) {
+      toast.error(`حدد ${DATED_BATCH_LABEL} أو ${UNDATED_BATCH_LABEL}`);
+      return;
+    }
     const conversion = unitConversion(draft.units, draft.unitId);
     const baseQty = lineBaseQuantity(qty, conversion);
     const name = unitName(draft.units, draft.unitId);
     setLines((prev) => [
       ...prev,
       {
-        key: `${draft.product.id}-${draft.unitId}-${Date.now()}`,
+        key: `${draft.product.id}-${draft.unitId}-${draft.sourceKey}-${Date.now()}`,
         product_id: draft.product.id,
         product_unit_id: draft.unitId,
         product_name: draft.product.name,
@@ -119,9 +154,20 @@ export default function InventoryDocumentForm({ docType }) {
         base_quantity: baseQty,
         base_unit_name: baseUnitName(draft.units),
         stock: Number(draft.product.stock) || 0,
+        batch_source: chosen?.batch_source || null,
+        expiry_date: chosen?.batch_source === "dated"
+          ? chosen.expiry_date
+          : cfg.type === "receipt" && draft.receiptExpiry
+            ? draft.receiptExpiry
+            : null,
+        source_label: chosen
+          ? batchSourceLabel(chosen.batch_source, chosen.expiry_date)
+          : cfg.type === "receipt" && draft.receiptExpiry
+            ? batchSourceLabel("dated", draft.receiptExpiry)
+            : "—",
       },
     ]);
-    setDraft({ product: null, units: [], unitId: null, quantity: "" });
+    setDraft({ product: null, units: [], unitId: null, quantity: "", sources: null, sourceKey: "", receiptExpiry: "" });
   }
 
   function removeLine(key) {
@@ -150,6 +196,11 @@ export default function InventoryDocumentForm({ docType }) {
               product_id: l.product_id,
               product_unit_id: l.product_unit_id,
               quantity: l.quantity,
+              ...(l.batch_source
+                ? { batch_source: l.batch_source, expiry_date: l.expiry_date }
+                : l.expiry_date
+                  ? { expiry_date: l.expiry_date }
+                  : {}),
             })),
           },
           { headers: getAuthHeaders() }
@@ -211,6 +262,39 @@ export default function InventoryDocumentForm({ docType }) {
             </span>
           ) : null}
         </FormField>
+        {cfg.type === "issue" && draft.sources?.has_dated_batches ? (
+          <FormField label="المصدر" required>
+            {draft.sources.inconsistent ? (
+              <span className="ui-field__hint">{draft.sources.inconsistency_message}</span>
+            ) : null}
+            <Select
+              value={draft.sourceKey}
+              onChange={(e) => setDraft((p) => ({ ...p, sourceKey: e.target.value }))}
+            >
+              <option value="">حدد {DATED_BATCH_LABEL} أو {UNDATED_BATCH_LABEL}</option>
+              {draft.sources.sources.map((row) => {
+                const key = row.batch_source === "dated" ? `dated:${row.expiry_date}` : "undated";
+                const label = batchSourceLabel(row.batch_source, row.expiry_date, { quantityText: fmtQty(row.quantity) });
+                return (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                );
+              })}
+            </Select>
+          </FormField>
+        ) : null}
+        {cfg.type === "receipt" ? (
+          <FormField label="تاريخ الصلاحية">
+            <Input
+              type="date"
+              value={draft.receiptExpiry}
+              onChange={(e) => setDraft((p) => ({ ...p, receiptExpiry: e.target.value }))}
+              disabled={!draft.product}
+            />
+            <span className="ui-field__hint">إذا تُرك التاريخ فارغاً تُسجَّل الكمية {UNDATED_BATCH_LABEL}.</span>
+          </FormField>
+        ) : null}
         <FormField label="الوحدة">
           <Select
             value={draft.unitId || ""}
@@ -261,6 +345,7 @@ export default function InventoryDocumentForm({ docType }) {
               <th>الرقم</th>
               <th>الباركود</th>
               <th>الوحدة</th>
+              <th>المصدر</th>
               <th>الكمية</th>
               <th>التحويل</th>
               <th>الكمية الأساسية</th>
@@ -270,7 +355,7 @@ export default function InventoryDocumentForm({ docType }) {
           <tbody>
             {lines.length === 0 ? (
               <tr>
-                <td colSpan={8}>لا توجد أصناف بعد</td>
+                <td colSpan={9}>لا توجد أصناف بعد</td>
               </tr>
             ) : (
               lines.map((l) => (
@@ -279,6 +364,7 @@ export default function InventoryDocumentForm({ docType }) {
                   <td>{displayProductSku(l.sku)}</td>
                   <td>{l.barcode || "—"}</td>
                   <td>{l.unit_name}</td>
+                  <td>{l.source_label || "—"}</td>
                   <td className="num">{fmtQty(l.quantity)}</td>
                   <td className="num">{fmtQty(l.conversion_to_base)}</td>
                   <td className="num">

@@ -841,7 +841,7 @@ describe("audit independent reconciliation", () => {
       expect(fin.cogs_unknown || fin.profit.cogsKnown === false).toBe(true);
     });
 
-    test("POS allows negative stock; office sales invoice does not silently oversell", async () => {
+    test("POS and office sales reject stock beyond the sellable main-warehouse quantity", async () => {
       const p = await request(ctx.app)
         .post("/api/v1/products")
         .set(authHeader(adminToken))
@@ -863,8 +863,13 @@ describe("audit independent reconciliation", () => {
             payment_method: "cash",
           })
         );
-      expect(pos.status).toBe(201);
-      expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(-1);
+      expect(pos.status).toBe(400);
+      expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(0);
+      const saleRows = await ctx.db.get(
+        "SELECT COUNT(*) AS n FROM transaction_items WHERE product_id = ?",
+        [product.id]
+      );
+      expect(Number(saleRows.n)).toBe(0);
 
       const cust = await ctx.db.run(
         `INSERT INTO customers (name, customer_code, balance) VALUES ('مشتري مخزون', 'AUD-NEG', 0)`
@@ -1138,8 +1143,8 @@ describe("audit independent reconciliation", () => {
         await request(ctx.app).get("/api/v1/warehouses").set(authHeader(adminToken))
       );
       const main = warehouses.find((w) => w.type === "main");
-      const store = warehouses.find((w) => w.type === "store");
-      expect(main && store).toBeTruthy();
+      const returnsWh = warehouses.find((w) => w.type === "returns");
+      expect(main && returnsWh).toBeTruthy();
       const product = await ctx.db.get("SELECT stock, cost FROM products WHERE id = ?", [ctx.productId]);
       const before = await getWarehouseValuation(ctx.db);
       const draft = await request(ctx.app)
@@ -1147,7 +1152,7 @@ describe("audit independent reconciliation", () => {
         .set(authHeader(adminToken))
         .send({
           from_warehouse_id: main.id,
-          to_warehouse_id: store.id,
+          to_warehouse_id: returnsWh.id,
           items: [{ product_id: ctx.productId, quantity: 10 }],
         });
       expect(draft.status).toBe(201);

@@ -636,7 +636,7 @@ function BakeryConsumption() {
           <Button variant="ghost" onClick={() => setShow(false)}>إلغاء</Button>
         </>}>
         <FormField label="التاريخ"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></FormField>
-        <p className="ui-field__hint">سيتم خصم الكميات من مخزون مواد المخبز.</p>
+        <p className="ui-field__hint">يُخصم الاستهلاك من أقدم صلاحية ثم من المخزون غير المحدد، بنفس ترتيب البيع.</p>
         <div data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
           <div style={{ margin: "0.75rem 0" }}><ProductPicker onPick={addProduct} scope={BAKERY_SCOPE} placeholder="ابحث عن مادة مخبز…" /></div>
           <div className="ui-table-wrap">

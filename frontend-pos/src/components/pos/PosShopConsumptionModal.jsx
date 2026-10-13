@@ -8,16 +8,43 @@ function extractApiError(err, fallback) {
   return err?.response?.data?.error || err?.message || fallback;
 }
 
+const EXPENSE_KEY = "pos.shopExpenseKey";
+
 function cartPayload(cartItems) {
   return (cartItems || []).map((item) => ({
     product_id: item.id,
     unit_id: item.unitId ?? null,
     quantity: Number(item.quantity),
+    price: item.price,
   }));
 }
 
+function cartSignature(items) {
+  return JSON.stringify(items);
+}
+
+function expenseIdempotencyKey(items) {
+  const signature = cartSignature(items);
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(EXPENSE_KEY) || "null");
+    if (saved && saved.signature === signature && saved.key) return saved.key;
+  } catch {
+    /* mint a new key */
+  }
+  const key =
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `shop-use-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    window.sessionStorage.setItem(EXPENSE_KEY, JSON.stringify({ signature, key }));
+  } catch {
+    /* the request still carries this key for this attempt */
+  }
+  return key;
+}
+
 /**
- * Confirm internal shop consumption of the current cart at inventory cost.
+ * Confirm internal shop consumption of the current cart at selling price.
  */
 export default function PosShopConsumptionModal({ open, cartItems, onClose, onPosted, onWaiting }) {
   const [preview, setPreview] = useState(null);
@@ -26,13 +53,11 @@ export default function PosShopConsumptionModal({ open, cartItems, onClose, onPo
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState("");
   const keyRef = useRef("");
+  const postingRef = useRef(false);
 
   useEffect(() => {
     if (!open) return undefined;
-    keyRef.current =
-      typeof crypto !== "undefined" && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `shop-use-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    keyRef.current = expenseIdempotencyKey(cartPayload(cartItems));
     setReason("");
     setPreview(null);
     setError("");
@@ -48,7 +73,7 @@ export default function PosShopConsumptionModal({ open, cartItems, onClose, onPo
         if (!cancelled) setPreview(data?.data ?? data);
       })
       .catch((err) => {
-        if (!cancelled) setError(extractApiError(err, "تعذّر حساب تكلفة الاستهلاك"));
+        if (!cancelled) setError(extractApiError(err, "تعذّر حساب مبلغ المصروف"));
       })
       .finally(() => {
         if (!cancelled) setPreviewing(false);
@@ -62,7 +87,8 @@ export default function PosShopConsumptionModal({ open, cartItems, onClose, onPo
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!preview || loading) return;
+    if (!preview || loading || postingRef.current) return;
+    postingRef.current = true;
     setLoading(true);
     setError("");
     try {
@@ -80,10 +106,16 @@ export default function PosShopConsumptionModal({ open, cartItems, onClose, onPo
         onWaiting?.(payload.request_id, { telegram: payload.telegram === true });
         return;
       }
+      try {
+        window.sessionStorage.removeItem(EXPENSE_KEY);
+      } catch {
+        /* ignore */
+      }
       onPosted?.();
     } catch (err) {
       setError(extractApiError(err, "فشل ترحيل مصاريف المحل"));
     } finally {
+      postingRef.current = false;
       setLoading(false);
     }
   }
@@ -97,7 +129,7 @@ export default function PosShopConsumptionModal({ open, cartItems, onClose, onPo
           يُرسل الطلب للموافقة. لا يُخصم المخزون ولا يُسجَّل المصروف قبل الموافقة، ولا تتحرك نقدية الصندوق.
         </p>
 
-        {previewing ? <p className="shift-modal-lead">جاري حساب التكلفة…</p> : null}
+        {previewing ? <p className="shift-modal-lead">جاري حساب المصروف…</p> : null}
 
         {preview ? (
           <>
@@ -106,8 +138,8 @@ export default function PosShopConsumptionModal({ open, cartItems, onClose, onPo
                 <tr>
                   <th>الصنف</th>
                   <th>الكمية</th>
-                  <th>التكلفة</th>
-                  <th>الإجمالي</th>
+                  <th>سعر البيع</th>
+                  <th>المبلغ</th>
                 </tr>
               </thead>
               <tbody>
@@ -117,13 +149,19 @@ export default function PosShopConsumptionModal({ open, cartItems, onClose, onPo
                     <td>
                       {qty(line.quantity)} {line.unit_name || ""}
                     </td>
-                    <td>{ils(line.unit_cost)}</td>
-                    <td>{ils(line.line_cost)}</td>
+                    <td>{ils(line.unit_price)}</td>
+                    <td>{ils(line.line_amount)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            <p className="shift-modal-lead">إجمالي التكلفة: {ils(preview.total_cost)}</p>
+            {preview.discount ? (
+              <p className="shift-modal-lead">الخصم: {ils(preview.discount)}</p>
+            ) : null}
+            {preview.rounding_adjustment ? (
+              <p className="shift-modal-lead">التقريب: {ils(preview.rounding_adjustment)}</p>
+            ) : null}
+            <p className="shift-modal-lead">إجمالي المصروف: {ils(preview.total_cost)}</p>
           </>
         ) : null}
 

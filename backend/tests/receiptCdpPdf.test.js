@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { receiptPdfPrintParams } from "../services/chromeCdp.js";
 import {
+  allowLocalReceiptPdfRenderForTests,
   findReceiptChromium,
   measurePdfPageSizeMm,
   printPdfViaChromiumCli,
@@ -71,6 +72,13 @@ const browser = findReceiptChromium();
 const describeEdge = browser ? describe : describe.skip;
 
 describeEdge("receipt CDP PDF vs CLI (Edge present)", () => {
+  beforeAll(() => {
+    allowLocalReceiptPdfRenderForTests(true);
+  });
+  afterAll(() => {
+    allowLocalReceiptPdfRenderForTests(false);
+  });
+
   test("short and long receipts: CDP MediaBox matches measured size and is not A4", async () => {
     const shortHtml = sampleReceipt(2);
     const longHtml = sampleReceipt(28);

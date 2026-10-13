@@ -11,6 +11,7 @@
  */
 
 import { round2 } from "./money.js";
+import { displayedWarehouseQuantities } from "../services/warehouseBatchStock.js";
 import { productSkuLookupValues } from "./entityCodes.js";
 import { bakeryMembershipSql, BAKERY_KIND_WORKSPACE, parseBakeryKind } from "./bakeryMembership.js";
 import { resolveBakeryReportCategories } from "../services/bakeryReportService.js";
@@ -304,19 +305,13 @@ export async function listProductWarehouseLocations(db, productId) {
 
   const warehouses = await loadWarehouses(db);
   const { main, returns: returnsWh } = warehouseRoles(warehouses);
+  const shown = await displayedWarehouseQuantities(db, pid);
   const out = [];
   const derivedIds = [];
 
   if (main) {
     derivedIds.push(Number(main.id));
-    const awayRow = await db.get(
-      `SELECT COALESCE(SUM(ws.quantity), 0) AS qty
-         FROM warehouse_stock ws
-         JOIN warehouses w ON w.id = ws.warehouse_id
-        WHERE ws.product_id = ? AND w.id != ?`,
-      [pid, main.id]
-    );
-    const qty = num(product.stock) - num(awayRow?.qty);
+    const qty = num(shown?.main);
     if (Math.abs(qty) > QTY_EPS) {
       out.push({
         warehouse_id: main.id,
@@ -324,17 +319,14 @@ export async function listProductWarehouseLocations(db, productId) {
         code: main.code,
         type: main.type,
         quantity: qty,
+        reconciliation_required: Boolean(shown?.reconciliation_required),
       });
     }
   }
 
   if (returnsWh) {
     derivedIds.push(Number(returnsWh.id));
-    const moved = await db.get(
-      "SELECT COALESCE(quantity, 0) AS qty FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?",
-      [returnsWh.id, pid]
-    );
-    const qty = num(moved?.qty);
+    const qty = num(shown?.returns);
     if (Math.abs(qty) > QTY_EPS) {
       out.push({
         warehouse_id: returnsWh.id,
@@ -342,6 +334,7 @@ export async function listProductWarehouseLocations(db, productId) {
         code: returnsWh.code,
         type: returnsWh.type,
         quantity: qty,
+        reconciliation_required: Boolean(shown?.reconciliation_required),
       });
     }
   }

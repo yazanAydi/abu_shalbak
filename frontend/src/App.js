@@ -382,7 +382,7 @@ function App() {
             path="/bakery/movements"
             element={
               <OfficeRoute requireAnyPermission={["stock_count", "bakery_supplies"]}>
-                <Inventory workspace="bakery" initialTab="movements" allowedTabs={["movements"]} />
+                <Inventory workspace="bakery" initialTab="movements" allowedTabs={["count", "movements"]} />
               </OfficeRoute>
             }
           />

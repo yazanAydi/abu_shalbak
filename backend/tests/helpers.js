@@ -127,6 +127,76 @@ export async function createTestEmployee(db, { name = "موظف اختبار", a
   return { id: ins.lastID, name };
 }
 
+export async function moveStockToReturns(app, db, token, items, supplierId = null) {
+  const lines = [];
+  for (const item of items) {
+    let qty = Number(item.base_quantity ?? item.quantity);
+    if (item.base_quantity == null && item.unit_id) {
+      const unit = await db.get(
+        "SELECT conversion_to_base FROM product_units WHERE id = ?",
+        [item.unit_id]
+      );
+      qty *= Number(unit?.conversion_to_base) || 1;
+    }
+    if (!(qty > 0)) continue;
+    const expiry = item.expiry_date ? String(item.expiry_date).slice(0, 10) : "";
+    lines.push({
+      product_id: item.product_id,
+      quantity: qty,
+      ...(expiry
+        ? { expiry_date: expiry, batch_source: "dated" }
+        : { batch_source: "undated" }),
+    });
+  }
+  if (lines.length === 0) return;
+  const listed = await request(app).get("/api/v1/warehouses").set(authHeader(token));
+  const warehouses = listed.body?.data ?? listed.body;
+  const main = warehouses.find((row) => row.type === "main");
+  const returnsWh = warehouses.find((row) => row.type === "returns");
+  let transferLines = lines;
+  if (supplierId && main) {
+    transferLines = [];
+    for (const item of lines) {
+      const key = item.batch_source === "dated" && item.expiry_date ? String(item.expiry_date).slice(0, 10) : "";
+      const lots = await db.all(
+        `SELECT id, quantity FROM stock_source_lots
+          WHERE product_id = ? AND warehouse_id = ? AND supplier_id = ?
+            AND provenance IN ('receipt', 'assigned') AND quantity > 0.0000001
+            AND expiry_date = ?
+          ORDER BY received_at, id`,
+        [item.product_id, main.id, Number(supplierId), key]
+      );
+      let need = Number(item.quantity) || 0;
+      for (const lot of lots) {
+        if (need <= 0.0000001) break;
+        const take = Math.min(Number(lot.quantity) || 0, need);
+        if (take <= 0) continue;
+        transferLines.push({ ...item, quantity: take, source_lot_id: lot.id });
+        need -= take;
+      }
+      if (need > 0.0000001) transferLines.push({ ...item, quantity: need });
+    }
+  }
+  const draft = await request(app)
+    .post("/api/v1/warehouses/transfers")
+    .set(authHeader(token))
+    .send({
+      from_warehouse_id: main.id,
+      to_warehouse_id: returnsWh.id,
+      items: transferLines,
+    });
+  if (draft.status !== 201) {
+    throw new Error(`return staging draft ${draft.status} ${JSON.stringify(draft.body)}`);
+  }
+  const id = draft.body?.data?.id ?? draft.body.id;
+  const posted = await request(app)
+    .post(`/api/v1/warehouses/transfers/${id}/post`)
+    .set(authHeader(token));
+  if (posted.status !== 200) {
+    throw new Error(`return staging post ${posted.status} ${JSON.stringify(posted.body)}`);
+  }
+}
+
 export async function destroyTestContext(ctx) {
   if (!ctx) return;
   try {

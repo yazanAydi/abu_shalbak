@@ -4,7 +4,7 @@ import { round2 } from "./money.js";
  * Posted purchase invoices and returns for a calendar date range.
  * Same document dates as the supplier ledger / purchases module:
  *   purchase_invoices.invoice_date, purchase_returns.return_date
- * Amount is the payable document total (after line discount).
+ * Amount is the payable document total (after line and invoice discounts).
  * Drafts and any non-posted row are excluded. supplier_invoices / vouchers / payments are not used.
  *
  * @param {object} db

@@ -25,7 +25,7 @@ import { pickExportColumns } from "../utils/reportExport";
 import { printReceipt } from "../utils/printReceipt";
 import { printSummaryReport } from "../utils/printReport";
 import { loadStoreSettings } from "../utils/loadStoreSettings";
-import { buildShiftCountSummaryModel, visaAmountText } from "../utils/shiftVisa";
+import { buildShiftCountSummaryModel, formatSignedMoney, visaAmountText } from "../utils/shiftVisa";
 import CashCountFields, {
   buildCountCurrencyRows,
   countedCurrenciesPayload,
@@ -39,6 +39,17 @@ import ShiftCountTotals from "../components/ShiftCountTotals";
 import { mapShiftDetailToCountTarget } from "../utils/shiftCountSupplierPayment";
 
 const PM = { cash: "نقد", visa: "بطاقة", on_account: "ذمة", mixed: "مختلط" };
+
+/** Shown in تفاصيل and in print/CSV, not as table columns. */
+const SHIFT_AUDIT_DETAIL_ONLY_KEYS = new Set([
+  "cash_sales",
+  "visa_sales",
+  "tender_total",
+  "cash_refunds",
+  "visa_refunds",
+  "cash_net",
+  "visa_net",
+]);
 
 function savedAdjustmentText(value) {
   if (value == null || value === "") return null;
@@ -250,6 +261,13 @@ function shiftCountSource(shift, summary) {
     expected_cash: summary?.expected ?? shift?.expected_cash,
     expected_cash_label: summary?.expected_cash_label || shift?.expected_cash_label,
     expected_by_currency: shift?.expected_by_currency || summary?.expected_by_currency,
+    opening_cash: shift?.opening_cash,
+    supplier_payments_total: summary?.supplier_payments_total ?? shift?.supplier_payments_total,
+    advances_total: summary?.advances_total ?? shift?.advances_total,
+    customer_collections_total:
+      summary?.customer_collections_total ?? shift?.customer_collections_total,
+    customer_cash_debts_total: summary?.customer_cash_debts_total ?? shift?.customer_cash_debts_total,
+    adjustments_total: summary?.adjustments_total ?? shift?.adjustments_total,
   };
 }
 
@@ -264,7 +282,9 @@ function ShiftDetailSummary({ shift, summary, varianceWarn }) {
       </div>
       <div className="shift-detail-chip">
         <span className="shift-detail-chip-k">افتتاح</span>
-        <span className="shift-detail-chip-v num">{ils(shift.opening_cash ?? 0)}</span>
+        <span className="shift-detail-chip-v num">
+          {shift.opening_cash != null && shift.opening_cash !== "" ? ils(shift.opening_cash) : "غير متوفر"}
+        </span>
       </div>
       <div className="shift-detail-chip">
         <span className="shift-detail-chip-k">الحالة</span>
@@ -285,7 +305,7 @@ function ShiftDetailSummary({ shift, summary, varianceWarn }) {
         </>
       ) : null}
       <div className="shift-detail-summary-totals">
-        <ShiftCountTotals source={shiftCountSource(shift, summary)} />
+        <ShiftCountTotals source={shiftCountSource(shift, summary)} includeZeros />
       </div>
       <div className="shift-detail-chip">
         <span className="shift-detail-chip-k">دفعات الموردين</span>
@@ -769,14 +789,21 @@ export default function ShiftAudit() {
   ];
 
   const columns = [
-    { key: "cashier", header: "الكاشير", value: (r) => r.cashier_name || r.cashier_id, render: (r) => r.cashier_name || r.cashier_id },
-    { key: "start", header: "وقت الفتح", value: (r) => formatDt(r.start_time), render: (r) => formatDt(r.start_time) },
-    { key: "business_day", header: "يوم العمل", value: (r) => dateOnly(r.business_day), render: (r) => dateOnly(r.business_day) },
-    { key: "end", header: "النهاية", value: (r) => formatDt(r.end_time), render: (r) => formatDt(r.end_time) },
+    {
+      key: "cashier",
+      header: "الكاشير",
+      minWidth: "6.5rem",
+      value: (r) => r.cashier_name || r.cashier_id,
+      render: (r) => r.cashier_name || r.cashier_id,
+    },
+    { key: "start", header: "وقت الفتح", width: "10.5rem", value: (r) => formatDt(r.start_time), render: (r) => formatDt(r.start_time) },
+    { key: "business_day", header: "يوم العمل", width: "6.75rem", value: (r) => dateOnly(r.business_day), render: (r) => dateOnly(r.business_day) },
+    { key: "end", header: "النهاية", width: "10.5rem", value: (r) => formatDt(r.end_time), render: (r) => formatDt(r.end_time) },
     {
       key: "opening",
       header: "افتتاح",
       className: "num",
+      width: "6.5rem",
       value: (r) => ils(r.opening_cash ?? 0),
       render: (r) => ils(r.opening_cash ?? 0),
     },
@@ -784,6 +811,7 @@ export default function ShiftAudit() {
       key: "closing",
       header: "إغلاق",
       className: "num",
+      width: "6.5rem",
       value: (r) => (r.closing_cash != null ? ils(r.closing_cash) : "—"),
       render: (r) => (r.closing_cash != null ? ils(r.closing_cash) : "—"),
     },
@@ -791,6 +819,7 @@ export default function ShiftAudit() {
       key: "expected",
       header: "متوقع",
       className: "num",
+      width: "6.5rem",
       value: (r) => (r.expected_cash != null ? ils(r.expected_cash) : "—"),
       render: (r) => <ExpectedCashCell row={r} />,
     },
@@ -798,6 +827,7 @@ export default function ShiftAudit() {
       key: "variance",
       header: "الفرق",
       className: "num",
+      width: "6.5rem",
       value: (r) =>
         r.variance != null ? `${r.variance >= 0 ? "+" : ""}${ils(r.variance)}` : "—",
       render: (r) =>
@@ -862,6 +892,7 @@ export default function ShiftAudit() {
     {
       key: "status",
       header: "الحالة",
+      width: "7.5rem",
       value: (r) => {
         if (r.status === "open") return "مفتوحة";
         if (r.status === "pending_count") return "بانتظار العد";
@@ -872,6 +903,7 @@ export default function ShiftAudit() {
     {
       key: "view",
       header: "",
+      width: "6.75rem",
       render: (r) => (
         <SecondaryButton size="sm" type="button" onClick={() => openDetail(r.id)}>
           تفاصيل
@@ -879,6 +911,8 @@ export default function ShiftAudit() {
       ),
     },
   ];
+
+  const tableColumns = columns.filter((column) => !SHIFT_AUDIT_DETAIL_ONLY_KEYS.has(column.key));
 
   const countedTotal = countedNisTotal(countRows, countedAmounts);
   const hasCountedInput = Object.values(countedAmounts).some((v) => String(v || "").trim() !== "");
@@ -976,7 +1010,7 @@ export default function ShiftAudit() {
       <Card>
         <CardBody flush>
           <DataTable
-            columns={columns}
+            columns={tableColumns}
             rows={rows}
             loading={loading}
             empty="لا توجد ورديات"
@@ -986,6 +1020,7 @@ export default function ShiftAudit() {
       </Card>
 
       <Modal
+        className="shift-count-modal"
         open={!!reconcileTarget}
         onClose={closeReconcile}
         title={reconcileTarget ? `عد النقد — وردية #${reconcileTarget.id}` : ""}
@@ -1012,7 +1047,7 @@ export default function ShiftAudit() {
       >
         {reconcileTarget ? (
           <>
-            <p style={{ color: "var(--office-text-muted)", lineHeight: 1.6 }}>
+            <p className="shift-count-meta">
               {reconcileTarget.cashier_name}
               {reconcileTarget.id != null ? ` — وردية #${reconcileTarget.id}` : ""}
             </p>
@@ -1054,7 +1089,8 @@ export default function ShiftAudit() {
                 }
               }}
             />
-            <form id="reconcile-form" onSubmit={submitReconcile}>
+            <form id="reconcile-form" className="shift-count-card" onSubmit={submitReconcile}>
+            <h3 className="shift-count-card__title">عد النقد</h3>
             <CashCountFields
               countRows={countRows}
               values={countedAmounts}
@@ -1063,16 +1099,21 @@ export default function ShiftAudit() {
               }
             />
             {hasCountedInput ? (
-              <p style={{ marginBottom: "0.75rem" }}>
-                المجموع بالشيكل: <span className="num">{ils(countedTotal)}</span>
+              <p className="shift-count-line">
+                <span className="shift-count-line__label">المجموع بالشيكل</span>
+                <span className="shift-count-money" dir="ltr">
+                  {formatSignedMoney(countedTotal)}
+                </span>
               </p>
             ) : null}
             {reconcilePreview != null && !Number.isNaN(reconcilePreview) ? (
-              <p style={{ marginBottom: "0.75rem" }}>
-                الفارق (معاينة):{" "}
-                <span className={varianceWarn(reconcilePreview) ? "negative" : ""}>
-                  {reconcilePreview >= 0 ? "+" : ""}
-                  {ils(reconcilePreview)}
+              <p className="shift-count-line">
+                <span className="shift-count-line__label">الفارق (معاينة)</span>
+                <span
+                  className={varianceWarn(reconcilePreview) ? "shift-count-money negative" : "shift-count-money"}
+                  dir="ltr"
+                >
+                  {formatSignedMoney(reconcilePreview)}
                 </span>
               </p>
             ) : null}

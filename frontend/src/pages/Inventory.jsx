@@ -14,14 +14,14 @@ import { pickExportColumns } from "../utils/reportExport";
 import { apiErrorMessage } from "../utils/apiError";
 import QtyStepper from "../components/QtyStepper";
 import { handleEnterNavKeyDown } from "../utils/focusNavigation";
-
-const ADJ_LABELS = { in: "إدخال مخزون", out: "إخراج مخزون", damage: "تالف", consumption: "استهلاك", correction: "تصحيح" };
-const MOVE_LABELS = {
-  sale: "بيع", refund: "استرجاع", purchase: "شراء", purchase_return: "مرتجع شراء",
-  adjust_in: "إدخال", adjust_out: "إخراج", damage: "تالف", consumption: "استهلاك",
-  correction: "تصحيح", count: "جرد", transfer_in: "تحويل وارد", transfer_out: "تحويل صادر", opening: "افتتاحي",
-};
-const MOVE_TONE = { sale: "blue", refund: "orange", purchase: "green", purchase_return: "red", adjust_in: "green", adjust_out: "red", damage: "red", consumption: "orange", correction: "neutral" };
+import { DATED_BATCH_LABEL, UNDATED_BATCH_LABEL, batchSourceLabel } from "../utils/stockBatchLabels";
+import {
+  ADJUSTMENT_TYPE_LABELS,
+  LEDGER_MOVEMENT_LABELS,
+  adjustmentTypeLabel,
+  movementLabel,
+  movementTone,
+} from "../utils/inventoryLabels";
 
 function Adjustments() {
   const toast = useToast();
@@ -43,8 +43,24 @@ function Adjustments() {
   }, [toast]);
   useEffect(() => { load(); }, [load]);
 
-  function addProduct(p) {
-    setItems((prev) => prev.some((x) => x.product_id === p.id) ? prev : [...prev, { product_id: p.id, name: p.name, quantity: 1, unit_cost: Number(p.cost) || 0 }]);
+  async function addProduct(p) {
+    if (items.some((x) => x.product_id === p.id)) return;
+    let sources = null;
+    try {
+      const { data } = await api.get(`/api/inventory/stock-sources?product_id=${p.id}`, { headers: getAuthHeaders() });
+      sources = data;
+    } catch {
+      sources = null;
+    }
+    setItems((prev) => prev.some((x) => x.product_id === p.id) ? prev : [...prev, {
+      product_id: p.id,
+      name: p.name,
+      quantity: 1,
+      unit_cost: Number(p.cost) || 0,
+      sources,
+      batch_source: "",
+      expiry_date: "",
+    }]);
   }
   const upd = (i, k, v) => setItems((prev) => prev.map((x, idx) => idx === i ? { ...x, [k]: v } : x));
 
@@ -54,7 +70,13 @@ function Adjustments() {
     try {
       const payload = {
         adjustment_type: type, adjustment_date: date, notes,
-        items: items.map((it) => ({ product_id: it.product_id, quantity: Number(it.quantity), unit_cost: Number(it.unit_cost) || null })),
+        items: items.map((it) => ({
+          product_id: it.product_id,
+          quantity: Number(it.quantity),
+          unit_cost: Number(it.unit_cost) || null,
+          ...(it.batch_source ? { batch_source: it.batch_source, expiry_date: it.batch_source === "dated" ? it.expiry_date : null } : {}),
+          ...(type === "in" && it.expiry_date ? { expiry_date: it.expiry_date } : {}),
+        })),
       };
       if (editId) {
         await api.put(`/api/inventory/adjustments/${editId}`, payload, { headers: getAuthHeaders() });
@@ -96,6 +118,9 @@ function Adjustments() {
       name: it.name,
       quantity: it.quantity,
       unit_cost: it.unit_cost ?? 0,
+      batch_source: it.batch_source || "",
+      expiry_date: it.expiry_date || "",
+      sources: null,
     })));
     setEditId(data.id);
     setShow(true);
@@ -103,7 +128,7 @@ function Adjustments() {
 
   const adjColumns = [
     { key: "adjustment_no", header: "رقم", value: (r) => `#${r.adjustment_no ?? r.id}`, render: (r) => `#${r.adjustment_no ?? r.id}` },
-    { key: "adjustment_type", header: "النوع", value: (r) => ADJ_LABELS[r.adjustment_type] || r.adjustment_type, render: (r) => ADJ_LABELS[r.adjustment_type] || r.adjustment_type },
+    { key: "adjustment_type", header: "النوع", value: (r) => adjustmentTypeLabel(r.adjustment_type), render: (r) => adjustmentTypeLabel(r.adjustment_type) },
     { key: "adjustment_date", header: "التاريخ", value: (r) => dateOnly(r.adjustment_date), render: (r) => dateOnly(r.adjustment_date) },
     { key: "item_count", header: "الأصناف" },
     { key: "status", header: "الحالة", value: (r) => (r.status === "posted" ? "مرحّلة" : "مسودة"), render: (r) => <StatusPill tone={r.status === "posted" ? "green" : "neutral"}>{r.status === "posted" ? "مرحّلة" : "مسودة"}</StatusPill> },
@@ -141,23 +166,54 @@ function Adjustments() {
           <Button variant="ghost" onClick={() => { setShow(false); setEditId(null); }}>إلغاء</Button>
         </>}>
         <FormGrid>
-          <FormField label="نوع التسوية"><Select value={type} onChange={(e) => setType(e.target.value)}>{Object.entries(ADJ_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></FormField>
+          <FormField label="نوع التسوية"><Select value={type} onChange={(e) => setType(e.target.value)}>{Object.entries(ADJUSTMENT_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></FormField>
           <FormField label="التاريخ"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></FormField>
         </FormGrid>
         <Notice tone="info" className="ui-mt-md">
-          {type === "correction" ? "للتصحيح: أدخل كمية موجبة للزيادة أو سالبة للنقص." : "أدخل الكمية (موجبة) وسيُطبَّق اتجاهها تلقائياً حسب النوع."}
+          {type === "correction"
+            ? "للتصحيح: أدخل كمية موجبة للزيادة أو سالبة للنقص، وحدد الدفعة عندما يكون للصنف دفعات."
+            : type === "consumption"
+              ? `يُخصم الاستهلاك من أقدم صلاحية ثم من ${UNDATED_BATCH_LABEL}، بنفس ترتيب البيع.`
+              : type === "in"
+                ? `أدخل تاريخ صلاحية لإضافة الكمية إلى ${DATED_BATCH_LABEL}. إذا تُرك التاريخ فارغاً تُسجَّل الكمية ${UNDATED_BATCH_LABEL}.`
+                : `حدد ${DATED_BATCH_LABEL} أو ${UNDATED_BATCH_LABEL} قبل ترحيل التالف أو الإخراج.`}
         </Notice>
         <div data-enter-nav="" onKeyDown={handleEnterNavKeyDown}>
         <div className="ui-mt-md"><ProductPicker onPick={addProduct} scope="retail" /></div>
         <div className="ui-table-wrap ui-mt-md">
           <table className="ui-table">
-            <thead><tr><th className="ui-table__col--name">الصنف</th><th>الكمية</th><th>الكلفة</th><th></th></tr></thead>
+            <thead><tr><th className="ui-table__col--name">الصنف</th><th>المصدر</th><th>الكمية</th><th>الكلفة</th><th></th></tr></thead>
             <tbody>
-              {items.length === 0 && <tr><td colSpan={4} className="ui-table__empty-cell">أضف أصنافاً</td></tr>}
+              {items.length === 0 && <tr><td colSpan={5} className="ui-table__empty-cell">أضف أصنافاً</td></tr>}
               {items.map((it, i) => (
                 <tr key={it.product_id}>
                   <td className="ui-table__col--name">{it.name}</td>
-                  <td><QtyStepper className="ui-input ui-input--narrow" min={0} value={it.quantity} onChange={(e) => upd(i, "quantity", e.target.value)} /></td>
+                  <td>
+                    {type === "in" ? (
+                      <Input type="date" value={it.expiry_date || ""} onChange={(e) => upd(i, "expiry_date", e.target.value)} />
+                    ) : (type === "damage" || type === "out" || type === "correction") && it.sources?.has_dated_batches ? (
+                      <Select
+                        value={it.batch_source === "dated" ? `dated:${it.expiry_date}` : it.batch_source || ""}
+                        onChange={(e) => {
+                          const key = e.target.value;
+                          if (key === "undated") upd(i, "batch_source", "undated");
+                          else if (key.startsWith("dated:")) {
+                            setItems((prev) => prev.map((row, idx) => idx === i ? { ...row, batch_source: "dated", expiry_date: key.slice(6) } : row));
+                          } else {
+                            upd(i, "batch_source", "");
+                          }
+                        }}
+                      >
+                        <option value="">حدد {DATED_BATCH_LABEL} أو {UNDATED_BATCH_LABEL}</option>
+                        {it.sources.sources.map((row) => {
+                          const key = row.batch_source === "dated" ? `dated:${row.expiry_date}` : "undated";
+                          const label = batchSourceLabel(row.batch_source, row.expiry_date, { quantityText: fmtQty(row.quantity) });
+                          return <option key={key} value={key}>{label}</option>;
+                        })}
+                      </Select>
+                    ) : type === "consumption" ? "أقدم صلاحية" : "—"}
+                  </td>
+                  <td><QtyStepper className="ui-input ui-input--narrow" min={type === "correction" ? undefined : 0} value={it.quantity} onChange={(e) => upd(i, "quantity", e.target.value)} /></td>
                   <td><input className="ui-input ui-input--narrow" type="number" step="0.01" value={it.unit_cost} onChange={(e) => upd(i, "unit_cost", e.target.value)} /></td>
                   <td><Button variant="ghost" size="sm" icon="trash" iconOnly aria-label="حذف" onClick={() => setItems((p) => p.filter((_, idx) => idx !== i))} /></td>
                 </tr>
@@ -174,6 +230,7 @@ function Adjustments() {
           <DataTable
             columns={[
               { key: "name", header: "الصنف", nameColumn: true, wrap: true },
+              { key: "source", header: "المصدر", render: (it) => (it.batch_source === "dated" || it.batch_source === "undated" ? batchSourceLabel(it.batch_source, it.expiry_date) : (it.expiry_date || "—")) },
               { key: "quantity", header: "الكمية", align: "left", render: (it) => fmtQty(it.quantity) },
               { key: "unit_cost", header: "الكلفة", align: "left", className: "num", render: (it) => (it.unit_cost != null ? ils(it.unit_cost) : "—") },
             ]}
@@ -211,7 +268,7 @@ function Movements({ membership = null }) {
   const moveColumns = [
     { key: "created_at", header: "التاريخ", value: (r) => dateTime(r.created_at), render: (r) => dateTime(r.created_at) },
     { key: "product_name", header: "الصنف", nameColumn: true, wrap: true },
-    { key: "movement_type", header: "النوع", value: (r) => MOVE_LABELS[r.movement_type] || r.movement_type, render: (r) => <StatusPill tone={MOVE_TONE[r.movement_type] || "neutral"} noDot>{MOVE_LABELS[r.movement_type] || r.movement_type}</StatusPill> },
+    { key: "movement_type", header: "النوع", value: (r) => movementLabel(r.movement_type), render: (r) => <StatusPill tone={movementTone(r.movement_type)} noDot>{movementLabel(r.movement_type)}</StatusPill> },
     { key: "quantity", header: "الكمية", value: (r) => `${r.quantity > 0 ? "+" : ""}${fmtQty(r.quantity)}`, render: (r) => <span className={r.quantity > 0 ? "positive" : "negative"}>{r.quantity > 0 ? "+" : ""}{fmtQty(r.quantity)}</span> },
     { key: "notes", header: "ملاحظات", value: (r) => r.notes || "—", render: (r) => r.notes || "—" },
     { key: "created_by_name", header: "بواسطة", value: (r) => r.created_by_name || "—", render: (r) => r.created_by_name || "—" },
@@ -225,7 +282,7 @@ function Movements({ membership = null }) {
         <FormField label="النوع">
           <Select value={type} onChange={(e) => setType(e.target.value)}>
             <option value="">كل الأنواع</option>
-            {Object.entries(MOVE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            {Object.entries(LEDGER_MOVEMENT_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </Select>
         </FormField>
         <FormField label="من تاريخ" className="ui-field--date">
@@ -325,7 +382,7 @@ function Batches({ membership = null }) {
   async function remove(id) {
     if (!window.confirm("حذف الدفعة؟")) return;
     try { await api.delete(`/api/inventory/batches/${id}`, { headers: getAuthHeaders() }); toast.success("تم الحذف"); load(); }
-    catch { toast.error("فشل"); }
+    catch (e) { toast.error(apiErrorMessage(e, "فشل")); }
   }
 
   const batchColumns = [
@@ -423,7 +480,12 @@ export default function Inventory({
       {tabs.length > 1 ? (
         <Tabs active={tab} onChange={setTab} tabs={tabs} />
       ) : null}
-      {tab === "count" && <InventoryCount embedded />}
+      {tab === "count" && (
+        <InventoryCount
+          embedded
+          scope={isBakery ? "bakery" : "retail"}
+        />
+      )}
       {tab === "adjustments" && <Adjustments />}
       {tab === "movements" && <Movements membership={membership} />}
       {tab === "negative" && <NegativeStock />}

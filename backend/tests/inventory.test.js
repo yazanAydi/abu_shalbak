@@ -136,7 +136,7 @@ describe("Zero all product stock", () => {
     const create = await request(ctx.app)
       .post("/api/v1/inventory/counts")
       .set(authHeader(adminToken))
-      .send({ notes: "live-stock post" });
+      .send({ notes: "live-stock post", department: "retail" });
     expect(create.status).toBe(201);
     const sessionId = (create.body.data ?? create.body).id;
 

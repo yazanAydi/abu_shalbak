@@ -19,6 +19,7 @@ import PosRefundNotifications from "../components/pos/PosRefundNotifications";
 import PosPrintQueue from "../components/pos/PosPrintQueue";
 import PosWindowCloseHost from "../components/pos/PosWindowCloseHost";
 import { getAuthHeaders, getUser, removeToken } from "../utils/auth";
+import { clearRecoverableCart, readRecoverableCart, writeRecoverableCart } from "../utils/recoverableCart";
 import { requiresShiftForPos } from "../utils/roles";
 import ShiftStart from "../components/ShiftStart";
 import { openReceiptForPrinting, printReceipt } from "../utils/printReceipt";
@@ -35,10 +36,12 @@ import { resolveF9CheckoutAction } from "../utils/f9Checkout";
 import { focusBarcodeInput, isBarcodeFocusSurface } from "../utils/focusBarcodeInput";
 import { readWaitingRequestId, writeWaitingRequestId } from "../utils/posWaitingRequests";
 import { playScanSuccess, warmPosSounds } from "../utils/posSounds";
+import { suspendedItemsToCartItems } from "../utils/suspendedCart";
 import {
-  cartItemsToSuspendPayload,
-  suspendedItemsToCartItems,
-} from "../utils/suspendedCart";
+  buildSuspendRequest,
+  resolveSuspendAttempt,
+  suspendPayloadSignature,
+} from "../utils/suspendCartSubmit";
 import "../components/ShiftModal.css";
 import "./pos-theme.css";
 import "./Checkout.css";
@@ -52,6 +55,7 @@ const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 const PosClearCartModal = lazy(() => import("../components/pos/PosClearCartModal"));
 const PosSuspendedSalesModal = lazy(() => import("../components/pos/PosSuspendedSalesModal"));
 const PosSuspendedDetailModal = lazy(() => import("../components/pos/PosSuspendedDetailModal"));
+const PosPreviousSalesModal = lazy(() => import("../components/pos/PosPreviousSalesModal"));
 const PosRestoreConflictModal = lazy(() => import("../components/pos/PosRestoreConflictModal"));
 const PosRefundModal = lazy(() => import("../components/pos/PosRefundModal"));
 const PosAdvanceRequestModal = lazy(() => import("../components/pos/PosAdvanceRequestModal"));
@@ -121,6 +125,13 @@ export default function Checkout() {
   const [restoreConflictOpen, setRestoreConflictOpen] = useState(false);
   const [pendingRestoreId, setPendingRestoreId] = useState(null);
   const [activeSuspendedSaleId, setActiveSuspendedSaleId] = useState(null);
+  const [previousSalesOpen, setPreviousSalesOpen] = useState(false);
+  const activeSuspendedSaleIdRef = useRef(null);
+  const suspendedVersionRef = useRef(null);
+  const activeSuspendedNoteRef = useRef(null);
+  const suspendIdempotencyRef = useRef(null);
+  const suspendSignatureRef = useRef(null);
+  const holdInFlightRef = useRef(false);
 
   const posActionErrorTimerRef = useRef(null);
 
@@ -155,6 +166,8 @@ export default function Checkout() {
   const idempotencyKeyRef = useRef(null);
   const submittedPayloadRef = useRef(null);
   const isSubmittingRef = useRef(false);
+  const cartRestoredRef = useRef(false);
+  const [cartRecoveryReady, setCartRecoveryReady] = useState(false);
 
   const loadActivePromos = useCallback(() => {
     api
@@ -282,6 +295,35 @@ export default function Checkout() {
   }, [loadShift]);
 
   useEffect(() => {
+    if (shiftLoading || shiftLoadError || cartRestoredRef.current) return;
+    cartRestoredRef.current = true;
+    const saved = user?.id ? readRecoverableCart(user.id) : null;
+    const shiftId = activeShift?.id ?? null;
+    if (saved && shiftId && Number(saved.shiftId) === Number(shiftId)) {
+      dispatch({ type: "LOAD_CART", cartItems: saved.cartItems });
+      if (saved.idempotencyKey) idempotencyKeyRef.current = saved.idempotencyKey;
+      if (saved.submittedPayload) submittedPayloadRef.current = saved.submittedPayload;
+      if (saved.suspendedSaleId) {
+        activeSuspendedSaleIdRef.current = saved.suspendedSaleId;
+        setActiveSuspendedSaleId(saved.suspendedSaleId);
+      }
+    }
+    setCartRecoveryReady(true);
+  }, [shiftLoading, shiftLoadError, activeShift?.id, user?.id]);
+
+  useEffect(() => {
+    if (!cartRecoveryReady || !user?.id || shiftLoadError) return;
+    writeRecoverableCart({
+      userId: user.id,
+      shiftId: activeShift?.id ?? null,
+      cartItems,
+      idempotencyKey: idempotencyKeyRef.current,
+      submittedPayload: submittedPayloadRef.current,
+      suspendedSaleId: activeSuspendedSaleId,
+    });
+  }, [cartRecoveryReady, cartItems, activeShift?.id, user?.id, activeSuspendedSaleId, shiftLoadError]);
+
+  useEffect(() => {
     if (shiftReady) loadSuspendedList();
   }, [shiftReady, loadSuspendedList]);
 
@@ -349,15 +391,34 @@ export default function Checkout() {
     focusBarcodeInput();
   }, []);
 
+  const clearSuspendedIdentity = useCallback(() => {
+    activeSuspendedSaleIdRef.current = null;
+    suspendedVersionRef.current = null;
+    activeSuspendedNoteRef.current = null;
+    suspendIdempotencyRef.current = null;
+    suspendSignatureRef.current = null;
+    setActiveSuspendedSaleId(null);
+  }, []);
+
+  const rememberSuspendedSale = useCallback((detail) => {
+    const id = detail?.id ?? null;
+    activeSuspendedSaleIdRef.current = id;
+    suspendedVersionRef.current = detail?.version ?? null;
+    activeSuspendedNoteRef.current = detail?.note ?? null;
+    suspendIdempotencyRef.current = null;
+    suspendSignatureRef.current = null;
+    setActiveSuspendedSaleId(id);
+  }, []);
+
   const resetInvoiceState = useCallback(() => {
     dispatch({ type: "CLEAR_CART" });
     setSelectedPayment(null);
     setCustomerId(null);
     setEmployeeId(null);
     setPayModalOpen(false);
-    setActiveSuspendedSaleId(null);
+    clearSuspendedIdentity();
     focusBarcodeInput();
-  }, []);
+  }, [clearSuspendedIdentity]);
 
   const requestClearCart = useCallback(() => {
     if (!cartItems.length) return;
@@ -370,14 +431,47 @@ export default function Checkout() {
     focusBarcodeInput();
   }, [state.scanHistory?.length]);
 
-  const suspendCartItems = useCallback(async (items, note) => {
-    const { data } = await api.post(
-      "/api/suspended-sales",
-      { note: note?.trim() || null, items: cartItemsToSuspendPayload(items) },
-      { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
-    );
-    return data;
-  }, []);
+  const persistSuspendedCart = useCallback(
+    async (items) => {
+      const saleId = activeSuspendedSaleIdRef.current;
+      const signature = suspendPayloadSignature(items, {
+        note: activeSuspendedNoteRef.current,
+        customerId,
+        employeeId,
+      });
+      const attempt = resolveSuspendAttempt({
+        activeSaleId: saleId,
+        outstandingKey: suspendIdempotencyRef.current,
+        outstandingSignature: suspendSignatureRef.current,
+        signature,
+      });
+      if (attempt.mode === "create") {
+        suspendIdempotencyRef.current = attempt.idempotencyKey;
+        suspendSignatureRef.current = signature;
+      }
+      const req = buildSuspendRequest({
+        saleId: attempt.mode === "update" ? saleId : null,
+        items,
+        note: activeSuspendedNoteRef.current,
+        version: suspendedVersionRef.current,
+        customerId,
+        employeeId,
+        idempotencyKey: attempt.idempotencyKey,
+      });
+      const { data } = await api[req.method](req.url, req.body, {
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+      });
+      if (attempt.mode === "create") {
+        suspendIdempotencyRef.current = null;
+        suspendSignatureRef.current = null;
+      }
+      if (data?.version != null && saleId) {
+        suspendedVersionRef.current = data.version;
+      }
+      return data;
+    },
+    [customerId, employeeId]
+  );
 
   const fetchSuspendedDetail = useCallback(async (id) => {
     const { data } = await api.get(`/api/suspended-sales/${id}`, {
@@ -394,14 +488,20 @@ export default function Checkout() {
       } else {
         dispatch({ type: "LOAD_CART", cartItems: cartRows });
       }
-      setActiveSuspendedSaleId(detail.id);
+      rememberSuspendedSale(detail);
+      if (mode === "load") {
+        setCustomerId(detail.customer_id || null);
+        setEmployeeId(detail.employee_id || null);
+      } else if (detail.customer_id) {
+        setCustomerId(detail.customer_id);
+      }
       setSuspendedModalOpen(false);
       setRestoreConflictOpen(false);
       setPendingRestoreId(null);
       setDetailModalOpen(false);
       focusBarcodeInput();
     },
-    []
+    [rememberSuspendedSale]
   );
 
   const restoreSuspendedSale = useCallback(
@@ -428,16 +528,19 @@ export default function Checkout() {
     [cartItems.length, restoreSuspendedSale, showPosActionError]
   );
 
-  const syncSuspendedCart = useCallback(
-    async (saleId, items) => {
-      await api.put(
-        `/api/suspended-sales/${saleId}`,
-        { items: cartItemsToSuspendPayload(items) },
-        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
-      );
-    },
-    []
-  );
+  const syncSuspendedCart = useCallback(async (saleId, items) => {
+    const req = buildSuspendRequest({
+      saleId,
+      items,
+      version: suspendedVersionRef.current,
+      preserveParty: true,
+    });
+    const { data } = await api.put(req.url, req.body, {
+      headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+    });
+    if (data?.version != null) suspendedVersionRef.current = data.version;
+    return data;
+  }, []);
 
   const completeSale = useCallback(
     async (paymentPayload = null) => {
@@ -459,10 +562,20 @@ export default function Checkout() {
         setSelectedPayment,
         setCustomerId,
         setEmployeeId,
-        setActiveSuspendedSaleId,
+        setActiveSuspendedSaleId: clearSuspendedIdentity,
         loadShift,
         loadSuspendedList,
         syncSuspendedCart,
+        onPersistAttempt: ({ idempotencyKey, submittedPayload }) => {
+          writeRecoverableCart({
+            userId: user?.id,
+            shiftId: activeShift?.id ?? null,
+            cartItems,
+            idempotencyKey,
+            submittedPayload,
+            suspendedSaleId: activeSuspendedSaleId,
+          });
+        },
       });
     },
     [
@@ -475,6 +588,9 @@ export default function Checkout() {
       selectedPayment,
       activeSuspendedSaleId,
       syncSuspendedCart,
+      clearSuspendedIdentity,
+      user?.id,
+      activeShift?.id,
     ]
   );
 
@@ -493,13 +609,13 @@ export default function Checkout() {
       setEmployeeId(null);
       writeWaitingRequestId("onAccount", null);
       setOnAccountWaitingId(null);
-      setActiveSuspendedSaleId(null);
+      clearSuspendedIdentity();
       loadShift();
       loadSuspendedList();
       focusBarcodeInput();
       /* Approved ذمة prints once from the cashier print queue, not from this callback. */
     },
-    [loadShift, loadSuspendedList]
+    [clearSuspendedIdentity, loadShift, loadSuspendedList]
   );
 
   const ackDecision = useCallback(async (apiPath, requestId) => {
@@ -601,16 +717,16 @@ export default function Checkout() {
   }
 
   async function holdCartNow() {
-    if (!cartItems.length || !shiftReady || holdLoading) return;
+    if (!cartItems.length || !shiftReady || holdLoading || holdInFlightRef.current) return;
     if (cartItems.some((it) => !(Number(it.quantity) > 0))) {
       dispatch({ type: "CHECKOUT_ERROR", fallback: "أدخل الوزن بالكيلو قبل تعليق الفاتورة" });
       return;
     }
+    holdInFlightRef.current = true;
     setHoldLoading(true);
     try {
-      await suspendCartItems(cartItems, null);
-      dispatch({ type: "CLEAR_CART" });
-      setActiveSuspendedSaleId(null);
+      await persistSuspendedCart(cartItems);
+      resetInvoiceState();
       await loadSuspendedList();
       await loadShift();
       focusBarcodeInput();
@@ -622,6 +738,7 @@ export default function Checkout() {
           : extractApiError(e, "فشل تعليق الفاتورة");
       showPosActionError(msg);
     } finally {
+      holdInFlightRef.current = false;
       setHoldLoading(false);
     }
   }
@@ -646,7 +763,7 @@ export default function Checkout() {
     try {
       await api.delete(`/api/suspended-sales/${id}`, { headers: getAuthHeaders() });
       setDeleteConfirmId(null);
-      if (activeSuspendedSaleId === id) setActiveSuspendedSaleId(null);
+      if (activeSuspendedSaleId === id) clearSuspendedIdentity();
       await loadSuspendedList();
       await loadShift();
       focusBarcodeInput();
@@ -656,16 +773,21 @@ export default function Checkout() {
   }
 
   async function handleHoldAndRestore() {
-    if (!pendingRestoreId) return;
+    if (!pendingRestoreId || holdInFlightRef.current) return;
+    holdInFlightRef.current = true;
     setHoldLoading(true);
     try {
       if (cartItems.length) {
-        await suspendCartItems(cartItems, null);
+        const saved = await persistSuspendedCart(cartItems);
+        if (!activeSuspendedSaleIdRef.current && saved?.id) {
+          rememberSuspendedSale(saved);
+        }
       }
       await restoreSuspendedSale(pendingRestoreId, "load");
     } catch (e) {
       showPosActionError(extractApiError(e, "فشل استرجاع الفاتورة"));
     } finally {
+      holdInFlightRef.current = false;
       setHoldLoading(false);
     }
   }
@@ -705,6 +827,7 @@ export default function Checkout() {
     suspendedModalOpen ||
     detailModalOpen ||
     restoreConflictOpen ||
+    previousSalesOpen ||
     supplierPayOpen ||
     !!cashDebtWaitingId ||
     !!supplierWaitingId;
@@ -812,7 +935,7 @@ export default function Checkout() {
     }
     if (cartItems.length > 0) {
       const ok = window.confirm(
-        "يوجد أصناف في السلة. هل تريد تسجيل الخروج؟ سيتم فقدان الفاتورة الحالية."
+        "يوجد أصناف في السلة. تسجيل الخروج لا يغلق الوردية، وستعود الفاتورة عند دخول نفس الكاشير."
       );
       if (!ok) return;
     }
@@ -940,6 +1063,9 @@ export default function Checkout() {
                 <span className="pos-toolbar-badge">({suspendedCount})</span>
               ) : null}
             </button>
+            <button type="button" className="pos-toolbar-btn" onClick={() => setPreviousSalesOpen(true)}>
+              الفواتير السابقة
+            </button>
             <button type="button" className="pos-toolbar-btn" onClick={() => setRefundOpen(true)}>
               استرجاع
             </button>
@@ -983,6 +1109,16 @@ export default function Checkout() {
             deleteConfirmId={deleteConfirmId}
             onConfirmDelete={confirmDeleteSuspended}
             onCancelDelete={() => setDeleteConfirmId(null)}
+          />
+        ) : null}
+
+        {previousSalesOpen ? (
+          <PosPreviousSalesModal
+            open
+            onClose={() => {
+              setPreviousSalesOpen(false);
+              focusBarcodeInput();
+            }}
           />
         ) : null}
 
@@ -1093,7 +1229,7 @@ export default function Checkout() {
             titlePrefix="مصاريف محل"
             statusLabels={{
               pending: "بانتظار الموافقة — لم يُخصم المخزون",
-              approved: "تمت الموافقة — خُصم المخزون بالتكلفة",
+              approved: "تمت الموافقة — خُصم المخزون وسُجّل المصروف بسعر البيع",
               rejected: "تم رفض مصاريف المحل",
             }}
             onClose={() => {
@@ -1199,7 +1335,10 @@ export default function Checkout() {
             suspendedCount={suspendedCount}
             open={endShiftOpen}
             onClose={() => setEndShiftOpen(false)}
-            onSuccess={goToLogin}
+            onSuccess={() => {
+              clearRecoverableCart(user?.id);
+              goToLogin();
+            }}
           />
         ) : null}
       </Suspense>

@@ -895,10 +895,10 @@ export async function sendShopConsumptionApprovalMessage({
     `طلب مصاريف محل #${requestId}`,
     `الكاشير: ${cashierName}`,
     `عدد الأصناف: ${lineCount}`,
-    `التكلفة: ${ils(totalCost)}`,
+    `المبلغ: ${ils(totalCost)}`,
     reason ? `السبب: ${reason}` : null,
     "",
-    "الموافقة تخصم المخزون بالتكلفة وتسجّل مصروفاً بلا حركة صندوق.",
+    "الموافقة تخصم المخزون وتسجّل مصروفاً بسعر البيع بلا حركة صندوق.",
   ]
     .filter((line) => line != null)
     .join("\n");

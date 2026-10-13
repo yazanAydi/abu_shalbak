@@ -277,7 +277,9 @@ describe("sales invoices post-all", () => {
   });
 
   test("posts what it can when one invoice lacks stock", async () => {
-    await ctx.db.run("UPDATE products SET stock = 1 WHERE id = ?", [ctx.productId]);
+    await ctx.db.run("DELETE FROM warehouse_batch_stock WHERE product_id = ?", [ctx.productId]);
+    await ctx.db.run("DELETE FROM product_batches WHERE product_id = ?", [ctx.productId]);
+    await ctx.db.run("UPDATE products SET stock = 1, location_status = 'located' WHERE id = ?", [ctx.productId]);
     const okInv = await createDraft(1, 10);
     const failInv = await createDraft(5, 50);
 

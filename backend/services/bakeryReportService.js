@@ -319,10 +319,21 @@ async function loadBakeryWorkspaceAlerts(db, categoryNames) {
       filter.params
     ),
     db.all(
-      `SELECT p.id, p.name, p.barcode, p.unit, p.stock, p.expiry_date, p.category,
+      `SELECT p.id, p.name, p.barcode, p.unit,
+              (p.stock - COALESCE((
+                 SELECT SUM(b.quantity) FROM product_batches b
+                 WHERE b.product_id = p.id
+                   AND b.expiry_date IS NOT NULL AND TRIM(b.expiry_date) != ''
+              ), 0)) AS stock,
+              p.expiry_date, p.category,
               CAST(julianday(p.expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
        FROM products p
        WHERE p.expiry_date IS NOT NULL AND p.expiry_date != ''
+         AND (p.stock - COALESCE((
+                SELECT SUM(b.quantity) FROM product_batches b
+                WHERE b.product_id = p.id
+                  AND b.expiry_date IS NOT NULL AND TRIM(b.expiry_date) != ''
+             ), 0)) > 0
          AND julianday(p.expiry_date) <= julianday('now', '+' || ? || ' days')
          ${filter.sql}
        ORDER BY p.expiry_date ASC

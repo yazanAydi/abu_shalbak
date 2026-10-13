@@ -582,6 +582,12 @@ describe("GET /finance/overview — posted purchases", () => {
   }
 
   async function postReturn(id) {
+    const { moveStockToReturns } = await import("./helpers.js");
+    const items = await ctx.db.all(
+      "SELECT product_id, quantity, base_quantity, expiry_date FROM purchase_return_items WHERE return_id = ?",
+      [id]
+    );
+    await moveStockToReturns(ctx.app, ctx.db, adminToken, items, supplierId);
     const res = await request(ctx.app)
       .post(`/api/v1/purchases/returns/${id}/post`)
       .set(authHeader(adminToken))

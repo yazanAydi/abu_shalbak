@@ -14,6 +14,7 @@ import { isScaleIdentityScan, normalizeBarcodeInput } from "../utils/barcode.js"
 import { WEIGHED_BASE_UNIT_NAME } from "../utils/productUnits.js";
 import { buildBarcodeLookupResponse } from "../utils/productUnitLookup.js";
 import { projectProductForRole } from "../utils/roleProjection.js";
+import { sellableQuantity } from "../services/warehouseBatchStock.js";
 import { validate } from "../middleware/validate.js";
 import { posSupplierPaymentSchema, shopConsumptionPreviewSchema, shopConsumptionSchema } from "../middleware/schemas.js";
 import {
@@ -36,6 +37,7 @@ import {
   listCashierPrintJobs,
   reprintPrintJob,
 } from "../services/operationPrintService.js";
+import { getPosSaleHistoryDetail, listPosSaleHistory } from "../services/posSaleHistoryService.js";
 
 export async function buildPosDecisionSnapshot(db, cashierId) {
   const [refunds, advances, on_account, cash_debts, supplier_payments, shop_consumption] = await Promise.all([
@@ -80,6 +82,7 @@ async function loadQuickButtonProducts(db, settings) {
       ids
     );
     for (const r of rows) {
+      r.stock = await sellableQuantity(db, r.id);
       byId.set(r.id, r);
     }
   }
@@ -112,6 +115,24 @@ async function loadQuickButtonProducts(db, settings) {
 
 export function createPosRouter(db) {
   const router = Router();
+
+  router.get("/my-sales", requireAuth, requirePosAccess, async (req, res, next) => {
+    try {
+      res.json(await listPosSaleHistory(db, req.user, req.query));
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
+  });
+
+  router.get("/my-sales/:id", requireAuth, requirePosAccess, async (req, res, next) => {
+    try {
+      res.json(await getPosSaleHistoryDetail(db, req.user, req.params.id));
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message, code: e.code });
+      next(e);
+    }
+  });
 
   router.get("/employees", requireAuth, requirePosAccess, async (_req, res) => {
     res.set("Cache-Control", "no-store");
@@ -317,12 +338,15 @@ export function createPosRouter(db) {
        LIMIT 20`,
       params
     );
-    res.json(
-      rows.map((r) => ({
+    const priced = [];
+    for (const r of rows) {
+      priced.push({
         ...r,
         price: r.unit_price ?? r.price,
-      }))
-    );
+        stock: await sellableQuantity(db, r.id),
+      });
+    }
+    res.json(priced);
   });
 
   router.get("/events", requireAuth, requirePosAccess, async (req, res) => {

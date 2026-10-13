@@ -73,7 +73,7 @@ describe("operation receipts after posting", () => {
     const slip = unwrap(claim.body);
     expect(slip.receipt_html).toContain("استهلاك داخلي — مصاريف محل");
     expect(slip.receipt_html).toContain("لا توجد حركة نقدية");
-    expect(slip.receipt_html).toContain("20.00");
+    expect(slip.receipt_html).toContain("30.00");
     expect(slip.receipt_html).not.toContain("10.00");
     expect(slip.receipt_html).not.toContain("unit_cost");
 

@@ -635,7 +635,7 @@ async function loadRecordedMoney(db) {
   for (const row of consumptions) {
     const key = queueKey(row.consumption_id, row.product_id);
     const list = consumptionQueues.get(key) || [];
-    list.push(round2(num(row.line_cost)));
+    list.push(row.line_cost == null ? null : round2(num(row.line_cost)));
     consumptionQueues.set(key, list);
   }
   return { saleQueues, refundQueues, consumptionQueues };

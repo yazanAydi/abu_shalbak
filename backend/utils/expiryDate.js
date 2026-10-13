@@ -27,6 +27,29 @@ export function normalizeExpiryDate(value) {
   return `${m[1]}-${pad2(mo)}-${pad2(d)}`;
 }
 
+/** True when YYYY-MM-DD is a real civil date, including 29 February in a leap year. */
+export function isRealCalendarYmd(value) {
+  const ymd = normalizeExpiryDate(value);
+  if (!ymd) return false;
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * Empty input means the receipt has no expiry. Any other text must be a real date.
+ * @param {unknown} value
+ * @returns {{ ok: true, date: string | null } | { ok: false, date: null }}
+ */
+export function interpretExpiryInput(value) {
+  if (value == null) return { ok: true, date: null };
+  const s = String(value).trim();
+  if (!s) return { ok: true, date: null };
+  const ymd = normalizeExpiryDate(s);
+  if (!isRealCalendarYmd(ymd)) return { ok: false, date: null };
+  return { ok: true, date: ymd };
+}
+
 /**
  * Whole calendar days from `fromYmd` to `toYmd` (to - from).
  * Uses UTC date-only arithmetic so the string is not interpreted in local TZ.

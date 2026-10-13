@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { apiErrorMessage } from "../utils/apiError";
-import { ils } from "../utils/format";
+import { formatSignedMoney } from "../utils/shiftVisa";
 import { FormField, Input, Select, PrimaryButton, SecondaryButton } from "./ui";
 import { sanitizeCountAmount } from "./CashCountFields";
 import {
@@ -117,34 +117,51 @@ export default function CountSupplierPaymentSection({
   const total = Number(paymentsTotal) || rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
 
   return (
-    <section style={{ marginBottom: "1rem" }} data-testid="count-supplier-payments">
-      <h3 className="dashboard-subtitle" style={{ marginBottom: "0.5rem" }}>
-        دفعات الموردين
-      </h3>
+    <section className="shift-count-card" data-testid="count-supplier-payments">
+      <h3 className="shift-count-card__title">دفعات الموردين</h3>
       {pending.length ? (
-        <ul style={{ listStyle: "none", padding: 0, margin: "0 0 0.5rem" }}>
+        <ul className="shift-pay-list">
           {pending.map((row) => (
-            <li key={row.request_id} style={{ marginBottom: "0.35rem" }}>
-              بانتظار الموافقة — {row.supplier_name || "مورد"} — {ils(row.amount)} — طلب #{row.request_id}
+            <li key={row.request_id} className="shift-pay-row">
+              <span className="shift-pay-main">
+                <span className="shift-pay-name">{row.supplier_name || "مورد"}</span>
+                <span className="shift-pay-ref">بانتظار الموافقة — طلب #{row.request_id}</span>
+              </span>
+              <span className="shift-count-money" dir="ltr">
+                {formatSignedMoney(row.amount)}
+              </span>
             </li>
           ))}
         </ul>
       ) : null}
       {rows.length ? (
-        <ul style={{ listStyle: "none", padding: 0, margin: "0 0 0.5rem" }}>
+        <ul className="shift-pay-list">
           {rows.map((row) => (
-            <li key={row.voucher_id || row.movement_id} style={{ marginBottom: "0.35rem" }}>
-              {row.supplier_name || "مورد"} — {ils(row.amount)} — سند #{row.voucher_no ?? "—"}
-              {row.print_label ? ` — ${row.print_label}` : ""}
+            <li key={row.voucher_id || row.movement_id} className="shift-pay-row">
+              <span className="shift-pay-main">
+                <span className="shift-pay-name">{row.supplier_name || "مورد"}</span>
+                <span className="shift-pay-ref">
+                  سند #{row.voucher_no ?? "—"}
+                  {row.print_label ? ` — ${row.print_label}` : ""}
+                </span>
+              </span>
+              <span className="shift-count-money" dir="ltr">
+                {formatSignedMoney(row.amount)}
+              </span>
             </li>
           ))}
         </ul>
       ) : (
-        <p style={{ color: "var(--office-text-muted)", marginBottom: "0.5rem" }}>لا توجد دفعات مسجّلة على هذه الوردية.</p>
+        <p className="shift-count-quiet">لا توجد دفعات مسجّلة على هذه الوردية.</p>
       )}
-      <p style={{ marginBottom: "0.5rem" }}>
-        الإجمالي: <span className="num">{ils(total)}</span>
-      </p>
+      {rows.length ? (
+        <div className="shift-pay-total" data-testid="count-supplier-payments-total">
+          <span>الإجمالي</span>
+          <span className="shift-count-money" dir="ltr">
+            {formatSignedMoney(total)}
+          </span>
+        </div>
+      ) : null}
       {formOpen ? (
         <div>
           <p style={{ color: "var(--office-text-muted)", lineHeight: 1.6 }}>
@@ -184,7 +201,7 @@ export default function CountSupplierPaymentSection({
             <Input value={notes} disabled={saving} onChange={(e) => setNotes(e.target.value)} />
           </FormField>
           {error ? <p className="negative">{error}</p> : null}
-          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+          <div className="shift-count-pending-actions">
             <PrimaryButton type="button" disabled={saving} onClick={savePayment}>
               {saving ? "جاري التسجيل…" : "تسجيل الدفعة"}
             </PrimaryButton>
@@ -194,9 +211,11 @@ export default function CountSupplierPaymentSection({
           </div>
         </div>
       ) : (
-        <SecondaryButton type="button" onClick={() => setFormOpen(true)}>
-          تسجيل دفعة مورد من هذه الوردية
-        </SecondaryButton>
+        <div className="shift-pay-action">
+          <SecondaryButton type="button" onClick={() => setFormOpen(true)}>
+            تسجيل دفعة مورد من هذه الوردية
+          </SecondaryButton>
+        </div>
       )}
     </section>
   );

@@ -3,6 +3,7 @@ import { ils, num, dateOnly, formatStockWithUnit } from "../../utils/format";
 import { NO_UNIT_LABEL, UNCATEGORIZED_LABEL } from "../../utils/productCatalogLabels";
 import { displayProductBarcode, displayProductSku } from "../../utils/entityCodeDisplay";
 import { productPriceLabel } from "../../utils/scaleProductForm";
+import { warehouseDisplayName } from "../../utils/inventoryLabels";
 import { useProductTab } from "./useProductTab";
 import { TabState, expiryBadge } from "./shared";
 
@@ -105,7 +106,7 @@ export default function OverviewTab({ productId }) {
                       <tbody>
                         {data.warehouses.map((w) => (
                           <tr key={w.warehouse_id}>
-                            <td>{w.warehouse_name}</td>
+                            <td>{warehouseDisplayName(w.warehouse_name, w.type)}</td>
                             <td>{w.code || "—"}</td>
                             <td className="num">{num(w.quantity, 0)}</td>
                           </tr>

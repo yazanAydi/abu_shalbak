@@ -217,6 +217,8 @@ export async function resolveReceiptPrinterName() {
     return named;
   }
 
+  if (automatedTestProcess()) refuseRealPrinter();
+
   try {
     const { getDefaultPrinter, getPrinters } = loadPdfToPrinter();
     const def = await getDefaultPrinter();
@@ -323,6 +325,7 @@ async function printPdfViaChromiumCli(browser, printHtmlPath, pdfPath, profileDi
 }
 
 async function htmlToPdf(html, attempt) {
+  if (automatedTestProcess() && !localPdfRenderAllowed) refuseRealPrinter();
   const t = attemptOrNoop(attempt);
   const browser = findChromium();
   if (!browser) {
@@ -445,9 +448,27 @@ export function silentPrintErrorFromHelper(err) {
 }
 
 let pdfPrinterOverride = null;
+let localPdfRenderAllowed = false;
+
+function automatedTestProcess() {
+  return process.env.JEST_WORKER_ID != null;
+}
 
 function printHookAllowed() {
-  return process.env.NODE_ENV === "test" || process.env.RECEIPT_PRINT_FAULT_HOOK === "1";
+  return automatedTestProcess() || process.env.NODE_ENV === "test" || process.env.RECEIPT_PRINT_FAULT_HOOK === "1";
+}
+
+function refuseRealPrinter() {
+  throw new SilentPrintError("TEST_ISOLATION", "الاختبارات الآلية لا تتصل بالطابعة");
+}
+
+/**
+ * Lets one receipt page-size test write a local PDF with headless Edge.
+ * It does not install a printer, and printPdfFile still refuses the device.
+ */
+export function allowLocalReceiptPdfRenderForTests(allowed = true) {
+  if (!printHookAllowed()) return;
+  localPdfRenderAllowed = Boolean(allowed);
 }
 
 /** Test and demo-fault hook. Production routes never call this. */
@@ -473,6 +494,7 @@ function receiptPaperSizeOption() {
 }
 
 export async function printPdfFile(pdfPath, printerName) {
+  if (automatedTestProcess() && !pdfPrinterOverride) refuseRealPrinter();
   const mod = pdfPrinterOverride ? { print: pdfPrinterOverride } : loadPdfToPrinter();
   const print = typeof mod.print === "function" ? mod.print : mod.default;
   if (typeof print !== "function") {
@@ -529,6 +551,7 @@ export function receiptPrintAgentUrl() {
  * @param {typeof fetch} [fetchImpl]
  */
 export async function forwardToPrintAgent(html, fetchImpl = globalThis.fetch) {
+  if (automatedTestProcess() && fetchImpl === globalThis.fetch) refuseRealPrinter();
   if (typeof fetchImpl !== "function") {
     throw new SilentPrintError("AGENT_UNAVAILABLE", AGENT_UNAVAILABLE_AR);
   }
@@ -650,7 +673,7 @@ export async function silentPrintReceiptHtml(html) {
   if (!html || typeof html !== "string") {
     throw new SilentPrintError("NO_HTML", "لا يوجد إيصال للطباعة");
   }
-  if (process.env.NODE_ENV === "test") {
+  if (automatedTestProcess() || process.env.NODE_ENV === "test") {
     if (testAdapter) return testAdapter(html);
     if (isReceiptPrintTestSave()) {
       return printReceiptHtmlLocally(html);

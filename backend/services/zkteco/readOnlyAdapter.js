@@ -170,6 +170,11 @@ export async function readSnapshotFromDevice(zk, options = {}) {
 }
 
 async function defaultZkFactory(config) {
+  if (process.env.JEST_WORKER_ID != null) {
+    const err = new Error("الاختبارات الآلية لا تتصل بجهاز البصمة");
+    err.code = "TEST_ISOLATION";
+    throw err;
+  }
   const require = createRequire(import.meta.url);
   const ZKLib = require("node-zklib");
   return new ZKLib(config.host, config.port, config.timeoutMs, 4000);

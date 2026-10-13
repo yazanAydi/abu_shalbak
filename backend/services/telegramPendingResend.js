@@ -186,12 +186,16 @@ async function resendConsumption(db) {
   );
   let sent = 0;
   for (const row of rows) {
-    const items = parseJson(row.items_json, []);
+    const stored = parseJson(row.items_json, []);
+    const lines = Array.isArray(stored) ? stored : Array.isArray(stored?.lines) ? stored.lines : [];
+    const storedTotal = !Array.isArray(stored) && stored?.total_cost != null ? Number(stored.total_cost) : null;
     const messageId = await sendShopConsumptionApprovalMessage({
       requestId: row.id,
       cashierName: row.cashier_username || String(row.cashier_id),
-      totalCost: items.reduce((sum, line) => sum + (Number(line.line_cost) || 0), 0),
-      lineCount: items.length,
+      totalCost: Number.isFinite(storedTotal)
+        ? storedTotal
+        : lines.reduce((sum, line) => sum + (Number(line.line_amount ?? line.line_cost) || 0), 0),
+      lineCount: lines.length,
       reason: row.reason,
     });
     if (await storeMessageId(db, "shop_consumption_requests", row.id, messageId)) sent += 1;

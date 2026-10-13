@@ -9,9 +9,9 @@ import {
 import { withTransaction } from "../utils/dbTx.js";
 
 /**
- * Concurrent sales persist the full requested stock delta, including negatives.
+ * Concurrent sales stop at the eligible quantity. A rejected sale writes nothing.
  */
-describe("Concurrent sales with negative stock allowed (Scenario F)", () => {
+describe("Concurrent sales stop at eligible stock (Scenario F)", () => {
   let ctx;
   let cashierToken;
 
@@ -39,59 +39,65 @@ describe("Concurrent sales with negative stock allowed (Scenario F)", () => {
       }));
   }
 
-  test("two simultaneous sales from stock 1 both succeed, final stock is -1, no lost update", async () => {
-    await ctx.db.run("UPDATE products SET stock = 1 WHERE id = ?", [ctx.productId]);
+  async function setStock(quantity) {
+    await ctx.db.run("DELETE FROM warehouse_batch_stock WHERE product_id = ?", [ctx.productId]);
+    await ctx.db.run(
+      "UPDATE products SET stock = ?, location_status = 'located' WHERE id = ?",
+      [quantity, ctx.productId]
+    );
+  }
+
+  test("two simultaneous sales from stock 1 accept one unit and write one movement", async () => {
+    await setStock(1);
 
     const [a, b] = await Promise.all([sell(1), sell(1)]);
-
-    expect(a.status).toBe(201);
-    expect(b.status).toBe(201);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([201, 400]);
 
     const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
-    expect(product.stock).toBe(-1);
+    expect(product.stock).toBe(0);
+    const winner = a.status === 201 ? a : b;
 
     const ledger = await ctx.db.all(
-      "SELECT * FROM inventory_ledger WHERE product_id = ? AND movement_type = 'sale' AND reference_id IN (?, ?)",
-      [ctx.productId, a.body.data.transaction_id, b.body.data.transaction_id]
+      "SELECT * FROM inventory_ledger WHERE product_id = ? AND movement_type = 'sale' AND reference_id = ?",
+      [ctx.productId, winner.body.data.transaction_id]
     );
-    expect(ledger.length).toBe(2);
-    const deltas = ledger.map((r) => r.quantity_delta).sort((x, y) => y - x);
-    expect(deltas).toEqual([-1, -1]);
-    for (const row of ledger) {
-      expect(row.qty_after).toBe(row.qty_before + row.quantity_delta);
-    }
+    expect(ledger.length).toBe(1);
+    expect(ledger[0].quantity_delta).toBe(-1);
+    expect(ledger[0].qty_after).toBe(ledger[0].qty_before + ledger[0].quantity_delta);
   });
 
-  test("selling more than available succeeds and persists the full negative delta", async () => {
-    await ctx.db.run("UPDATE products SET stock = 1 WHERE id = ?", [ctx.productId]);
+  test("selling more than available is rejected and stock stays unchanged", async () => {
+    await setStock(1);
 
+    const before = await ctx.db.get(
+      "SELECT COUNT(*) AS n FROM transaction_items WHERE product_id = ?",
+      [ctx.productId]
+    );
     const res = await sell(5);
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(400);
 
     const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
-    expect(product.stock).toBe(-4);
-
-    const ledger = await ctx.db.get(
-      "SELECT * FROM inventory_ledger WHERE product_id = ? AND movement_type = 'sale' AND reference_id = ?",
-      [ctx.productId, res.body.data.transaction_id]
+    expect(product.stock).toBe(1);
+    const sales = await ctx.db.get(
+      "SELECT COUNT(*) AS n FROM transaction_items WHERE product_id = ?",
+      [ctx.productId]
     );
-    expect(ledger.quantity_delta).toBe(-5);
-    expect(ledger.qty_before).toBe(1);
-    expect(ledger.qty_after).toBe(-4);
+    expect(Number(sales.n)).toBe(Number(before.n));
   });
 
-  test("selling from zero stock succeeds and goes to -1", async () => {
-    await ctx.db.run("UPDATE products SET stock = 0 WHERE id = ?", [ctx.productId]);
+  test("selling from zero stock is rejected and stock stays at 0", async () => {
+    await setStock(0);
 
     const res = await sell(1);
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(400);
 
     const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
-    expect(product.stock).toBe(-1);
+    expect(product.stock).toBe(0);
   });
 
   test("each sale creates its own inventory ledger record", async () => {
-    await ctx.db.run("UPDATE products SET stock = 10 WHERE id = ?", [ctx.productId]);
+    await setStock(10);
     const before = await ctx.db.get(
       "SELECT COUNT(*) AS c FROM inventory_ledger WHERE product_id = ? AND movement_type = 'sale'",
       [ctx.productId]

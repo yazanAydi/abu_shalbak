@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
-import { resolveApiUrl } from "../apiClient";
+import { useEffect, useRef, useState } from "react";
+import { renewPosSession, resolveApiUrl } from "../apiClient";
 import { getToken, removeToken } from "../utils/auth";
+import { isAccessTokenExpired } from "../utils/sessionRefresh";
 
 /**
  * Authenticated SSE via fetch (EventSource cannot send Authorization).
@@ -9,6 +10,13 @@ import { getToken, removeToken } from "../utils/auth";
 export function useAuthEventSource(url, onEvent, { enabled = true } = {}) {
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  const [tokenGeneration, setTokenGeneration] = useState(0);
+
+  useEffect(() => {
+    const bump = () => setTokenGeneration((value) => value + 1);
+    window.addEventListener("pos-token-changed", bump);
+    return () => window.removeEventListener("pos-token-changed", bump);
+  }, []);
 
   useEffect(() => {
     if (!enabled || !url) return undefined;
@@ -50,6 +58,22 @@ export function useAuthEventSource(url, onEvent, { enabled = true } = {}) {
               parsed = data;
             }
             if (event === "session" && (parsed?.code === "SESSION_REVOKED" || parsed?.code === "INVALID_TOKEN")) {
+              const current = getToken();
+              if (current && current !== token) {
+                controller.abort();
+                return;
+              }
+              if (current && !isAccessTokenExpired(current)) {
+                try {
+                  const next = await renewPosSession();
+                  if (next && next !== token) {
+                    controller.abort();
+                    return;
+                  }
+                } catch {
+                  /* renewal failed; the session is no longer usable */
+                }
+              }
               removeToken();
               const loginPath = `${process.env.PUBLIC_URL || ""}/login`;
               if (!window.location.pathname.endsWith("/login")) {
@@ -70,5 +94,5 @@ export function useAuthEventSource(url, onEvent, { enabled = true } = {}) {
       cancelled = true;
       controller.abort();
     };
-  }, [url, enabled]);
+  }, [url, enabled, tokenGeneration]);
 }

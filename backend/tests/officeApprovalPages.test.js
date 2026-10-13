@@ -239,7 +239,7 @@ describe("office supplier and shop-consumption approvals", () => {
     const row = pending.find((item) => item.id === requestId);
     expect(row.shift_id).toBe(shiftId);
     expect(row.notes).toBe("تنظيف المحل");
-    expect(row.amount).toBe(8);
+    expect(row.amount).toBe(18);
     expect(row.items[0].name).toBe(product.name);
     expect(Number(row.items[0].quantity)).toBe(2);
 

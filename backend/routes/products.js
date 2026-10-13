@@ -2084,6 +2084,8 @@ export function createProductsRouter(db) {
       product_id: product.id,
       product_name: product.name,
       product_stock: listed.product_stock,
+      dated_sum: listed.dated_sum,
+      unknown_quantity: listed.unknown_quantity,
       near_expiry_days: listed.near_expiry_days,
       rows: listed.rows,
     });

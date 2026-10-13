@@ -28,7 +28,6 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
   const [notes, setNotes] = useState("");
   const [expected, setExpected] = useState(null);
   const [expectedByCurrency, setExpectedByCurrency] = useState([]);
-  const [opening, setOpening] = useState(null);
   const [countSummary, setCountSummary] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -45,7 +44,6 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
       const exp = shiftData.summary?.expected;
       setExpected(exp != null ? Number(exp) : null);
       setExpectedByCurrency(shiftData.summary?.expected_by_currency || shiftData.shift?.expected_by_currency || []);
-      setOpening(shiftData.shift?.opening_cash != null ? Number(shiftData.shift.opening_cash) : null);
       setCountSummary({
         ...(shiftData.summary?.visa || shiftData.shift || {}),
         cash_sales: shiftData.summary?.cash_sales ?? shiftData.shift?.cash_sales,
@@ -72,6 +70,12 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
           shiftData.summary?.expected_cash_label || shiftData.shift?.expected_cash_label,
         expected_by_currency:
           shiftData.summary?.expected_by_currency || shiftData.shift?.expected_by_currency || [],
+        opening_cash: shiftData.shift?.opening_cash,
+        supplier_payments_total: shiftData.summary?.supplier_payments_total,
+        advances_total: shiftData.summary?.advances_total,
+        customer_collections_total: shiftData.summary?.customer_collections_total,
+        customer_cash_debts_total: shiftData.summary?.customer_cash_debts_total,
+        adjustments_total: shiftData.summary?.adjustments_total,
       });
       setCountCurrencies(Array.isArray(curData?.currencies) ? curData.currencies : []);
     } catch (e) {
@@ -130,7 +134,6 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
       <form className="shift-modal-panel" onSubmit={submitEnd}>
         <h2 className="shift-modal-title">إغلاق الوردية</h2>
         {loadErr ? <div className="shift-modal-err">{loadErr}</div> : null}
-        {opening != null ? <p className="shift-modal-meta">افتتاح: {ils(opening)}</p> : null}
         {countSummary ? (
           <ShiftCountTotals source={countSummary} breakdown={expectedByCurrency} />
         ) : expected != null ? (

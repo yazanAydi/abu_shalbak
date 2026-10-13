@@ -633,49 +633,6 @@ export async function computeExpectedBaseCash(db, shiftId, openingCash) {
   return drawer.expected_base_cash;
 }
 
-/**
- * After applying this sale's cash tenders, the change-currency bucket must
- * cover changeOriginal. Returns { error, code } or null.
- */
-export async function assertDrawerCanGiveChange(
-  db,
-  shiftId,
-  openingCash,
-  paymentLines,
-  { changeOriginal = 0, changeNis = 0, changeCurrencyCode = null } = {}
-) {
-  const orig = round2(Number(changeOriginal) || 0);
-  const nis = round2(Number(changeNis) || 0);
-  if (orig <= TOLERANCE && nis <= TOLERANCE) return null;
-
-  const drawer = await computeExpectedDrawer(db, shiftId, openingCash);
-  const baseCode = drawer.by_currency.find((c) => c.is_base)?.code || "NIS";
-  const buckets = new Map(
-    drawer.by_currency.map((b) => [normalizeCurrencyCode(b.code), { ...b }])
-  );
-
-  for (const line of paymentLines || []) {
-    if (line.method !== "cash") continue;
-    const code = normalizeCurrencyCode(line.currency_code || baseCode);
-    const prev = buckets.get(code) || emptyBucket(line, code);
-    prev.original = round2(prev.original + Number(line.original_amount || 0));
-    prev.nis = round2(prev.nis + Number(line.nis_equivalent || line.amount || 0));
-    if (line.symbol) prev.symbol = line.symbol;
-    buckets.set(code, prev);
-  }
-
-  const changeCode = normalizeCurrencyCode(changeCurrencyCode || baseCode);
-  const bucket = buckets.get(changeCode);
-  const available = round2(bucket?.original || 0);
-  if (available + TOLERANCE >= orig) return null;
-
-  const symbol = bucket?.symbol || changeCode;
-  return {
-    error: `النقد في الدرج غير كافٍ لإرجاع الباقي (${symbol}${orig.toFixed(2)}). المتاح: ${symbol}${available.toFixed(2)} — غيّر عملة الباقي`,
-    code: "INSUFFICIENT_CHANGE",
-  };
-}
-
 /** Convert a counted-currency payload to a single NIS closing amount. */
 export async function resolveCountedCash(db, body, drawer = null) {
   const counted = body?.counted_currencies;

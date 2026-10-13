@@ -27,6 +27,7 @@ if (usingDefaultJwt && !isLoopbackHost(process.env.HOST)) {
 }
 
 export const JWT_OPTIONS = {
+  // Login session only. An open cashier shift stays open after this token expires.
   expiresIn: process.env.JWT_EXPIRES_IN || "8h",
   issuer: "abo-shalbak",
   audience: "abo-shalbak-api",

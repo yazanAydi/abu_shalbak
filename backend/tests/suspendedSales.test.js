@@ -462,8 +462,9 @@ describe("Negative stock is allowed at POS checkout", () => {
     await destroyTestContext(ctx);
   });
 
-  test("selling 5 units with stock 2 succeeds and leaves stock at -3", async () => {
-    await ctx.db.run("UPDATE products SET stock = 2, price = 10 WHERE id = ?", [ctx.productId]);
+  test("selling 5 units with stock 2 is rejected and leaves stock at 2", async () => {
+    await ctx.db.run("DELETE FROM warehouse_batch_stock WHERE product_id = ?", [ctx.productId]);
+    await ctx.db.run("UPDATE products SET stock = 2, price = 10, location_status = 'located' WHERE id = ?", [ctx.productId]);
     await ctx.db.run(
       "UPDATE product_units SET price = 10 WHERE product_id = ? AND is_default = 1",
       [ctx.productId]
@@ -478,17 +479,15 @@ describe("Negative stock is allowed at POS checkout", () => {
         idempotency_key: "neg-stock-sale-5-vs-2",
       });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(400);
     const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
-    expect(product.stock).toBe(-3);
+    expect(product.stock).toBe(2);
     const ledger = await ctx.db.all(
       `SELECT quantity_delta, qty_after FROM inventory_ledger
        WHERE product_id = ? AND movement_type = 'sale'
        ORDER BY id`,
       [ctx.productId]
     );
-    expect(ledger).toHaveLength(1);
-    expect(ledger[0].quantity_delta).toBe(-5);
-    expect(ledger[0].qty_after).toBe(-3);
+    expect(ledger).toHaveLength(0);
   });
 });

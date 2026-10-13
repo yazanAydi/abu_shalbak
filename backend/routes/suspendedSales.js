@@ -20,8 +20,11 @@ export function createSuspendedSalesRouter(db) {
         cashierId: req.user.id,
         note: req.body.note,
         items: req.body.items,
+        idempotencyKey: req.body.idempotency_key,
+        customerId: req.body.customer_id,
+        employeeId: req.body.employee_id,
       });
-      res.status(201).json(result);
+      res.status(result.replayed ? 200 : 201).json(result);
     } catch (e) {
       if (e.status) {
         const body = { error: e.message, code: e.code };
@@ -39,7 +42,7 @@ export function createSuspendedSalesRouter(db) {
       if (shiftErr || !shift) {
         return res.json({ count: 0, sales: [] });
       }
-      const sales = await listSuspendedSalesForShift(db, shift.id);
+      const sales = await listSuspendedSalesForShift(db, shift.id, req.user.id);
       res.json({ count: sales.length, sales });
     } catch (e) {
       next(e);
@@ -53,6 +56,9 @@ export function createSuspendedSalesRouter(db) {
       const result = await updateSuspendedSale(db, id, req.user.id, {
         items: req.body.items,
         note: req.body.note,
+        version: req.body.version,
+        customerId: req.body.customer_id,
+        employeeId: req.body.employee_id,
       });
       res.json(result);
     } catch (e) {
@@ -71,6 +77,12 @@ export function createSuspendedSalesRouter(db) {
     if (!id) return res.status(400).json({ error: "معرّف غير صالح" });
     try {
       const detail = await getSuspendedSaleDetail(db, id);
+      if (Number(detail.cashier_id) !== Number(req.user.id)) {
+        return res.status(403).json({
+          error: "لا يمكن عرض فاتورة معلقة لكاشير آخر",
+          code: "SUSPENDED_NOT_OWNER",
+        });
+      }
       const { shift } = await requireOpenShiftForCashier(db, req.user.id);
       if (!shift || Number(shift.id) !== Number(detail.shift_id)) {
         return res.status(403).json({ error: "لا يمكن عرض فاتورة من وردية أخرى" });

@@ -1,5 +1,6 @@
 import { getStoreLogoDataUri, resolvePrintBranding } from "./storeBranding.js";
 import { documentTypeTitleAr, reasonLabelAr } from "./inventoryDocumentReasons.js";
+import { batchSourceLabelAr } from "./batchSourceLabel.js";
 
 function escapeHtml(text) {
   return String(text ?? "")
@@ -7,6 +8,10 @@ function escapeHtml(text) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function sourceLabel(it) {
+  return batchSourceLabelAr(it.batch_source, it.expiry_date) || "—";
 }
 
 function fmtQty(n) {
@@ -45,6 +50,7 @@ export function buildInventoryDocumentPrintHtml(doc, store = {}, extras = {}) {
         <td>${escapeHtml(it.sku || it.sku_snapshot || "—")}</td>
         <td>${escapeHtml(it.barcode || it.barcode_snapshot || "—")}</td>
         <td>${escapeHtml(unitName || "—")}</td>
+        <td>${escapeHtml(sourceLabel(it))}</td>
         <td class="num">${escapeHtml(fmtQty(it.quantity))}</td>
         <td class="num">${escapeHtml(fmtQty(it.conversion_used ?? it.conversion_to_base))}</td>
         <td class="num">${escapeHtml(fmtQty(it.base_quantity))}</td>
@@ -122,6 +128,7 @@ export function buildInventoryDocumentPrintHtml(doc, store = {}, extras = {}) {
         <th>الرقم</th>
         <th>الباركود</th>
         <th>الوحدة</th>
+        <th>المصدر</th>
         <th class="num">الكمية</th>
         <th class="num">التحويل</th>
         <th class="num">الكمية الأساسية</th>

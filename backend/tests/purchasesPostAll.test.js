@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  moveStockToReturns,
 } from "./helpers.js";
 
 function unwrapData(body) {
@@ -153,6 +154,13 @@ describe("purchases post-all", () => {
     const beforeBal = Number(
       (await ctx.db.get("SELECT balance FROM suppliers WHERE id = ?", [supplierId])).balance
     );
+    const draftItems = await ctx.db.all(
+      `SELECT i.product_id, i.quantity, i.base_quantity, i.expiry_date
+         FROM purchase_return_items i
+         JOIN purchase_returns r ON r.id = i.return_id
+        WHERE r.status = 'draft'`
+    );
+    await moveStockToReturns(ctx.app, ctx.db, adminToken, draftItems, supplierId);
 
     const res = await request(ctx.app)
       .post("/api/v1/purchases/returns/post-all")

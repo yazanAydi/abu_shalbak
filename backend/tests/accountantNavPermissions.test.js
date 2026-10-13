@@ -53,7 +53,7 @@ describe("nav-level accountant permissions", () => {
   const NAV_READS = [
     { key: "products", path: "/api/v1/products/next-sku" },
     { key: "units", path: "/api/v1/products/units/catalog" },
-    { key: "stock_count", path: "/api/v1/inventory/counts" },
+    { key: "stock_count", path: "/api/v1/inventory/counts?department=retail" },
     { key: "warehouses", path: "/api/v1/warehouses/stock" },
     { key: "purchases", path: "/api/v1/purchases/invoices" },
     { key: "sales_invoices", path: "/api/v1/sales/invoices" },

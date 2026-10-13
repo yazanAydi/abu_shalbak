@@ -75,7 +75,7 @@ describe("valuation scope ownership, unknown cost, and business-day dates", () =
   let cashierToken;
   let supplierId;
   let mainId;
-  let damagedId;
+  let returnsId;
   let shiftId;
   let seq = 3000;
 
@@ -95,7 +95,7 @@ describe("valuation scope ownership, unknown cost, and business-day dates", () =
     ).lastID;
     const warehouses = unwrap(await request(ctx.app).get("/api/v1/warehouses").set(authHeader(adminToken)));
     mainId = warehouses.find((row) => row.type === "main").id;
-    damagedId = warehouses.find((row) => row.type === "damaged").id;
+    returnsId = warehouses.find((row) => row.type === "returns").id;
     const shift = await request(ctx.app).post("/api/v1/shifts/start").set(authHeader(cashierToken)).send({});
     expect(shift.status).toBe(201);
     shiftId = unwrap(shift).shift_id;
@@ -149,7 +149,7 @@ describe("valuation scope ownership, unknown cost, and business-day dates", () =
       .set(authHeader(adminToken))
       .send({
         from_warehouse_id: mainId,
-        to_warehouse_id: damagedId,
+        to_warehouse_id: returnsId,
         transfer_date: date,
         items: [{ product_id: productId, quantity: qty }],
       });
@@ -218,7 +218,7 @@ describe("valuation scope ownership, unknown cost, and business-day dates", () =
     expect(retailFinished.every((row) => row.ownership === "owned" && row.inventory_scope === "retail")).toBe(true);
     expect(retailFinished.every((row) => row.category_label === "مخبز" && row.grouping_label === "التصنيف الحالي")).toBe(true);
     expect(retailFinished.find((row) => Number(row.warehouse_id) === mainId).quantity).toBeCloseTo(9, 3);
-    expect(retailFinished.find((row) => Number(row.warehouse_id) === damagedId).quantity).toBeCloseTo(1, 3);
+    expect(retailFinished.find((row) => Number(row.warehouse_id) === returnsId).quantity).toBeCloseTo(1, 3);
     expect(ownedRows(retail, material.id)).toHaveLength(0);
     expect(valueOf(ownedRows(retail, grocery.id))).toBeCloseTo(9, 2);
 
@@ -333,12 +333,12 @@ describe("valuation scope ownership, unknown cost, and business-day dates", () =
     expect(qtyOf(rowsOf(replayPrev, early.id))).toBeCloseTo(4, 3);
     expect(valueOf(rowsOf(replayPrev, early.id))).toBeCloseTo(20, 2);
     expect(rowsOf(replayPrev, early.id).find((row) => Number(row.warehouse_id) === mainId).quantity).toBeCloseTo(3, 3);
-    expect(rowsOf(replayPrev, early.id).find((row) => Number(row.warehouse_id) === damagedId).quantity).toBeCloseTo(1, 3);
+    expect(rowsOf(replayPrev, early.id).find((row) => Number(row.warehouse_id) === returnsId).quantity).toBeCloseTo(1, 3);
     expect(rowsOf(replayPrev, late.id)).toHaveLength(0);
     expect(qtyOf(rowsOf(replayCal, early.id))).toBeCloseTo(4, 3);
     expect(qtyOf(rowsOf(replayCal, late.id))).toBeCloseTo(3, 3);
     expect(valueOf(rowsOf(replayCal, late.id))).toBeCloseTo(15, 2);
-    expect(rowsOf(replayCal, late.id).find((row) => Number(row.warehouse_id) === damagedId).quantity).toBeCloseTo(1, 3);
+    expect(rowsOf(replayCal, late.id).find((row) => Number(row.warehouse_id) === returnsId).quantity).toBeCloseTo(1, 3);
     assertReconciled(replayPrev);
     assertReconciled(replayCal);
 
@@ -348,7 +348,7 @@ describe("valuation scope ownership, unknown cost, and business-day dates", () =
     for (const productId of [early.id, late.id, fresh.id]) {
       expect(qtyOf(rowsOf(live, productId))).toBeCloseTo(qtyOf(rowsOf(replayShop, productId)), 3);
       expect(valueOf(rowsOf(live, productId))).toBeCloseTo(valueOf(rowsOf(replayShop, productId)), 2);
-      for (const warehouseId of [mainId, damagedId]) {
+      for (const warehouseId of [mainId, returnsId]) {
         const liveQty = qtyOf(rowsOf(live, productId).filter((row) => Number(row.warehouse_id) === warehouseId));
         const replayQty = qtyOf(rowsOf(replayShop, productId).filter((row) => Number(row.warehouse_id) === warehouseId));
         expect(liveQty).toBeCloseTo(replayQty, 3);

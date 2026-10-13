@@ -13,6 +13,7 @@ import {
   applySaleStock,
   allocationsToJson,
 } from "./stockBatchService.js";
+import { assertSellable, sellableQuantity } from "./warehouseBatchStock.js";
 
 function round6(n) {
   return Math.round((Number(n) || 0) * 1e6) / 1e6;
@@ -267,10 +268,11 @@ export async function postSalesInvoice(db, invoiceId, body, userId) {
   if (items.length === 0) return { error: "لا توجد أصناف", status: 400 };
 
   for (const it of items) {
-    const stock = Number((await db.get("SELECT stock FROM products WHERE id = ?", [it.product_id]))?.stock) || 0;
     const need = it.base_quantity != null ? Number(it.base_quantity) : Number(it.quantity) || 0;
-    if (stock < need) {
-      return { error: `مخزون غير كافٍ للصنف: ${it.name}`, status: 400 };
+    try {
+      assertSellable(await sellableQuantity(db, it.product_id), need);
+    } catch (err) {
+      return { error: err.message, status: err.status || 400, code: err.code };
     }
   }
 

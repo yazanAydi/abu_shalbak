@@ -1,4 +1,13 @@
 import { SkeletonRows, EmptyState } from "../../components/ui";
+import {
+  LEDGER_MOVEMENT_LABELS,
+  MOVEMENT_TONE,
+  REFERENCE_TYPE_LABELS,
+  movementLabel,
+  referenceDisplay,
+} from "../../utils/inventoryLabels";
+
+export { LEDGER_MOVEMENT_LABELS as MOVEMENT_LABELS, MOVEMENT_TONE, REFERENCE_TYPE_LABELS, movementLabel, referenceDisplay };
 
 export const CHART_COLORS = {
   teal: "#0f766e",
@@ -8,36 +17,6 @@ export const CHART_COLORS = {
   red: "#dc2626",
   slate: "#64748b",
   purple: "#7c3aed",
-};
-
-export const MOVEMENT_LABELS = {
-  sale: "بيع",
-  refund: "استرجاع",
-  purchase_receive: "استلام شراء",
-  supplier_return: "مرتجع مورد",
-  manual_adjustment: "تسوية يدوية",
-  warehouse_transfer_in: "تحويل وارد",
-  warehouse_transfer_out: "تحويل صادر",
-  stock_count_correction: "تصحيح جرد",
-  expiry_writeoff: "إتلاف صلاحية",
-};
-
-export const REFERENCE_TYPE_LABELS = {
-  inventory_receipt: "سند إدخال بضاعة",
-  inventory_issue: "سند إخراج بضاعة",
-  inventory_document: "سند مخزون",
-};
-
-export const MOVEMENT_TONE = {
-  sale: "red",
-  refund: "green",
-  purchase_receive: "green",
-  supplier_return: "orange",
-  manual_adjustment: "neutral",
-  warehouse_transfer_in: "blue",
-  warehouse_transfer_out: "blue",
-  stock_count_correction: "orange",
-  expiry_writeoff: "red",
 };
 
 export const AUDIT_LABELS = {
@@ -51,12 +30,8 @@ export const AUDIT_LABELS = {
   WAREHOUSE_TRANSFER: "تحويل مستودع",
 };
 
-export function movementLabel(type) {
-  return MOVEMENT_LABELS[type] || type || "—";
-}
-
 export function auditLabel(action) {
-  return AUDIT_LABELS[action] || action || "—";
+  return AUDIT_LABELS[action] || "—";
 }
 
 /** Days-remaining -> expiry badge tone + label. */

@@ -1,9 +1,30 @@
+import { dateOnly } from "./format";
+
 export const UNKNOWN_EXPIRY_LABEL = "غير محدد";
+export const DATED_BATCH_LABEL = "دفعة بتاريخ صلاحية";
+export const UNDATED_BATCH_LABEL = "بدون تاريخ صلاحية";
 export const PREFERRED_AUTO = "auto";
 export const PREFERRED_UNKNOWN = "__unknown__";
 
 export function formatExpiryLabel(expiryDate) {
   return expiryDate || UNKNOWN_EXPIRY_LABEL;
+}
+
+/**
+ * Display label for a physical batch source. Internal values stay dated/undated.
+ * @param {string|null|undefined} source
+ * @param {string|null|undefined} expiryDate
+ * @param {{ quantityText?: string }} [extras]
+ */
+export function batchSourceLabel(source, expiryDate, extras = {}) {
+  const date = expiryDate ? dateOnly(expiryDate) : "";
+  let label = "—";
+  if (source === "undated") label = UNDATED_BATCH_LABEL;
+  else if (source === "dated") label = date && date !== "—" ? `${DATED_BATCH_LABEL} — ${date}` : DATED_BATCH_LABEL;
+  else if (date && date !== "—") label = date;
+  const qty = extras.quantityText;
+  if (qty != null && qty !== "") return `${label} — ${qty}`;
+  return label;
 }
 
 export function formatAllocationsAr(allocations) {

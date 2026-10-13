@@ -112,7 +112,14 @@ export default function InvoiceLineProductCell({
 
   function pickProduct(product) {
     if (!product) return;
-    onPick(product);
+    const accepted = onPick(product);
+    if (accepted === false) {
+      setOpen(false);
+      setResults([]);
+      setQ(productName || "");
+      setDirty(false);
+      return;
+    }
     setQ(product.name || "");
     setDirty(false);
     setOpen(false);
@@ -145,7 +152,7 @@ export default function InvoiceLineProductCell({
       }
       return;
     }
-    if (e.key !== "Enter" || e.defaultPrevented) return;
+    if (e.key !== "Enter" || e.defaultPrevented || e.repeat) return;
     if (open && dirty && q.trim() && !loading && results.length > 0) {
       e.preventDefault();
       e.stopPropagation();

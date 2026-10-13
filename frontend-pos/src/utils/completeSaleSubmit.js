@@ -79,7 +79,7 @@ function shouldKeepOutstanding(code, err) {
     return true;
   }
   const status = err?.response?.status;
-  if (status == null) return true;
+  if (status == null || status === 401) return true;
   if (status >= 500) return true;
   return false;
 }
@@ -110,6 +110,7 @@ export async function submitCompleteSale({
   loadShift,
   loadSuspendedList,
   syncSuspendedCart,
+  onPersistAttempt,
 }) {
   const pay = paymentPayload || { payment_method: selectedPayment };
   if (!cartItems.length || !pay.payment_method || isLoading || isSubmittingRef.current) {
@@ -159,6 +160,9 @@ export async function submitCompleteSale({
         key: idempotencyKeyRef.current,
       });
   if (submittedPayloadRef) submittedPayloadRef.current = body;
+  if (typeof onPersistAttempt === "function") {
+    onPersistAttempt({ idempotencyKey: body.idempotency_key, submittedPayload: body });
+  }
 
   let receiptToPrint = null;
   let result = { status: "ok" };

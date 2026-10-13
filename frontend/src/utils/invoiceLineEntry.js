@@ -17,6 +17,18 @@ export function invoiceLineHasProduct(it) {
   return Boolean(it && it.product_id);
 }
 
+/** Another line already uses this product id. The line being edited is excluded. */
+export function findDuplicateProductLine(items, productId, excludeIndex = -1) {
+  const id = Number(productId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const list = items || [];
+  for (let i = 0; i < list.length; i += 1) {
+    if (i === excludeIndex) continue;
+    if (Number(list[i]?.product_id) === id) return list[i];
+  }
+  return null;
+}
+
 export function invoiceLineQtyValid(it) {
   const qty = Number(it?.quantity);
   return Number.isFinite(qty) && qty > 0;
@@ -82,7 +94,7 @@ export function focusInvoiceField(lineKey, field) {
  * Invoice-table Enter: next cell, next row product, or add a row.
  * Returns true when handled.
  */
-export function handleInvoiceTableEnterKeyDown(e, { items, addEmptyRow, onInvalid }) {
+export function handleInvoiceTableEnterKeyDown(e, { items, addEmptyRow, onInvalid, validateLine }) {
   if (e.key !== "Enter" || e.defaultPrevented) return false;
   if (e.isComposing || e.keyCode === 229) return false;
 
@@ -128,7 +140,7 @@ export function handleInvoiceTableEnterKeyDown(e, { items, addEmptyRow, onInvali
   }
 
   const current = (items || []).find((it) => String(it.line_key) === String(lineKey));
-  const invalid = validateInvoiceLine(current);
+  const invalid = (validateLine || validateInvoiceLine)(current);
   if (invalid) {
     onInvalid?.(invalid, current);
     focusInvoiceField(lineKey, invalid.field);
