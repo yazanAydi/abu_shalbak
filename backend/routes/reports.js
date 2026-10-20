@@ -1,5 +1,7 @@
 import { createSafeRouter } from "../utils/asyncHandler.js";
 import { requireAuth, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
+import { listShiftVisaActivity, queryVisaReport } from "../services/visaReconciliationService.js";
+import { computeShiftVisa } from "../utils/salePayments.js";
 import {
   snapshotSalesCogsForRange,
   snapshotRefundCogsForRange,
@@ -22,7 +24,7 @@ import {
   parseStatementDate,
 } from "../utils/accountStatementService.js";
 import XLSX from "xlsx";
-import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
+import { aggregatePaymentLinesForDate, aggregateVisaSalesForShopDate } from "../utils/salePayments.js";
 import {
   fetchRefundsForShopDate,
   fetchRefundsForShopDateRange,
@@ -158,19 +160,18 @@ async function aggregateDay(db, dateStr) {
   let refunds_total = 0;
   let refund_count = refundRows.length;
   let refund_cash = 0;
-  let refund_card = 0;
   for (const r of refundRows) {
     refunds_total = round2(refunds_total + Number(r.total));
     if (r.payment_method === "cash") refund_cash = round2(refund_cash + Number(r.total));
-    else refund_card = round2(refund_card + Number(r.total));
   }
+  const visaDay = await aggregateVisaSalesForShopDate(db, dateStr);
   const net_sales = round2(total_sales - refunds_total);
   const cash_total = paymentAgg.cash_total;
-  const card_total = paymentAgg.card_total;
+  const card_total = visaDay.visa_sales;
   const on_account_total = paymentAgg.on_account_total;
   // Change is handed back from the cash drawer, so it reduces net cash on hand.
   const net_cash_total = round2(cash_total - refund_cash - change_total);
-  const net_card_total = round2(card_total - refund_card);
+  const net_card_total = visaDay.visa_net;
 
   return {
     success: true,
@@ -198,6 +199,8 @@ async function aggregateDay(db, dateStr) {
     net_sales,
     net_cash_total,
     net_card_total,
+    visa_refunds: visaDay.visa_refunds,
+    visa_incomplete: visaDay.visa_incomplete,
   };
 }
 
@@ -312,6 +315,46 @@ export function createReportsRouter(db) {
   const dashboardOrSales = requireAnyReportsPermission(db, "dashboard", "sales_reports");
 
   router.use(requireAuth);
+
+  router.get("/visa-summary", dashboardOrSales, async (req, res) => {
+    const report = await queryVisaReport(db, {
+      from: req.query.from,
+      to: req.query.to,
+    });
+    res.json({
+      from: report.from,
+      to: report.to,
+      summary: report.summary,
+    });
+  });
+
+  router.get("/visa/shifts/:shiftId/lines", salesReports, async (req, res) => {
+    const shiftId = Number(req.params.shiftId);
+    if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
+    const shift = await db.get(
+      `SELECT id, cashier_id FROM cashier_shifts WHERE id = ?`,
+      [shiftId]
+    );
+    if (!shift) return res.status(404).json({ error: "الوردية غير موجودة" });
+    const live = await computeShiftVisa(db, shiftId);
+    const lines = await listShiftVisaActivity(db, shiftId);
+    res.json({
+      shift_id: shiftId,
+      incomplete: !!live.visa_incomplete,
+      lines,
+    });
+  });
+
+  router.get("/visa", salesReports, async (req, res) => {
+    const report = await queryVisaReport(db, {
+      from: req.query.from,
+      to: req.query.to,
+      cashierId: req.query.cashier_id || null,
+      shiftId: req.query.shift_id || null,
+      state: req.query.state || null,
+    });
+    res.json(report);
+  });
 
   router.get("/today", dashboard, async (_req, res) => {
     const dateStr = shopTodayYmd();

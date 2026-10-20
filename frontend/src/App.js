@@ -49,6 +49,7 @@ const VouchersPage = lazy(() => import("./pages/VouchersPage"));
 const AccountStatement = lazy(() => import("./pages/AccountStatement"));
 const SupplierBalanceImport = lazy(() => import("./pages/SupplierBalanceImport"));
 const SalesReports = lazy(() => import("./pages/SalesReports"));
+const VisaCollectionsReport = lazy(() => import("./pages/VisaCollectionsReport"));
 const CashierPayroll = lazy(() => import("./pages/CashierPayroll"));
 const EmployeeAttendance = lazy(() => import("./pages/EmployeeAttendance"));
 const DeviceAttendance = lazy(() => import("./pages/DeviceAttendance"));
@@ -170,6 +171,14 @@ function App() {
             element={
               <OfficeRoute requirePermission="sales_reports">
                 <SalesReports />
+              </OfficeRoute>
+            }
+          />
+          <Route
+            path="/sales-reports/visa"
+            element={
+              <OfficeRoute requirePermission="sales_reports">
+                <VisaCollectionsReport />
               </OfficeRoute>
             }
           />

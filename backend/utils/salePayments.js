@@ -11,6 +11,7 @@ import {
   TX_BUSINESS_DAY_JOIN,
   businessDayRangeClause,
   businessDayRangeParams,
+  fetchRefundsForShopDate,
   txMatchesShopDate,
 } from "./businessDay.js";
 
@@ -713,8 +714,11 @@ const ALLOCATION_TOLERANCE = 0.02;
 export function emptyShiftVisa() {
   return {
     visa_sales: 0,
+    visa_other_receipts: 0,
     visa_refunds: 0,
     visa_net: 0,
+    visa_receipt_count: 0,
+    visa_refund_count: 0,
     visa_incomplete: false,
     visa_note: VISA_RECORDED_NOTE,
     visa_incomplete_note: VISA_INCOMPLETE_NOTE,
@@ -797,23 +801,52 @@ export async function computeShiftVisaMap(db, shiftIds) {
   const ph = ids.map(() => "?").join(",");
 
   const salesRows = await db.all(
-    `SELECT shift_id, COALESCE(SUM(line_nis), 0) AS visa_sales
+    `SELECT shift_id,
+            COALESCE(SUM(line_nis), 0) AS visa_sales,
+            COUNT(DISTINCT transaction_id) AS visa_receipt_count
      FROM (
        SELECT sp.id AS payment_id,
+              t.id AS transaction_id,
               t.shift_id AS shift_id,
               COALESCE(sp.nis_equivalent, sp.amount) AS line_nis
        FROM sale_payments sp
        INNER JOIN transactions t ON t.id = sp.transaction_id
-       WHERE t.shift_id IN (${ph}) AND sp.payment_method = 'visa'
+       WHERE t.shift_id IN (${ph})
+         AND sp.payment_method = 'visa'
+         AND t.status = 'completed'
        GROUP BY sp.id
      ) AS visa_lines
      GROUP BY shift_id`,
     ids
   );
   const refundRows = await db.all(
-    `SELECT shift_id, COALESCE(SUM(total), 0) AS visa_refunds
+    `SELECT shift_id,
+            COALESCE(SUM(total), 0) AS visa_refunds,
+            COUNT(*) AS visa_refund_count
      FROM refunds
      WHERE shift_id IN (${ph}) AND status = 'approved' AND payment_method = 'visa'
+     GROUP BY shift_id`,
+    ids
+  );
+  // Debt collections and office vouchers have no Visa tender today.
+  // The query stays so a future posted Visa receipt is counted once, separately from sales.
+  const otherRows = await db.all(
+    `SELECT shift_id,
+            COALESCE(SUM(line_nis), 0) AS visa_other,
+            COUNT(DISTINCT voucher_id) AS visa_other_count
+     FROM (
+       SELECT vl.id AS line_id,
+              scm.shift_id AS shift_id,
+              v.id AS voucher_id,
+              COALESCE(vl.amount_nis, vl.amount) AS line_nis
+       FROM voucher_lines vl
+       INNER JOIN vouchers v ON v.id = vl.voucher_id
+       INNER JOIN shift_cash_movements scm ON scm.voucher_id = v.id
+       WHERE scm.shift_id IN (${ph})
+         AND vl.line_type = 'visa'
+         AND v.status = 'posted'
+       GROUP BY vl.id
+     ) AS visa_receipts
      GROUP BY shift_id`,
     ids
   );
@@ -844,11 +877,21 @@ export async function computeShiftVisaMap(db, shiftIds) {
 
   for (const row of salesRows) {
     const visa = out.get(Number(row.shift_id));
-    if (visa) visa.visa_sales = round2(Number(row.visa_sales) || 0);
+    if (!visa) continue;
+    visa.visa_sales = round2(Number(row.visa_sales) || 0);
+    visa.visa_receipt_count = Number(row.visa_receipt_count) || 0;
   }
   for (const row of refundRows) {
     const visa = out.get(Number(row.shift_id));
-    if (visa) visa.visa_refunds = round2(Number(row.visa_refunds) || 0);
+    if (!visa) continue;
+    visa.visa_refunds = round2(Number(row.visa_refunds) || 0);
+    visa.visa_refund_count = Number(row.visa_refund_count) || 0;
+  }
+  for (const row of otherRows) {
+    const visa = out.get(Number(row.shift_id));
+    if (!visa) continue;
+    visa.visa_other_receipts = round2(Number(row.visa_other) || 0);
+    visa.visa_receipt_count += Number(row.visa_other_count) || 0;
   }
   for (const row of suspectSales) {
     const visa = out.get(Number(row.shift_id));
@@ -862,7 +905,7 @@ export async function computeShiftVisaMap(db, shiftIds) {
     if (visa) visa.visa_incomplete = true;
   }
   for (const visa of out.values()) {
-    visa.visa_net = round2(visa.visa_sales - visa.visa_refunds);
+    visa.visa_net = round2(visa.visa_sales + visa.visa_other_receipts - visa.visa_refunds);
   }
   return out;
 }
@@ -876,6 +919,74 @@ export async function computeShiftVisa(db, shiftId) {
 export async function sumShiftCardPayments(db, shiftId) {
   const visa = await computeShiftVisa(db, shiftId);
   return visa.visa_sales;
+}
+
+/**
+ * Visa sales tenders posted on a shop business day, including an office
+ * invoice with no shift. Other Visa receipts are shift collections and are
+ * not part of this sales total. Unknown splits are omitted, not guessed.
+ */
+export async function aggregateVisaSalesForShopDate(db, dateStr) {
+  const params = businessDayRangeParams(dateStr, dateStr);
+  const salesRows = await db.all(
+    `SELECT COALESCE(sp.nis_equivalent, sp.amount) AS line_nis,
+            t.created_at, t.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS shift_start_time
+     FROM sale_payments sp
+     INNER JOIN transactions t ON t.id = sp.transaction_id
+     ${TX_BUSINESS_DAY_JOIN}
+     WHERE sp.payment_method = 'visa'
+       AND COALESCE(t.status, 'completed') = 'completed'
+       AND ${businessDayRangeClause("t", "cs")}`,
+    params
+  );
+  let visa_sales = 0;
+  for (const row of salesRows) {
+    if (!txMatchesShopDate(row, dateStr)) continue;
+    visa_sales = round2(visa_sales + (Number(row.line_nis) || 0));
+  }
+
+  const refundRows = await fetchRefundsForShopDate(db, dateStr);
+  let visa_refunds = 0;
+  let visa_incomplete = false;
+  for (const row of refundRows) {
+    if (row.payment_method === "visa") {
+      visa_refunds = round2(visa_refunds + (Number(row.total) || 0));
+    }
+    else if (refundAllocationIncomplete(row)) visa_incomplete = true;
+  }
+
+  const suspects = await db.all(
+    `SELECT t.payment_method AS payment_method,
+            t.total AS total,
+            t.created_at,
+            t.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS shift_start_time,
+            COUNT(sp.id) AS pay_count,
+            COALESCE(SUM(CASE WHEN sp.payment_method = 'visa' THEN 1 ELSE 0 END), 0) AS visa_count,
+            COALESCE(SUM(CASE WHEN sp.payment_method = 'visa' THEN COALESCE(sp.nis_equivalent, sp.amount) ELSE 0 END), 0) AS visa_paid
+     FROM transactions t
+     ${TX_BUSINESS_DAY_JOIN}
+     LEFT JOIN sale_payments sp ON sp.transaction_id = t.id
+     WHERE COALESCE(t.status, 'completed') = 'completed'
+       AND t.payment_method IN ('visa', 'mixed')
+       AND ${businessDayRangeClause("t", "cs")}
+     GROUP BY t.id`,
+    params
+  );
+  for (const row of suspects) {
+    if (!txMatchesShopDate(row, dateStr)) continue;
+    if (saleAllocationIncomplete(row)) visa_incomplete = true;
+  }
+
+  return {
+    visa_sales,
+    visa_refunds,
+    visa_net: round2(visa_sales - visa_refunds),
+    visa_incomplete,
+  };
 }
 
 /** Aggregate payment lines for transactions on a given shop calendar date. */

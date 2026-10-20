@@ -87,16 +87,13 @@ export default function PosQuickGrid({ onProductFound }) {
           <p className="pos-quick-empty">لا توجد أزرار في هذا القسم</p>
         ) : (
           items.map((p) => {
-            const outOfStock = Number(p.stock) <= 0;
             const fullName = p.name || "";
-            const hoverLabel = outOfStock
-              ? `${fullName}${p.barcode ? ` — ${p.barcode}` : ""} — الرصيد: 0`
-              : `${fullName}${p.barcode ? ` — ${p.barcode}` : ""}`;
+            const hoverLabel = `${fullName}${p.barcode ? ` — ${p.barcode}` : ""}`;
             return (
             <button
               key={`${p.id}-${p.unit_id ?? "default"}`}
               type="button"
-              className={`pos-quick-btn${outOfStock ? " pos-quick-btn--no-stock" : ""}`}
+              className="pos-quick-btn"
               onMouseDown={preventButtonFocus}
               onClick={() => tap(p)}
               title={hoverLabel}

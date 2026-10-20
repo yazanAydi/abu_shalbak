@@ -16,6 +16,7 @@ import { shopTodayYmd } from "../utils/shopTime.js";
 import {
   addSourceIdentity,
   ensureProductSourceLots,
+  insertUnknownShortageLot,
   listSourceLots,
   markReceiptReferences,
   moveSourceLots,
@@ -304,7 +305,7 @@ export async function listWarehouseSources(db, warehouseId, productId, options =
     attributedOnly: Boolean(supplierId),
   }));
   if (lots.length || supplierId) {
-    return lots.map((lot, index) => sourceFromRow({
+    const mapped = lots.map((lot, index) => sourceFromRow({
       warehouse_id: Number(warehouseId),
       expiry_date: lot.expiry_date,
       quantity: lot.quantity,
@@ -319,6 +320,27 @@ export async function listWarehouseSources(db, warehouseId, productId, options =
       received_at: lot.received_at,
       receipt_order: index,
     }, today));
+    if (!supplierId) {
+      const shortage = await db.get(
+        `SELECT COALESCE(SUM(-quantity), 0) AS qty
+           FROM stock_source_lots
+          WHERE product_id = ? AND warehouse_id = ? AND expiry_date = ''
+            AND quantity < 0 AND supplier_id IS NULL AND provenance = 'unknown'`,
+        [Number(productId), Number(warehouseId)]
+      );
+      let cut = round6(Number(shortage?.qty) || 0);
+      const reduce = (source) => {
+        if (cut <= EPS) return;
+        const take = round6(Math.min(source.quantity, cut));
+        source.quantity = round6(source.quantity - take);
+        cut = round6(cut - take);
+      };
+      for (const source of mapped) {
+        if (source.batch_source === "undated") reduce(source);
+      }
+      for (const source of mapped) reduce(source);
+    }
+    return mapped.filter((source) => source.quantity > EPS);
   }
   const rows = await locationRows(db, productId, warehouseId);
   const any = await locationRows(db, productId);
@@ -378,7 +400,7 @@ export function assertSellable(available, requested) {
  * FEFO among eligible main-warehouse sources. Preferred expiry is honored
  * only when that source is itself eligible.
  */
-export function planEligibleAllocations(sources, quantity, { preferred = null, productExpiry = null, today = shopTodayYmd() } = {}) {
+export function planEligibleAllocations(sources, quantity, { preferred = null, productExpiry = null, today = shopTodayYmd(), allowShortage = false } = {}) {
   const need = round6(quantity);
   const eligible = sources
     .filter((source) => source.quantity > EPS)
@@ -431,16 +453,18 @@ export function planEligibleAllocations(sources, quantity, { preferred = null, p
       received_at: source.received_at || null,
     });
   }
-  if (remaining > EPS) {
+  if (remaining > EPS && !allowShortage) {
     const have = round6(need - remaining);
     assertSellable(have, need);
   }
   return out;
 }
 
-export async function planSellableAllocations(db, productId, quantity, preferred = null) {
+export async function planSellableAllocations(db, productId, quantity, preferred = null, { allowShortage = false } = {}) {
   const product = await productRow(db, productId);
-  if (!product || product.location_status === NEEDS_RECONCILIATION) {
+  if (!product) throw badRequest(NO_SELLABLE_MESSAGE, "NO_SELLABLE_STOCK");
+  if (product.location_status === NEEDS_RECONCILIATION) {
+    if (allowShortage) return [];
     throw badRequest(NO_SELLABLE_MESSAGE, "NO_SELLABLE_STOCK");
   }
   const { main } = await operationalWarehouses(db);
@@ -450,7 +474,54 @@ export async function planSellableAllocations(db, productId, quantity, preferred
     preferred,
     productExpiry: product.expiry_date,
     today,
+    allowShortage,
   });
+}
+
+/**
+ * POS sale remainder that eligible main-warehouse stock could not cover.
+ * The negative undated lot is the shortage. Returns stock and expired lots stay put.
+ */
+export async function recordMainWarehouseShortage(db, productId, quantity) {
+  const qty = round6(quantity);
+  if (!(qty > 0)) return null;
+  const { main } = await operationalWarehouses(db);
+  if (!main) throw badRequest("مستودع البيع غير موجود", "WAREHOUSE_NOT_OPERATIONAL");
+  const key = expiryKey(null);
+  const row = await db.get(
+    `SELECT id, quantity FROM warehouse_batch_stock
+      WHERE warehouse_id = ? AND product_id = ? AND expiry_date = ?`,
+    [main.id, Number(productId), key]
+  );
+  const next = round6((Number(row?.quantity) || 0) - qty);
+  if (!row) {
+    await db.run(
+      `INSERT INTO warehouse_batch_stock (warehouse_id, product_id, expiry_date, quantity)
+       VALUES (?, ?, ?, ?)`,
+      [main.id, Number(productId), key, next]
+    );
+  } else if (Math.abs(next) <= EPS) {
+    await db.run("DELETE FROM warehouse_batch_stock WHERE id = ?", [row.id]);
+  } else {
+    await db.run("UPDATE warehouse_batch_stock SET quantity = ? WHERE id = ?", [next, row.id]);
+  }
+  await refreshCache(db, main.id, productId);
+  const lot = await insertUnknownShortageLot(db, {
+    productId,
+    warehouseId: main.id,
+    quantity: qty,
+  });
+  return {
+    expiry_date: null,
+    quantity: qty,
+    warehouse_id: main.id,
+    source_lot_id: lot?.id ?? null,
+    supplier_id: null,
+    purchase_invoice_id: null,
+    purchase_invoice_item_id: null,
+    source_provenance: "unknown",
+    batch_source: "undated",
+  };
 }
 
 /** Every source in the warehouse, earliest expiry first, then undated. Expired lots are included. */

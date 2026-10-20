@@ -25,6 +25,11 @@ jest.mock("../../utils/auth", () => ({
   getAuthHeaders: () => ({ Authorization: "Bearer test" }),
 }));
 
+const mockPrintReceipt = jest.fn();
+jest.mock("../../utils/printReceipt", () => ({
+  printReceipt: (...args) => mockPrintReceipt(...args),
+}));
+
 const LIST = {
   sales: [
     {
@@ -102,6 +107,8 @@ describe("PosPreviousSalesModal", () => {
     mockPost.mockReset();
     mockPut.mockReset();
     mockDelete.mockReset();
+    mockPrintReceipt.mockReset();
+    mockPrintReceipt.mockResolvedValue({ ok: true, printed: true });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -140,6 +147,24 @@ describe("PosPreviousSalesModal", () => {
     expect(labels).not.toContain("استرجاع");
     expect(labels).not.toContain("تعديل");
     expect(container.querySelector("[data-testid=cart]").textContent).toBe("خبز|hold-15");
+    const reprint = [...container.querySelectorAll("button")].find((b) => b.textContent === "إعادة طباعة");
+    const back = [...container.querySelectorAll("button")].find((b) => b.textContent === "رجوع");
+    const close = [...container.querySelectorAll("button")].find((b) => b.textContent === "إغلاق");
+    expect(reprint).toBeTruthy();
+    expect(reprint.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(reprint.compareDocumentPosition(close) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => {
+      reprint.click();
+      reprint.click();
+    });
+    await flush();
+    expect(mockPrintReceipt).toHaveBeenCalledTimes(1);
+    expect(mockPrintReceipt).toHaveBeenCalledWith(
+      { transaction_id: 41 },
+      { alert: false, reprint: true }
+    );
+    expect(container.querySelector("[data-testid=cart]").textContent).toBe("خبز|hold-15");
+    expect(container.textContent).toContain("مرتجعة جزئياً");
     expect(mockPost).not.toHaveBeenCalled();
     expect(mockPut).not.toHaveBeenCalled();
     expect(mockDelete).not.toHaveBeenCalled();
@@ -162,5 +187,37 @@ describe("PosPreviousSalesModal", () => {
     await flush();
     expect(container.textContent).toContain("تعذّر تحميل الفواتير");
     expect(container.textContent).toContain("إعادة المحاولة");
+  });
+
+  test("a failed reprint stays on the same invoice and can be retried", async () => {
+    mockGet.mockImplementation((url) => {
+      if (String(url).includes("/my-sales/41")) return Promise.resolve({ data: DETAIL });
+      return Promise.resolve({ data: LIST });
+    });
+    mockPrintReceipt.mockResolvedValueOnce({ ok: false, error: "تعذر الاتصال بمساعد طباعة ويندوز" });
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    await flush();
+    const view = [...container.querySelectorAll("button")].find((b) => b.textContent === "عرض التفاصيل");
+    await act(async () => {
+      view.click();
+    });
+    await flush();
+    const reprint = [...container.querySelectorAll("button")].find((b) => b.textContent === "إعادة طباعة");
+    await act(async () => {
+      reprint.click();
+    });
+    await flush();
+    expect(container.textContent).toContain("تعذر الاتصال بمساعد طباعة ويندوز");
+    expect(container.textContent).toContain("اسم محفوظ");
+    const retry = [...container.querySelectorAll("button")].find((b) => b.textContent === "إعادة المحاولة");
+    mockPrintReceipt.mockResolvedValueOnce({ ok: true, printed: true });
+    await act(async () => {
+      retry.click();
+    });
+    await flush();
+    expect(mockPrintReceipt).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("[data-testid=cart]").textContent).toBe("خبز|hold-15");
   });
 });

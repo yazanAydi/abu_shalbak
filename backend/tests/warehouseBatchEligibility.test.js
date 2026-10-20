@@ -228,9 +228,13 @@ describe("warehouse batch eligibility", () => {
     expect(posted.status).toBe(200);
     expect(await posStock(product)).toBe(0);
     const sale = await sell(product.id, 1, "elig-returns-excluded");
-    expect(sale.status).toBe(400);
-    expect(sale.body.code).toBe("NO_SELLABLE_STOCK");
-    expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(7);
+    expect(sale.status).toBe(201);
+    expect(await locations(product.id)).toEqual([
+      { type: "main", expiry_date: null, quantity: -1 },
+      { type: "returns", expiry_date: null, quantity: 3 },
+      { type: "returns", expiry_date: FRESH, quantity: 4 },
+    ]);
+    expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(6);
   });
 
   test("today remains sellable and yesterday does not, including the local midnight", async () => {
@@ -276,8 +280,18 @@ describe("warehouse batch eligibility", () => {
     );
     expect(Number(fresh.quantity)).toBeCloseTo(0.25, 6);
     const tooMuch = await sell(product.id, 0.5, "elig-fraction-over");
-    expect(tooMuch.status).toBe(400);
-    expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBeCloseTo(0.75, 6);
+    expect(tooMuch.status).toBe(201);
+    const freshAfter = await ctx.db.get(
+      "SELECT quantity FROM product_batches WHERE product_id = ? AND expiry_date = ?",
+      [product.id, FRESH]
+    );
+    expect(Number(freshAfter.quantity)).toBeCloseTo(0, 6);
+    const expiredLeft = await ctx.db.get(
+      "SELECT quantity FROM product_batches WHERE product_id = ? AND expiry_date = ?",
+      [product.id, EXPIRED]
+    );
+    expect(Number(expiredLeft.quantity)).toBeCloseTo(0.5, 6);
+    expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBeCloseTo(0.25, 6);
 
     const draft = await request(ctx.app)
       .post("/api/v1/warehouses/transfers")
@@ -340,14 +354,14 @@ describe("warehouse batch eligibility", () => {
       sell(product.id, 1, "elig-race-a"),
       sell(product.id, 1, "elig-race-b"),
     ]);
-    const statuses = [a.status, b.status].sort();
-    expect(statuses).toEqual([201, 400]);
-    expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(5);
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(4);
     const sales = await ctx.db.get(
       "SELECT COUNT(*) AS n FROM transaction_items WHERE product_id = ?",
       [product.id]
     );
-    expect(Number(sales.n)).toBe(1);
+    expect(Number(sales.n)).toBe(2);
     const fresh = await ctx.db.get(
       "SELECT quantity FROM product_batches WHERE product_id = ? AND expiry_date = ?",
       [product.id, FRESH]
@@ -378,14 +392,16 @@ describe("warehouse batch eligibility", () => {
     expect(again.location_status).toBe("needs_reconciliation");
     expect(Number(again.stock)).toBe(Number(product.stock));
 
-    const blocked = await request(ctx.app)
+    const sold = await request(ctx.app)
       .post("/api/v1/checkout")
       .set(authHeader(cashierToken))
       .send(withCheckoutKey({
         items: [{ product_id: product.id, quantity: 1, price: 10 }],
         payment_method: "cash",
       }, "elig-legacy-sale"));
-    expect(blocked.status).toBe(400);
+    expect(sold.status).toBe(201);
+    const afterSale = Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock);
+    expect(afterSale).toBe(Number(product.stock) - 1);
 
     const named = await request(ctx.app)
       .post("/api/v1/warehouses/transfers")
@@ -416,13 +432,13 @@ describe("warehouse batch eligibility", () => {
     expect(qtyPost.status).toBe(200);
     const still = await ctx.db.get("SELECT location_status, stock FROM products WHERE id = ?", [product.id]);
     expect(still.location_status).toBe("needs_reconciliation");
-    expect(Number(still.stock)).toBe(Number(product.stock));
+    expect(Number(still.stock)).toBe(afterSale);
 
     const dated = await ctx.db.get(
       "SELECT COALESCE(SUM(quantity), 0) AS qty FROM product_batches WHERE product_id = ?",
       [product.id]
     );
-    const undated = Number(product.stock) - Number(dated.qty);
+    const undated = Number(still.stock) - Number(dated.qty);
     const badCount = await request(ctx.app)
       .post("/api/v1/warehouses/reconcile")
       .set(authHeader(adminToken))
@@ -444,8 +460,8 @@ describe("warehouse batch eligibility", () => {
     expect(counted.status).toBe(200);
     const located = await ctx.db.get("SELECT location_status, stock FROM products WHERE id = ?", [product.id]);
     expect(located.location_status).toBe("located");
-    expect(Number(located.stock)).toBe(Number(product.stock));
+    expect(Number(located.stock)).toBe(afterSale);
     const placed = await locations(product.id);
-    expect(placed.reduce((sum, row) => sum + row.quantity, 0)).toBe(Number(product.stock));
+    expect(placed.reduce((sum, row) => sum + row.quantity, 0)).toBe(afterSale);
   });
 });

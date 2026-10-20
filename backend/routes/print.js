@@ -12,7 +12,7 @@ import { loadSalePayments } from "../utils/salePayments.js";
 import { getAppSettings } from "../utils/settings.js";
 import { partyBalanceForSale } from "../utils/partyBalanceAroundMove.js";
 
-export async function loadSaleReceipt(db, tid) {
+export async function loadSaleReceipt(db, tid, { reprint = false } = {}) {
   const tx = await db.get("SELECT * FROM transactions WHERE id = ?", [tid]);
   if (!tx) return null;
 
@@ -59,6 +59,7 @@ export async function loadSaleReceipt(db, tid) {
     changeNis: tx.change_amount,
     settings,
     partyBalance,
+    reprint: Boolean(reprint),
   });
 
   return {
@@ -100,7 +101,7 @@ export function createPrintRouter(db) {
       if (!(await canAccessSaleReceipt(db, req.user, tx))) {
         return res.status(403).json({ error: "غير مسموح بطباعة هذه الفاتورة", code: "FORBIDDEN" });
       }
-      const receipt = await loadSaleReceipt(db, tid);
+      const receipt = await loadSaleReceipt(db, tid, { reprint: Boolean((req.body || {}).reprint) });
       if (!receipt) {
         return res.status(404).json({ error: "العملية غير موجودة" });
       }
@@ -161,7 +162,7 @@ export function createPrintRouter(db) {
       if (!(await canAccessSaleReceipt(db, req.user, tx))) {
         return res.status(403).json({ error: "غير مسموح بطباعة هذه الفاتورة", code: "FORBIDDEN" });
       }
-      const receipt = await loadSaleReceipt(db, tid);
+      const receipt = await loadSaleReceipt(db, tid, { reprint: Boolean((req.body || {}).reprint) });
       if (!receipt) {
         return res.status(404).json({ error: "العملية غير موجودة" });
       }

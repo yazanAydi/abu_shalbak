@@ -16,9 +16,10 @@ import {
   NEEDS_RECONCILIATION,
   operationalWarehouses,
   planSellableAllocations,
+  recordMainWarehouseShortage,
   locationRows,
 } from "./warehouseBatchStock.js";
-import { addSourceIdentity, listSourceLots, takeSourceLots } from "./stockSourceService.js";
+import { addSourceIdentity, listSourceLots, settleUndatedShortageLots, takeSourceLots } from "./stockSourceService.js";
 import { getAppSettings } from "../utils/settings.js";
 import {
   daysUntilExpiry,
@@ -242,13 +243,15 @@ export async function moveUndatedOnMain(db, productId, delta, source = null) {
   if (placed.mode === NEEDS_RECONCILIATION) return [];
   const { main } = await operationalWarehouses(db);
   if (!main) return [];
-  return addWarehouseQuantity(db, {
+  const parts = await addWarehouseQuantity(db, {
     warehouseId: main.id,
     productId,
     expiryDate: null,
     delta,
     source,
   });
+  if (delta > 0) await settleUndatedShortageLots(db, productId, main.id);
+  return parts;
 }
 
 const EXPLICIT_ADJUSTMENT_TYPES = new Set(["damage", "out", "correction"]);
@@ -891,7 +894,7 @@ async function consumePlanned(db, productId, allocations, meta) {
   return recorded;
 }
 
-export async function applyOutboundBatches(db, { productId, quantity, preferred, referenceType, referenceId, transactionItemId, invoiceItemId }) {
+export async function applyOutboundBatches(db, { productId, quantity, preferred, referenceType, referenceId, transactionItemId, invoiceItemId, allowShortage = false }) {
   const qty = round6(quantity);
   if (qty <= 0) return [];
   const meta = { referenceType, referenceId, transactionItemId, invoiceItemId };
@@ -899,8 +902,27 @@ export async function applyOutboundBatches(db, { productId, quantity, preferred,
     throw badRequest("مرتجع المورد يحدد كمية المورد في المرتجعات", "WRONG_SUPPLIER");
   }
   await ensureMaterialized(db, productId);
-  const allocations = await planSellableAllocations(db, productId, qty, preferred);
-  return consumePlanned(db, productId, allocations, meta);
+  const allocations = await planSellableAllocations(db, productId, qty, preferred, { allowShortage });
+  const recorded = await consumePlanned(db, productId, allocations, meta);
+  if (allowShortage) {
+    const covered = round6(allocations.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0));
+    const short = round6(qty - covered);
+    if (short > 1e-9) {
+      const placed = await db.get("SELECT location_status FROM products WHERE id = ?", [Number(productId)]);
+      if (placed?.location_status === "needs_reconciliation") {
+        recorded.push({
+          expiry_date: null,
+          quantity: short,
+          source_provenance: "unknown",
+          batch_source: "undated",
+        });
+      } else {
+        const shortage = await recordMainWarehouseShortage(db, productId, short);
+        if (shortage) recorded.push(shortage);
+      }
+    }
+  }
+  return recorded;
 }
 
 export async function applySaleStock(db, opts) {
@@ -915,6 +937,7 @@ export async function applySaleStock(db, opts) {
     transactionItemId,
     invoiceItemId,
     businessDay = null,
+    allowShortage = false,
   } = opts;
   const qty = round6(quantity);
   if (qty <= 0) return [];
@@ -926,6 +949,7 @@ export async function applySaleStock(db, opts) {
     referenceId,
     transactionItemId,
     invoiceItemId,
+    allowShortage,
   });
   await recordMovement(db, {
     productId,

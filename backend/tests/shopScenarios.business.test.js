@@ -722,15 +722,15 @@ describe("batch, expiry, and cost scenarios", () => {
     expect(before.rows.find((r) => r.expiry_date === "2020-01-15").status).toBe("expired");
     expect(before.product_stock).toBe(4);
     const sale = await sell(product.id, 1);
-    expect(sale.status).toBe(400);
+    expect(sale.status).toBe(201);
     const after = await listStockBatches(ctx.db, product.id);
     expect(qtyOf(after, "2020-01-15")).toBe(4);
-    expect(after.product_stock).toBe(4);
+    expect(after.product_stock).toBe(3);
     const sales = await ctx.db.get(
       "SELECT COUNT(*) AS n FROM transaction_items WHERE product_id = ?",
       [product.id]
     );
-    expect(Number(sales.n)).toBe(0);
+    expect(Number(sales.n)).toBe(1);
   });
 
   test("the same expiry adds quantity onto one lot and product cost stays weighted", async () => {
@@ -875,11 +875,13 @@ describe("batch, expiry, and cost scenarios", () => {
     expect(listed.unknown_quantity).toBe(0);
 
     const over = await sell(product.id, 2);
-    expect(over.status).toBe(400);
+    expect(over.status).toBe(201);
     listed = await listStockBatches(ctx.db, product.id);
-    expect(listed.product_stock).toBe(0);
-    expect(listed.unknown_quantity).toBe(0);
-    expect(await deriveStockFromLedger(ctx.db, product.id)).toBe(0);
+    expect(listed.product_stock).toBe(-2);
+    expect(qtyOf(listed, expiryA)).toBe(0);
+    expect(qtyOf(listed, expiryB)).toBe(0);
+    expect(listed.unknown_quantity).toBe(-2);
+    expect(await deriveStockFromLedger(ctx.db, product.id)).toBe(-2);
 
     const fresh = await makeProduct();
     await postDraft(await postPurchase([
@@ -1283,19 +1285,19 @@ describe("one business day across money, credit, bakery, and the cutoff", () => 
   test("purchases, tenders, credit, bakery, refunds, and the cutoff reconcile", async () => {
     const early = new Date(new Date(shopYmdToUtcBounds("2026-10-05").startIso).getTime() + 2 * 3600 * 1000);
     expect(businessDayFromTimestamp(early.toISOString(), 6)).toBe("2026-10-04");
+    // The nearer milk lot expires on 2026-10-14. Allocation uses the shop
+    // calendar date, so the whole scenario stays on that morning. Restoring
+    // the wall clock would expire the lot and leave its purchased quantity.
     jest.useFakeTimers({
       now: early,
       doNotFake: ["nextTick", "setImmediate", "setTimeout", "setInterval", "queueMicrotask"],
     });
-    let opened;
     try {
-      opened = await request(ctx.app)
-        .post("/api/v1/shifts/start")
-        .set(authHeader(cashierToken))
-        .send({ opening_cash: 500 });
-    } finally {
-      jest.useRealTimers();
-    }
+    expect(shopTodayYmd()).toBe("2026-10-05");
+    const opened = await request(ctx.app)
+      .post("/api/v1/shifts/start")
+      .set(authHeader(cashierToken))
+      .send({ opening_cash: 500 });
     expect(opened.status).toBe(201);
     shiftId = unwrap(opened.body).shift_id ?? unwrap(opened.body).id;
     const shift = await ctx.db.get("SELECT business_day, opening_cash FROM cashier_shifts WHERE id = ?", [shiftId]);
@@ -1519,6 +1521,8 @@ describe("one business day across money, credit, bakery, and the cutoff", () => 
     expect(Number((await ctx.db.get("SELECT balance FROM customers WHERE id = ?", [customerId])).balance)).toBe(0);
 
     const listed = await listStockBatches(ctx.db, milk);
+    const nearer = listed.rows.find((row) => row.expiry_date === expiryB);
+    expect(nearer.status).not.toBe("expired");
     expect(qtyOf(listed, expiryB)).toBe(2);
     expect(qtyOf(listed, expiryA)).toBe(10);
     expect(listed.product_stock).toBe(12);
@@ -1709,5 +1713,8 @@ describe("one business day across money, credit, bakery, and the cutoff", () => 
       });
     expect(late.status).toBeGreaterThanOrEqual(400);
     expect(Number((await ctx.db.get("SELECT balance FROM suppliers WHERE id = ?", [supplierId])).balance)).toBe(73);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

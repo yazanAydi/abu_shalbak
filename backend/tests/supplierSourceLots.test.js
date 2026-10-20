@@ -553,10 +553,16 @@ describe("supplier source lots", () => {
         payment_method: "cash",
       }, `src-race-b-${product.id}`)),
     ]);
-    const statuses = [a.status, b.status].sort();
-    expect(statuses).toEqual([201, 400]);
-    expect(Number((await shop.ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(0);
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(Number((await shop.ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(-1);
     const lots = await sourceLots(shop.ctx.db, product.id);
-    expect(lots.reduce((sum, row) => sum + Number(row.quantity), 0)).toBe(0);
+    expect(lots.filter((row) => row.supplier_id === shop.supplierA).reduce((sum, row) => sum + Number(row.quantity), 0)).toBe(0);
+    const shortage = await shop.ctx.db.get(
+      `SELECT COALESCE(SUM(quantity), 0) AS qty FROM stock_source_lots
+        WHERE product_id = ? AND quantity < 0 AND supplier_id IS NULL`,
+      [product.id]
+    );
+    expect(Number(shortage.qty)).toBe(-1);
   });
 });

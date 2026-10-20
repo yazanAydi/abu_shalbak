@@ -9,6 +9,8 @@ import CashCountFields, {
   expectedBreakdownText,
 } from "./CashCountFields";
 import ShiftCountTotals from "./ShiftCountTotals";
+import ShiftVisaSection, { VisaActivityList } from "./ShiftVisaSection";
+import { parseVisaMachineInput, visaBasisPayload } from "../utils/shiftVisa";
 import "./ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -32,6 +34,8 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadErr, setLoadErr] = useState("");
+  const [visaMachine, setVisaMachine] = useState("");
+  const [visaLines, setVisaLines] = useState(null);
 
   const loadPreview = useCallback(async () => {
     if (!shiftId || !open) return;
@@ -65,6 +69,14 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
         cash_sales_incomplete_note:
           shiftData.summary?.cash_sales_incomplete_note ||
           shiftData.shift?.cash_sales_incomplete_note,
+        visa_sales: shiftData.shift?.visa_sales,
+        visa_other_receipts: shiftData.shift?.visa_other_receipts,
+        visa_refunds: shiftData.shift?.visa_refunds,
+        visa_net: shiftData.shift?.visa_net,
+        visa_receipt_count: shiftData.shift?.visa_receipt_count,
+        visa_refund_count: shiftData.shift?.visa_refund_count,
+        visa_incomplete: shiftData.shift?.visa_incomplete,
+        visa_reconciliation: shiftData.shift?.visa_reconciliation,
         expected_cash: exp,
         expected_cash_label:
           shiftData.summary?.expected_cash_label || shiftData.shift?.expected_cash_label,
@@ -97,11 +109,25 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
     setErr("");
     setLoading(true);
     try {
+      const parsedVisa = parseVisaMachineInput(visaMachine);
+      if (parsedVisa.error) {
+        setErr("صافي جهاز الفيزا غير صالح");
+        setLoading(false);
+        return;
+      }
+      const visaBody =
+        parsedVisa.empty || countSummary?.visa_incomplete
+          ? {}
+          : {
+              visa_machine_net: parsedVisa.value,
+              visa_basis: visaBasisPayload(countSummary),
+            };
       const { data } = await api.post(
         `/api/shifts/${shiftId}/end`,
         {
           counted_currencies: countedCurrenciesPayload(countRows, countedAmounts),
           notes: notes.trim() || null,
+          ...visaBody,
         },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
@@ -135,7 +161,23 @@ export default function ShiftEnd({ shiftId, open, onClose, onSuccess }) {
         <h2 className="shift-modal-title">إغلاق الوردية</h2>
         {loadErr ? <div className="shift-modal-err">{loadErr}</div> : null}
         {countSummary ? (
-          <ShiftCountTotals source={countSummary} breakdown={expectedByCurrency} />
+          <>
+            <ShiftCountTotals source={countSummary} breakdown={expectedByCurrency} />
+            <ShiftVisaSection
+              visa={countSummary}
+              reconciliation={countSummary.visa_reconciliation}
+              machineValue={visaMachine}
+              onMachineChange={setVisaMachine}
+              showInput
+              onOpenLines={async () => {
+                const { data } = await api.get(`/api/shifts/${shiftId}/visa-activity`, {
+                  headers: getAuthHeaders(),
+                });
+                setVisaLines(data);
+              }}
+            />
+            {visaLines ? <VisaActivityList lines={visaLines.lines} incomplete={visaLines.incomplete} /> : null}
+          </>
         ) : expected != null ? (
           <p className="shift-modal-meta">
             النقد المتوقع في الصندوق: {ils(expected)}

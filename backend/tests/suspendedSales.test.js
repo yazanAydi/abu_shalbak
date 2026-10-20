@@ -479,15 +479,17 @@ describe("Negative stock is allowed at POS checkout", () => {
         idempotency_key: "neg-stock-sale-5-vs-2",
       });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
     const product = await ctx.db.get("SELECT stock FROM products WHERE id = ?", [ctx.productId]);
-    expect(product.stock).toBe(2);
+    expect(product.stock).toBe(-3);
     const ledger = await ctx.db.all(
       `SELECT quantity_delta, qty_after FROM inventory_ledger
        WHERE product_id = ? AND movement_type = 'sale'
        ORDER BY id`,
       [ctx.productId]
     );
-    expect(ledger).toHaveLength(0);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].quantity_delta).toBe(-5);
+    expect(ledger[0].qty_after).toBe(-3);
   });
 });

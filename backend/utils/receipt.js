@@ -346,6 +346,7 @@ export function buildReceiptHtml(opts) {
   const printBrand = resolvePrintBranding(settings);
   const { date, time } = splitTimestamp(opts.timestamp);
   const invNo = invoiceNumber(opts);
+  const copyLabel = opts.reprint ? "إعادة طباعة" : "نسخة أصلية";
 
   const logoSrc = getStoreLogoDataUri();
   const logoHtml = logoSrc
@@ -403,7 +404,7 @@ export function buildReceiptHtml(opts) {
     <div class="header-box">
       ${licenseHtml}
       <div class="header-no">الرقم : ${escapeHtml(invNo)}</div>
-      <div class="header-title">فاتورة مبيعات ضريبية<span class="copy">نسخة أصلية</span></div>
+      <div class="header-title">فاتورة مبيعات ضريبية<span class="copy">${escapeHtml(copyLabel)}</span></div>
     </div>
     <div class="meta-row">
       <div class="meta-cell">إلى : ${escapeHtml(soldToLabel(opts))}</div>
@@ -458,6 +459,7 @@ export function buildReceiptText(opts) {
   const printBrand = resolvePrintBranding(settings);
   const { date, time } = splitTimestamp(opts.timestamp);
   const invNo = invoiceNumber(opts);
+  const copyLabel = opts.reprint ? "إعادة طباعة" : "نسخة أصلية";
 
   const sep = "═".repeat(LINE);
   const thin = "─".repeat(LINE);
@@ -477,7 +479,7 @@ export function buildReceiptText(opts) {
 
   lines.push(
     padCenter("فاتورة مبيعات ضريبية", LINE),
-    padCenter("نسخة أصلية", LINE),
+    padCenter(copyLabel, LINE),
     sep,
     `الرقم : ${invNo}`,
     `إلى : ${soldToLabel(opts)}`,

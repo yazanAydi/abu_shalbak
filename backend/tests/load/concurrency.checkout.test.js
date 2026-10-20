@@ -85,10 +85,10 @@ describe("C1/C2/C12 concurrent checkouts", () => {
     );
 
     const ok = results.filter((r) => r.status === 201);
-    expect(ok).toHaveLength(5);
-    expect(results.filter((r) => r.status >= 400)).toHaveLength(N - 5);
+    expect(ok).toHaveLength(N);
+    expect(results.filter((r) => r.status >= 400)).toHaveLength(0);
     const stock = await h.db.get("SELECT stock FROM products WHERE id = ?", [h.productId]);
-    expect(Number(stock.stock)).toBe(0);
+    expect(Number(stock.stock)).toBe(5 - N);
 
     const receipts = ok.map((r) => unwrap(r).receipt_number);
     await runAndCheckInvariants(h.db, baseline, {

@@ -6,7 +6,6 @@ import { withTransaction } from "../utils/dbTx.js";
 import { invalidatePromotionsCache } from "../utils/promotions.js";
 import { HttpError } from "../utils/httpError.js";
 import { applySaleStock } from "./stockBatchService.js";
-import { assertSellable, sellableQuantity } from "./warehouseBatchStock.js";
 
 /**
  * Execute a validated checkout sale (inventory, payments, customer balance, cash movement).
@@ -87,15 +86,6 @@ async function executeCheckoutSaleCore(db, params, options = {}) {
 
   if (suspendedSaleId) {
     await markSuspendedSaleCompleted(db, suspendedSaleId);
-  }
-
-  const needed = new Map();
-  for (const line of normalized) {
-    const id = Number(line.product_id);
-    needed.set(id, (needed.get(id) || 0) + Number(line.stock_delta));
-  }
-  for (const [productId, quantity] of needed) {
-    assertSellable(await sellableQuantity(db, productId), quantity);
   }
 
   const receiptNumber = await nextReceiptNumber(db, 1);
@@ -190,6 +180,7 @@ async function executeCheckoutSaleCore(db, params, options = {}) {
         referenceId: transactionId,
         transactionItemId: itemIns.lastID,
         businessDay: saleBusinessDay,
+        allowShortage: true,
       });
     }
 

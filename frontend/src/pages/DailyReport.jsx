@@ -8,7 +8,7 @@ import {
   buildDashboardAlerts,
   buildDemoChartSeries,
 } from "../utils/dashboardHelpers";
-import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
+import { addShopDays, firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
 import { dateOnly, dateTime, ils } from "../utils/format";
 import {
   TOP_PRODUCT_COLUMNS,
@@ -106,6 +106,42 @@ function UpdatedAgo({ lastUpdated, refreshing }) {
   return `آخر تحديث: منذ ${secondsAgo} ثانية${refreshing ? " (جاري التحديث…)" : ""}`;
 }
 
+function chartPeriodBounds(period) {
+  const to = todayYmd();
+  if (period === "rolling30") return { from: addShopDays(to, -29), to };
+  if (period === "calendarMonth") return { from: firstOfCurrentMonthYmd(), to };
+  return { from: addShopDays(to, -6), to };
+}
+
+const VISA_PERIOD_LABEL = {
+  week: "7 أيام",
+  rolling30: "30 يوم",
+  calendarMonth: "هذا الشهر",
+};
+
+function VisaPeriodCard({ summary, period }) {
+  if (!summary) return null;
+  const canOpen = userHasOfficePermission(getUser(), "sales_reports");
+  const label = summary.coverage === "incomplete" ? "صافي معروف" : "صافي تحصيلات الفيزا";
+  const hint = [
+    VISA_PERIOD_LABEL[period] || VISA_PERIOD_LABEL.week,
+    `${summary.receipt_count} عملية`,
+    `${summary.awaiting_shifts} بانتظار المطابقة`,
+    `${summary.difference_shifts} بفرق`,
+    summary.coverage === "incomplete" ? "غير مكتمل" : "",
+    summary.basis_changed_shifts > 0 ? "تغيّر الأساس" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const card = <StatCard label={label} value={ils(summary.live_expected_net)} hint={hint} icon="finance" />;
+  if (!canOpen || !summary.from || !summary.to) return card;
+  return (
+    <Link to={`/sales-reports/visa?from=${summary.from}&to=${summary.to}`} className="dashboard-visa-link">
+      {card}
+    </Link>
+  );
+}
+
 export default function DailyReport() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
@@ -129,6 +165,7 @@ export default function DailyReport() {
   const [nearExpiryItems, setNearExpiryItems] = useState([]);
   const [nearExpiryTotal, setNearExpiryTotal] = useState(0);
   const [nearExpiryDays, setNearExpiryDays] = useState(7);
+  const [visaSummary, setVisaSummary] = useState(null);
 
   const dashboardAbortRef = useRef(null);
   const dashboardReqRef = useRef(0);
@@ -223,6 +260,15 @@ export default function DailyReport() {
           series: [],
           isDemo: false,
         }));
+        const visaBounds = chartPeriodBounds(chartPeriodRef.current);
+        const visaPromise = api
+          .get("/api/reports/visa-summary", {
+            headers,
+            signal,
+            params: visaBounds,
+          })
+          .then((r) => r.data)
+          .catch(() => null);
 
         const dailyPayload = (await dailyPromise).data;
         if (reqId !== dashboardReqRef.current) return;
@@ -232,7 +278,7 @@ export default function DailyReport() {
         setErr(null);
         if (initial) setLoading(false);
 
-        const [openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData, chartResult] =
+        const [openShiftsRes, closedShiftsRes, lowStockRes, nearExpiryRes, reconData, chartResult, visaData] =
           await Promise.all([
             openShiftsPromise,
             closedShiftsPromise,
@@ -240,6 +286,7 @@ export default function DailyReport() {
             nearExpiryPromise,
             reconPromise,
             chartPromise,
+            visaPromise,
           ]);
 
         if (reqId !== dashboardReqRef.current) return;
@@ -277,6 +324,7 @@ export default function DailyReport() {
         setNearExpiryDays(Number(nearExpiryPayload?.days_threshold) || 7);
 
         setRecon(reconData);
+        setVisaSummary(visaData?.summary ? { ...visaData.summary, from: visaData.from, to: visaData.to } : null);
         setLastUpdated(new Date());
         setErr(null);
       } catch (e) {
@@ -310,7 +358,16 @@ export default function DailyReport() {
     }
     setChartLoading(true);
     try {
-      applyChart(await fetchChartData(period));
+      const bounds = chartPeriodBounds(period);
+      const [chartResult, visaData] = await Promise.all([
+        fetchChartData(period),
+        api
+          .get("/api/reports/visa-summary", { headers: getAuthHeaders(), params: bounds })
+          .then((r) => r.data)
+          .catch(() => null),
+      ]);
+      applyChart(chartResult);
+      setVisaSummary(visaData?.summary ? { ...visaData.summary, from: visaData.from, to: visaData.to } : null);
     } catch {
       /* keep previous series */
     } finally {
@@ -422,6 +479,7 @@ export default function DailyReport() {
       <div className="dashboard-kpi-row">
         <TodaysSummary today={today} />
         <div className="dashboard-kpi-extra ui-stat-grid" style={{ marginBottom: 0 }}>
+          <VisaPeriodCard summary={visaSummary} period={chartPeriod} />
           <StatCard label="ورديات مفتوحة" value={openShifts.length} icon="shifts" />
           <StatCard
             label={`مخزون منخفض (≤${LOW_STOCK_THRESHOLD})`}

@@ -18,10 +18,13 @@ export const RANGE_BY_DAY_COLUMNS = [
   { key: "net_sales", header: "صافي المبيعات", value: (r) => ilsCell(r.net_sales) },
   { key: "items_sold", header: "القطع", value: (r) => qty(r.items_sold) },
   { key: "cash_total", header: "نقد", value: (r) => ilsCell(r.cash_total) },
-  { key: "card_total", header: "بطاقة", value: (r) => ilsCell(r.card_total) },
+  { key: "card_total", header: "مبيعات الفيزا", value: (r) => ilsCell(r.card_total) },
   { key: "cost", header: "التكلفة", value: (r) => ilsKnown(r.cost, r.cost_unknown) },
   { key: "profit", header: "الربح", value: (r) => ilsKnown(r.profit, r.cost_unknown) },
 ];
+
+export const VISA_SALES_SCOPE_NOTE =
+  "صافي مبيعات الفيزا = مبيعات الفيزا ناقص مرتجعات الفيزا لهذا اليوم، بما فيها فاتورة مكتب بلا وردية. تقرير تحصيلات الفيزا يتبع ورديات الصندوق وقد يضم تحصيلاً آخر، ولا يضم فاتورة بلا وردية.";
 
 export function incompleteProfitNote(report) {
   if (!report?.cost_unknown) return null;
@@ -45,11 +48,11 @@ export function buildDailySummaryItems(report) {
     { label: "الاسترجاعات", value: `${report.refund_count ?? 0} (${ils(report.refunds_total)})` },
     { label: "القطع المباعة", value: String(report.items_sold ?? 0) },
     { label: "نقد (إجمالي)", value: ils(report.cash_total) },
-    { label: "بطاقة (إجمالي)", value: ils(report.card_total) },
+    { label: "مبيعات الفيزا", value: ils(report.card_total) },
     { label: "مبيعات الذمة", value: ils(report.on_account_total) },
     { label: "الباقي المُرجَع", value: ils(report.change_total) },
     { label: "صافي النقد", value: ils(report.net_cash_total) },
-    { label: "صافي البطاقة", value: ils(report.net_card_total) },
+    { label: "صافي مبيعات الفيزا", value: ils(report.net_card_total) },
     { label: "تكلفة المبيعات", value: ilsKnown(report.cost, report.cost_unknown) },
     { label: "الربح", value: ilsKnown(report.profit, report.cost_unknown) },
   ];
@@ -93,7 +96,7 @@ export function buildRangeSummaryItems(report) {
     { label: "الاسترجاعات", value: `${report.refund_count ?? 0} (${ils(report.refunds_total)})` },
     { label: "القطع المباعة", value: String(report.items_sold ?? 0) },
     { label: "نقد (إجمالي)", value: ils(report.cash_total) },
-    { label: "بطاقة (إجمالي)", value: ils(report.card_total) },
+    { label: "مبيعات الفيزا", value: ils(report.card_total) },
     { label: "تكلفة المبيعات", value: ilsKnown(report.cost, report.cost_unknown) },
     { label: "الربح", value: ilsKnown(report.profit, report.cost_unknown) },
   ];

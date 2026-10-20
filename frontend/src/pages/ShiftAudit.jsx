@@ -25,7 +25,8 @@ import { pickExportColumns } from "../utils/reportExport";
 import { printReceipt } from "../utils/printReceipt";
 import { printSummaryReport } from "../utils/printReport";
 import { loadStoreSettings } from "../utils/loadStoreSettings";
-import { buildShiftCountSummaryModel, formatSignedMoney, visaAmountText } from "../utils/shiftVisa";
+import { buildShiftCountSummaryModel, formatSignedMoney, parseVisaMachineInput, visaAmountText, visaBasisPayload } from "../utils/shiftVisa";
+import ShiftVisaSection, { VisaActivityList } from "../components/ShiftVisaSection";
 import CashCountFields, {
   buildCountCurrencyRows,
   countedCurrenciesPayload,
@@ -371,6 +372,11 @@ export default function ShiftAudit() {
   const [countCurrencies, setCountCurrencies] = useState([]);
   const [reconcileNotes, setReconcileNotes] = useState("");
   const [reconcileLoading, setReconcileLoading] = useState(false);
+  const [visaMachine, setVisaMachine] = useState("");
+  const [visaLines, setVisaLines] = useState(null);
+  const [visaLinesShiftId, setVisaLinesShiftId] = useState(null);
+  const [visaCorrections, setVisaCorrections] = useState([]);
+  const [visaCorrecting, setVisaCorrecting] = useState(false);
   const [supplierSaving, setSupplierSaving] = useState(false);
   const [advanceSaving, setAdvanceSaving] = useState(false);
   const [expandedSaleId, setExpandedSaleId] = useState(null);
@@ -454,6 +460,8 @@ export default function ShiftAudit() {
     try {
       const { data } = await api.get(`/api/shifts/${id}`, { headers: getAuthHeaders() });
       setDetail(data);
+      if (data?.shift?.visa_reconciliation?.saved) loadVisaCorrections(id);
+      else setVisaCorrections([]);
     } catch (e) {
       toast.error(apiErrorMessage(e, "تعذّر فتح التفاصيل"));
     } finally {
@@ -561,6 +569,7 @@ export default function ShiftAudit() {
     });
     setCountedAmounts({});
     setReconcileNotes("");
+    setVisaMachine("");
     api
       .get(`/api/shifts/${row.id}`, { headers: getAuthHeaders() })
       .then(({ data }) => {
@@ -576,20 +585,118 @@ export default function ShiftAudit() {
     setReconcileTarget(null);
     setCountedAmounts({});
     setReconcileNotes("");
+    setVisaMachine("");
     setSupplierSaving(false);
     setAdvanceSaving(false);
+  }
+
+  function visaPayloadFor(source) {
+    const parsed = parseVisaMachineInput(visaMachine);
+    if (parsed.error) return { error: "صافي جهاز الفيزا غير صالح" };
+    if (parsed.empty) return {};
+    if (source?.visa_incomplete || source?.visa_reconciliation?.incomplete) {
+      return { error: "سجل الفيزا غير مكتمل. أفرغ حقل الجهاز لإتمام عد النقد." };
+    }
+    if (source?.visa_reconciliation?.saved) return {};
+    return {
+      visa_machine_net: parsed.value,
+      visa_basis: visaBasisPayload(source),
+    };
+  }
+
+  async function openVisaLines(shiftId) {
+    setVisaLinesShiftId(shiftId);
+    setVisaLines(null);
+    try {
+      const { data } = await api.get(`/api/shifts/${shiftId}/visa-activity`, {
+        headers: getAuthHeaders(),
+      });
+      setVisaLines(data);
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "تعذّر تحميل عمليات الفيزا"));
+      setVisaLinesShiftId(null);
+    }
+  }
+
+  async function saveVisaFollowUp(source) {
+    const visaBody = visaPayloadFor(source);
+    if (visaBody.error || visaBody.visa_machine_net == null) {
+      toast.error(visaBody.error || "صافي جهاز الفيزا مطلوب");
+      return;
+    }
+    setVisaCorrecting(true);
+    try {
+      await api.post(`/api/shifts/${source.id}/visa-reconcile`, visaBody, {
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+      });
+      toast.success("حُفظت مطابقة الفيزا");
+      setVisaMachine("");
+      await openDetail(source.id);
+      load();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "تعذّر حفظ مطابقة الفيزا"));
+    } finally {
+      setVisaCorrecting(false);
+    }
+  }
+
+  async function correctVisaMachine(shiftId, value, reason) {
+    const parsed = parseVisaMachineInput(value);
+    if (parsed.error || parsed.empty) {
+      toast.error("صافي جهاز الفيزا غير صالح");
+      return;
+    }
+    if (!String(reason || "").trim()) {
+      toast.error("سبب التصحيح مطلوب");
+      return;
+    }
+    setVisaCorrecting(true);
+    try {
+      await api.post(
+        `/api/shifts/${shiftId}/visa-correct`,
+        { visa_machine_net: parsed.value, reason: String(reason).trim() },
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+      toast.success("تم تصحيح جهاز الفيزا");
+      await openDetail(shiftId);
+      load();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "تعذّر تصحيح جهاز الفيزا"));
+    } finally {
+      setVisaCorrecting(false);
+    }
+  }
+
+  async function loadVisaCorrections(shiftId) {
+    try {
+      const { data } = await api.get(`/api/shifts/${shiftId}/visa-corrections`, {
+        headers: getAuthHeaders(),
+      });
+      setVisaCorrections(data?.corrections || []);
+    } catch {
+      setVisaCorrections([]);
+    }
   }
 
   async function submitReconcile(e) {
     e.preventDefault();
     if (!reconcileTarget?.id) return;
+    const visaBody = visaPayloadFor(reconcileTarget);
+    if (visaBody.error) {
+      toast.error(visaBody.error);
+      return;
+    }
     const payload = countedCurrenciesPayload(countRows, countedAmounts);
     setReconcileLoading(true);
     const shiftId = reconcileTarget.id;
     try {
       const { data } = await api.post(
         `/api/shifts/${shiftId}/reconcile`,
-        { counted_currencies: payload, notes: reconcileNotes.trim() || null },
+        {
+          counted_currencies: payload,
+          notes: reconcileNotes.trim() || null,
+          ...visaBody,
+        },
         { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
       );
       if (data.requires_approval) {
@@ -1052,6 +1159,14 @@ export default function ShiftAudit() {
               {reconcileTarget.id != null ? ` — وردية #${reconcileTarget.id}` : ""}
             </p>
             <ShiftCountTotals source={reconcileTarget} />
+            <ShiftVisaSection
+              visa={reconcileTarget}
+              reconciliation={reconcileTarget.visa_reconciliation}
+              machineValue={visaMachine}
+              onMachineChange={setVisaMachine}
+              showInput
+              onOpenLines={() => openVisaLines(reconcileTarget.id)}
+            />
             <CountPendingDecisions
               pendingRequests={reconcileTarget.pending_requests || []}
               discrepancies={reconcileTarget.handover_discrepancies || []}
@@ -1158,6 +1273,29 @@ export default function ShiftAudit() {
               summary={detail.summary}
               varianceWarn={varianceWarn}
             />
+            {detail.shift?.status === "closed" || detail.shift?.status === "pending_count" ? (
+              <ShiftVisaSection
+                visa={detail.shift}
+                reconciliation={detail.shift.visa_reconciliation}
+                machineValue={visaMachine}
+                onMachineChange={setVisaMachine}
+                showInput={detail.shift.status === "closed" && !detail.shift.visa_reconciliation?.saved}
+                corrections={visaCorrections}
+                onOpenLines={() => openVisaLines(detail.shift.id)}
+                onSave={
+                  detail.shift.status === "closed" && !detail.shift.visa_reconciliation?.saved
+                    ? () => saveVisaFollowUp(detail.shift)
+                    : null
+                }
+                saving={visaCorrecting}
+                onCorrect={
+                  detail.shift.visa_reconciliation?.saved
+                    ? (value, reason) => correctVisaMachine(detail.shift.id, value, reason)
+                    : null
+                }
+                correcting={visaCorrecting}
+              />
+            ) : null}
             {detail.summary?.balanced === false ? (
               <p className="ui-hint" style={{ color: "var(--office-danger, #9b2c2c)" }}>
                 الوردية غير متوازنة بسبب نقد أو بضاعة سُلّمت ولم تُعكس في القيود.
@@ -1389,6 +1527,22 @@ export default function ShiftAudit() {
             )}
           </>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={visaLinesShiftId != null}
+        onClose={() => {
+          setVisaLinesShiftId(null);
+          setVisaLines(null);
+        }}
+        title="عمليات الفيزا"
+        size="lg"
+      >
+        {visaLines ? (
+          <VisaActivityList lines={visaLines.lines} incomplete={visaLines.incomplete} />
+        ) : (
+          <p style={{ color: "var(--office-text-muted)" }}>جاري تحميل عمليات الفيزا…</p>
+        )}
       </Modal>
     </div>
   );

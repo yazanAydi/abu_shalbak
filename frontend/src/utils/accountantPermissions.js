@@ -208,6 +208,7 @@ export function permissionKeyForPath(pathname) {
   if (pathname.startsWith("/bakery/purchases") || pathname.startsWith("/bakery/returns")) return "purchases";
   if (pathname.startsWith("/bakery/expiry")) return "expiry";
   if (pathname.startsWith("/bakery/movements")) return "stock_count";
+  if (pathname.startsWith("/sales-reports/")) return "sales_reports";
   if (pathname.startsWith("/products/")) return "products";
   if (pathname.startsWith("/suppliers/") && pathname.endsWith("/statement")) return "account_statement";
   if (pathname.startsWith("/vouchers/")) return "vouchers";

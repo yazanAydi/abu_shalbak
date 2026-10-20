@@ -174,18 +174,17 @@ describe("stock batches across purchase, sales invoice, POS, refund", () => {
         items: [{ product_id: pid, quantity: 6, price: 8 }],
         payment_method: "cash",
       }));
-    expect(sell.status).toBe(400);
-    expect(sell.body.code || sell.body.error?.code).toBe("INSUFFICIENT_SELLABLE");
+    expect(sell.status).toBe(201);
     const listed = await listStockBatches(ctx.db, pid);
-    expect(listed.product_stock).toBe(4);
+    expect(listed.product_stock).toBe(-2);
     const unknown = listed.rows.find((r) => r.virtual);
-    expect(unknown.quantity).toBe(4);
+    expect(unknown.quantity).toBe(-2);
     expect(unknown.expiry_date).toBeNull();
     const sales = await ctx.db.get(
       "SELECT COUNT(*) AS n FROM transaction_items WHERE product_id = ?",
       [pid]
     );
-    expect(Number(sales.n)).toBe(0);
+    expect(Number(sales.n)).toBe(1);
   });
 
   test("refund restores dated lots instead of inventing a new expiry", async () => {

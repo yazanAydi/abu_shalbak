@@ -863,13 +863,13 @@ describe("audit independent reconciliation", () => {
             payment_method: "cash",
           })
         );
-      expect(pos.status).toBe(400);
-      expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(0);
+      expect(pos.status).toBe(201);
+      expect(Number((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(-1);
       const saleRows = await ctx.db.get(
         "SELECT COUNT(*) AS n FROM transaction_items WHERE product_id = ?",
         [product.id]
       );
-      expect(Number(saleRows.n)).toBe(0);
+      expect(Number(saleRows.n)).toBe(1);
 
       const cust = await ctx.db.run(
         `INSERT INTO customers (name, customer_code, balance) VALUES ('مشتري مخزون', 'AUD-NEG', 0)`

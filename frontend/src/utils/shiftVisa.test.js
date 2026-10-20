@@ -5,6 +5,9 @@ import {
   buildShiftVisaPrintModel,
   drawerLineAmount,
   formatSignedMoney,
+  parseVisaMachineInput,
+  visaExpectedCaption,
+  visaReconciliationStatus,
   visaAmountText,
 } from "./shiftVisa";
 
@@ -209,5 +212,29 @@ describe("shift count presentation", () => {
       unavailable: true,
       amount: null,
     });
+  });
+});
+
+describe("visa machine reconciliation status", () => {
+  test("blank, zero, negative, match, shortage, and surplus", () => {
+    expect(parseVisaMachineInput("")).toEqual({ empty: true });
+    expect(parseVisaMachineInput("  ")).toEqual({ empty: true });
+    expect(parseVisaMachineInput("0")).toEqual({ value: 0 });
+    expect(parseVisaMachineInput("-5")).toEqual({ value: -5 });
+    expect(parseVisaMachineInput("abc").error).toBe(true);
+    expect(visaReconciliationStatus({ saved: false, difference: 0 })).toMatchObject({
+      state: "awaiting",
+      label: "بانتظار المطابقة",
+      matched: false,
+    });
+    expect(visaReconciliationStatus({ saved: false, incomplete: true }).label).toBe("بانتظار المطابقة");
+    expect(visaReconciliationStatus({ saved: true, difference: 0 })).toMatchObject({
+      state: "matched",
+      label: "مطابق",
+    });
+    expect(visaReconciliationStatus({ saved: true, difference: -5 }).label).toBe("ناقص 5");
+    expect(visaReconciliationStatus({ saved: true, difference: 5 }).label).toBe("زائد 5");
+    expect(visaExpectedCaption(true)).toBe("صافي معروف");
+    expect(visaExpectedCaption(false)).toBe("صافي الفيزا المتوقع");
   });
 });

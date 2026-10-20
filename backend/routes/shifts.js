@@ -58,6 +58,14 @@ import {
   listClosedShiftPendingRequests,
   listShiftDecisionState,
 } from "../services/originatingShiftDecision.js";
+import {
+  correctVisaMachine,
+  listShiftVisaActivity,
+  listVisaCorrections,
+  presentShiftVisa,
+  readVisaMachineInput,
+  saveVisaReconciliation,
+} from "../services/visaReconciliationService.js";
 
 function parseDate(s) {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return null;
@@ -91,9 +99,13 @@ async function computeShiftTotals(db, shiftId) {
 function applyVisa(row, visa) {
   const source = visa || emptyShiftVisa();
   row.visa_sales = source.visa_sales;
+  row.visa_other_receipts = source.visa_other_receipts;
   row.visa_refunds = source.visa_refunds;
   row.visa_net = source.visa_net;
+  row.visa_receipt_count = source.visa_receipt_count;
+  row.visa_refund_count = source.visa_refund_count;
   row.visa_incomplete = source.visa_incomplete;
+  row.visa_reconciliation = presentShiftVisa(row, source);
   row.visa_note = source.visa_note;
   row.visa_incomplete_note = source.visa_incomplete_note;
   row.visa_labels = source.visa_labels;
@@ -174,7 +186,7 @@ async function attachDrawers(db, rows) {
   return rows;
 }
 
-async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_notes, counted_cash) {
+async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_notes, counted_cash, visaInput = null) {
   const shiftId = shift.id;
   const settings = await getAppSettings(db);
   const varianceThreshold = round2(Number(settings.shift_variance_threshold) || 50);
@@ -227,6 +239,26 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
        VALUES (?, 'closing', ?, ?)`,
       [shiftId, closing_cash, closing_notes ? `إغلاق الوردية — ${closing_notes}` : "إغلاق الوردية"]
     );
+    let visaResult = null;
+    if (visaInput) {
+      visaResult = await saveVisaReconciliation(db, {
+        shiftId,
+        machineNet: visaInput.machineNet,
+        basis: visaInput.basis,
+        userId: req.user?.id,
+      });
+      if (visaResult.created) {
+        await logAudit(
+          db,
+          req,
+          AUDIT_ACTIONS.SHIFT_VISA_RECONCILE,
+          "cashier_shifts",
+          shiftId,
+          null,
+          visaResult.audit?.next || null
+        );
+      }
+    }
     return {
       expected_cash,
       variance,
@@ -236,10 +268,11 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
       needsApproval,
       opening_cash: live.opening_cash,
       priorStatus: live.status,
+      visa_reconciliation: visaResult?.reconciliation || null,
     };
   });
 
-  const { expected_cash, variance, card_total, refund_total, visa, needsApproval, opening_cash, priorStatus } = closed;
+  const { expected_cash, variance, card_total, refund_total, visa, needsApproval, opening_cash, priorStatus, visa_reconciliation } = closed;
   shift.status = priorStatus;
 
   const auditAction =
@@ -270,6 +303,7 @@ async function closeShiftWithCash(db, req, shift, closing_cash, notes, closing_n
     requires_approval: needsApproval,
     counted_cash: counted_cash || null,
     status: "closed",
+    visa_reconciliation,
   };
 }
 
@@ -788,6 +822,110 @@ export function createShiftsRouter(db) {
     }
   });
 
+  router.get("/:shiftId/visa-activity", requireAuth, async (req, res) => {
+    const shiftId = Number(req.params.shiftId);
+    if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
+    const shift = await db.get(
+      `SELECT s.*, u.username AS cashier_name FROM cashier_shifts s JOIN users u ON u.id = s.cashier_id WHERE s.id = ?`,
+      [shiftId]
+    );
+    if (!shift) return res.status(404).json({ error: "الوردية غير موجودة" });
+    if (!(await canViewShiftDetail(db, req.user, shift))) {
+      return res.status(403).json({ error: "ممنوع" });
+    }
+    const live = await computeShiftVisa(db, shiftId);
+    const lines = await listShiftVisaActivity(db, shiftId);
+    res.json({
+      shift_id: shiftId,
+      incomplete: !!live.visa_incomplete,
+      reconciliation: presentShiftVisa(shift, live),
+      lines,
+    });
+  });
+
+  router.get("/:shiftId/visa-corrections", requireAuth, requireShiftAudit, async (req, res) => {
+    const shiftId = Number(req.params.shiftId);
+    if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
+    const shift = await db.get("SELECT id FROM cashier_shifts WHERE id = ?", [shiftId]);
+    if (!shift) return res.status(404).json({ error: "الوردية غير موجودة" });
+    const corrections = await listVisaCorrections(db, shiftId);
+    res.json({ shift_id: shiftId, corrections });
+  });
+
+  router.post("/:shiftId/visa-reconcile", requireAuth, requireShiftAudit, async (req, res) => {
+    const shiftId = Number(req.params.shiftId);
+    if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
+    const shift = await db.get("SELECT * FROM cashier_shifts WHERE id = ?", [shiftId]);
+    if (!shift) return res.status(404).json({ error: "الوردية غير موجودة" });
+    if (shift.status !== "pending_count" && shift.status !== "closed") {
+      return res.status(400).json({
+        error: "يمكن مطابقة الفيزا بعد تسليم الوردية للعد",
+        code: "VISA_SHIFT_OPEN",
+      });
+    }
+    const input = readVisaMachineInput({
+      ...(req.body || {}),
+      visa_machine_net: (req.body || {}).visa_machine_net,
+    });
+    if (!input) {
+      return res.status(400).json({ error: "صافي جهاز الفيزا مطلوب", code: "VISA_MACHINE_REQUIRED" });
+    }
+    const result = await withTransaction(db, async () => {
+      const saved = await saveVisaReconciliation(db, {
+        shiftId,
+        machineNet: input.machineNet,
+        basis: input.basis,
+        userId: req.user.id,
+      });
+      if (saved.created) {
+        await logAudit(
+          db,
+          req,
+          AUDIT_ACTIONS.SHIFT_VISA_RECONCILE,
+          "cashier_shifts",
+          shiftId,
+          null,
+          saved.audit?.next || null
+        );
+      }
+      return saved;
+    });
+    res.json(result);
+  });
+
+  router.post("/:shiftId/visa-correct", requireAuth, requireShiftAudit, async (req, res) => {
+    const shiftId = Number(req.params.shiftId);
+    if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
+    const shift = await db.get("SELECT id, status FROM cashier_shifts WHERE id = ?", [shiftId]);
+    if (!shift) return res.status(404).json({ error: "الوردية غير موجودة" });
+    const result = await withTransaction(db, async () => {
+      const corrected = await correctVisaMachine(db, {
+        shiftId,
+        machineNet: (req.body || {}).visa_machine_net,
+        reason: (req.body || {}).reason,
+        userId: req.user.id,
+      });
+      if (corrected.created) {
+        await logAudit(
+          db,
+          req,
+          AUDIT_ACTIONS.SHIFT_VISA_CORRECT,
+          "cashier_shifts",
+          shiftId,
+          corrected.audit?.old || null,
+          corrected.audit?.next || null
+        );
+      }
+      const cash = await db.get(
+        `SELECT status, closing_cash, expected_cash, variance, actual_cash, requires_approval
+         FROM cashier_shifts WHERE id = ?`,
+        [shiftId]
+      );
+      return { ...corrected, cash };
+    });
+    res.json(result);
+  });
+
   router.post("/:shiftId/reconcile", requireAuth, requireShiftAudit, async (req, res, next) => {
     const shiftId = Number(req.params.shiftId);
     if (!shiftId) return res.status(400).json({ error: "معرّف الوردية غير صالح" });
@@ -816,7 +954,8 @@ export function createShiftsRouter(db) {
         counted.closing_cash,
         null,
         closing_notes,
-        counted.counted_cash
+        counted.counted_cash,
+        readVisaMachineInput(req.body || {})
       );
       if (payload.requires_approval) {
         return res.status(202).json({
@@ -923,7 +1062,8 @@ export function createShiftsRouter(db) {
         counted.closing_cash,
         notes,
         closing_notes,
-        counted.counted_cash
+        counted.counted_cash,
+        readVisaMachineInput(req.body || {})
       );
       if (payload.requires_approval) {
         return res.status(202).json({

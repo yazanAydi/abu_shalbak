@@ -207,6 +207,67 @@ export function markReceiptReferences(lots) {
  * Add quantity to a receipt identity. The same purchase line on the same
  * warehouse and expiry stays one lot. A different receipt inserts a new lot.
  */
+/**
+ * Incoming undated stock covers an unknown shortage before it is offered as available.
+ * The purchase document is unchanged. The shortage lot stays, at zero once covered,
+ * so a later refund can still find it. No supplier is written onto that lot.
+ */
+export async function settleUndatedShortageLots(db, productId, warehouseId) {
+  const negatives = await db.all(
+    `SELECT id, quantity FROM stock_source_lots
+      WHERE product_id = ? AND warehouse_id = ? AND expiry_date = ''
+        AND quantity < ? AND supplier_id IS NULL AND provenance = 'unknown'
+      ORDER BY id`,
+    [Number(productId), Number(warehouseId), -EPS]
+  );
+  if (!negatives.length) return;
+  let debt = negatives.reduce((sum, row) => round6(sum + Math.abs(Number(row.quantity) || 0)), 0);
+  const positives = await db.all(
+    `SELECT id, quantity FROM stock_source_lots
+      WHERE product_id = ? AND warehouse_id = ? AND expiry_date = ''
+        AND quantity > ?
+      ORDER BY id`,
+    [Number(productId), Number(warehouseId), EPS]
+  );
+  for (const lot of positives) {
+    if (debt <= EPS) break;
+    const have = round6(Number(lot.quantity) || 0);
+    const take = round6(Math.min(have, debt));
+    if (take <= EPS) continue;
+    await db.run("UPDATE stock_source_lots SET quantity = ? WHERE id = ?", [round6(have - take), lot.id]);
+    debt = round6(debt - take);
+  }
+  const covered = round6(
+    negatives.reduce((sum, row) => round6(sum + Math.abs(Number(row.quantity) || 0)), 0) - debt
+  );
+  let rest = covered;
+  for (const lot of negatives) {
+    if (rest <= EPS) break;
+    const magnitude = round6(Math.abs(Number(lot.quantity) || 0));
+    const take = round6(Math.min(magnitude, rest));
+    if (take <= EPS) continue;
+    await db.run(
+      "UPDATE stock_source_lots SET quantity = ? WHERE id = ?",
+      [round6(Number(lot.quantity) + take), lot.id]
+    );
+    rest = round6(rest - take);
+  }
+}
+
+/** A sale past eligible stock. No supplier, receipt, or dated batch is invented. */
+export async function insertUnknownShortageLot(db, { productId, warehouseId, quantity }) {
+  const qty = round6(quantity);
+  if (!(qty > 0)) return null;
+  return insertLot(db, {
+    productId,
+    warehouseId,
+    expiryDate: "",
+    quantity: -qty,
+    provenance: "unknown",
+    supplierId: null,
+  });
+}
+
 export async function addSourceIdentity(db, spec) {
   const qty = round6(spec.quantity);
   if (!(qty > 0)) return null;

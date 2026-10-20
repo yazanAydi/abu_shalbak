@@ -34,6 +34,88 @@ export const VISA_RECORDED_NOTE =
 export const VISA_INCOMPLETE_NOTE =
   "سجل الفيزا غير مكتمل: توجد عمليات بلا توزيع دفع موثوق، ولم يُخمَّن المبلغ الناقص.";
 
+export const VISA_MACHINE_HINT =
+  "أدخل صافي إجمالي جهاز الفيزا بعد خصم مرتجعات الفيزا، لنفس هذه الوردية.";
+
+export const VISA_RECONCILE_LABELS = Object.freeze({
+  receiptCount: "عدد عمليات الفيزا",
+  sales: "مبيعات الفيزا",
+  other: "تحصيلات فيزا أخرى",
+  refunds: "مرتجعات الفيزا",
+  expected: "صافي الفيزا المتوقع",
+  known: "صافي معروف",
+  machine: "صافي إجمالي جهاز الفيزا",
+  difference: "فرق الفيزا",
+  waiting: "بانتظار المطابقة",
+  matched: "مطابق",
+  incomplete: "غير مكتمل",
+  basisChanged: "تغيّر أساس المطابقة بعد الحفظ",
+});
+
+function formatAbsAmount(amount) {
+  const abs = Math.abs(Number(amount));
+  if (!Number.isFinite(abs)) return "";
+  if (Number.isInteger(abs)) return String(abs);
+  return abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Blank is not zero. Explicit zero and a negative net are entries. */
+export function parseVisaMachineInput(raw) {
+  if (raw == null) return { empty: true };
+  const text = String(raw).trim().replace(/,/g, "");
+  if (!text) return { empty: true };
+  if (!/^-?\d+(\.\d+)?$/.test(text)) return { error: true };
+  const value = Number(text);
+  if (!Number.isFinite(value)) return { error: true };
+  return { value };
+}
+
+export function visaBasisPayload(visa) {
+  const source = visa?.live || visa || {};
+  return {
+    visa_sales: Number(source.visa_sales) || 0,
+    visa_other_receipts: Number(source.visa_other_receipts) || 0,
+    visa_refunds: Number(source.visa_refunds) || 0,
+    visa_net: Number(source.visa_net) || 0,
+    visa_receipt_count: Number(source.visa_receipt_count) || 0,
+    visa_refund_count: Number(source.visa_refund_count) || 0,
+  };
+}
+
+/**
+ * Saved reconciliation keeps its own status. An unsaved shift is never «مطابق»,
+ * including when the known subtotal is incomplete.
+ */
+export function visaReconciliationStatus({ saved = false, difference = null, incomplete = false } = {}) {
+  if (!saved) {
+    return {
+      state: "awaiting",
+      label: VISA_RECONCILE_LABELS.waiting,
+      incomplete: !!incomplete,
+      matched: false,
+    };
+  }
+  const diff = Number(difference);
+  if (!Number.isFinite(diff) || diff === 0) {
+    return {
+      state: "matched",
+      label: VISA_RECONCILE_LABELS.matched,
+      incomplete: !!incomplete,
+      matched: true,
+    };
+  }
+  return {
+    state: "difference",
+    label: diff < 0 ? `ناقص ${formatAbsAmount(diff)}` : `زائد ${formatAbsAmount(diff)}`,
+    incomplete: !!incomplete,
+    matched: false,
+  };
+}
+
+export function visaExpectedCaption(incomplete) {
+  return incomplete ? VISA_RECONCILE_LABELS.known : VISA_RECONCILE_LABELS.expected;
+}
+
 function labelsOf(visa) {
   return {
     sales: visa?.visa_labels?.sales || SHIFT_VISA_LABELS.sales,

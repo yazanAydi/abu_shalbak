@@ -2,7 +2,7 @@ import { Router } from "express";
 import { postSupplierPaymentVoucher } from "./vouchers.js";
 import { requireAuth, requireReportsPermission } from "../middleware/auth.js";
 import { round2 } from "../utils/money.js";
-import { aggregatePaymentLinesForDate } from "../utils/salePayments.js";
+import { aggregatePaymentLinesForDate, aggregateVisaSalesForShopDate } from "../utils/salePayments.js";
 import {
   fetchRefundsForShopDate,
   fetchTransactionsForShopDate,
@@ -30,16 +30,15 @@ async function shopDayCashCardTotals(db, day) {
   }
   const refundRows = await fetchRefundsForShopDate(db, day);
   let refund_cash = 0;
-  let refund_card = 0;
   for (const r of refundRows) {
     if (r.payment_method === "cash") refund_cash = round2(refund_cash + Number(r.total));
-    else refund_card = round2(refund_card + Number(r.total));
   }
+  const visaDay = await aggregateVisaSalesForShopDate(db, day);
   return {
     sales_cash: round2(paymentAgg.cash_total - cashChange),
-    sales_card: paymentAgg.card_total,
+    sales_card: visaDay.visa_sales,
     refund_cash,
-    refund_card,
+    refund_card: visaDay.visa_refunds,
   };
 }
 

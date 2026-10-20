@@ -410,28 +410,30 @@ describe("returns warehouse is not sellable", () => {
     const afterExtraCompany = num((await salesShop.ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock);
     const afterExtraBatches = await batchesOf(salesShop.ctx.db, product.id);
     const afterExtraWh = await displayedWarehouses(salesShop, product.id);
-    compare("sell 1 more", "checkout rejected", extra.status >= 400, true);
-    compare("sell 1 more", "no new sale line", afterExtra.sales, beforeExtra.sales);
-    compare("sell 1 more", "no new payment", afterExtra.payments, beforeExtra.payments);
-    compare("sell 1 more", "no new stock movement", afterExtra.saleLedger, beforeExtra.saleLedger);
-    compare("sell 1 more", "no new batch allocation", afterExtra.saleAllocations, beforeExtra.saleAllocations);
-    compare("sell 1 more", "company stock", afterExtraCompany, 5);
-    compare("sell 1 more", "المخزن الرئيسي", afterExtraWh.main, 0);
+    compare("sell 1 more", "checkout status", extra.status, 201);
+    compare("sell 1 more", "new sale line", afterExtra.sales, beforeExtra.sales + 1);
+    compare("sell 1 more", "new payment", afterExtra.payments, beforeExtra.payments + 1);
+    compare("sell 1 more", "new stock movement", afterExtra.saleLedger, beforeExtra.saleLedger + 1);
+    compare("sell 1 more", "company stock", afterExtraCompany, 4);
+    compare("sell 1 more", "المخزن الرئيسي", afterExtraWh.main, -1);
     compare("sell 1 more", "مرتجعات", afterExtraWh.returns, 5);
     compare("sell 1 more", "expired batch", qtyOf(afterExtraBatches, EXPIRED), 5);
     compare("sell 1 more", "fresh batch", qtyOf(afterExtraBatches, FRESH), 0);
     findings.push({
       step: "sell 1 more",
-      field: "checkout response",
-      expected: "rejected with no sale",
+      field: "shortage does not touch returns or the expired batch",
+      expected: "sale posted, returns 5, expired 5, main -1",
       actual: {
         status: extra.status,
-        code: extra.body?.code || extra.body?.error || null,
         company: afterExtraCompany,
         main: afterExtraWh.main,
         returns: afterExtraWh.returns,
+        expired: qtyOf(afterExtraBatches, EXPIRED),
       },
-      ok: extra.status >= 400 && afterExtra.sales === beforeExtra.sales,
+      ok: extra.status === 201
+        && afterExtraWh.returns === 5
+        && qtyOf(afterExtraBatches, EXPIRED) === 5
+        && afterExtraWh.main === -1,
     });
 
     const failed = findings.filter((row) => !row.ok && row.step !== "after purchase");

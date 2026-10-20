@@ -86,11 +86,12 @@ describe("daily POS payment cards", () => {
     const paymentCard = paymentTitle.closest(".ui-card");
     const stats = [...paymentCard.querySelectorAll(".ui-stat")];
     expect(stats.map((el) => el.querySelector(".ui-stat__label").textContent)).toEqual([
-      "بطاقة (إجمالي)",
+      "مبيعات الفيزا",
       "مبيعات الذمة",
       "صافي النقد",
-      "صافي البطاقة",
+      "صافي مبيعات الفيزا",
     ]);
+    expect(paymentCard.textContent).toContain("فاتورة مكتب بلا وردية");
     expect(stats.every((el) => el.querySelector(".ui-stat__icon"))).toBe(true);
     expect(paymentCard.querySelectorAll(".ui-stat-grid")).toHaveLength(1);
     expect(paymentCard.textContent).not.toContain("₪70.00");

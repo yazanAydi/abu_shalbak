@@ -57,11 +57,11 @@ function cashierPrintError(err) {
   return err?.response?.data?.error || err?.message || STORE_PRINT_UNAVAILABLE_AR;
 }
 
-async function loadSavedSaleHtml(transactionId, fallbackHtml) {
+async function loadSavedSaleHtml(transactionId, fallbackHtml, reprint) {
   try {
     const htmlRes = await api.post(
       "/api/print-receipt",
-      { transaction_id: transactionId },
+      { transaction_id: transactionId, ...(reprint ? { reprint: true } : {}) },
       { headers: authHeaders() }
     );
     return receiptHtmlFromResponse(htmlRes) || fallbackHtml || null;
@@ -91,7 +91,7 @@ export async function printReceipt(receiptOrPayload, options = {}) {
   try {
     let html;
     try {
-      html = await loadSavedSaleHtml(transactionId, fallbackHtml);
+      html = await loadSavedSaleHtml(transactionId, fallbackHtml, options.reprint);
     } catch (e) {
       const error = cashierPrintError(e);
       if (notify) window.alert(error);
@@ -172,7 +172,7 @@ export async function openReceiptForPrinting(receiptOrPayload, options = {}) {
 
   let html;
   try {
-    html = await loadSavedSaleHtml(transactionId, fallbackHtml);
+    html = await loadSavedSaleHtml(transactionId, fallbackHtml, options.reprint);
   } catch (e) {
     const error = cashierPrintError(e);
     writeTabError(tab, error);

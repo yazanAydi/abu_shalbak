@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
 import { dateTime, ils, qty, ymdToDmy } from "../../utils/format";
+import { printReceipt } from "../../utils/printReceipt";
 import "../ShiftModal.css";
 
 const PAYMENT_LABELS = {
@@ -24,6 +25,28 @@ function errorText(err, fallback) {
 }
 
 function SaleDetail({ detail, onBack }) {
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState("");
+  const printingRef = useRef(false);
+
+  async function reprint() {
+    if (printingRef.current) return;
+    printingRef.current = true;
+    setPrinting(true);
+    setPrintError("");
+    try {
+      const result = await printReceipt(
+        { transaction_id: detail.transaction_id },
+        { alert: false, reprint: true }
+      );
+      if (!result?.ok && !result?.skipped) {
+        setPrintError(result?.error || "تعذّرت طباعة الإيصال. أعد المحاولة.");
+      }
+    } finally {
+      printingRef.current = false;
+      setPrinting(false);
+    }
+  }
   const showDiscount = Number(detail.discount) > 0 || (detail.lines || []).some((line) => Number(line.discount) > 0);
   const showRounding = Number(detail.rounding_adjustment) !== 0;
   const showBeforeRounding =
@@ -117,8 +140,19 @@ function SaleDetail({ detail, onBack }) {
         </>
       ) : null}
       <p className="shift-modal-meta">عرض فقط. لا يمكن تعديل الفاتورة أو حذفها أو إعادة ترحيلها من هنا.</p>
+      {printError ? (
+        <div className="shift-modal-err">
+          <p>{printError}</p>
+          <button type="button" className="shift-modal-secondary" onClick={reprint} disabled={printing}>
+            إعادة المحاولة
+          </button>
+        </div>
+      ) : null}
       <div className="shift-modal-actions">
-        <button type="button" className="shift-modal-secondary" onClick={onBack}>
+        <button type="button" className="shift-modal-primary" onClick={reprint} disabled={printing}>
+          {printing ? "جاري الطباعة…" : "إعادة طباعة"}
+        </button>
+        <button type="button" className="shift-modal-secondary" onClick={onBack} disabled={printing}>
           رجوع
         </button>
       </div>

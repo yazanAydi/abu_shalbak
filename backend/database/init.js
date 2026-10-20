@@ -2116,6 +2116,47 @@ async function migrateBusinessDayColumns(db) {
   );
 }
 
+async function migrateShiftVisaReconciliation(db) {
+  const cols = [
+    ["visa_machine_net", "REAL"],
+    ["visa_expected_sales", "REAL"],
+    ["visa_expected_other", "REAL"],
+    ["visa_expected_refunds", "REAL"],
+    ["visa_expected_net", "REAL"],
+    ["visa_receipt_count", "INTEGER"],
+    ["visa_refund_count", "INTEGER"],
+    ["visa_difference", "REAL"],
+    ["visa_counted_by", "INTEGER REFERENCES users(id)"],
+    ["visa_counted_at", "TEXT"],
+  ];
+  for (const [col, type] of cols) {
+    if (!(await tableHasColumn(db, "cashier_shifts", col))) {
+      await db.run(`ALTER TABLE cashier_shifts ADD COLUMN ${col} ${type}`);
+    }
+  }
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS shift_visa_corrections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_id INTEGER NOT NULL REFERENCES cashier_shifts(id),
+      previous_machine_net REAL NOT NULL,
+      revised_machine_net REAL NOT NULL,
+      previous_difference REAL NOT NULL,
+      revised_difference REAL NOT NULL,
+      expected_sales REAL,
+      expected_other REAL,
+      expected_refunds REAL,
+      expected_net REAL NOT NULL,
+      receipt_count INTEGER,
+      refund_count INTEGER,
+      reason TEXT NOT NULL,
+      corrected_by INTEGER REFERENCES users(id),
+      corrected_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_shift_visa_corrections_shift
+      ON shift_visa_corrections(shift_id, id);
+  `);
+}
+
 async function migrateShiftReconciliationExtended(db) {
   const cols = [
     ["actual_cash", "REAL"],
@@ -3906,6 +3947,7 @@ export async function initDatabase(dbPath) {
   await migrateReceiptSequencesTable(db);
   await migrateEntityCodeSequencesTable(db);
   await migrateShiftReconciliationExtended(db);
+  await migrateShiftVisaReconciliation(db);
   await migrateCashierShiftsPendingStatus(db);
   await migrateOneOpenShiftPerCashier(db);
   await migrateRefundRequestsTable(db);

@@ -13,6 +13,7 @@ import {
   buildRangeSummaryItems,
   getTopProductsFromDaily,
   incompleteProfitNote,
+  VISA_SALES_SCOPE_NOTE,
 } from "../utils/salesReportHelpers";
 import { printSalesDailyReport, printSalesRangeReport } from "../utils/salesReportPrint";
 import { exportToCsv } from "../utils/reportExport";
@@ -310,18 +311,34 @@ export default function SalesReports() {
             <CardHeader
               title="تفاصيل الدفع والتحصيل"
               actions={
-                <Link to={`/shift-audit?date_from=${date}&date_to=${date}`} className="dashboard-inline-link">
-                  عرض الورديات لهذا اليوم
-                </Link>
+                <>
+                  <Link to={`/sales-reports/visa?from=${date}&to=${date}`} className="dashboard-inline-link">
+                    تحصيلات الفيزا
+                  </Link>
+                  <Link to={`/shift-audit?date_from=${date}&date_to=${date}`} className="dashboard-inline-link">
+                    عرض الورديات لهذا اليوم
+                  </Link>
+                </>
               }
             />
             <CardBody>
               <div className="ui-stat-grid ui-mt-sm">
-                <StatCard label="بطاقة (إجمالي)" value={ils(dailyReport.card_total)} icon="finance" />
+                <StatCard
+                  label="مبيعات الفيزا"
+                  value={ils(dailyReport.card_total)}
+                  hint={dailyReport.visa_incomplete ? "غير مكتمل" : null}
+                  icon="finance"
+                />
                 <StatCard label="مبيعات الذمة" value={ils(dailyReport.on_account_total)} icon="vouchers" />
                 <StatCard label="صافي النقد" value={ils(dailyReport.net_cash_total)} icon="finance" />
-                <StatCard label="صافي البطاقة" value={ils(dailyReport.net_card_total)} icon="finance" />
+                <StatCard
+                  label="صافي مبيعات الفيزا"
+                  value={ils(dailyReport.net_card_total)}
+                  hint={dailyReport.visa_incomplete ? "مبلغ معروف" : null}
+                  icon="finance"
+                />
               </div>
+              <p className="ui-hint ui-mt-sm">{VISA_SALES_SCOPE_NOTE}</p>
             </CardBody>
           </Card>
 
