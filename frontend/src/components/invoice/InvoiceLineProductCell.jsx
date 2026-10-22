@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { searchProductsApi } from "../../utils/productSearch";
 import { displayProductSku } from "../../utils/entityCodeDisplay";
@@ -27,6 +27,7 @@ export default function InvoiceLineProductCell({
   const ref = useRef(null);
   const inputRef = useRef(null);
   const listRef = useRef(null);
+  const listId = useId();
 
   const showList = open && dirty && q.trim() && !loading && results.length > 0;
 
@@ -168,6 +169,7 @@ export default function InvoiceLineProductCell({
         className="ui-input"
         role="combobox"
         aria-expanded={Boolean(open && dirty && q.trim())}
+        aria-controls={listId}
         aria-autocomplete="list"
         data-invoice-field="product"
         data-invoice-product={lineKey || ""}
@@ -188,6 +190,7 @@ export default function InvoiceLineProductCell({
       {showList && menuStyle
         ? createPortal(
           <ul
+            id={listId}
             className="search-dropdown invoice-product-cell__list"
             role="listbox"
             ref={listRef}

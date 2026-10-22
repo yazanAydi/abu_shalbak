@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { focusBarcodeInput } from "../../utils/focusBarcodeInput";
-import { cartItemPromoKey, computeDealLineTotal } from "../../utils/posTotals";
+import { appliedPromoName, cartItemPromoKey, computeDealLineTotal } from "../../utils/posTotals";
 import { isKgSoldUnit } from "../../utils/cartProduct";
 import Icon from "../icons/Icon";
 import { handleEnterNavKeyDown } from "../../utils/focusNavigation";
@@ -196,6 +196,7 @@ function CartTableBody({
               const promoKey = cartItemPromoKey(it);
               const lineDiscount = Number(lineDiscounts?.[promoKey]) || 0;
               const lineTotal = computeDealLineTotal(it, activePromos);
+              const dealName = lineDiscount > 0 ? appliedPromoName(it, activePromos) : "";
               const kgLine = isKgCartLine(it);
               const rowClass = [
                 lineDiscount > 0 ? "pos-line--deal" : "",
@@ -264,7 +265,9 @@ function CartTableBody({
                   <td className="pos-col-money">{formatUnitPrice(it)}</td>
                   <td className="pos-col-money">
                     {ils(lineTotal)}
-                    {lineDiscount > 0 ? <span className="pos-line-deal-hint">عرض</span> : null}
+                    {lineDiscount > 0 ? (
+                      <span className="pos-line-deal-hint">{dealName ? `عرض: ${dealName}` : "عرض"}</span>
+                    ) : null}
                   </td>
                   <td className="pos-col-actions">
                     <button

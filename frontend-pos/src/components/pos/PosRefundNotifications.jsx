@@ -119,12 +119,18 @@ function detailFor(item) {
 export default function PosRefundNotifications({
   suppressIds,
   onApprovedOnAccount,
+  onPromotions,
+  onSyncChange,
 }) {
   const [unread, setUnread] = useState([]);
   const [ackLoading, setAckLoading] = useState(false);
   const [err, setErr] = useState("");
   const onApprovedRef = useRef(onApprovedOnAccount);
   onApprovedRef.current = onApprovedOnAccount;
+  const onPromotionsRef = useRef(onPromotions);
+  onPromotionsRef.current = onPromotions;
+  const onSyncChangeRef = useRef(onSyncChange);
+  onSyncChangeRef.current = onSyncChange;
   const finalizedOnAccountRef = useRef(new Set());
 
   const poll = useCallback(async () => {
@@ -157,8 +163,14 @@ export default function PosRefundNotifications({
   }, [poll]);
 
   const [sseLive, setSseLive] = useState(false);
+  useEffect(() => {
+    onSyncChangeRef.current?.(sseLive);
+  }, [sseLive]);
   useAuthEventSource("/api/v1/pos/events", (event, data) => {
-    setSseLive(true);
+    if (event === "promotions" && Array.isArray(data)) {
+      onPromotionsRef.current?.(data);
+      return;
+    }
     if (event === "decisions") {
       setUnread(mergeSnapshot(data));
       return;
@@ -171,7 +183,7 @@ export default function PosRefundNotifications({
         ])
       );
     }
-  });
+  }, { onConnection: setSseLive });
   useVisiblePoll(poll, 8000, { enabled: !sseLive, hiddenIntervalMs: 8000 });
 
   const visible = applySuppress(unread, suppressIds);

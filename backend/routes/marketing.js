@@ -2,6 +2,8 @@ import { Router } from "express";
 import { requireAuth, requirePosAccess, requireReportsPermission } from "../middleware/auth.js";
 import { getActivePromotions, computeCartDiscount, invalidatePromotionsCache } from "../utils/promotions.js";
 import { round2 } from "../utils/money.js";
+import { isUnitSaleEnabled } from "../utils/bakeryMembership.js";
+import { loadUnitsForProduct } from "../utils/productUnits.js";
 
 const OFFER_TYPES = ["percentage", "fixed", "bundle", "buy_x_get_y", "multi_price"];
 
@@ -90,6 +92,46 @@ function normalizePromoBody(b, ex = null) {
   };
 }
 
+function bodyDefinesDeal(body, isCreate) {
+  if (isCreate) return true;
+  return ["offer_type", "buy_qty", "discount_value", "product_id", "product_unit_id", "name", "category"].some(
+    (key) => body[key] !== undefined
+  );
+}
+
+function assertMultiPriceNumbers(normalized, body, isCreate) {
+  if (normalized.offer_type !== "multi_price") return null;
+  const touches =
+    isCreate ||
+    body.offer_type !== undefined ||
+    body.buy_qty !== undefined ||
+    body.discount_value !== undefined;
+  if (!touches) return null;
+  if (!(Number(normalized.buy_qty) > 0)) {
+    return { error: "أدخل الكمية", code: "VALIDATION_ERROR" };
+  }
+  if (!(Number(normalized.discount_value) > 0)) {
+    return { error: "أدخل سعر البيع", code: "VALIDATION_ERROR" };
+  }
+  return null;
+}
+
+async function assertSellingUnit(db, productId, productUnitId) {
+  if (!productId) return null;
+  if (!productUnitId) return { error: "حدّد وحدة المنتج", code: "VALIDATION_ERROR" };
+  const unit = await db.get(
+    "SELECT id, product_id, sale_enabled FROM product_units WHERE id = ?",
+    [productUnitId]
+  );
+  if (!unit || Number(unit.product_id) !== Number(productId)) {
+    return { error: "الوحدة لا تتبع هذا المنتج", code: "VALIDATION_ERROR" };
+  }
+  if (!isUnitSaleEnabled(unit)) {
+    return { error: "هذه الوحدة غير متاحة للبيع", code: "VALIDATION_ERROR" };
+  }
+  return null;
+}
+
 export function createMarketingRouter(db) {
   const router = Router();
   const requireMarketing = requireReportsPermission(db, "marketing");
@@ -162,6 +204,10 @@ export function createMarketingRouter(db) {
 
     const normalized = normalizePromoBody(b);
     if (normalized.error) return res.status(400).json({ error: normalized.error, code: normalized.code });
+    const dealError = assertMultiPriceNumbers(normalized, b, true);
+    if (dealError) return res.status(400).json(dealError);
+    const unitError = await assertSellingUnit(db, normalized.product_id, normalized.product_unit_id);
+    if (unitError) return res.status(400).json(unitError);
 
     let deactivatedCount = 0;
     if (normalized.active && normalized.product_id && normalized.product_unit_id) {
@@ -214,8 +260,15 @@ export function createMarketingRouter(db) {
     const ex = await db.get("SELECT * FROM promotions WHERE id = ?", [req.params.id]);
     if (!ex) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
 
-    const normalized = normalizePromoBody(req.body || {}, ex);
+    const body = req.body || {};
+    const normalized = normalizePromoBody(body, ex);
     if (normalized.error) return res.status(400).json({ error: normalized.error, code: normalized.code });
+    if (bodyDefinesDeal(body, false)) {
+      const dealError = assertMultiPriceNumbers(normalized, body, false);
+      if (dealError) return res.status(400).json(dealError);
+      const unitError = await assertSellingUnit(db, normalized.product_id, normalized.product_unit_id);
+      if (unitError) return res.status(400).json(unitError);
+    }
 
     const usedQty = normalized.reset_used_qty ? 0 : ex.used_qty;
 
@@ -271,6 +324,22 @@ export function createMarketingRouter(db) {
     await db.run("DELETE FROM promotions WHERE id = ?", [req.params.id]);
     onPromotionsDataChanged();
     res.json({ success: true });
+  });
+
+  router.get("/products/:id/sale-units", requireAuth, requireMarketing, async (req, res) => {
+    const product = await db.get("SELECT id FROM products WHERE id = ?", [req.params.id]);
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
+    const units = (await loadUnitsForProduct(db, product.id))
+      .filter((unit) => isUnitSaleEnabled(unit))
+      .map((unit) => ({
+        id: unit.id,
+        unit_name: unit.unit_name,
+        price: unit.price,
+        conversion_to_base: unit.conversion_to_base,
+        is_default: unit.is_default,
+        sale_enabled: true,
+      }));
+    res.json({ product_id: product.id, units });
   });
 
   // ════════════ POS consumption ════════════

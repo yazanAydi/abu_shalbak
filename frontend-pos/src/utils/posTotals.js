@@ -75,6 +75,12 @@ export function buildCartLineDiscounts(cartItems, promos) {
 /**
  * Deal-adjusted line total for cart display (e.g. 2 for ₪15 shows ₪15, not shelf gross).
  */
+export function appliedPromoName(cartItem, promos) {
+  if (!Array.isArray(promos) || !promos.length || !cartItem) return "";
+  const { breakdown } = computeCartDiscount(promos, buildPromoLines([cartItem]));
+  return breakdown[0]?.name || "";
+}
+
 export function computeDealLineTotal(cartItem, promos) {
   const raw = round2(Number(cartItem.subtotal) || Number(cartItem.price) * Number(cartItem.quantity));
   const lineGross = raw;

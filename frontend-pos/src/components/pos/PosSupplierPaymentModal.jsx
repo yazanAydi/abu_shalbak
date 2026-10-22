@@ -4,6 +4,7 @@ import { getAuthHeaders } from "../../utils/auth";
 import { newIdempotencyKey } from "../../utils/completeSaleSubmit";
 import SearchableSelect from "../ui/SearchableSelect";
 import { handleEnterNavKeyDown } from "../../utils/focusNavigation";
+import { usePosDialogKeyboard } from "../../utils/posDialogKeyboard";
 import "../ShiftModal.css";
 
 const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
@@ -71,6 +72,7 @@ export default function PosSupplierPaymentModal({ open, onClose, onPaid, onCashD
   const [customerSuccess, setCustomerSuccess] = useState(null);
   const customerKey = useStableSubmitKey();
   const pending = supplierLoading || customerLoading;
+  const dialogRef = useRef(null);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -144,6 +146,14 @@ export default function PosSupplierPaymentModal({ open, onClose, onPaid, onCashD
   function handleClose() {
     onClose();
   }
+
+  usePosDialogKeyboard({
+    active: open,
+    dialogRef,
+    focusToken: tab,
+    allowDismiss: !pending,
+    onDismiss: handleClose,
+  });
 
   function switchTab(next) {
     if (pending || next === tab) return;
@@ -239,10 +249,18 @@ export default function PosSupplierPaymentModal({ open, onClose, onPaid, onCashD
   if (!open) return null;
 
   return (
-    <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
+    <div
+      className="shift-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="pos-supplier-debt-title"
+      dir="rtl"
+      lang="ar"
+      ref={dialogRef}
+    >
       <div className="shift-modal-backdrop" onClick={pending ? undefined : handleClose} aria-hidden />
       <div className="shift-modal-panel shift-modal-panel--form">
-        <h2 className="shift-modal-title">موردين/ذمم</h2>
+        <h2 id="pos-supplier-debt-title" className="shift-modal-title">موردين/ذمم</h2>
         <div className="shift-modal-tabs" role="tablist" aria-label="موردين وذمم">
           <button
             type="button"
@@ -300,8 +318,8 @@ export default function PosSupplierPaymentModal({ open, onClose, onPaid, onCashD
                     className="shift-modal-input"
                     value={supplierId}
                     onChange={(e) => setSupplierId(e.target.value)}
-                    placeholder="ابحث عن المورد"
-                    disabled={supplierListLoading || pending}
+                    placeholder={supplierListLoading ? "جاري تحميل الموردين…" : "ابحث عن المورد"}
+                    disabled={pending}
                     required
                   >
                     <option value="">اختر المورد</option>
@@ -378,8 +396,8 @@ export default function PosSupplierPaymentModal({ open, onClose, onPaid, onCashD
                     className="shift-modal-input"
                     value={customerId}
                     onChange={(e) => setCustomerId(e.target.value)}
-                    placeholder="ابحث عن العميل"
-                    disabled={customerListLoading || pending}
+                    placeholder={customerListLoading ? "جاري تحميل العملاء…" : "ابحث عن العميل"}
+                    disabled={pending}
                     required
                   >
                     <option value="">اختر العميل</option>

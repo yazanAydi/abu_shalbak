@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { isPartyValue, searchPartiesApi } from "../utils/partySearch";
 
@@ -11,6 +11,7 @@ export default function PartyPicker({
   placeholder = "ابحث بالاسم أو الرقم…",
 }) {
   const picked = isPartyValue(value);
+  const listId = useId();
   const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
@@ -142,6 +143,7 @@ export default function PartyPicker({
         placeholder={placeholder}
         role="combobox"
         aria-expanded={open}
+        aria-controls={listId}
         aria-autocomplete="list"
         autoComplete="off"
         onChange={(e) => {
@@ -156,6 +158,7 @@ export default function PartyPicker({
         menuStyle &&
         createPortal(
           <div
+            id={listId}
             className="search-dropdown party-picker__list"
             ref={listRef}
             style={menuStyle}

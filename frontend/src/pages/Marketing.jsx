@@ -113,6 +113,15 @@ function pickDefaultUnitId(units) {
   return String(def.id);
 }
 
+function formatUnitOption(unit) {
+  const name = unit.unit_name || "وحدة";
+  const conversion = Number(unit.conversion_to_base) || 1;
+  const conversionLabel = conversion !== 1 ? ` ×${conversion}` : "";
+  const price = Number(unit.price);
+  const priceLabel = Number.isFinite(price) ? ` — ₪${price.toFixed(2)}` : "";
+  return `${name}${conversionLabel}${priceLabel}`;
+}
+
 export default function Marketing() {
   const toast = useToast();
   const [tab, setTab] = useState("promotions");
@@ -121,6 +130,8 @@ export default function Marketing() {
   const [loading, setLoading] = useState(true);
   const [productUnits, setProductUnits] = useState([]);
   const [unitsLoading, setUnitsLoading] = useState(false);
+  const [unitsError, setUnitsError] = useState("");
+  const [unitsLoadedFor, setUnitsLoadedFor] = useState(null);
 
   const [showCampaign, setShowCampaign] = useState(false);
   const [campaignForm, setCampaignForm] = useState({ name: "", description: "", start_date: "", end_date: "", active: true });
@@ -145,31 +156,39 @@ export default function Marketing() {
     if (!promoForm.product_id) {
       setProductUnits([]);
       setUnitsLoading(false);
+      setUnitsError("");
+      setUnitsLoadedFor(null);
       return;
     }
     let cancelled = false;
     setUnitsLoading(true);
+    setUnitsError("");
     (async () => {
       try {
-        const res = await api.get(`/api/products/${promoForm.product_id}/units`, { headers: getAuthHeaders() });
+        const res = await api.get(`/api/marketing/products/${promoForm.product_id}/sale-units`, { headers: getAuthHeaders() });
         if (cancelled) return;
         const payload = res.data;
-        const units = Array.isArray(payload?.units)
-          ? payload.units
-          : Array.isArray(payload)
-            ? payload
-            : [];
+        const units = (Array.isArray(payload?.units) ? payload.units : []).filter(
+          (unit) => unit.sale_enabled !== false
+        );
         setProductUnits(units);
-        if (units.length > 0) {
-          setPromoForm((f) => {
-            const currentValid =
-              f.product_unit_id && units.some((u) => String(u.id) === String(f.product_unit_id));
-            if (currentValid) return f;
-            return { ...f, product_unit_id: pickDefaultUnitId(units) };
-          });
-        }
+        setUnitsLoadedFor(promoForm.product_id);
+        setPromoForm((f) => {
+          if (Number(f.product_id) !== Number(promoForm.product_id)) return f;
+          const currentValid =
+            f.product_unit_id && units.some((u) => String(u.id) === String(f.product_unit_id));
+          if (currentValid) return f;
+          return { ...f, product_unit_id: pickDefaultUnitId(units) };
+        });
       } catch {
-        if (!cancelled) setProductUnits([]);
+        if (!cancelled) {
+          setProductUnits([]);
+          setUnitsLoadedFor(promoForm.product_id);
+          setUnitsError("تعذّر تحميل وحدات البيع");
+          setPromoForm((f) => (
+            Number(f.product_id) === Number(promoForm.product_id) ? { ...f, product_unit_id: "" } : f
+          ));
+        }
       } finally {
         if (!cancelled) setUnitsLoading(false);
       }
@@ -276,6 +295,7 @@ export default function Marketing() {
   const needsBxgy = promoForm.offer_type === "buy_x_get_y";
   const needsBundleQty = promoForm.offer_type === "bundle";
   const needsMultiPrice = promoForm.offer_type === "multi_price";
+  const selectedPromoUnit = productUnits.find((unit) => String(unit.id) === String(promoForm.product_unit_id)) || null;
 
   const promoColumns = [
     { key: "name", header: "العرض", value: (p) => p.name, render: (p) => <strong>{p.name}</strong> },
@@ -433,24 +453,15 @@ export default function Marketing() {
             </p>
           )}
           {promoForm.product_id && unitsLoading && (
-            <p className="ui-field__hint ui-mt-sm ui-text-muted">جاري تحميل الوحدات...</p>
+            <p className="ui-field__hint ui-mt-sm ui-text-muted">جاري تحميل وحدات البيع...</p>
           )}
-          {promoForm.product_id && !unitsLoading && productUnits.length === 0 && (
-            <p className="ui-field__hint ui-mt-sm ui-text-muted">لا توجد وحدات لهذا المنتج</p>
+          {promoForm.product_id && !unitsLoading && unitsError && (
+            <p className="ui-field__hint ui-mt-sm ui-text-muted">{unitsError}</p>
+          )}
+          {promoForm.product_id && !unitsLoading && !unitsError && Number(unitsLoadedFor) === Number(promoForm.product_id) && productUnits.length === 0 && (
+            <p className="ui-field__hint ui-mt-sm ui-text-muted">لا توجد وحدات بيع لهذا المنتج</p>
           )}
         </div>
-        {promoForm.product_id && productUnits.length > 0 && (
-          <FormField label="الوحدة" required>
-            <Select
-              value={promoForm.product_unit_id}
-              onChange={(e) => setPromoForm((f) => ({ ...f, product_unit_id: e.target.value }))}
-            >
-              {productUnits.map((u) => (
-                <option key={u.id} value={u.id}>{u.unit_name}</option>
-              ))}
-            </Select>
-          </FormField>
-        )}
         <FormField label="أو فئة المنتجات">
           <CategorySelect
             value={promoForm.category}
@@ -458,12 +469,34 @@ export default function Marketing() {
             onChange={(e) => setPromoForm((f) => ({ ...f, category: e.target.value }))}
           />
         </FormField>
+        {!promoForm.product_id && (
+          <p className="ui-field__hint ui-mt-sm">
+            عرض الفئة يُحسب لكل منتج على حدة بوحدة البيع الممسوحة في الصندوق. منتجات الفئة لا تشترك في وحدة واحدة، والكمية تُحسب بتلك الوحدة.
+          </p>
+        )}
 
         <FormGrid>
           {needsMultiPrice && (
             <p className="ui-field__hint ui-field--full">
-              أدخل الكمية وسعر البيع النهائي للعرض (مثال: 2 صناديق بـ ₪15)
+              الكمية من الوحدة المختارة، والسعر إجمالي لها. مثال: 2 صناديق بـ 15 ₪ يعني أن صندوقين يكلّفان 15 ₪ معاً.
             </p>
+          )}
+          {promoForm.product_id && productUnits.length > 0 && (
+            <FormField
+              label="الوحدة"
+              required
+              hint={productUnits.length === 1 ? "وحدة البيع الوحيدة لهذا المنتج" : "وحدة البيع التي يسري عليها العرض"}
+            >
+              <Select
+                aria-label="الوحدة"
+                value={promoForm.product_unit_id}
+                onChange={(e) => setPromoForm((f) => ({ ...f, product_unit_id: e.target.value }))}
+              >
+                {productUnits.map((u) => (
+                  <option key={u.id} value={u.id}>{formatUnitOption(u)}</option>
+                ))}
+              </Select>
+            </FormField>
           )}
           {needsValue && (
             <FormField label={promoForm.offer_type === "percentage" ? "نسبة الخصم %" : "قيمة الخصم (₪)"}>
@@ -473,7 +506,14 @@ export default function Marketing() {
           {needsBxgy && <FormField label="اشترِ (كمية)"><Input type="number" value={promoForm.buy_qty} onChange={(e) => setPromoForm((f) => ({ ...f, buy_qty: e.target.value }))} /></FormField>}
           {needsBxgy && <FormField label="احصل على (مجاناً)"><Input type="number" value={promoForm.get_qty} onChange={(e) => setPromoForm((f) => ({ ...f, get_qty: e.target.value }))} /></FormField>}
           {needsBundleQty && <FormField label="الكمية المطلوبة للحزمة"><Input type="number" value={promoForm.buy_qty} onChange={(e) => setPromoForm((f) => ({ ...f, buy_qty: e.target.value }))} /></FormField>}
-          {needsMultiPrice && <FormField label="الكمية"><Input type="number" value={promoForm.buy_qty} onChange={(e) => setPromoForm((f) => ({ ...f, buy_qty: e.target.value }))} /></FormField>}
+          {needsMultiPrice && (
+            <FormField
+              label="الكمية"
+              hint={selectedPromoUnit ? `من وحدة ${selectedPromoUnit.unit_name}` : "من الوحدة المختارة"}
+            >
+              <Input type="number" value={promoForm.buy_qty} onChange={(e) => setPromoForm((f) => ({ ...f, buy_qty: e.target.value }))} />
+            </FormField>
+          )}
           {needsMultiPrice && <FormField label="سعر البيع (₪)"><Input type="number" step="1" inputMode="decimal" value={promoForm.discount_value} onChange={(e) => setPromoForm((f) => ({ ...f, discount_value: e.target.value }))} /></FormField>}
           {!needsMultiPrice && (
             <FormField label="حد أدنى للمبلغ (₪)"><Input type="number" step="0.01" value={promoForm.min_amount} onChange={(e) => setPromoForm((f) => ({ ...f, min_amount: e.target.value }))} /></FormField>

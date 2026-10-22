@@ -111,6 +111,8 @@ export default function SearchableSelect({
         requestAnimationFrame(() => focusNextField(e.target));
       }
     } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
       setOpen(false);
       setQuery("");
     }

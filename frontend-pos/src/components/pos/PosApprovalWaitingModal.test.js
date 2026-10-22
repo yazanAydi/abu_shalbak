@@ -37,7 +37,7 @@ describe("PosApprovalWaitingModal minimized chip", () => {
 
   beforeEach(() => {
     mockGet.mockReset();
-    mockGet.mockResolvedValue({ data: { id: 1, status: "pending" } });
+    mockGet.mockResolvedValue({ data: { id: 1, status: "pending", telegram_message_id: 1 } });
     slot = document.createElement("div");
     slot.id = "pos-waiting-chip-slot";
     slot.className = "pos-waiting-chip-slot";
@@ -82,5 +82,53 @@ describe("PosApprovalWaitingModal minimized chip", () => {
     expect(chip.textContent).toContain("بانتظار الموافقة — طلب دفع لمورد #1");
     expect(container.querySelector(".pos-waiting-chip")).toBeNull();
     expect(container.querySelector(".shift-modal-overlay")).toBeNull();
+  });
+
+  test("a scan key cannot reach the register, and hide restores the scan field", async () => {
+    container.className = "pos-screen";
+    await act(async () => {
+      root.render(
+        <>
+          <input className="barcode-input" defaultValue="625" />
+          <PosApprovalWaitingModal
+            open
+            requestId={1}
+            apiPath="/api/customer-cash-debt-requests"
+            titlePrefix="طلب ذمة نقدية"
+            statusLabels={{ pending: "بانتظار الموافقة" }}
+            onClose={() => {}}
+          />
+        </>
+      );
+    });
+    await flush();
+
+    const barcode = container.querySelector(".barcode-input");
+    const dialog = container.querySelector("[role='dialog']");
+    expect(dialog).toBeTruthy();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(barcode.inert).toBe(true);
+
+    const seen = jest.fn();
+    barcode.addEventListener("keydown", seen);
+    const scan = new KeyboardEvent("keydown", { key: "9", bubbles: true, cancelable: true });
+    act(() => {
+      barcode.dispatchEvent(scan);
+    });
+    expect(scan.defaultPrevented).toBe(true);
+    expect(seen).not.toHaveBeenCalled();
+    expect(barcode.value).toBe("625");
+
+    const hide = [...dialog.querySelectorAll("button")].find((b) => (b.textContent || "").includes("إخفاء"));
+    await act(async () => {
+      hide.click();
+    });
+    expect(container.querySelector("[role='dialog']")).toBeNull();
+    expect(barcode.inert).toBe(false);
+    expect(document.activeElement).toBe(barcode);
+    const after = new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true });
+    barcode.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
+    barcode.removeEventListener("keydown", seen);
   });
 });

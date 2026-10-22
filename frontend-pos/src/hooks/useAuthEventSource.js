@@ -7,9 +7,11 @@ import { isAccessTokenExpired } from "../utils/sessionRefresh";
  * Authenticated SSE via fetch (EventSource cannot send Authorization).
  * Falls back silently if the stream is unavailable.
  */
-export function useAuthEventSource(url, onEvent, { enabled = true } = {}) {
+export function useAuthEventSource(url, onEvent, { enabled = true, onConnection } = {}) {
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  const onConnectionRef = useRef(onConnection);
+  onConnectionRef.current = onConnection;
   const [tokenGeneration, setTokenGeneration] = useState(0);
 
   useEffect(() => {
@@ -34,6 +36,7 @@ export function useAuthEventSource(url, onEvent, { enabled = true } = {}) {
           signal: controller.signal,
         });
         if (!res.ok || !res.body) return;
+        onConnectionRef.current?.(true);
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
@@ -87,6 +90,8 @@ export function useAuthEventSource(url, onEvent, { enabled = true } = {}) {
         }
       } catch {
         /* aborted or offline */
+      } finally {
+        if (!cancelled) onConnectionRef.current?.(false);
       }
     })();
 

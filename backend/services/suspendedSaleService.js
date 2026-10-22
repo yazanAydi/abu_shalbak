@@ -480,7 +480,11 @@ export async function getSuspendedSalesSummary(db, shiftId) {
 
 async function loadSuspendedItems(db, suspendedSaleId) {
   return db.all(
-    `SELECT * FROM suspended_sale_items WHERE suspended_sale_id = ? ORDER BY id`,
+    `SELECT i.*, p.category AS product_category
+     FROM suspended_sale_items i
+     LEFT JOIN products p ON p.id = i.product_id
+     WHERE i.suspended_sale_id = ?
+     ORDER BY i.id`,
     [suspendedSaleId]
   );
 }
@@ -503,6 +507,7 @@ export async function getSuspendedSaleDetail(db, id) {
     id: r.id,
     product_id: r.product_id,
     product_unit_id: r.product_unit_id,
+    category: r.product_category || null,
     product_name_snapshot: r.product_name_snapshot,
     unit_name_snapshot: r.unit_name_snapshot,
     barcode_snapshot: r.barcode_snapshot,

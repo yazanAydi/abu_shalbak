@@ -88,6 +88,7 @@ export function mapLookupToCartProduct(data) {
     barcode: selectedUnit?.barcode ?? product.barcode,
     scanned_barcode: scanned,
     name: product.name ?? data.name,
+    category: product.category ?? data.category ?? null,
     price: Number(selectedUnit?.price ?? data.price ?? product.price),
     conversionToBase: Number(selectedUnit?.conversion_to_base ?? data.conversionToBase ?? 1) || 1,
     availableUnits,

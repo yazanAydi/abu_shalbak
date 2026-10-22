@@ -1,4 +1,4 @@
-import { Children, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Children, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { focusNextField } from "../../utils/focusNavigation";
 
@@ -49,6 +49,7 @@ export default function SearchableSelect({
   const [menuStyle, setMenuStyle] = useState(null);
   const rootRef = useRef(null);
   const listRef = useRef(null);
+  const listId = useId();
 
   const placeMenu = useCallback(() => {
     const el = rootRef.current;
@@ -167,6 +168,7 @@ export default function SearchableSelect({
         className={`ui-select ui-combobox__input ${className}`}
         role="combobox"
         aria-expanded={open}
+        aria-controls={listId}
         aria-autocomplete="list"
         autoComplete="off"
         disabled={disabled}
@@ -186,7 +188,9 @@ export default function SearchableSelect({
         menuStyle &&
         createPortal(
           <ul
+            id={listId}
             className="ui-combobox__list"
+            role="listbox"
             ref={listRef}
             style={menuStyle}
             onWheel={(e) => e.stopPropagation()}

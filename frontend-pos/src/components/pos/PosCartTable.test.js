@@ -155,4 +155,58 @@ describe("POS cart quantity buttons", () => {
     expect(container.querySelector(".pos-qty-val--weight")).toBeNull();
     expect(onQuantityChange).not.toHaveBeenCalled();
   });
+
+  test("shows the offer name when the deal quantity is reached", () => {
+    const { container } = renderTable(
+      [
+        {
+          cartKey: "1-11",
+          id: 1,
+          unitId: 11,
+          unitName: "صندوق",
+          name: "حليب",
+          category: "ألبان",
+          quantity: 2,
+          price: 50,
+          subtotal: 100,
+          availableUnits: [{ id: 11, unit_name: "صندوق", price: 50, conversion_to_base: 12 }],
+        },
+      ]
+    );
+    act(() => {
+      mountedRoots[mountedRoots.length - 1].render(
+        <PosCartTable
+          cartItems={[
+            {
+              cartKey: "1-11",
+              id: 1,
+              unitId: 11,
+              unitName: "صندوق",
+              name: "حليب",
+              category: "ألبان",
+              quantity: 2,
+              price: 50,
+              subtotal: 100,
+              availableUnits: [{ id: 11, unit_name: "صندوق", price: 50, conversion_to_base: 12 }],
+            },
+          ]}
+          lineDiscounts={{ "1-11": 20 }}
+          activePromos={[
+            {
+              id: 5,
+              name: "صندوقين بـ 80",
+              offer_type: "multi_price",
+              product_id: 1,
+              product_unit_id: 11,
+              discount_value: 80,
+              buy_qty: 2,
+            },
+          ]}
+          onQuantityChange={jest.fn()}
+          onRemoveItem={jest.fn()}
+        />
+      );
+    });
+    expect(container.textContent).toContain("عرض: صندوقين بـ 80");
+  });
 });

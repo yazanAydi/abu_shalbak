@@ -26,6 +26,7 @@ import { openReceiptForPrinting, printReceipt } from "../utils/printReceipt";
 import { RECEIPT_PRINT_TAB_NAME } from "../utils/printDocument";
 import { submitCompleteSale } from "../utils/completeSaleSubmit";
 import { estimateCartTotals, buildCartLineDiscounts } from "../utils/posTotals";
+import { useVisiblePoll } from "../hooks/useVisiblePoll";
 import { checkoutReducer, checkoutInitialState } from "../utils/checkoutCartReducer";
 import {
   formatShortcutHint,
@@ -169,12 +170,19 @@ export default function Checkout() {
   const cartRestoredRef = useRef(false);
   const [cartRecoveryReady, setCartRecoveryReady] = useState(false);
 
+  const [offerSyncLive, setOfferSyncLive] = useState(false);
+
+  const applyActivePromos = useCallback((rows) => {
+    if (!Array.isArray(rows)) return;
+    setActivePromos((prev) => (JSON.stringify(prev) === JSON.stringify(rows) ? prev : rows));
+  }, []);
+
   const loadActivePromos = useCallback(() => {
     api
       .get("/api/marketing/active", { headers: getAuthHeaders() })
-      .then(({ data }) => setActivePromos(Array.isArray(data) ? data : []))
-      .catch(() => setActivePromos([]));
-  }, []);
+      .then(({ data }) => applyActivePromos(data))
+      .catch(() => {});
+  }, [applyActivePromos]);
 
   useEffect(() => {
     warmPosSounds();
@@ -185,13 +193,7 @@ export default function Checkout() {
     loadActivePromos();
   }, [loadActivePromos]);
 
-  useEffect(() => {
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") loadActivePromos();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [loadActivePromos]);
+  useVisiblePoll(loadActivePromos, 8000, { enabled: !offerSyncLive });
 
   const checkoutDialogOpen =
     payModalOpen ||
@@ -985,6 +987,8 @@ export default function Checkout() {
           shop: shopExpenseWaitingId,
         }}
         onApprovedOnAccount={finalizeApprovedOnAccountSale}
+        onSyncChange={setOfferSyncLive}
+        onPromotions={applyActivePromos}
       />
 
       {suspendedCount > 0 ? (

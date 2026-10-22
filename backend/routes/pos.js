@@ -38,6 +38,7 @@ import {
   reprintPrintJob,
 } from "../services/operationPrintService.js";
 import { getPosSaleHistoryDetail, listPosSaleHistory } from "../services/posSaleHistoryService.js";
+import { getActivePromotions } from "../utils/promotions.js";
 
 export async function buildPosDecisionSnapshot(db, cashierId) {
   const [refunds, advances, on_account, cash_debts, supplier_payments, shop_consumption] = await Promise.all([
@@ -75,7 +76,7 @@ async function loadQuickButtonProducts(db, settings) {
   if (ids.length > 0) {
     const placeholders = ids.map(() => "?").join(",");
     const rows = await db.all(
-      `SELECT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate
+      `SELECT p.id, p.barcode, p.name, p.category, p.price, p.stock, p.tax_rate
        FROM products p
        WHERE p.id IN (${placeholders}) AND COALESCE(p.is_active, 1) = 1
          AND ${posCatalogVisibleSql("p.id", "p.inventory_scope")}`,
@@ -318,7 +319,7 @@ export function createPosRouter(db) {
       ? [WEIGHED_BASE_UNIT_NAME, like, like, like, like, ...skuValues]
       : [WEIGHED_BASE_UNIT_NAME, like, like, like, like];
     const rows = await db.all(
-      `SELECT DISTINCT p.id, p.barcode, p.name, p.price, p.stock, p.tax_rate,
+      `SELECT DISTINCT p.id, p.barcode, p.name, p.category, p.price, p.stock, p.tax_rate,
               COALESCE(p.is_weighed, 0) AS is_weighed,
               COALESCE(p.scale_only, 0) AS scale_only,
               pu.id AS unit_id, pu.unit_name, pu.price AS unit_price, pu.conversion_to_base,
@@ -376,8 +377,10 @@ export function createPosRouter(db) {
       }
       try {
         const snapshot = await buildPosDecisionSnapshot(db, req.user.id);
+        const promos = await getActivePromotions(db);
         res.write(`event: decisions\ndata: ${JSON.stringify(snapshot)}\n\n`);
         res.write(`event: refunds\ndata: ${JSON.stringify(snapshot.refunds)}\n\n`);
+        res.write(`event: promotions\ndata: ${JSON.stringify(promos)}\n\n`);
       } catch {
         /* keep the stream alive */
       }

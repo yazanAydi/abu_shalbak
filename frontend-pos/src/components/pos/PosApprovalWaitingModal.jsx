@@ -4,6 +4,7 @@ import api from "../../apiClient";
 import { getAuthHeaders } from "../../utils/auth";
 import { useVisiblePoll } from "../../hooks/useVisiblePoll";
 import { playApprovalDecision } from "../../utils/posSounds";
+import { usePosDialogKeyboard } from "../../utils/posDialogKeyboard";
 import "../ShiftModal.css";
 
 const WAITING_CHIP_SLOT_ID = "pos-waiting-chip-slot";
@@ -52,7 +53,17 @@ export default function PosApprovalWaitingModal({
   const [minimized, setMinimized] = useState(false);
   const terminalRef = useRef(false);
   const onTerminalRef = useRef(onTerminal);
+  const dialogRef = useRef(null);
   onTerminalRef.current = onTerminal;
+
+  usePosDialogKeyboard({
+    active: open && !!requestId && !minimized,
+    dialogRef,
+    onDismiss: () => {
+      if (TERMINAL.includes(status)) onClose();
+      else setMinimized(true);
+    },
+  });
 
   useEffect(() => {
     setStatus("pending");
@@ -122,7 +133,7 @@ export default function PosApprovalWaitingModal({
   }
 
   return (
-    <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar">
+    <div className="shift-modal-overlay" role="dialog" aria-modal="true" dir="rtl" lang="ar" ref={dialogRef}>
       <div className="shift-modal-backdrop" onClick={isTerminal ? onClose : undefined} aria-hidden />
       <div className="shift-modal-panel">
         <h2 className="shift-modal-title">

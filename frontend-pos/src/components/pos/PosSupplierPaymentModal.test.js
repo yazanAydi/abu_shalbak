@@ -252,4 +252,120 @@ describe("PosSupplierPaymentModal", () => {
     expect(mockPost).toHaveBeenCalledTimes(1);
     expect(mockPost.mock.calls[0][0]).toContain("/customer-cash-debt-requests");
   });
+
+  test("opening the dialog keeps the keyboard in its fields and restores the scanner on close", async () => {
+    mockGet.mockImplementation(() => new Promise(() => {}));
+    window.HTMLMediaElement.prototype.play = () => Promise.resolve();
+    const add = jest.spyOn(window, "addEventListener");
+    const remove = jest.spyOn(window, "removeEventListener");
+    function keyCount(spy) {
+      return spy.mock.calls.filter((call) => call[0] === "keydown").length;
+    }
+
+    function Screen() {
+      const [open, setOpen] = useState(true);
+      return (
+        <div className="pos-screen">
+          <input className="barcode-input" defaultValue="625" />
+          <button type="button" onClick={() => setOpen(true)}>
+            موردين/ذمم
+          </button>
+          <PosSupplierPaymentModal open={open} onClose={() => setOpen(false)} />
+        </div>
+      );
+    }
+
+    await act(async () => {
+      root.render(<Screen />);
+    });
+    await flush();
+
+    const barcode = container.querySelector(".barcode-input");
+    const supplierSearch = container.querySelector("input[role='combobox']");
+    expect(supplierSearch.disabled).toBe(false);
+    expect(supplierSearch.placeholder).toContain("جاري تحميل الموردين");
+    expect(document.activeElement).toBe(supplierSearch);
+    expect(barcode.inert).toBe(true);
+
+    const seen = jest.fn();
+    barcode.addEventListener("keydown", seen);
+    barcode.focus();
+    const scan = new KeyboardEvent("keydown", { key: "9", bubbles: true, cancelable: true });
+    act(() => {
+      barcode.dispatchEvent(scan);
+    });
+    expect(scan.defaultPrevented).toBe(true);
+    expect(seen).not.toHaveBeenCalled();
+    expect(barcode.value).toBe("625");
+    expect(document.activeElement.closest("[role='dialog']")).toBeTruthy();
+    expect(document.activeElement.disabled).toBe(false);
+
+    const amount = container.querySelector('input[placeholder="0.00"]');
+    amount.focus();
+    act(() => setNativeValue(amount, "15.50"));
+    expect(amount.value).toBe("15.50");
+    expect(document.activeElement).toBe(amount);
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    amount.dispatchEvent(enter);
+    expect(document.activeElement.getAttribute("maxlength")).toBe("500");
+    expect(document.activeElement).not.toBe(amount);
+
+    const cancel = [...container.querySelectorAll("button")].find((b) => b.textContent === "إلغاء");
+    cancel.focus();
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    cancel.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement.textContent).toContain("دفع لمورد");
+
+    const customerTab = [...container.querySelectorAll('[role="tab"]')].find((b) =>
+      b.textContent.includes("ذمم")
+    );
+    await act(async () => {
+      customerTab.click();
+    });
+    const customerSearch = container.querySelector("input[role='combobox']");
+    expect(customerSearch.disabled).toBe(false);
+    expect(customerSearch.placeholder).toContain("جاري تحميل العملاء");
+    expect(document.activeElement).toBe(customerSearch);
+
+    const closeList = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    act(() => {
+      document.activeElement.dispatchEvent(closeList);
+    });
+    expect(container.querySelector("[role='dialog']")).toBeTruthy();
+    expect(container.querySelector(".ui-combobox__list")).toBeNull();
+
+    await act(async () => {
+      document.activeElement.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+    });
+    expect(container.querySelector("[role='dialog']")).toBeNull();
+    expect(barcode.inert).toBe(false);
+    expect(document.activeElement).toBe(barcode);
+    const after = new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true });
+    barcode.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
+
+    const afterFirstClose = keyCount(add);
+    expect(keyCount(remove)).toBe(afterFirstClose);
+
+    await act(async () => {
+      container.querySelector("button").click();
+    });
+    await flush();
+    expect(container.querySelector("input[role='combobox']").disabled).toBe(false);
+    expect(document.activeElement).toBe(container.querySelector("input[role='combobox']"));
+
+    await act(async () => {
+      [...container.querySelectorAll("button")].find((b) => b.textContent === "إلغاء").click();
+    });
+    expect(keyCount(add)).toBe(keyCount(remove));
+    expect(keyCount(add)).toBe(afterFirstClose + 1);
+    expect(barcode.inert).toBe(false);
+    expect(document.activeElement).toBe(barcode);
+    barcode.removeEventListener("keydown", seen);
+    add.mockRestore();
+    remove.mockRestore();
+  });
 });

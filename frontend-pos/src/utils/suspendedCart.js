@@ -38,6 +38,7 @@ export function suspendedItemsToCartItems(items, liveMeta = {}) {
       barcode: it.barcode_snapshot,
       scanned_barcode: it.scanned_barcode_snapshot || null,
       name: it.product_name_snapshot,
+      category: it.category || it.product_category || null,
       price,
       conversionToBase: Number(it.conversion_to_base) || 1,
       availableUnits,
