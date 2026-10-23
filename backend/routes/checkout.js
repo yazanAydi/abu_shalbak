@@ -5,7 +5,7 @@ import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { computeSaleTotals, productTaxRate, round2 } from "../utils/tax.js";
 import { roundPosPayable } from "../utils/money.js";
-import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js";
+import { getActivePromotions, computeCartDiscount, invalidOfferMessage } from "../utils/promotions.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { validate } from "../middleware/validate.js";
 import { checkoutSchema } from "../middleware/schemas.js";
@@ -16,6 +16,10 @@ import {
 } from "../utils/salePayments.js";
 import {
   loadSuspendedSaleItemMap,
+  quoteSaleDiscount,
+  decideHeldDiscount,
+  parseStoredPromoBreakdown,
+  payableFromDiscount,
 } from "../services/suspendedSaleService.js";
 import {
   createOnAccountRequest,
@@ -149,14 +153,28 @@ export function createCheckoutRouter(db) {
     };
   }
 
-  router.post("/", requireAuth, requirePosAccess, validate(checkoutSchema), async (req, res, next) => {
-    const validationError = validateCheckoutBody(req.body);
-    if (validationError) {
-      return res.status(400).json({ error: validationError, code: "VALIDATION_ERROR" });
+  router.post("/quote", requireAuth, requirePosAccess, (req, res, next) =>
+    handlePosCheckout(req, res, next, { quoteOnly: true })
+  );
+
+  router.post("/", requireAuth, requirePosAccess, validate(checkoutSchema), (req, res, next) =>
+    handlePosCheckout(req, res, next, { quoteOnly: false })
+  );
+
+  async function handlePosCheckout(req, res, next, { quoteOnly }) {
+    if (quoteOnly) {
+      if (!Array.isArray(req.body?.items) || req.body.items.length === 0) {
+        return res.status(400).json({ error: "قائمة الأصناف مطلوبة", code: "VALIDATION_ERROR" });
+      }
+    } else {
+      const validationError = validateCheckoutBody(req.body);
+      if (validationError) {
+        return res.status(400).json({ error: validationError, code: "VALIDATION_ERROR" });
+      }
     }
 
     const { items, customer_id, employee_id } = req.body;
-    const idempotencyKey = String(req.body.idempotency_key).trim();
+    const idempotencyKey = quoteOnly ? null : String(req.body.idempotency_key).trim();
     const settings = await getAppSettings(db);
     const rawCustId = customer_id ? Number(customer_id) : null;
     const rawEmpId = employee_id ? Number(employee_id) : null;
@@ -181,6 +199,7 @@ export function createCheckoutRouter(db) {
     });
 
     try {
+      if (!quoteOnly) {
       const early = await resolveCheckoutIdempotency(db, {
         key: idempotencyKey,
         fingerprint: payloadFingerprint,
@@ -197,6 +216,7 @@ export function createCheckoutRouter(db) {
           telegram: false,
           idempotent_replay: true,
         });
+      }
       }
     } catch (e) {
       if (e?.status) return res.status(e.status).json({ error: e.message, code: e.code });
@@ -470,11 +490,31 @@ export function createCheckoutRouter(db) {
 
     let discount = 0;
     let promoBreakdown = [];
-    if (
-      suspendedContext &&
-      cartMatchesSuspendedExactly(suspendedContext.itemMap, normalized)
-    ) {
-      discount = round2(Number(suspendedContext.sale.discount));
+    const heldExact =
+      suspendedContext && cartMatchesSuspendedExactly(suspendedContext.itemMap, normalized);
+    if (heldExact) {
+      const fresh = await quoteSaleDiscount(db, normalized);
+      const decision = decideHeldDiscount({
+        quoteVerified: suspendedContext.sale.quote_verified,
+        savedDiscount: suspendedContext.sale.discount,
+        freshDiscount: fresh.discount,
+        freshBreakdown: fresh.breakdown,
+        storedBreakdown: parseStoredPromoBreakdown(suspendedContext.sale.promo_breakdown_json),
+      });
+      if (decision.action === "reject") {
+        const savedPayable = payableFromDiscount(grossTotal, suspendedContext.sale.discount);
+        const currentPayable = payableFromDiscount(fresh.subtotal, fresh.discount);
+        return res.status(409).json({
+          error: "خصم الفاتورة المعلقة غير مؤكد. راجع المبلغ قبل الدفع.",
+          code: "SUSPENDED_QUOTE_UNVERIFIED",
+          saved_discount: round2(Number(suspendedContext.sale.discount) || 0),
+          saved_payable: savedPayable.payable,
+          current_discount: fresh.discount,
+          current_payable: currentPayable.payable,
+        });
+      }
+      discount = decision.discount;
+      promoBreakdown = decision.breakdown;
     } else {
       try {
         const activePromos = await getActivePromotions(db);
@@ -487,6 +527,13 @@ export function createCheckoutRouter(db) {
             unitPrice: L.price,
           }));
           const promoResult = computeCartDiscount(activePromos, promoLines);
+          if (promoResult.invalidOffers?.length) {
+            return res.status(409).json({
+              error: invalidOfferMessage(promoResult.invalidOffers),
+              code: "PROMO_CONFIG_INVALID",
+              offers: promoResult.invalidOffers,
+            });
+          }
           discount = promoResult.discount;
           promoBreakdown = promoResult.breakdown || [];
           discount = Math.min(discount, grossTotal);
@@ -503,6 +550,36 @@ export function createCheckoutRouter(db) {
     const total = payable.payable;
     const amountBeforeRounding = payable.calculated;
     const roundingAdjustment = payable.adjustment;
+
+    if (quoteOnly) {
+      return res.json({
+        subtotal,
+        tax,
+        discount,
+        total,
+        amount_before_rounding: amountBeforeRounding,
+        rounding_adjustment: roundingAdjustment,
+      });
+    }
+
+    const confirmationSent =
+      req.body.confirmed_total != null && req.body.confirmed_total !== ""
+      || req.body.confirmed_discount != null && req.body.confirmed_discount !== "";
+    if (
+      confirmationSent &&
+      (round2(req.body.confirmed_total) !== total || round2(req.body.confirmed_discount ?? NaN) !== discount)
+    ) {
+      return res.status(409).json({
+        error: "تغير سعر الفاتورة. راجع المبلغ قبل الإتمام.",
+        code: "QUOTE_CHANGED",
+        subtotal,
+        tax,
+        discount,
+        total,
+        amount_before_rounding: amountBeforeRounding,
+        rounding_adjustment: roundingAdjustment,
+      });
+    }
 
     const paymentResolved = await resolveCheckoutPayments(db, req.body, total);
     if (paymentResolved.error) {
@@ -801,7 +878,7 @@ export function createCheckoutRouter(db) {
       }
       next(e);
     }
-  });
+  }
 
   return router;
 }

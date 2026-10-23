@@ -651,6 +651,12 @@ async function migrateTransactionsDiscount(db) {
   }
 }
 
+async function migrateTransactionPromoBreakdown(db) {
+  if (!(await tableHasColumn(db, "transactions", "promo_breakdown_json"))) {
+    await db.run("ALTER TABLE transactions ADD COLUMN promo_breakdown_json TEXT");
+  }
+}
+
 async function migrateInventoryMovementsTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS inventory_movements (
@@ -2329,6 +2335,8 @@ async function migrateSuspendedSaleConcurrency(db) {
     ["payload_fingerprint", "TEXT"],
     ["customer_id", "INTEGER REFERENCES customers(id)"],
     ["employee_id", "INTEGER REFERENCES employees(id)"],
+    ["quote_verified", "INTEGER NOT NULL DEFAULT 0"],
+    ["promo_breakdown_json", "TEXT"],
   ];
   for (const [col, type] of cols) {
     if (!(await tableHasColumn(db, "suspended_sales", col))) {
@@ -4041,6 +4049,7 @@ export async function initDatabase(dbPath) {
   await migrateHandoverDispositionColumns(db);
   await migrateShiftCountAdvanceIdempotency(db);
   await db.exec("PRAGMA optimize;");
+  await migrateTransactionPromoBreakdown(db);
 
   await recordSchemaVersion(db);
 

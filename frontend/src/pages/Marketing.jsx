@@ -12,10 +12,10 @@ import { pickExportColumns } from "../utils/reportExport";
 import CategorySelect from "../components/CategorySelect";
 
 const OFFER_LABELS = {
-  multi_price: "عرض: كمية بسعر",
-  percentage: "خصم نسبة %",
-  fixed: "خصم مبلغ ثابت",
-  bundle: "حزمة",
+  multi_price: "كمية بسعر إجمالي",
+  percentage: "خصم نسبة مئوية",
+  fixed: "خصم مبلغ لكل وحدة",
+  bundle: "خصم مرة واحدة للحزمة",
   buy_x_get_y: "اشترِ X واحصل على Y",
 };
 
@@ -77,8 +77,28 @@ function promoToForm(p) {
 function formatPromoValue(p) {
   if (p.offer_type === "percentage") return `${p.discount_value}%`;
   if (p.offer_type === "buy_x_get_y") return `${p.buy_qty}+${p.get_qty}`;
-  if (p.offer_type === "multi_price") return `${p.buy_qty} بـ ₪${Number(p.discount_value).toFixed(2)}`;
+  if (p.offer_type === "multi_price") return `${p.buy_qty} بـ ₪${Number(p.discount_value).toFixed(2)} إجمالاً`;
+  if (p.offer_type === "fixed") return `₪${Number(p.discount_value).toFixed(2)} لكل وحدة`;
+  if (p.offer_type === "bundle") return `₪${Number(p.discount_value).toFixed(2)} مرة واحدة عند ${p.buy_qty}`;
   return `₪${Number(p.discount_value).toFixed(2)}`;
+}
+
+function percentageInvalid(p) {
+  if (p.offer_type !== "percentage") return false;
+  const val = Number(p.discount_value);
+  return !Number.isFinite(val) || val < 0 || val > 100;
+}
+
+function previewQuantity(form) {
+  if (form.offer_type === "buy_x_get_y") {
+    const n = (Number(form.buy_qty) || 0) + (Number(form.get_qty) || 0);
+    return n > 0 ? n : null;
+  }
+  if (form.offer_type === "multi_price" || form.offer_type === "bundle") {
+    const n = Number(form.buy_qty) || 0;
+    return n > 0 ? n : null;
+  }
+  return 2;
 }
 
 function formatPromoTarget(p) {
@@ -137,6 +157,7 @@ export default function Marketing() {
   const [campaignForm, setCampaignForm] = useState({ name: "", description: "", start_date: "", end_date: "", active: true });
 
   const [showPromo, setShowPromo] = useState(false);
+  const [offerPreview, setOfferPreview] = useState(null);
   const [editingPromoId, setEditingPromoId] = useState(null);
   const [promoForm, setPromoForm] = useState(emptyPromo);
 
@@ -195,6 +216,40 @@ export default function Marketing() {
     })();
     return () => { cancelled = true; };
   }, [promoForm.product_id]);
+
+  useEffect(() => {
+    const unit = productUnits.find((row) => String(row.id) === String(promoForm.product_unit_id));
+    const quantity = previewQuantity(promoForm);
+    const price = Number(unit?.price);
+    if (!showPromo || !(price > 0) || !quantity) {
+      setOfferPreview(null);
+      return;
+    }
+    if (promoForm.offer_type === "percentage" && percentageInvalid(promoForm)) {
+      setOfferPreview(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await api.post("/api/marketing/promotions/preview", {
+          offer_type: promoForm.offer_type,
+          discount_value: promoForm.discount_value,
+          buy_qty: promoForm.buy_qty,
+          get_qty: promoForm.get_qty,
+          unit_price: price,
+          quantity,
+        }, { headers: getAuthHeaders() });
+        if (!cancelled) setOfferPreview(res.data);
+      } catch {
+        if (!cancelled) setOfferPreview(null);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [showPromo, promoForm, productUnits]);
 
   async function saveCampaign() {
     if (!campaignForm.name.trim()) { toast.error("اسم الحملة مطلوب"); return; }
@@ -262,6 +317,21 @@ export default function Marketing() {
       if (!(Number(promoForm.buy_qty) > 0)) { toast.error("أدخل الكمية"); return; }
       if (!(Number(promoForm.discount_value) > 0)) { toast.error("أدخل سعر البيع"); return; }
     }
+    if (promoForm.offer_type === "percentage") {
+      const pct = Number(promoForm.discount_value);
+      if (promoForm.discount_value === "" || !Number.isFinite(pct) || pct < 0 || pct > 100) {
+        toast.error("نسبة الخصم يجب أن تكون بين 0 و 100");
+        return;
+      }
+    }
+    if (promoForm.offer_type === "fixed" && !(Number(promoForm.discount_value) > 0)) {
+      toast.error("أدخل مبلغ الخصم لكل وحدة");
+      return;
+    }
+    if (promoForm.offer_type === "bundle") {
+      if (!(Number(promoForm.buy_qty) > 0)) { toast.error("أدخل الكمية المطلوبة للحزمة"); return; }
+      if (!(Number(promoForm.discount_value) > 0)) { toast.error("أدخل مبلغ الخصم"); return; }
+    }
     try {
       const payload = buildPromoPayload();
       let res;
@@ -311,10 +381,10 @@ export default function Marketing() {
     {
       key: "active",
       header: "الحالة",
-      value: (p) => (isPromoExhausted(p) ? "منتهي" : p.active ? "مفعّل" : "متوقف"),
+      value: (p) => (percentageInvalid(p) ? "نسبة غير صالحة" : isPromoExhausted(p) ? "منتهي" : p.active ? "مفعّل" : "متوقف"),
       render: (p) => (
-        <StatusPill tone={isPromoExhausted(p) ? "orange" : p.active ? "green" : "neutral"}>
-          {isPromoExhausted(p) ? "منتهي" : p.active ? "مفعّل" : "متوقف"}
+        <StatusPill tone={percentageInvalid(p) || isPromoExhausted(p) ? "orange" : p.active ? "green" : "neutral"}>
+          {percentageInvalid(p) ? "نسبة غير صالحة" : isPromoExhausted(p) ? "منتهي" : p.active ? "مفعّل" : "متوقف"}
         </StatusPill>
       ),
     },
@@ -418,7 +488,13 @@ export default function Marketing() {
         <FormGrid>
           <FormField label="اسم العرض" required><Input value={promoForm.name} onChange={(e) => setPromoForm((f) => ({ ...f, name: e.target.value }))} /></FormField>
           <FormField label="نوع العرض">
-            <Select value={promoForm.offer_type} onChange={(e) => setPromoForm((f) => ({ ...f, offer_type: e.target.value }))}>
+            <Select value={promoForm.offer_type} onChange={(e) => setPromoForm((f) => ({
+              ...f,
+              offer_type: e.target.value,
+              discount_value: "",
+              buy_qty: "",
+              get_qty: "",
+            }))}>
               {OFFER_TYPE_ORDER.map((v) => <option key={v} value={v}>{OFFER_LABELS[v]}</option>)}
             </Select>
           </FormField>
@@ -499,7 +575,7 @@ export default function Marketing() {
             </FormField>
           )}
           {needsValue && (
-            <FormField label={promoForm.offer_type === "percentage" ? "نسبة الخصم %" : "قيمة الخصم (₪)"}>
+            <FormField label={promoForm.offer_type === "percentage" ? "نسبة الخصم %" : promoForm.offer_type === "fixed" ? "الخصم لكل وحدة بيع (₪)" : "مبلغ الخصم مرة واحدة (₪)"}>
               <Input type="number" step="0.01" value={promoForm.discount_value} onChange={(e) => setPromoForm((f) => ({ ...f, discount_value: e.target.value }))} />
             </FormField>
           )}
@@ -514,11 +590,23 @@ export default function Marketing() {
               <Input type="number" value={promoForm.buy_qty} onChange={(e) => setPromoForm((f) => ({ ...f, buy_qty: e.target.value }))} />
             </FormField>
           )}
-          {needsMultiPrice && <FormField label="سعر البيع (₪)"><Input type="number" step="1" inputMode="decimal" value={promoForm.discount_value} onChange={(e) => setPromoForm((f) => ({ ...f, discount_value: e.target.value }))} /></FormField>}
+          {needsBundleQty && (
+            <p className="ui-field__hint ui-field--full">
+              يُخصم هذا المبلغ مرة واحدة عن السطر عند بلوغ الكمية، ولا يتكرر لكل وحدة.
+            </p>
+          )}
+          {needsMultiPrice && <FormField label="السعر الإجمالي لهذه الكمية (₪)"><Input type="number" step="1" inputMode="decimal" value={promoForm.discount_value} onChange={(e) => setPromoForm((f) => ({ ...f, discount_value: e.target.value }))} /></FormField>}
           {!needsMultiPrice && (
             <FormField label="حد أدنى للمبلغ (₪)"><Input type="number" step="0.01" value={promoForm.min_amount} onChange={(e) => setPromoForm((f) => ({ ...f, min_amount: e.target.value }))} /></FormField>
           )}
         </FormGrid>
+        {offerPreview ? (
+          <p className="ui-field__hint ui-mt-sm">
+            مثال: {offerPreview.quantity} × ₪{Number(offerPreview.unit_price).toFixed(2)} = ₪{Number(offerPreview.line_gross).toFixed(2)}.
+            الخصم ₪{Number(offerPreview.discount).toFixed(2)}. المتبقي ₪{Number(offerPreview.payable).toFixed(2)}.
+            {offerPreview.free ? " هذا العرض يجعل هذه الكمية مجانية." : ""}
+          </p>
+        ) : null}
 
         <div className="ui-text-muted ui-mt-sm">انتهاء العرض</div>
         <FormGrid>

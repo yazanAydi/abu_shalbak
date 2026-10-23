@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { requireOpenShiftForCashier } from "../middleware/getCurrentShift.js";
 import { getAppSettings } from "../utils/settings.js";
 import { computeSaleTotals, productTaxRate, round2 } from "../utils/tax.js";
-import { getActivePromotions, computeCartDiscount } from "../utils/promotions.js";
+import { roundPosPayable } from "../utils/money.js";
+import { getActivePromotions, computeCartDiscount, invalidOfferMessage } from "../utils/promotions.js";
 import { ensureDefaultProductUnit, isWeighedBaseUnit } from "../utils/productUnits.js";
 import { HttpError } from "../utils/httpError.js";
 import { withTransaction } from "../utils/dbTx.js";
@@ -158,6 +159,9 @@ function mapSuspendedHeader(row, { replayed = false } = {}) {
     discount: round2(Number(row.discount)),
     tax: round2(Number(row.tax)),
     total: round2(Number(row.total)),
+    quote_verified: Number(row.quote_verified) === 1,
+    payable: payableFromDiscount(row.subtotal, row.discount).payable,
+    rounding_adjustment: payableFromDiscount(row.subtotal, row.discount).adjustment,
     note: row.note ?? null,
     customer_id: row.customer_id ? Number(row.customer_id) : null,
     employee_id: row.employee_id ? Number(row.employee_id) : null,
@@ -222,21 +226,80 @@ async function priceNormalizedSuspend(db, normalized, settings) {
   const { subtotal, tax } = computeSaleTotals(taxLines, settings);
   const grossTotal = round2(subtotal + tax);
   let discount = 0;
+  let breakdown = [];
   try {
     const activePromos = await getActivePromotions(db);
     if (activePromos.length > 0) {
       const promoLines = normalized.map((L) => ({
         product_id: L.product_id,
+        product_unit_id: L.product_unit_id,
         category: L.category,
         quantity: L.quantity,
         unitPrice: L.unit_price_snapshot,
       }));
-      discount = Math.min(computeCartDiscount(activePromos, promoLines).discount, grossTotal);
+      const promoResult = computeCartDiscount(activePromos, promoLines);
+      if (promoResult.invalidOffers?.length) {
+        const err = new Error(invalidOfferMessage(promoResult.invalidOffers));
+        err.status = 409;
+        err.code = "PROMO_CONFIG_INVALID";
+        throw err;
+      }
+      discount = Math.min(promoResult.discount, grossTotal);
+      breakdown = promoResult.breakdown || [];
     }
-  } catch (_) {
+  } catch (err) {
+    if (err?.code === "PROMO_CONFIG_INVALID") throw err;
     discount = 0;
+    breakdown = [];
   }
-  return { subtotal, tax, discount, total: round2(grossTotal - discount) };
+  return { subtotal, tax, discount, breakdown, total: round2(grossTotal - discount) };
+}
+
+export function payableFromDiscount(subtotal, discount) {
+  return roundPosPayable(round2(round2(subtotal) - round2(discount)));
+}
+
+export function parseStoredPromoBreakdown(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A verified hold keeps the saved discount. Usage follows that same quote:
+ * the current breakdown when it still produces the saved amount, otherwise
+ * the breakdown saved with the quote. An unverified hold is not priced here.
+ */
+export function decideHeldDiscount({
+  quoteVerified,
+  savedDiscount,
+  freshDiscount,
+  freshBreakdown,
+  storedBreakdown,
+}) {
+  if (Number(quoteVerified) !== 1) return { action: "reject" };
+  const saved = round2(Number(savedDiscount) || 0);
+  const fresh = round2(Number(freshDiscount) || 0);
+  const breakdown = saved === fresh ? freshBreakdown || [] : storedBreakdown || [];
+  return { action: "lock", discount: saved, breakdown };
+}
+
+export async function quoteSaleDiscount(db, lines) {
+  const settings = await getAppSettings(db);
+  const normalized = (lines || []).map((line) => ({
+    product_id: line.product_id,
+    product_unit_id: line.product_unit_id,
+    category: line.category,
+    quantity: line.quantity,
+    unit_price_snapshot: line.unitPrice ?? line.unit_price_snapshot ?? line.price,
+    tax_rate_snapshot: line.taxRate ?? line.tax_rate_snapshot ?? 0,
+    scaleWeighed: Boolean(line.scaleWeighed ?? line.is_weighed),
+  }));
+  return priceNormalizedSuspend(db, normalized, settings);
 }
 
 async function insertSuspendedItems(db, suspendedSaleId, normalized) {
@@ -318,8 +381,8 @@ export async function createSuspendedSale(db, { cashierId, note, items, idempote
         `INSERT INTO suspended_sales (
           cashier_id, shift_id, note, subtotal, discount, tax, total, status,
           created_at, updated_at, version, idempotency_key, payload_fingerprint,
-          customer_id, employee_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'suspended', datetime('now'), datetime('now'), 1, ?, ?, ?, ?)`,
+          customer_id, employee_id, quote_verified, promo_breakdown_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'suspended', datetime('now'), datetime('now'), 1, ?, ?, ?, ?, 1, ?)`,
         [
           cashierId,
           shift.id,
@@ -332,6 +395,7 @@ export async function createSuspendedSale(db, { cashierId, note, items, idempote
           fingerprint,
           party.customerId,
           party.employeeId,
+          JSON.stringify(priced.breakdown || []),
         ]
       );
     } catch (err) {
@@ -395,11 +459,13 @@ export async function updateSuspendedSale(db, id, cashierId, { items, note, vers
       nextCustomer,
       nextEmployee,
       fingerprint,
+      JSON.stringify(priced.breakdown || []),
       id,
     ];
     let sql = `UPDATE suspended_sales
       SET note = ?, subtotal = ?, discount = ?, tax = ?, total = ?,
           customer_id = ?, employee_id = ?, payload_fingerprint = ?,
+          quote_verified = 1, promo_breakdown_json = ?,
           version = COALESCE(version, 1) + 1, updated_at = datetime('now')
       WHERE id = ? AND status = 'suspended'`;
     if (expectedVersion != null) {
@@ -503,6 +569,17 @@ export async function getSuspendedSaleDetail(db, id) {
 
   const itemRows = await loadSuspendedItems(db, id);
 
+  const quoted = await quoteSaleDiscount(db, itemRows.map((r) => ({
+    product_id: r.product_id,
+    product_unit_id: r.product_unit_id,
+    category: r.product_category,
+    quantity: r.quantity,
+    unit_price_snapshot: r.unit_price_snapshot,
+    tax_rate_snapshot: r.tax_rate_snapshot,
+  })));
+  const savedPayable = payableFromDiscount(sale.subtotal, sale.discount);
+  const currentPayable = payableFromDiscount(quoted.subtotal, quoted.discount);
+
   const items = itemRows.map((r) => ({
     id: r.id,
     product_id: r.product_id,
@@ -530,6 +607,13 @@ export async function getSuspendedSaleDetail(db, id) {
     discount: round2(Number(sale.discount)),
     tax: round2(Number(sale.tax)),
     total: round2(Number(sale.total)),
+    quote_verified: Number(sale.quote_verified) === 1,
+    saved_discount: round2(Number(sale.discount)),
+    saved_payable: savedPayable.payable,
+    saved_rounding_adjustment: savedPayable.adjustment,
+    current_discount: quoted.discount,
+    current_payable: currentPayable.payable,
+    current_rounding_adjustment: currentPayable.adjustment,
     status: sale.status,
     customer_id: sale.customer_id ? Number(sale.customer_id) : null,
     employee_id: sale.employee_id ? Number(sale.employee_id) : null,

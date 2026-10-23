@@ -38,6 +38,8 @@ import { focusBarcodeInput, isBarcodeFocusSurface } from "../utils/focusBarcodeI
 import { readWaitingRequestId, writeWaitingRequestId } from "../utils/posWaitingRequests";
 import { playScanSuccess, warmPosSounds } from "../utils/posSounds";
 import { suspendedItemsToCartItems } from "../utils/suspendedCart";
+import { heldCartMatches, heldQuoteFromDetail, resolveHeldDisplay } from "../utils/heldQuote";
+import { fetchCheckoutQuote } from "../utils/checkoutQuote";
 import {
   buildSuspendRequest,
   resolveSuspendAttempt,
@@ -58,6 +60,7 @@ const PosSuspendedSalesModal = lazy(() => import("../components/pos/PosSuspended
 const PosSuspendedDetailModal = lazy(() => import("../components/pos/PosSuspendedDetailModal"));
 const PosPreviousSalesModal = lazy(() => import("../components/pos/PosPreviousSalesModal"));
 const PosRestoreConflictModal = lazy(() => import("../components/pos/PosRestoreConflictModal"));
+const PosHeldQuoteModal = lazy(() => import("../components/pos/PosHeldQuoteModal"));
 const PosRefundModal = lazy(() => import("../components/pos/PosRefundModal"));
 const PosAdvanceRequestModal = lazy(() => import("../components/pos/PosAdvanceRequestModal"));
 const PosSupplierPaymentModal = lazy(() => import("../components/pos/PosSupplierPaymentModal"));
@@ -126,6 +129,12 @@ export default function Checkout() {
   const [restoreConflictOpen, setRestoreConflictOpen] = useState(false);
   const [pendingRestoreId, setPendingRestoreId] = useState(null);
   const [activeSuspendedSaleId, setActiveSuspendedSaleId] = useState(null);
+  const [heldQuote, setHeldQuote] = useState(null);
+  const [heldRepriceOpen, setHeldRepriceOpen] = useState(false);
+  const [heldRepriceSaving, setHeldRepriceSaving] = useState(false);
+  const [serverQuote, setServerQuote] = useState(null);
+  const [quoteChanged, setQuoteChanged] = useState(false);
+  const [quoteLoading, setQuoteLoading] = useState(false);
   const [previousSalesOpen, setPreviousSalesOpen] = useState(false);
   const activeSuspendedSaleIdRef = useRef(null);
   const suspendedVersionRef = useRef(null);
@@ -207,6 +216,7 @@ export default function Checkout() {
     suspendedModalOpen ||
     detailModalOpen ||
     restoreConflictOpen ||
+    heldRepriceOpen ||
     !!advanceWaitingId ||
     !!onAccountWaitingId ||
     !!cashDebtWaitingId ||
@@ -361,12 +371,18 @@ export default function Checkout() {
     [cartItems, appSettings, activePromos]
   );
 
-  const lineDiscounts = useMemo(
-    () => buildCartLineDiscounts(cartItems, activePromos),
-    [cartItems, activePromos]
-  );
-
   const { tax, discount, total, roundingAdjustment } = estimated;
+  const heldMatch = Boolean(heldQuote && heldCartMatches(cartItems, heldQuote.items));
+  const heldDisplay = heldMatch ? resolveHeldDisplay(heldQuote) : null;
+  const discountShown = heldDisplay ? heldDisplay.discount : discount;
+  const totalShown = heldDisplay ? heldDisplay.total : total;
+  const roundingShown = heldDisplay ? heldDisplay.roundingAdjustment : roundingAdjustment;
+  const promosForLines = heldDisplay && heldDisplay.discount !== discount ? [] : activePromos;
+
+  const lineDiscounts = useMemo(
+    () => buildCartLineDiscounts(cartItems, promosForLines),
+    [cartItems, promosForLines]
+  );
 
   const addToCart = useCallback((product) => {
     if (isLoading) return;
@@ -400,6 +416,8 @@ export default function Checkout() {
     suspendIdempotencyRef.current = null;
     suspendSignatureRef.current = null;
     setActiveSuspendedSaleId(null);
+    setHeldQuote(null);
+    setHeldRepriceOpen(false);
   }, []);
 
   const rememberSuspendedSale = useCallback((detail) => {
@@ -491,6 +509,9 @@ export default function Checkout() {
         dispatch({ type: "LOAD_CART", cartItems: cartRows });
       }
       rememberSuspendedSale(detail);
+      const quote = mode === "load" ? heldQuoteFromDetail(detail) : null;
+      setHeldQuote(quote);
+      setHeldRepriceOpen(Boolean(quote && !quote.quote_verified));
       if (mode === "load") {
         setCustomerId(detail.customer_id || null);
         setEmployeeId(detail.employee_id || null);
@@ -544,9 +565,32 @@ export default function Checkout() {
     return data;
   }, []);
 
+  const confirmHeldReprice = useCallback(async () => {
+    if (!activeSuspendedSaleId || !heldQuote || heldRepriceSaving) return;
+    setHeldRepriceSaving(true);
+    try {
+      const saved = await syncSuspendedCart(activeSuspendedSaleId, cartItems);
+      setHeldQuote({
+        ...heldQuote,
+        quote_verified: saved?.quote_verified !== false,
+        saved_discount: Number(saved?.discount) || 0,
+        saved_payable: Number(saved?.payable) || 0,
+        saved_rounding: Number(saved?.rounding_adjustment) || 0,
+        current_discount: Number(saved?.discount) || 0,
+        current_payable: Number(saved?.payable) || 0,
+        current_rounding: Number(saved?.rounding_adjustment) || 0,
+      });
+      setHeldRepriceOpen(false);
+    } catch (e) {
+      showPosActionError(extractApiError(e, "تعذّر تحديث مبلغ الفاتورة المعلقة"));
+    } finally {
+      setHeldRepriceSaving(false);
+    }
+  }, [activeSuspendedSaleId, cartItems, heldQuote, heldRepriceSaving, showPosActionError, syncSuspendedCart]);
+
   const completeSale = useCallback(
     async (paymentPayload = null) => {
-      await submitCompleteSale({
+      const result = await submitCompleteSale({
         paymentPayload,
         selectedPayment,
         cartItems,
@@ -557,6 +601,12 @@ export default function Checkout() {
         idempotencyKeyRef,
         submittedPayloadRef,
         activeSuspendedSaleId,
+        syncBeforeCheckout: !(
+          heldQuote &&
+          heldQuote.quote_verified &&
+          heldCartMatches(cartItems, heldQuote.items)
+        ),
+        confirmedQuote: serverQuote,
         dispatch,
         setIsLoading,
         setOnAccountWaitingId,
@@ -579,6 +629,17 @@ export default function Checkout() {
           });
         },
       });
+      if (result?.status === "quote_changed" && result.quote) {
+        setServerQuote({
+          subtotal: result.quote.subtotal,
+          tax: result.quote.tax,
+          discount: result.quote.discount,
+          total: result.quote.total,
+          amount_before_rounding: result.quote.amount_before_rounding,
+          rounding_adjustment: result.quote.rounding_adjustment,
+        });
+        setQuoteChanged(true);
+      }
     },
     [
       cartItems,
@@ -589,6 +650,8 @@ export default function Checkout() {
       loadSuspendedList,
       selectedPayment,
       activeSuspendedSaleId,
+      heldQuote,
+      serverQuote,
       syncSuspendedCart,
       clearSuspendedIdentity,
       user?.id,
@@ -691,8 +754,12 @@ export default function Checkout() {
     openReceiptForPrinting(receiptData, { tab });
   }
 
-  function handleCompleteClick() {
-    if (isLoading) return;
+  async function handleCompleteClick() {
+    if (isLoading || quoteLoading) return;
+    if (heldDisplay?.needsConfirmation) {
+      setHeldRepriceOpen(true);
+      return;
+    }
     if (!shiftReady) {
       const message = "افتح الوردية قبل إتمام البيع";
       dispatch({ type: "CHECKOUT_ERROR", fallback: message });
@@ -712,10 +779,25 @@ export default function Checkout() {
       return;
     }
     dispatch({ type: "CLEAR_SALE_ERR" });
-    setSelectedPayment("cash");
-    setCustomerId(null);
-    setEmployeeId(null);
-    setPayModalOpen(true);
+    setQuoteLoading(true);
+    try {
+      const quote = await fetchCheckoutQuote({
+        cartItems,
+        suspendedSaleId: activeSuspendedSaleId,
+      });
+      setServerQuote(quote);
+      setQuoteChanged(false);
+      setSelectedPayment("cash");
+      setCustomerId(null);
+      setEmployeeId(null);
+      setPayModalOpen(true);
+    } catch (e) {
+      const message = e?.response?.data?.error || "تعذّر تأكيد السعر من الخادم. أعد المحاولة.";
+      dispatch({ type: "CHECKOUT_ERROR", fallback: message });
+      showPosActionError(message);
+    } finally {
+      setQuoteLoading(false);
+    }
   }
 
   async function holdCartNow() {
@@ -829,6 +911,7 @@ export default function Checkout() {
     suspendedModalOpen ||
     detailModalOpen ||
     restoreConflictOpen ||
+    heldRepriceOpen ||
     previousSalesOpen ||
     supplierPayOpen ||
     !!cashDebtWaitingId ||
@@ -909,6 +992,8 @@ export default function Checkout() {
   function handlePayModalClose() {
     if (isLoading) return;
     setPayModalOpen(false);
+    setServerQuote(null);
+    setQuoteChanged(false);
     setSelectedPayment(null);
     setCustomerId(null);
     setEmployeeId(null);
@@ -1010,7 +1095,7 @@ export default function Checkout() {
           cartItems={cartItems}
           scrollToCartKey={lastScannedCartKey}
           lineDiscounts={lineDiscounts}
-          activePromos={activePromos}
+          activePromos={promosForLines}
           onQuantityChange={changeQuantity}
           onRemoveItem={removeFromCart}
           onUnitChange={changeUnit}
@@ -1033,9 +1118,9 @@ export default function Checkout() {
         </div>
         <PosPaymentPanel
           tax={tax}
-          discount={discount}
-          roundingAdjustment={roundingAdjustment}
-          total={total}
+          discount={discountShown}
+          roundingAdjustment={roundingShown}
+          total={totalShown}
           error={error}
           printWarning={printWarning}
           isLoading={isLoading}
@@ -1137,6 +1222,18 @@ export default function Checkout() {
           />
         ) : null}
 
+        {heldRepriceOpen && heldDisplay ? (
+          <PosHeldQuoteModal
+            open
+            savedDiscount={heldDisplay.savedDiscount}
+            savedPayable={heldDisplay.savedPayable}
+            currentDiscount={heldDisplay.discount}
+            currentPayable={heldDisplay.total}
+            confirming={heldRepriceSaving}
+            onConfirm={confirmHeldReprice}
+            onDismiss={() => setHeldRepriceOpen(false)}
+          />
+        ) : null}
         {restoreConflictOpen ? (
           <PosRestoreConflictModal
             open
@@ -1360,8 +1457,10 @@ export default function Checkout() {
 
       <PosPaymentModal
         open={payModalOpen}
-        total={total}
-        roundingAdjustment={roundingAdjustment}
+        total={serverQuote ? serverQuote.total : totalShown}
+        discount={serverQuote ? serverQuote.discount : discountShown}
+        priceNotice={quoteChanged ? "تغير السعر بعد فتح الدفع. راجع الإجمالي والخصم والباقي، ثم أكّد البيع." : ""}
+        roundingAdjustment={serverQuote ? serverQuote.rounding_adjustment : roundingShown}
         selectedPayment={selectedPayment}
         onSelectPayment={setSelectedPayment}
         customerId={customerId}

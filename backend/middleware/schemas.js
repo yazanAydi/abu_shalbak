@@ -48,6 +48,8 @@ export const checkoutSchema = z
       .max(100),
     suspended_sale_id: z.coerce.number().int().positive().optional().nullable(),
     notes: z.string().max(500, "الملاحظات يجب ألا تتجاوز 500 حرف").optional().nullable(),
+    confirmed_total: z.coerce.number().optional().nullable(),
+    confirmed_discount: z.coerce.number().optional().nullable(),
   })
   .refine((data) => data.payment_method || (data.payments && data.payments.length > 0), {
     message: "payment_method أو payments مطلوب",

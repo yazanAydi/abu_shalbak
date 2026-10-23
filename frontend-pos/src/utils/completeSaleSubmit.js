@@ -39,7 +39,7 @@ export function checkoutAttemptSignature(body) {
   });
 }
 
-export function buildCheckoutBody({ cartItems, pay, customerId, employeeId, activeSuspendedSaleId, key }) {
+export function buildCheckoutBody({ cartItems, pay, customerId, employeeId, activeSuspendedSaleId, key, confirmedQuote }) {
   const items = cartItems.map((c) => ({
     product_id: c.id,
     unit_id: c.unitId,
@@ -55,6 +55,10 @@ export function buildCheckoutBody({ cartItems, pay, customerId, employeeId, acti
   if (customerId) body.customer_id = Number(customerId);
   if (employeeId) body.employee_id = Number(employeeId);
   if (activeSuspendedSaleId) body.suspended_sale_id = activeSuspendedSaleId;
+  if (confirmedQuote) {
+    body.confirmed_total = confirmedQuote.total;
+    body.confirmed_discount = confirmedQuote.discount;
+  }
   return body;
 }
 
@@ -99,6 +103,8 @@ export async function submitCompleteSale({
   idempotencyKeyRef,
   submittedPayloadRef,
   activeSuspendedSaleId,
+  confirmedQuote = null,
+  syncBeforeCheckout = true,
   dispatch,
   setIsLoading,
   setOnAccountWaitingId,
@@ -129,12 +135,13 @@ export async function submitCompleteSale({
   setIsLoading(true);
   unlockPosAudio();
 
-  const draft = buildCheckoutBody({
+    const draft = buildCheckoutBody({
     cartItems,
     pay,
     customerId,
     employeeId,
     activeSuspendedSaleId,
+    confirmedQuote,
     key: idempotencyKeyRef.current || "pending",
   });
   const draftSig = checkoutAttemptSignature(draft);
@@ -157,6 +164,7 @@ export async function submitCompleteSale({
         customerId,
         employeeId,
         activeSuspendedSaleId,
+        confirmedQuote,
         key: idempotencyKeyRef.current,
       });
   if (submittedPayloadRef) submittedPayloadRef.current = body;
@@ -167,7 +175,7 @@ export async function submitCompleteSale({
   let receiptToPrint = null;
   let result = { status: "ok" };
   try {
-    if (activeSuspendedSaleId) {
+    if (activeSuspendedSaleId && syncBeforeCheckout) {
       await syncSuspendedCart(activeSuspendedSaleId, cartItems);
     }
 
@@ -203,6 +211,9 @@ export async function submitCompleteSale({
     result = { status: "ok", payload };
   } catch (e) {
     const code = checkoutErrorCode(e);
+    if (code === "QUOTE_CHANGED") {
+      return { status: "quote_changed", quote: e.response?.data || {} };
+    }
     dispatch({
       type: "CHECKOUT_ERROR",
       payload: e.response?.data,

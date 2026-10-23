@@ -84,6 +84,8 @@ function withOppositeRemainder(lines, editedIdx, total, getCurrency) {
 export default function PosPaymentModal({
   open,
   total,
+  discount = 0,
+  priceNotice = "",
   roundingAdjustment = 0,
   selectedPayment,
   onSelectPayment,
@@ -188,7 +190,7 @@ export default function PosPaymentModal({
     setCustomerQuery("");
     setCustomerResults([]);
     setSelectedCustomerName("");
-  }, [open, total]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -491,6 +493,10 @@ export default function PosPaymentModal({
         <div className="pos-payment-modal-head">
           <h2 className="shift-modal-title">إتمام البيع</h2>
           <div className="pos-payment-modal-total">
+            {priceNotice ? <p className="pos-err">{priceNotice}</p> : null}
+            {Number(discount) > 0 ? (
+              <div className="pos-payment-modal-total-label">الخصم: {ils(discount)}</div>
+            ) : null}
             <span className="pos-payment-modal-total-label">الإجمالي</span>
             <span className="pos-payment-modal-total-amount">{ils(total)}</span>
             {Number(roundingAdjustment) ? (

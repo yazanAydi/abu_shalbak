@@ -63,6 +63,62 @@ describe("POS deal pricing", () => {
     expect(appliedPromoName(pieces, [cartonPromo])).toBe("");
   });
 
+  test("a 220.46 basket does not turn the 2 x 25 line into a 50 discount", () => {
+    const settings = { tax_inclusive: true, default_tax_rate: 0 };
+    const filler = {
+      id: 8,
+      unitId: 80,
+      category: "أخرى",
+      quantity: 1,
+      price: 170.46,
+      subtotal: 170.46,
+    };
+    const shampoo = {
+      id: 9,
+      unitId: 90,
+      category: "عناية",
+      name: "شامبو",
+      quantity: 2,
+      price: 25,
+      subtotal: 50,
+    };
+    const cart = [filler, shampoo];
+    const plain = estimateCartTotals(cart, settings, []);
+    expect(plain.subtotal).toBe(220.46);
+    expect(plain.discount).toBe(0);
+    expect(plain.amountBeforeRounding).toBe(220.46);
+    expect(plain.roundingAdjustment).toBe(-0.46);
+    expect(plain.total).toBe(220);
+
+    const unitDeal = {
+      id: 1,
+      name: "2 بـ 40",
+      offer_type: "multi_price",
+      product_id: 9,
+      product_unit_id: 90,
+      discount_value: 40,
+      buy_qty: 2,
+    };
+    const categoryFixed = {
+      id: 2,
+      name: "خصم العناية",
+      offer_type: "fixed",
+      category: "عناية",
+      discount_value: 25,
+    };
+    const shown = estimateCartTotals(cart, settings, [categoryFixed, unitDeal]);
+    expect(shown.discount).toBe(10);
+    expect(shown.amountBeforeRounding).toBe(210.46);
+    expect(shown.roundingAdjustment).toBe(-0.46);
+    expect(shown.total).toBe(210);
+    expect(computeDealLineTotal(shampoo, [categoryFixed, unitDeal])).toBe(40);
+    const displayedLines =
+      computeDealLineTotal(filler, [categoryFixed, unitDeal]) +
+      computeDealLineTotal(shampoo, [categoryFixed, unitDeal]);
+    expect(Math.round(displayedLines * 100) / 100).toBe(210.46);
+    expect(shown.total).toBe(210);
+  });
+
   test("a category deal uses the sold unit quantity", () => {
     const categoryPromo = {
       id: 9,

@@ -54,6 +54,17 @@ function sortedPromosForLine(promos, line) {
     );
 }
 
+export function invalidOfferMessage(offers) {
+  const name = offers?.[0]?.name || "بدون اسم";
+  return `العرض «${name}» نسبته خارج 0–100. صحّحه من المكتب قبل البيع. لن يُخصم من أصناف أخرى.`;
+}
+
+export function percentageOfferInvalid(promo) {
+  if (promo?.offer_type !== "percentage") return false;
+  const val = Number(promo.discount_value);
+  return !Number.isFinite(val) || val < 0 || val > 100;
+}
+
 function calcPromoLineDiscount(promo, line, remaining) {
   const qty = Math.max(0, Number(line.quantity) || 0);
   const unit = Math.max(0, Number(line.unitPrice) || 0);
@@ -127,6 +138,9 @@ function calcPromoLineDiscount(promo, line, remaining) {
       return null;
   }
 
+  const cap = r2(qty * unit);
+  if (d > cap) d = cap;
+
   if (d > 0 && unitsUsed > 0) {
     return { discount: d, unitsUsed };
   }
@@ -141,7 +155,10 @@ function calcPromoLineDiscount(promo, line, remaining) {
 export function computeCartDiscount(promos, lines) {
   let discount = 0;
   const breakdown = [];
-  if (!Array.isArray(promos) || !Array.isArray(lines)) return { discount: 0, breakdown };
+  const invalidOffers = [];
+  if (!Array.isArray(promos) || !Array.isArray(lines)) {
+    return { discount: 0, breakdown, invalidOffers };
+  }
 
   const quotaRemaining = new Map();
 
@@ -164,14 +181,29 @@ export function computeCartDiscount(promos, lines) {
       const remaining = getRemaining(promo);
       if (remaining !== Infinity && remaining <= 0) continue;
 
+      if (percentageOfferInvalid(promo)) {
+        invalidOffers.push({
+          promotion_id: promo.id ?? null,
+          name: promo.name || "",
+          discount_value: promo.discount_value,
+        });
+        break;
+      }
+
       const result = calcPromoLineDiscount(promo, line, remaining);
       if (result) {
         discount = r2(discount + result.discount);
         breakdown.push({
           promotion_id: promo.id,
           name: promo.name,
+          offer_type: promo.offer_type,
+          discount_value: Number(promo.discount_value) || 0,
+          buy_qty: Number(promo.buy_qty) || 0,
+          get_qty: Number(promo.get_qty) || 0,
           product_id: line.product_id,
           product_unit_id: line.product_unit_id ?? null,
+          quantity: line.quantity,
+          unit_price: line.unitPrice,
           discount: result.discount,
           units_used: result.unitsUsed,
         });
@@ -180,7 +212,7 @@ export function computeCartDiscount(promos, lines) {
       }
     }
   }
-  return { discount: r2(Math.max(0, discount)), breakdown };
+  return { discount: r2(Math.max(0, discount)), breakdown, invalidOffers };
 }
 
 /** Build the SQL WHERE for active promotions (active + within date window). */

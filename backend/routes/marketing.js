@@ -99,6 +99,18 @@ function bodyDefinesDeal(body, isCreate) {
   );
 }
 
+function assertPercentageRange(offerType, rawValue) {
+  if (offerType !== "percentage") return null;
+  if (rawValue == null || rawValue === "" || typeof rawValue === "boolean") {
+    return { error: "نسبة الخصم يجب أن تكون بين 0 و 100", code: "VALIDATION_ERROR" };
+  }
+  const val = Number(typeof rawValue === "string" ? rawValue.trim() : rawValue);
+  if (!Number.isFinite(val) || val < 0 || val > 100) {
+    return { error: "نسبة الخصم يجب أن تكون بين 0 و 100", code: "VALIDATION_ERROR" };
+  }
+  return null;
+}
+
 function assertMultiPriceNumbers(normalized, body, isCreate) {
   if (normalized.offer_type !== "multi_price") return null;
   const touches =
@@ -204,6 +216,8 @@ export function createMarketingRouter(db) {
 
     const normalized = normalizePromoBody(b);
     if (normalized.error) return res.status(400).json({ error: normalized.error, code: normalized.code });
+    const percentError = assertPercentageRange(normalized.offer_type, b.discount_value);
+    if (percentError) return res.status(400).json(percentError);
     const dealError = assertMultiPriceNumbers(normalized, b, true);
     if (dealError) return res.status(400).json(dealError);
     const unitError = await assertSellingUnit(db, normalized.product_id, normalized.product_unit_id);
@@ -264,6 +278,11 @@ export function createMarketingRouter(db) {
     const normalized = normalizePromoBody(body, ex);
     if (normalized.error) return res.status(400).json({ error: normalized.error, code: normalized.code });
     if (bodyDefinesDeal(body, false)) {
+      const percentError = assertPercentageRange(
+        normalized.offer_type,
+        body.discount_value !== undefined ? body.discount_value : normalized.discount_value
+      );
+      if (percentError) return res.status(400).json(percentError);
       const dealError = assertMultiPriceNumbers(normalized, body, false);
       if (dealError) return res.status(400).json(dealError);
       const unitError = await assertSellingUnit(db, normalized.product_id, normalized.product_unit_id);
@@ -346,6 +365,42 @@ export function createMarketingRouter(db) {
 
   router.get("/active", requireAuth, requirePosAccess, async (_req, res) => {
     res.json(await getActivePromotions(db));
+  });
+
+  router.post("/promotions/preview", requireAuth, requireMarketing, async (req, res) => {
+    const body = req.body || {};
+    const offerType = body.offer_type;
+    if (!OFFER_TYPES.includes(offerType)) {
+      return res.status(400).json({ error: "نوع العرض غير صالح", code: "VALIDATION_ERROR" });
+    }
+    const percentError = assertPercentageRange(offerType, body.discount_value);
+    if (percentError) return res.status(400).json(percentError);
+    const unitPrice = round2(Number(body.unit_price));
+    const quantity = Number(body.quantity);
+    if (!(unitPrice > 0) || !(quantity > 0)) {
+      return res.status(400).json({ error: "السعر والكمية مطلوبان للمعاينة", code: "VALIDATION_ERROR" });
+    }
+    const promo = {
+      id: 0,
+      name: "معاينة",
+      offer_type: offerType,
+      product_id: 1,
+      product_unit_id: 1,
+      discount_value: round2(Number(body.discount_value) || 0),
+      buy_qty: Number(body.buy_qty) || 0,
+      get_qty: Number(body.get_qty) || 0,
+    };
+    const line = { product_id: 1, product_unit_id: 1, quantity, unitPrice };
+    const priced = computeCartDiscount([promo], [line]);
+    const gross = round2(quantity * unitPrice);
+    return res.json({
+      quantity,
+      unit_price: unitPrice,
+      line_gross: gross,
+      discount: priced.discount,
+      payable: round2(gross - priced.discount),
+      free: priced.discount > 0 && priced.discount >= gross,
+    });
   });
 
   router.post("/quote", requireAuth, requirePosAccess, async (req, res) => {

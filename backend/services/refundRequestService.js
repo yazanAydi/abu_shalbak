@@ -49,6 +49,24 @@ function saleMerchandiseBasis(tx) {
   return round2(Number(tx?.total) || 0);
 }
 
+/** Offer discounts saved with the sale, keyed by product and selling unit. Null when the sale has no provenance. */
+function promoDiscountByKey(raw) {
+  if (raw == null || String(raw).trim() === "") return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const map = new Map();
+  for (const entry of parsed) {
+    const key = `${Number(entry.product_id)}:${Number(entry.product_unit_id) || 0}`;
+    map.set(key, round2((map.get(key) || 0) + (Number(entry.discount) || 0)));
+  }
+  return map;
+}
+
 function postedLineNetMatchesSaleTotal(tx, storedItems) {
   if (!storedItems?.length) return false;
   const net = round2(storedItems.reduce((sum, row) => sum + (Number(row.line_net) || 0), 0));
@@ -238,19 +256,21 @@ async function loadRefundSaleContext(db, transactionId) {
     throw err;
   }
   const storedItems = await db.all(
-    `SELECT id, product_id, product_unit_id, quantity, line_net, discount_at_sale
+    `SELECT id, product_id, product_unit_id, quantity, line_net, line_gross, discount_at_sale
        FROM transaction_items WHERE transaction_id = ? ORDER BY id`,
     [transactionId]
   );
+  const promoByKey = promoDiscountByKey(tx.promo_breakdown_json);
   const usePostedNet = postedLineNetMatchesSaleTotal(tx, storedItems);
   const postedByKey = new Map();
   const storedById = new Map();
   for (const row of storedItems) {
     storedById.set(Number(row.id), row);
     const key = `${Number(row.product_id)}:${Number(row.product_unit_id) || 0}`;
-    const prev = postedByKey.get(key) || { quantity: 0, line_net: 0, discount_at_sale: 0, ids: [] };
+    const prev = postedByKey.get(key) || { quantity: 0, line_net: 0, line_gross: 0, discount_at_sale: 0, ids: [] };
     prev.quantity += Number(row.quantity) || 0;
     prev.line_net = round2(prev.line_net + (Number(row.line_net) || 0));
+    prev.line_gross = round2(prev.line_gross + (Number(row.line_gross) || 0));
     prev.discount_at_sale = round2(prev.discount_at_sale + (Number(row.discount_at_sale) || 0));
     prev.ids.push(Number(row.id));
     postedByKey.set(key, prev);
@@ -261,16 +281,20 @@ async function loadRefundSaleContext(db, transactionId) {
     if (!pid) continue;
     const key = lineKey(it);
     const posted = postedByKey.get(key);
-    const postedUnit =
-      usePostedNet && posted && posted.quantity > 0 && Number.isFinite(posted.line_net)
-        ? round2(posted.line_net / posted.quantity)
-        : null;
+    let postedUnit = null;
+    if (promoByKey && posted && posted.quantity > 0) {
+      const promoOff = Math.min(posted.line_gross, promoByKey.get(key) || 0);
+      postedUnit = round2((posted.line_gross - promoOff) / posted.quantity);
+    } else if (usePostedNet && posted && posted.quantity > 0 && Number.isFinite(posted.line_net)) {
+      postedUnit = round2(posted.line_net / posted.quantity);
+    }
     origMap.set(key, {
       ...it,
       quantity: Number(it.quantity) || 0,
       price: round2(Number(it.price) || 0),
       posted_unit_price: postedUnit,
       discount_at_sale: posted?.discount_at_sale ?? Number(it.discount_at_sale || it.discount || 0),
+      promo_discount: promoByKey ? round2(promoByKey.get(key) || 0) : null,
       conversion_to_base: Math.max(0.0001, Number(it.conversion_to_base) || 1),
       transaction_item_ids: posted?.ids || [],
     });
@@ -701,7 +725,9 @@ export async function describeReturnableSale(db, tx) {
       name: it.name,
       price: orig ? refundedUnitPrice(orig, tx, ctx.origItems) : round2(Number(it.price) || 0),
       list_price: round2(Number(it.price) || 0),
-      line_discount: round2(Number(orig?.discount_at_sale) || 0),
+      line_discount: orig?.promo_discount != null
+        ? round2(orig.promo_discount)
+        : round2(Number(orig?.discount_at_sale) || 0),
       quantity_sold: sold,
       quantity_already_refunded: ref,
       quantity_returnable: Math.max(0, sold - ref),

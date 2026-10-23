@@ -91,8 +91,8 @@ async function executeCheckoutSaleCore(db, params, options = {}) {
   const receiptNumber = await nextReceiptNumber(db, 1);
 
     const ins = await db.run(
-      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, amount_before_rounding, rounding_adjustment, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, employee_id, receipt_number, status, store_id, idempotency_key, payload_fingerprint, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?, ?, ?)`,
+      `INSERT INTO transactions (cashier_id, items_json, subtotal, tax, total, discount, amount_before_rounding, rounding_adjustment, change_amount, change_currency_id, change_original_amount, payment_method, shift_id, customer_id, employee_id, receipt_number, status, store_id, idempotency_key, payload_fingerprint, notes, promo_breakdown_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?, ?, ?, ?)`,
       [
         cashierId,
         JSON.stringify(itemsForJson),
@@ -113,6 +113,7 @@ async function executeCheckoutSaleCore(db, params, options = {}) {
         idempotencyKey,
         payloadFingerprint || null,
         notes || null,
+        JSON.stringify(Array.isArray(promoBreakdown) ? promoBreakdown : []),
       ]
     );
     const transactionId = ins.lastID;
