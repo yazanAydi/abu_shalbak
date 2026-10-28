@@ -22,11 +22,11 @@ describe("Telegram poll loops", () => {
     let resolveA;
     let resolveB;
     const started = [];
-    const get = (method, _query, token) => {
+    const get = (method, query, token) => {
       if (method !== "getUpdates") {
         return Promise.resolve([]);
       }
-      started.push({ token, at: Date.now() });
+      started.push({ token, at: Date.now(), timeout: query.timeout });
       if (token === "token-a") {
         return new Promise((resolve) => {
           resolveA = () => resolve([]);
@@ -53,12 +53,40 @@ describe("Telegram poll loops", () => {
 
     expect(started.map((s) => s.token).sort()).toEqual(["token-a", "token-b"]);
     expect(Math.abs(started[0].at - started[1].at)).toBeLessThan(30);
+    expect(started.every((call) => call.timeout === 1)).toBe(true);
     expect(typeof resolveA).toBe("function");
     expect(typeof resolveB).toBe("function");
 
     stop();
     resolveA();
     resolveB();
+  });
+
+  test("getUpdates uses telegramGet, so the 15s send abort does not cut the long poll", async () => {
+    const calls = [];
+    let saw;
+    const seen = new Promise((resolve) => {
+      saw = resolve;
+    });
+    const original = global.fetch;
+    global.fetch = async (url, options) => {
+      calls.push({ url: String(url), signal: options?.signal });
+      saw();
+      return { ok: true, json: async () => ({ ok: true, result: [] }) };
+    };
+    const stop = startTelegramBotPollLoops({}, [{ kind: "sulaf", token: "poll-token" }], {
+      pollTimeoutSec: 30,
+    });
+    try {
+      await seen;
+      const poll = calls.find((call) => call.url.includes("/getUpdates"));
+      expect(poll).toBeTruthy();
+      expect(poll.signal).toBeUndefined();
+      expect(poll.url).toContain("timeout=30");
+    } finally {
+      stop();
+      global.fetch = original;
+    }
   });
 
   test("error in one bot does not prevent the other from polling", async () => {

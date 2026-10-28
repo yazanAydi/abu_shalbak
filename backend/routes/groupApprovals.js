@@ -75,6 +75,8 @@ export function createExpenseApprovalRouter(db) {
   router.get("/:id", requireAuth, requireExpenses, async (req, res) => {
     const row = await getExpenseApprovalRequestById(db, req.params.id);
     if (!row) return res.status(404).json({ error: "غير موجود", code: "NOT_FOUND" });
+    const { readTelegramDelivery } = await import("../services/telegramDelivery.js");
+    row.telegram_delivery = await readTelegramDelivery(db, "expense_approval_requests", row.id, row.telegram_message_id);
     res.json(row);
   });
   router.post("/:id/approve", requireAuth, requireExpenses, (req, res, next) =>

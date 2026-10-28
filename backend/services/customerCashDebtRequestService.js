@@ -125,28 +125,28 @@ function parseCreateInput(input) {
 
 async function notifyTelegram(db, row) {
   if (!isZimmaTelegramConfigured() || !row) return null;
-  const preview = await creditLimitPreview(db, row.customer_id, row.amount);
-  const cashier = await db.get("SELECT username FROM users WHERE id = ?", [row.cashier_id]);
-  try {
-    const messageId = await sendCashDebtApprovalMessage({
-      requestId: row.id,
-      cashierName: cashier?.username || String(row.cashier_id),
-      shiftId: row.shift_id,
-      customerName: row.customer_name,
-      amount: row.amount,
-      debtBefore: preview?.current_balance ?? row.debt_before,
-      projectedDebt: preview?.projected_balance,
-      notes: row.notes,
-    });
-    await db.run("UPDATE customer_cash_debt_requests SET telegram_message_id = ? WHERE id = ?", [
-      messageId,
-      row.id,
-    ]);
-    return messageId;
-  } catch (e) {
-    console.error("Telegram cash debt send failed:", e.message);
-    return null;
-  }
+  const { deliverPendingTelegram } = await import("./telegramDelivery.js");
+  const delivery = await deliverPendingTelegram(
+    db,
+    "customer_cash_debt_requests",
+    row.id,
+    async () => {
+      const preview = await creditLimitPreview(db, row.customer_id, row.amount);
+      const cashier = await db.get("SELECT username FROM users WHERE id = ?", [row.cashier_id]);
+      return sendCashDebtApprovalMessage({
+        requestId: row.id,
+        cashierName: cashier?.username || String(row.cashier_id),
+        shiftId: row.shift_id,
+        customerName: row.customer_name,
+        amount: row.amount,
+        debtBefore: preview?.current_balance ?? row.debt_before,
+        projectedDebt: preview?.projected_balance,
+        notes: row.notes,
+      });
+    },
+    "Telegram cash debt send failed"
+  );
+  return delivery ? await delivery : null;
 }
 
 export async function createCustomerCashDebtRequest(db, input) {
@@ -218,10 +218,18 @@ export async function createCustomerCashDebtRequest(db, input) {
 
   if (!created.replayed) await notifyTelegram(db, created.row);
   const fresh = await getCustomerCashDebtRequestById(db, created.row.id);
+  const { createDeliveryContract } = await import("./telegramDelivery.js");
   return {
     ...publicRequest(fresh),
     replayed: created.replayed,
     pending_approval: fresh.status === "pending",
+    ...(await createDeliveryContract(
+      db,
+      "customer_cash_debt_requests",
+      fresh.id,
+      isZimmaTelegramConfigured(),
+      fresh.telegram_message_id
+    )),
     message: "سُجّل طلب صرف النقد على الذمة. لا تسلّم المبلغ قبل الموافقة.",
   };
 }
@@ -537,5 +545,11 @@ export async function buildCustomerCashDebtStatusPayload(db, row) {
   const credit = row?.status === "pending"
     ? await creditLimitPreview(db, row.customer_id, row.amount)
     : null;
-  return { ...publicRequest(row), credit };
+  const { readTelegramDelivery } = await import("./telegramDelivery.js");
+  return {
+    ...publicRequest(row),
+    credit,
+    telegram_message_id: row.telegram_message_id || null,
+    telegram_delivery: await readTelegramDelivery(db, "customer_cash_debt_requests", row.id, row.telegram_message_id),
+  };
 }

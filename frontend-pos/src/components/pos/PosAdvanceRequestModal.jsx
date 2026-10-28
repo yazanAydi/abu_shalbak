@@ -88,7 +88,12 @@ export default function PosAdvanceRequestModal({ open, onClose, onWaiting }) {
       const payload = data?.data ?? data;
       const requestId = payload.request_id;
       resetForm();
-      if (requestId) onWaiting?.(requestId);
+      if (requestId) {
+        onWaiting?.(requestId, {
+          telegram: payload.telegram === true,
+          telegram_delivery: payload.telegram_delivery ?? null,
+        });
+      }
       else onClose();
     } catch (err) {
       setError(err.response?.data?.error || err.message || "فشل إرسال الطلب");

@@ -23,6 +23,9 @@ const STATUS_LABEL = {
 export default function PosRefundWaitingModal({ open, requestId, onClose, onTerminal }) {
   const [status, setStatus] = useState("pending");
   const [detail, setDetail] = useState(null);
+  const [delivery, setDelivery] = useState(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryNote, setRetryNote] = useState("");
   const [err, setErr] = useState("");
   const terminalRef = useRef(false);
 
@@ -46,6 +49,13 @@ export default function PosRefundWaitingModal({ open, requestId, onClose, onTerm
         const payload = data?.data ?? data;
         setDetail(payload);
         setStatus(payload.status || "pending");
+        if (payload.telegram_delivery === "queued" || payload.telegram_delivery === "sent" || payload.telegram_delivery === "failed") {
+          setDelivery(payload.telegram_delivery);
+        } else if (payload.telegram_message_id) {
+          setDelivery("sent");
+        } else if (payload.telegram_delivery === null) {
+          setDelivery(null);
+        }
         setErr("");
         if (["approved", "rejected", "expired"].includes(payload.status)) {
           if (!terminalRef.current) {
@@ -89,11 +99,41 @@ export default function PosRefundWaitingModal({ open, requestId, onClose, onTerm
         {detail?.total_amount != null ? (
           <p className="shift-modal-meta">المبلغ: {ils(detail.total_amount)}</p>
         ) : null}
-        {status === "pending" ? (
+        {status === "pending" && delivery === "queued" ? (
+          <p className="shift-modal-hint">جاري إرسال رسالة تيليجرام… الطلب محفوظ ولن يُعاد إنشاؤه.</p>
+        ) : status === "pending" && delivery === "failed" ? (
+          <p className="shift-modal-hint">تعذّر إرسال تيليجرام. الطلب محفوظ؛ أعد الإرسال أو وافق من لوحة الإدارة.</p>
+        ) : status === "pending" ? (
           <p className="shift-modal-hint">جاري انتظار موافقة المدير عبر التيليجرام أو لوحة الإدارة…</p>
         ) : null}
+        {retryNote ? <div className="shift-modal-err">{retryNote}</div> : null}
         {err ? <div className="shift-modal-err">{err}</div> : null}
         <div className="shift-modal-actions">
+          {status === "pending" && delivery === "failed" ? (
+            <button
+              type="button"
+              className="shift-modal-secondary"
+              disabled={retrying}
+              onClick={async () => {
+                setRetrying(true);
+                try {
+                  await api.post(
+                    "/api/telegram/outbound/retry",
+                    { kind: "refund", request_id: requestId },
+                    { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+                  );
+                  setDelivery("queued");
+                  setRetryNote("");
+                } catch (e) {
+                  setRetryNote(e.response?.data?.error || "تعذّر إعادة إرسال تيليجرام");
+                } finally {
+                  setRetrying(false);
+                }
+              }}
+            >
+              {retrying ? "جاري الإرسال…" : "إعادة الإرسال"}
+            </button>
+          ) : null}
           <button type="button" className="shift-modal-primary" onClick={onClose} disabled={!isTerminal && !err}>
             {isTerminal ? "إغلاق" : "—"}
           </button>

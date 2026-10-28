@@ -105,12 +105,15 @@ export default function Checkout() {
   const [supplierPayOpen, setSupplierPayOpen] = useState(false);
   const [shopExpenseOpen, setShopExpenseOpen] = useState(false);
   const [advanceWaitingId, setAdvanceWaitingId] = useState(() => readWaitingRequestId("advance"));
+  const [advanceDelivery, setAdvanceDelivery] = useState(null);
   const [onAccountWaitingId, setOnAccountWaitingId] = useState(() =>
     readWaitingRequestId("onAccount")
   );
+  const [onAccountDelivery, setOnAccountDelivery] = useState(null);
   const [cashDebtWaitingId, setCashDebtWaitingId] = useState(() =>
     readWaitingRequestId("cashDebt")
   );
+  const [cashDebtDelivery, setCashDebtDelivery] = useState(null);
   const [supplierWaitingId, setSupplierWaitingId] = useState(() =>
     readWaitingRequestId("supplierPayment")
   );
@@ -610,6 +613,7 @@ export default function Checkout() {
         dispatch,
         setIsLoading,
         setOnAccountWaitingId,
+        setOnAccountDelivery,
         setPayModalOpen,
         setSelectedPayment,
         setCustomerId,
@@ -1251,9 +1255,10 @@ export default function Checkout() {
           <PosAdvanceRequestModal
             open
             onClose={() => setAdvanceOpen(false)}
-            onWaiting={(id) => {
+            onWaiting={(id, meta) => {
               writeWaitingRequestId("advance", id);
               setAdvanceWaitingId(id);
+              setAdvanceDelivery(meta?.telegram_delivery ?? (meta?.telegram ? "sent" : null));
               setAdvanceOpen(false);
             }}
           />
@@ -1274,7 +1279,7 @@ export default function Checkout() {
             onWaiting={(id, meta) => {
               writeWaitingRequestId("shopExpense", id);
               setShopExpenseWaitingId(id);
-              setShopExpenseTelegram(meta?.telegram === true);
+              setShopExpenseTelegram(meta?.telegram_delivery ?? (meta?.telegram ? "sent" : null));
               setShopExpenseOpen(false);
             }}
           />
@@ -1290,12 +1295,13 @@ export default function Checkout() {
             onSupplierWaiting={(id, meta) => {
               writeWaitingRequestId("supplierPayment", id);
               setSupplierWaitingId(id);
-              setSupplierTelegram(meta?.telegram === true);
+              setSupplierTelegram(meta?.telegram_delivery ?? (meta?.telegram ? "sent" : null));
               setSupplierPayOpen(false);
             }}
-            onCashDebtWaiting={(id) => {
+            onCashDebtWaiting={(id, meta) => {
               writeWaitingRequestId("cashDebt", id);
               setCashDebtWaitingId(id);
+              setCashDebtDelivery(meta?.telegram_delivery ?? (meta?.telegram ? "sent" : null));
               setSupplierPayOpen(false);
             }}
           />
@@ -1305,6 +1311,7 @@ export default function Checkout() {
           <PosApprovalWaitingModal
             open
             requestId={advanceWaitingId}
+            initialTelegram={advanceDelivery}
             apiPath="/api/advance-requests"
             titlePrefix="طلب سلف"
             statusLabels={{
@@ -1372,6 +1379,7 @@ export default function Checkout() {
           <PosApprovalWaitingModal
             open
             requestId={cashDebtWaitingId}
+            initialTelegram={cashDebtDelivery}
             apiPath="/api/customer-cash-debt-requests"
             titlePrefix="طلب ذمة نقدية"
             statusLabels={{
@@ -1395,6 +1403,7 @@ export default function Checkout() {
           <PosApprovalWaitingModal
             open
             requestId={onAccountWaitingId}
+            initialTelegram={onAccountDelivery}
             apiPath="/api/on-account-requests"
             titlePrefix="طلب ذمة"
             statusLabels={{

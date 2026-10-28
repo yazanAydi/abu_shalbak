@@ -108,6 +108,7 @@ export async function submitCompleteSale({
   dispatch,
   setIsLoading,
   setOnAccountWaitingId,
+  setOnAccountDelivery,
   setPayModalOpen,
   setSelectedPayment,
   setCustomerId,
@@ -189,6 +190,9 @@ export async function submitCompleteSale({
     if (payload?.pending_approval && payload?.request_id) {
       writeWaitingRequestId("onAccount", payload.request_id);
       setOnAccountWaitingId(payload.request_id);
+      if (typeof setOnAccountDelivery === "function") {
+        setOnAccountDelivery(payload.telegram_delivery ?? (payload.telegram ? "sent" : null));
+      }
       setPayModalOpen(false);
       idempotencyKeyRef.current = null;
       if (submittedPayloadRef) submittedPayloadRef.current = null;

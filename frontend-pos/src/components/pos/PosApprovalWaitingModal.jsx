@@ -23,6 +23,29 @@ const ils = (n) => `\u20AA${Number(n).toFixed(2)}`;
 
 const TERMINAL = ["approved", "rejected", "expired"];
 
+const RETRY_KIND = {
+  shop: "consumption",
+  supplier: "supplier",
+  advance: "advance",
+  cash_debt: "cash_debt",
+  on_account: "on_account",
+  refund: "refund",
+};
+
+function normalizeDelivery(value) {
+  if (value === "queued" || value === "sent" || value === "failed") return value;
+  if (value === true) return "sent";
+  return null;
+}
+
+function deliveryFromPayload(payload) {
+  const explicit = normalizeDelivery(payload?.telegram_delivery);
+  if (explicit) return explicit;
+  if (payload?.telegram_delivery === null) return null;
+  if (payload?.telegram_message_id) return "sent";
+  return null;
+}
+
 /**
  * @param {object} props
  * @param {boolean} props.open
@@ -49,7 +72,8 @@ export default function PosApprovalWaitingModal({
   const [detail, setDetail] = useState(null);
   const [err, setErr] = useState("");
   const [connectionError, setConnectionError] = useState(false);
-  const [telegramDelivered, setTelegramDelivered] = useState(initialTelegram);
+  const [delivery, setDelivery] = useState(() => normalizeDelivery(initialTelegram));
+  const [retrying, setRetrying] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const terminalRef = useRef(false);
   const onTerminalRef = useRef(onTerminal);
@@ -70,7 +94,8 @@ export default function PosApprovalWaitingModal({
     setDetail(null);
     setErr("");
     setConnectionError(false);
-    setTelegramDelivered(initialTelegram);
+    setDelivery(normalizeDelivery(initialTelegram));
+    setRetrying(false);
     setMinimized(false);
     terminalRef.current = false;
   }, [open, requestId]);
@@ -89,7 +114,10 @@ export default function PosApprovalWaitingModal({
       setStatus(next);
       setErr("");
       setConnectionError(false);
-      setTelegramDelivered(Boolean(payload.telegram_message_id));
+      const nextDelivery = deliveryFromPayload(payload);
+      if (nextDelivery || payload?.telegram_delivery === null || payload?.telegram_message_id) {
+        setDelivery(nextDelivery);
+      }
       if (TERMINAL.includes(next) && !terminalRef.current) {
         terminalRef.current = true;
         setMinimized(false);
@@ -113,10 +141,35 @@ export default function PosApprovalWaitingModal({
     hiddenIntervalMs: 2500,
   });
 
+  const retrySend = useCallback(async () => {
+    if (!requestId || retrying) return;
+    setRetrying(true);
+    setErr("");
+    try {
+      await api.post(
+        "/api/telegram/outbound/retry",
+        { kind: RETRY_KIND[kindFromApiPath(apiPath)] || "refund", request_id: requestId },
+        { headers: { ...getAuthHeaders(), "Content-Type": "application/json" } }
+      );
+      setDelivery("queued");
+      await poll();
+    } catch (e) {
+      setErr(e.response?.data?.error || "تعذّر إعادة إرسال تيليجرام");
+    } finally {
+      setRetrying(false);
+    }
+  }, [apiPath, poll, requestId, retrying]);
+
   if (!open || !requestId) return null;
 
   const isTerminal = TERMINAL.includes(status);
   const extra = detailLine?.(detail);
+  const chipLabel =
+    delivery === "failed"
+      ? "تعذّر إرسال تيليجرام"
+      : delivery === "queued"
+        ? "جاري إرسال تيليجرام"
+        : "بانتظار الموافقة";
 
   if (minimized && !isTerminal) {
     const chip = (
@@ -125,7 +178,7 @@ export default function PosApprovalWaitingModal({
         className="pos-waiting-chip"
         onClick={() => setMinimized(false)}
       >
-        {telegramDelivered === false ? "حُفظ بدون تيليجرام" : "بانتظار الموافقة"} — {titlePrefix} #{requestId}
+        {chipLabel} — {titlePrefix} #{requestId}
       </button>
     );
     const slot = typeof document !== "undefined" ? document.getElementById(WAITING_CHIP_SLOT_ID) : null;
@@ -145,14 +198,22 @@ export default function PosApprovalWaitingModal({
         {extra ? <p className="shift-modal-meta">{extra}</p> : null}
         {connectionError ? (
           <p className="shift-modal-hint">{err}</p>
-        ) : status === "pending" && telegramDelivered === false ? (
-          <p className="shift-modal-hint">حُفظ الطلب، لكن رسالة تيليجرام لم تُرسل. يمكن الموافقة من لوحة الإدارة.</p>
-        ) : status === "pending" && telegramDelivered === true ? (
+        ) : status === "pending" && delivery === "queued" ? (
+          <p className="shift-modal-hint">جاري إرسال رسالة تيليجرام… الطلب محفوظ ولن يُعاد إنشاؤه.</p>
+        ) : status === "pending" && delivery === "sent" ? (
           <p className="shift-modal-hint">بانتظار الموافقة عبر تيليجرام أو لوحة الإدارة…</p>
+        ) : status === "pending" && delivery === "failed" ? (
+          <p className="shift-modal-hint">تعذّر إرسال تيليجرام. الطلب محفوظ؛ أعد الإرسال أو وافق من لوحة الإدارة.</p>
         ) : status === "pending" ? (
           <p className="shift-modal-hint">بانتظار نتيجة الموافقة…</p>
         ) : null}
+        {err && !connectionError ? <p className="shift-modal-hint">{err}</p> : null}
         <div className="shift-modal-actions">
+          {status === "pending" && delivery === "failed" ? (
+            <button type="button" className="shift-modal-secondary" onClick={retrySend} disabled={retrying}>
+              {retrying ? "جاري الإرسال…" : "إعادة الإرسال"}
+            </button>
+          ) : null}
           <button type="button" className="shift-modal-primary" onClick={onClose} disabled={!isTerminal}>
             {isTerminal ? "إغلاق" : "—"}
           </button>

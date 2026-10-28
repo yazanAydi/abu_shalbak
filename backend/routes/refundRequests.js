@@ -124,6 +124,13 @@ export function createRefundRequestsRouter(db) {
       cashier_username: row.cashier_username,
       manager_username: row.manager_username,
       shift_status: row.shift_status ?? null,
+      telegram_message_id: row.telegram_message_id || null,
+      telegram_delivery: await (await import("../services/telegramDelivery.js")).readTelegramDelivery(
+        db,
+        "refund_requests",
+        row.id,
+        row.telegram_message_id
+      ),
     });
   });
 

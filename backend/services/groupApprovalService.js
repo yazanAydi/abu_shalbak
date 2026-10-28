@@ -112,26 +112,28 @@ export async function createExpenseApprovalRequest(db, input) {
 
   let telegramMessageId = created.request.telegram_message_id || null;
   if (!created.replayed && isApprovalsTelegramConfigured()) {
-    try {
-      const requester = await db.get("SELECT username FROM users WHERE id = ?", [input.requesterId]);
-      telegramMessageId = await sendExpenseApprovalMessage({
-        requestId: created.request.id,
-        requesterName: requester?.username || String(input.requesterId),
-        categoryName: cat.name_ar || cat.name,
-        amount,
-        paidOn,
-        paymentMethod,
-        note,
-      });
-      await db.run("UPDATE expense_approval_requests SET telegram_message_id = ? WHERE id = ?", [
-        telegramMessageId,
-        created.request.id,
-      ]);
-      logApprovalStage("sent", { request: created.request.id, kind: "expense", message: telegramMessageId });
-    } catch (e) {
-      logApprovalStage("send_failed", { request: created.request.id, kind: "expense", detail: telegramFailureLog(e) });
-      telegramMessageId = null;
-    }
+    const { deliverPendingTelegram } = await import("./telegramDelivery.js");
+    const delivery = await deliverPendingTelegram(
+      db,
+      "expense_approval_requests",
+      created.request.id,
+      async () => {
+        const requester = await db.get("SELECT username FROM users WHERE id = ?", [input.requesterId]);
+        const messageId = await sendExpenseApprovalMessage({
+          requestId: created.request.id,
+          requesterName: requester?.username || String(input.requesterId),
+          categoryName: cat.name_ar || cat.name,
+          amount,
+          paidOn,
+          paymentMethod,
+          note,
+        });
+        logApprovalStage("sent", { request: created.request.id, kind: "expense", message: messageId });
+        return messageId;
+      },
+      "Telegram expense send failed"
+    );
+    if (delivery) telegramMessageId = await delivery;
   }
 
   return {
@@ -141,7 +143,13 @@ export async function createExpenseApprovalRequest(db, input) {
     replayed: created.replayed,
     amount,
     category_name: cat.name_ar || cat.name,
-    telegram: isApprovalsTelegramConfigured() && !!telegramMessageId,
+    ...(await (await import("./telegramDelivery.js")).createDeliveryContract(
+      db,
+      "expense_approval_requests",
+      created.request.id,
+      isApprovalsTelegramConfigured(),
+      telegramMessageId
+    )),
     operating_expense_id: created.request.operating_expense_id || null,
   };
 }
@@ -222,30 +230,28 @@ export async function createSupplierPaymentApprovalRequest(db, input) {
 
   let telegramMessageId = created.request.telegram_message_id || null;
   if (!created.replayed && isApprovalsTelegramConfigured()) {
-    try {
-      const cashier = await db.get("SELECT username FROM users WHERE id = ?", [created.request.cashier_id]);
-      telegramMessageId = await sendSupplierPaymentApprovalMessage({
-        requestId: created.request.id,
-        cashierName: cashier?.username || String(created.request.cashier_id),
-        supplierName: created.supplier.name,
-        amount,
-        shiftId: created.request.shift_id,
-        notes,
-        forgotten,
-      });
-      await db.run(
-        "UPDATE supplier_payment_approval_requests SET telegram_message_id = ? WHERE id = ?",
-        [telegramMessageId, created.request.id]
-      );
-      logApprovalStage("sent", { request: created.request.id, kind: "supplier", message: telegramMessageId });
-    } catch (e) {
-      logApprovalStage("send_failed", {
-        request: created.request.id,
-        kind: "supplier",
-        detail: telegramFailureLog(e),
-      });
-      telegramMessageId = null;
-    }
+    const { deliverPendingTelegram } = await import("./telegramDelivery.js");
+    const delivery = await deliverPendingTelegram(
+      db,
+      "supplier_payment_approval_requests",
+      created.request.id,
+      async () => {
+        const cashier = await db.get("SELECT username FROM users WHERE id = ?", [created.request.cashier_id]);
+        const messageId = await sendSupplierPaymentApprovalMessage({
+          requestId: created.request.id,
+          cashierName: cashier?.username || String(created.request.cashier_id),
+          supplierName: created.supplier.name,
+          amount,
+          shiftId: created.request.shift_id,
+          notes,
+          forgotten,
+        });
+        logApprovalStage("sent", { request: created.request.id, kind: "supplier", message: messageId });
+        return messageId;
+      },
+      "Telegram supplier send failed"
+    );
+    if (delivery) telegramMessageId = await delivery;
   } else if (!created.replayed) {
     logApprovalStage("send_skipped", {
       request: created.request.id,
@@ -265,7 +271,13 @@ export async function createSupplierPaymentApprovalRequest(db, input) {
     shift_id: created.request.shift_id,
     voucher_id: created.request.voucher_id || null,
     forgotten,
-    telegram: isApprovalsTelegramConfigured() && !!telegramMessageId,
+    ...(await (await import("./telegramDelivery.js")).createDeliveryContract(
+      db,
+      "supplier_payment_approval_requests",
+      created.request.id,
+      isApprovalsTelegramConfigured(),
+      telegramMessageId
+    )),
   };
 }
 
@@ -575,5 +587,14 @@ export async function getSupplierPaymentApprovalRequestById(db, id) {
 
 export async function getPresentedSupplierPaymentApproval(db, id) {
   const row = await getSupplierPaymentApprovalRequestById(db, id);
-  return row ? presentSupplierPaymentApproval(row) : null;
+  if (!row) return null;
+  const presented = presentSupplierPaymentApproval(row);
+  presented.telegram_message_id = row.telegram_message_id || null;
+  presented.telegram_delivery = await (await import("./telegramDelivery.js")).readTelegramDelivery(
+    db,
+    "supplier_payment_approval_requests",
+    row.id,
+    row.telegram_message_id
+  );
+  return presented;
 }

@@ -103,7 +103,10 @@ export default function PosShopConsumptionModal({ open, cartItems, onClose, onPo
       );
       const payload = data?.data ?? data;
       if (payload?.pending_approval && payload?.request_id) {
-        onWaiting?.(payload.request_id, { telegram: payload.telegram === true });
+        onWaiting?.(payload.request_id, {
+          telegram: payload.telegram === true,
+          telegram_delivery: payload.telegram_delivery ?? null,
+        });
         return;
       }
       try {

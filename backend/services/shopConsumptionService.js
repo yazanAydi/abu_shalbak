@@ -664,6 +664,12 @@ export async function presentShopConsumptionRequest(db, row) {
       : row.manager_username || null,
     decision_at: row.approved_at || row.rejected_at || null,
     can_reprint: row.status === "approved" && row.consumption_id != null,
+    telegram_delivery: await (await import("./telegramDelivery.js")).readTelegramDelivery(
+      db,
+      "shop_consumption_requests",
+      row.id,
+      row.telegram_message_id
+    ),
   };
 }
 
@@ -729,7 +735,13 @@ export async function createShopConsumptionRequest(db, params) {
       lines: publicLines(stored.lines),
       consumption_id: already.consumption_id || null,
       operating_expense_id: null,
-      telegram: Boolean(already.telegram_message_id),
+      ...(await (await import("./telegramDelivery.js")).createDeliveryContract(
+        db,
+        "shop_consumption_requests",
+        already.id,
+        (await import("../utils/telegram.js")).isApprovalsTelegramConfigured(),
+        already.telegram_message_id
+      )),
     };
   }
   const resolved = await resolveLines(db, params.items);
@@ -808,33 +820,32 @@ export async function createShopConsumptionRequest(db, params) {
   const { logApprovalStage: logSaved } = await import("../utils/telegram.js");
   logSaved("saved", { request: created.request.id, kind: "consumption", shift: created.request.shift_id });
   let telegramMessageId = created.request.telegram_message_id || null;
+  let approvalsConfigured = false;
   if (!created.replayed) {
     const { isApprovalsTelegramConfigured, sendShopConsumptionApprovalMessage } = await import("../utils/telegram.js");
-    if (isApprovalsTelegramConfigured()) {
-      try {
-        const cashier = await db.get("SELECT username FROM users WHERE id = ?", [params.cashierId]);
-        telegramMessageId = await sendShopConsumptionApprovalMessage({
-          requestId: created.request.id,
-          cashierName: cashier?.username || String(params.cashierId),
-          totalCost: resolved.total_cost,
-          lineCount: resolved.lines.length,
-          reason: note,
-        });
-        await db.run("UPDATE shop_consumption_requests SET telegram_message_id = ? WHERE id = ?", [
-          telegramMessageId,
-          created.request.id,
-        ]);
-        const { logApprovalStage } = await import("../utils/telegram.js");
-        logApprovalStage("sent", { request: created.request.id, kind: "consumption", message: telegramMessageId });
-      } catch (e) {
-        const { telegramFailureLog, logApprovalStage } = await import("../utils/telegram.js");
-        logApprovalStage("send_failed", {
-          request: created.request.id,
-          kind: "consumption",
-          detail: telegramFailureLog(e),
-        });
-        telegramMessageId = null;
-      }
+    approvalsConfigured = isApprovalsTelegramConfigured();
+    if (approvalsConfigured) {
+      const { deliverPendingTelegram } = await import("./telegramDelivery.js");
+      const { logApprovalStage } = await import("../utils/telegram.js");
+      const delivery = await deliverPendingTelegram(
+        db,
+        "shop_consumption_requests",
+        created.request.id,
+        async () => {
+          const cashier = await db.get("SELECT username FROM users WHERE id = ?", [params.cashierId]);
+          const messageId = await sendShopConsumptionApprovalMessage({
+            requestId: created.request.id,
+            cashierName: cashier?.username || String(params.cashierId),
+            totalCost: resolved.total_cost,
+            lineCount: resolved.lines.length,
+            reason: note,
+          });
+          logApprovalStage("sent", { request: created.request.id, kind: "consumption", message: messageId });
+          return messageId;
+        },
+        "Telegram consumption send failed"
+      );
+      if (delivery) telegramMessageId = await delivery;
     } else if (!created.replayed) {
       const { logApprovalStage } = await import("../utils/telegram.js");
       logApprovalStage("send_skipped", {
@@ -861,7 +872,13 @@ export async function createShopConsumptionRequest(db, params) {
     lines: publicLines(shownLines),
     consumption_id: created.request.consumption_id || null,
     operating_expense_id: null,
-    telegram: Boolean(telegramMessageId),
+    ...(await (await import("./telegramDelivery.js")).createDeliveryContract(
+      db,
+      "shop_consumption_requests",
+      created.request.id,
+      approvalsConfigured,
+      telegramMessageId
+    )),
   };
 }
 

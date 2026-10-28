@@ -82,6 +82,6 @@ describe("Post as store expenses confirmation", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0][1].items[0].price).toBe(10);
     expect(posts[0][1].idempotency_key).toBeTruthy();
-    expect(onWaiting).toHaveBeenCalledWith(4, { telegram: false });
+    expect(onWaiting).toHaveBeenCalledWith(4, { telegram: false, telegram_delivery: null });
   });
 });

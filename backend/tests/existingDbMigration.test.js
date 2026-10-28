@@ -59,6 +59,7 @@ async function dropColumnIfPresent(db, table, column) {
 }
 
 async function downgradeToPreReliabilitySchema(db) {
+  await db.exec("DROP TABLE IF EXISTS telegram_outbound");
   await db.exec("DROP TABLE IF EXISTS telegram_poll_failures");
   await db.exec("DROP TABLE IF EXISTS telegram_poll_offsets");
   await db.exec("DROP INDEX IF EXISTS idx_on_account_requests_idempotency_key");
@@ -83,6 +84,9 @@ async function assertReliabilitySchema(db) {
   const failures = await db.get(
     "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='telegram_poll_failures'"
   );
+  const outbound = await db.get(
+    "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='telegram_outbound'"
+  );
   const oaIdx = await db.get(
     "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_on_account_requests_idempotency_key'"
   );
@@ -91,6 +95,7 @@ async function assertReliabilitySchema(db) {
   expect(oaFp).toBeTruthy();
   expect(offsets).toBeTruthy();
   expect(failures).toBeTruthy();
+  expect(outbound).toBeTruthy();
   expect(oaIdx?.sql || "").toMatch(/UNIQUE/i);
 }
 
@@ -233,5 +238,183 @@ describe("Existing-database migration (disposable pre-reliability schema)", () =
     expect(replay.body.data.transaction_id).toBe(tx.lastID);
 
     expect(await snapshotMoneyAndStock(db)).toEqual(before);
+  });
+
+  test("upgrades telegram_outbound twice and startup recovery keeps cooldown and failure state", async () => {
+    const { resendPendingTelegramApprovals } = await import("../services/telegramPendingResend.js");
+    const { sendPendingTelegram, stopTelegramDeliveryScheduler } = await import("../services/telegramDelivery.js");
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "abo-shalbak-outbound-mig-"));
+    dbPath = path.join(tmpDir, "legacy.db");
+    db = await initDatabase(dbPath);
+    const cashHash = await bcrypt.hash("cashpass123", 4);
+    await db.run(
+      "INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, 'cashier', 0)",
+      ["outboundcashier", cashHash]
+    );
+    const cashier = await db.get("SELECT id FROM users WHERE username = 'outboundcashier'");
+    const product = await db.get("SELECT id FROM products ORDER BY id LIMIT 1");
+    await db.run("UPDATE products SET stock = 12, price = 10, cost = 4 WHERE id = ?", [product.id]);
+    const shift = await db.run(
+      "INSERT INTO cashier_shifts (cashier_id, opening_cash, status) VALUES (?, 40, 'open')",
+      [cashier.id]
+    );
+    const tx = await db.run(
+      `INSERT INTO transactions
+         (cashier_id, items_json, subtotal, tax, total, discount, payment_method, shift_id, status)
+       VALUES (?, '[]', 10, 0, 10, 0, 'cash', ?, 'completed')`,
+      [cashier.id, shift.lastID]
+    );
+    await db.run(
+      `INSERT INTO transaction_items
+         (transaction_id, product_id, name, quantity, unit_price, line_net, line_tax, line_gross, unit_cost_at_sale, gross_profit)
+       VALUES (?, ?, 'صنف', 1, 10, 10, 0, 10, 4, 6)`,
+      [tx.lastID, product.id]
+    );
+    await db.run(
+      "INSERT INTO sale_payments (transaction_id, payment_method, amount) VALUES (?, 'cash', 10)",
+      [tx.lastID]
+    );
+    await db.run(
+      `INSERT INTO inventory_ledger
+         (product_id, movement_type, quantity_delta, qty_before, qty_after, reference_type, reference_id)
+       VALUES (?, 'sale', -1, 12, 11, 'transaction', ?)`,
+      [product.id, tx.lastID]
+    );
+    await db.run("UPDATE products SET stock = 11 WHERE id = ?", [product.id]);
+    const approved = await db.run(
+      `INSERT INTO advance_requests
+         (cashier_id, shift_id, employee_name, amount, status, telegram_message_id, decision_source, manager_id)
+       VALUES (?, ?, 'موظف معتمد', 5, 'approved', '55', 'admin', ?)`,
+      [cashier.id, shift.lastID, cashier.id]
+    );
+    const pending = await db.run(
+      `INSERT INTO advance_requests (cashier_id, shift_id, employee_name, amount, status)
+       VALUES (?, ?, 'موظف معلّق', 3, 'pending')`,
+      [cashier.id, shift.lastID]
+    );
+    const moneyBefore = await snapshotMoneyAndStock(db);
+    const decisionsBefore = await db.all(
+      "SELECT id, status, amount, telegram_message_id, decision_source FROM advance_requests ORDER BY id"
+    );
+
+    await db.exec("DROP TABLE telegram_outbound");
+    await closeSqliteConnection(db);
+    db = await initDatabase(dbPath);
+    await assertReliabilitySchema(db);
+    await closeSqliteConnection(db);
+    db = await initDatabase(dbPath);
+    await assertReliabilitySchema(db);
+    expect(await snapshotMoneyAndStock(db)).toEqual(moneyBefore);
+    expect(
+      await db.all(
+        "SELECT id, status, amount, telegram_message_id, decision_source FROM advance_requests ORDER BY id"
+      )
+    ).toEqual(decisionsBefore);
+
+    const previousFetch = global.fetch;
+    let releaseHold = () => {};
+    process.env.TELEGRAM_SULAF_BOT_TOKEN = "upgrade-sulaf-token";
+    process.env.TELEGRAM_SULAF_CHAT_ID = "6096292831";
+    process.env.TELEGRAM_SULAF_WEBHOOK_SECRET = "upgrade-secret";
+    let sends = 0;
+    global.fetch = async (url) => {
+      if (!String(url).includes("/sendMessage")) throw new Error(`unexpected ${url}`);
+      sends += 1;
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 880 } }) };
+    };
+    try {
+      const recovered = await resendPendingTelegramApprovals(db);
+      expect(recovered.sulaf).toBe(1);
+      expect(sends).toBe(1);
+      const plain = await db.get("SELECT status, telegram_message_id FROM advance_requests WHERE id = ?", [pending.lastID]);
+      expect(plain.status).toBe("pending");
+      expect(plain.telegram_message_id).toBe("880");
+      const kept = await db.get("SELECT status, telegram_message_id FROM advance_requests WHERE id = ?", [approved.lastID]);
+      expect(kept).toEqual({ status: "approved", telegram_message_id: "55" });
+
+      const cooling = await db.run(
+        `INSERT INTO advance_requests (cashier_id, shift_id, employee_name, amount, status)
+         VALUES (?, ?, 'موظف انتظار', 2, 'pending')`,
+        [cashier.id, shift.lastID]
+      );
+      const failed = await db.run(
+        `INSERT INTO advance_requests (cashier_id, shift_id, employee_name, amount, status)
+         VALUES (?, ?, 'موظف فشل', 2, 'pending')`,
+        [cashier.id, shift.lastID]
+      );
+      const deadline = new Date(Date.now() + 300000).toISOString();
+      await db.run(
+        `INSERT INTO telegram_outbound
+           (request_table, request_id, state, attempts, last_error, next_attempt_at)
+         VALUES ('advance_requests', ?, 'queued', 2, 'rate limit', ?)`,
+        [cooling.lastID, deadline]
+      );
+      await db.run(
+        `INSERT INTO telegram_outbound
+           (request_table, request_id, state, attempts, last_error, next_attempt_at)
+         VALUES ('advance_requests', ?, 'failed', 5, 'Forbidden', NULL)`,
+        [failed.lastID]
+      );
+      const beforeRestart = await db.all(
+        "SELECT request_id, state, attempts, last_error, next_attempt_at FROM telegram_outbound ORDER BY request_id"
+      );
+      sends = 0;
+      await resendPendingTelegramApprovals(db);
+      expect(sends).toBe(0);
+      expect(
+        await db.all(
+          "SELECT request_id, state, attempts, last_error, next_attempt_at FROM telegram_outbound ORDER BY request_id"
+        )
+      ).toEqual(beforeRestart);
+      expect((await db.get("SELECT telegram_message_id FROM advance_requests WHERE id = ?", [cooling.lastID])).telegram_message_id).toBeFalsy();
+      expect((await db.get("SELECT telegram_message_id FROM advance_requests WHERE id = ?", [failed.lastID])).telegram_message_id).toBeFalsy();
+
+      const interrupted = await db.run(
+        `INSERT INTO advance_requests (cashier_id, shift_id, employee_name, amount, status)
+         VALUES (?, ?, 'موظف منقطع', 1, 'pending')`,
+        [cashier.id, shift.lastID]
+      );
+      const gate = new Promise((resolve) => {
+        releaseHold = resolve;
+      });
+      let held = 0;
+      global.fetch = async () => {
+        held += 1;
+        if (held === 1) await gate;
+        return { ok: true, json: async () => ({ ok: true, result: { message_id: 881 } }) };
+      };
+      const inflight = sendPendingTelegram(db, "advance_requests", interrupted.lastID, async () => {
+        const res = await global.fetch("https://api.telegram.org/botupgrade-sulaf-token/sendMessage");
+        const body = await res.json();
+        return String(body.result.message_id);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(held).toBe(1);
+      stopTelegramDeliveryScheduler();
+      global.fetch = async () => {
+        held += 1;
+        return { ok: true, json: async () => ({ ok: true, result: { message_id: 882 } }) };
+      };
+      expect((await resendPendingTelegramApprovals(db)).sulaf).toBe(1);
+      const stored = await db.get("SELECT status, telegram_message_id FROM advance_requests WHERE id = ?", [
+        interrupted.lastID,
+      ]);
+      expect(stored.status).toBe("pending");
+      expect(stored.telegram_message_id).toBe("882");
+      releaseHold();
+      await inflight;
+      const afterLate = await db.get("SELECT status, telegram_message_id FROM advance_requests WHERE id = ?", [
+        interrupted.lastID,
+      ]);
+      expect(afterLate).toEqual(stored);
+      expect(await snapshotMoneyAndStock(db)).toEqual(moneyBefore);
+    } finally {
+      releaseHold();
+      stopTelegramDeliveryScheduler();
+      global.fetch = previousFetch;
+      delete process.env.TELEGRAM_SULAF_BOT_TOKEN;
+      delete process.env.TELEGRAM_SULAF_CHAT_ID;
+      delete process.env.TELEGRAM_SULAF_WEBHOOK_SECRET;
+    }
   });
 });

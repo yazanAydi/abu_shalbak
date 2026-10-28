@@ -76,6 +76,16 @@ If scanning on admin/accountant pages opens DevTools, the scanner suffix is like
 - [ ] Document official DB path for all staff — only one file is authoritative
 - [ ] Do not `cp` / `Copy-Item` the live `supermarket.db` while the store is running
 
+## This release — additive schema
+
+`init.js` creates `telegram_outbound` if it is missing (`CREATE TABLE IF NOT EXISTS`). Starting the current server on an older `supermarket.db` adds that table and does not rewrite sales, stock, or approval decisions. Run it twice; the second start leaves the new rows in place.
+
+The table remembers Telegram sends that have not finished: queued, waiting out a server `retry_after`, or permanently failed. It is not a financial ledger. Money and stock still move only when a manager approves.
+
+Take a backup before deploying. To roll the application back and keep every sale, stock movement, and approval recorded after that backup, leave `supermarket.db` in place and deploy the older build only. The extra table stays unused. Pending requests and any message id already stored remain. The older build does not read cooldown or exhausted-failure rows, so when it starts it can send another Telegram message for a pending request that still has no message id.
+
+Restoring a backup taken before this deploy replaces the live database with that older file. Transactions recorded after the backup are not in it and would be discarded. Do not restore that backup merely to remove `telegram_outbound`.
+
 ## Post-deploy smoke test
 
 1. Admin login → product list loads

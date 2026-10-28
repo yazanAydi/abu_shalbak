@@ -646,29 +646,38 @@ export async function createRefundRequest(db, params) {
 
   let telegramMessageId = null;
   if (isRefundTelegramConfigured()) {
-    try {
-      telegramMessageId = await sendRefundApprovalMessage({
-        requestId: created.request_id,
-        cashierName: created.cashier?.username || String(cashierId),
-        transactionId: created.transactionId,
-        total: created.total,
-        reason: created.reason || "",
-        items: parseItemsJson(created.request.items_json),
-      });
-      await db.run("UPDATE refund_requests SET telegram_message_id = ? WHERE id = ?", [
-        telegramMessageId,
-        created.request_id,
-      ]);
-      created.request.telegram_message_id = telegramMessageId;
-    } catch (e) {
-      console.error("Telegram send failed:", e.message);
+    const { deliverPendingTelegram } = await import("./telegramDelivery.js");
+    const delivery = await deliverPendingTelegram(
+      db,
+      "refund_requests",
+      created.request_id,
+      () =>
+        sendRefundApprovalMessage({
+          requestId: created.request_id,
+          cashierName: created.cashier?.username || String(cashierId),
+          transactionId: created.transactionId,
+          total: created.total,
+          reason: created.reason || "",
+          items: parseItemsJson(created.request.items_json),
+        }),
+      "Telegram send failed"
+    );
+    if (delivery) {
+      telegramMessageId = await delivery;
+      if (telegramMessageId) created.request.telegram_message_id = telegramMessageId;
     }
   }
 
   return {
     request: created.request,
     request_id: created.request_id,
-    telegram: isRefundTelegramConfigured() && !!telegramMessageId,
+    ...(await (await import("./telegramDelivery.js")).createDeliveryContract(
+      db,
+      "refund_requests",
+      created.request_id,
+      isRefundTelegramConfigured(),
+      telegramMessageId
+    )),
     message:
       "سُجّل طلب الاسترجاع قيد المراجعة. لن يُحدَّث المخزون أو النقد حتى موافقة المسؤول.",
   };

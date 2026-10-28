@@ -191,7 +191,10 @@ export default function PosSupplierPaymentModal({ open, onClose, onPaid, onCashD
       );
       const payload = data?.data ?? data;
       if (payload?.pending_approval && payload?.request_id) {
-        onSupplierWaiting?.(payload.request_id, { telegram: payload.telegram === true });
+        onSupplierWaiting?.(payload.request_id, {
+          telegram: payload.telegram === true,
+          telegram_delivery: payload.telegram_delivery ?? null,
+        });
         return;
       }
       setSupplierSuccess(data);
@@ -235,7 +238,10 @@ export default function PosSupplierPaymentModal({ open, onClose, onPaid, onCashD
       const payload = data?.data ?? data;
       const requestId = payload?.request_id ?? payload?.id;
       if (requestId && onCashDebtWaiting) {
-        onCashDebtWaiting(requestId);
+        onCashDebtWaiting(requestId, {
+          telegram: payload.telegram === true,
+          telegram_delivery: payload.telegram_delivery ?? null,
+        });
         return;
       }
       setCustomerSuccess(payload);

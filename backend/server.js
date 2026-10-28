@@ -8,6 +8,7 @@ import { createBackup, pruneBackups } from "./utils/backup.js";
 import { sendExpiryAlert } from "./services/expiryAlertService.js";
 import { startTelegramPolling } from "./services/telegramPolling.js";
 import { resendPendingTelegramApprovals } from "./services/telegramPendingResend.js";
+import { stopTelegramDeliveryScheduler } from "./services/telegramDelivery.js";
 import { closeOverdueAttendanceSessions } from "./services/attendanceSessionService.js";
 import { startZktecoSync } from "./services/zktecoSync.js";
 import { resolveDatabasePath } from "./utils/dbPath.js";
@@ -109,6 +110,16 @@ if (process.env.NODE_ENV !== "test") {
   resendPendingTelegramApprovals(db).catch((err) => {
     console.error("[telegram-resend] startup resend failed:", err?.message || err);
   });
+
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    stopTelegramDeliveryScheduler();
+    server.close(() => process.exit(0));
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 
   const runAttendanceClose = async () => {
     try {

@@ -2876,6 +2876,17 @@ async function migrateTelegramPollRecoveryTables(db) {
 
     CREATE INDEX IF NOT EXISTS idx_telegram_poll_failures_status
       ON telegram_poll_failures(status, updated_at);
+
+    CREATE TABLE IF NOT EXISTS telegram_outbound (
+      request_table TEXT NOT NULL,
+      request_id INTEGER NOT NULL,
+      state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (request_table, request_id)
+    );
   `);
 }
 

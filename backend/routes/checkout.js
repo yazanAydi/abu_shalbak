@@ -24,6 +24,7 @@ import {
 import {
   createOnAccountRequest,
   notifyOnAccountRequestTelegram,
+  onAccountDeliveryState,
 } from "../services/onAccountRequestService.js";
 import { executeCheckoutSale } from "../services/checkoutSaleService.js";
 import { withTransaction } from "../utils/dbTx.js";
@@ -213,7 +214,7 @@ export function createCheckoutRouter(db) {
           pending_approval: true,
           request_id: early.requestId,
           message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
-          telegram: false,
+          ...(await onAccountDeliveryState(db, early.requestId)),
           idempotent_replay: true,
         });
       }
@@ -775,7 +776,7 @@ export function createCheckoutRouter(db) {
         });
       }
       if (result.kind === "oa_created") {
-        const telegramMessageId = await notifyOnAccountRequestTelegram(
+        await notifyOnAccountRequestTelegram(
           db,
           result.created,
           req.user.id,
@@ -785,7 +786,7 @@ export function createCheckoutRouter(db) {
           pending_approval: true,
           request_id: result.created.request_id,
           message: result.created.message || "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
-          telegram: !!telegramMessageId,
+          ...(await onAccountDeliveryState(db, result.created.request_id)),
         });
       }
 
@@ -866,7 +867,7 @@ export function createCheckoutRouter(db) {
               pending_approval: true,
               request_id: existing.requestId,
               message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
-              telegram: false,
+              ...(await onAccountDeliveryState(db, existing.requestId)),
               idempotent_replay: true,
             });
           }

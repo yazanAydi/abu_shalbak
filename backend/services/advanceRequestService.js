@@ -93,28 +93,39 @@ export async function createAdvanceRequest(db, params) {
 
   let telegramMessageId = null;
   if (isSulafTelegramConfigured()) {
-    try {
-      telegramMessageId = await sendAdvanceApprovalMessage({
-        requestId: created.request_id,
-        cashierName: created.cashier?.username || String(cashierId),
-        employeeName: created.trimmedName,
-        amount: amt,
-        notes: notes || "",
-      });
-      await db.run("UPDATE advance_requests SET telegram_message_id = ? WHERE id = ?", [
-        telegramMessageId,
-        created.request_id,
-      ]);
-      created.request.telegram_message_id = telegramMessageId;
-    } catch (e) {
-      console.error("Telegram sulaf send failed:", e.message);
+    const { deliverPendingTelegram } = await import("./telegramDelivery.js");
+    const delivery = await deliverPendingTelegram(
+      db,
+      "advance_requests",
+      created.request_id,
+      () =>
+        sendAdvanceApprovalMessage({
+          requestId: created.request_id,
+          cashierName: created.cashier?.username || String(cashierId),
+          employeeName: created.trimmedName,
+          amount: amt,
+          notes: notes || "",
+        }),
+      "Telegram sulaf send failed"
+    );
+    if (delivery) {
+      telegramMessageId = await delivery;
+      if (telegramMessageId) created.request.telegram_message_id = telegramMessageId;
     }
   }
 
+  const { createDeliveryContract } = await import("./telegramDelivery.js");
+  const deliveryState = await createDeliveryContract(
+    db,
+    "advance_requests",
+    created.request_id,
+    isSulafTelegramConfigured(),
+    telegramMessageId
+  );
   return {
     request: created.request,
     request_id: created.request_id,
-    telegram: isSulafTelegramConfigured() && !!telegramMessageId,
+    ...deliveryState,
     message: "سُجّل طلب السلف قيد المراجعة. لن يُصرف النقد حتى موافقة المسؤول.",
   };
 }

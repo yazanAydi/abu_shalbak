@@ -128,11 +128,27 @@ async function insertOnAccountRequest(db, params) {
   };
 }
 
+export async function onAccountDeliveryState(db, requestId) {
+  const row = await db.get("SELECT telegram_message_id FROM on_account_requests WHERE id = ?", [requestId]);
+  const { createDeliveryContract } = await import("./telegramDelivery.js");
+  return createDeliveryContract(
+    db,
+    "on_account_requests",
+    requestId,
+    isZimmaTelegramConfigured(),
+    row?.telegram_message_id
+  );
+}
+
 export async function notifyOnAccountRequestTelegram(db, created, cashierId, custId) {
-  let telegramMessageId = null;
-  if (isZimmaTelegramConfigured()) {
-    try {
-      telegramMessageId = await sendOnAccountApprovalMessage({
+  if (!isZimmaTelegramConfigured()) return null;
+  const { deliverPendingTelegram } = await import("./telegramDelivery.js");
+  const delivery = await deliverPendingTelegram(
+    db,
+    "on_account_requests",
+    created.request_id,
+    () =>
+      sendOnAccountApprovalMessage({
         requestId: created.request_id,
         cashierName: created.cashier?.username || String(cashierId),
         customerName: created.customer?.name || null,
@@ -141,16 +157,12 @@ export async function notifyOnAccountRequestTelegram(db, created, cashierId, cus
         total: created.totals.total,
         notes: created.request?.notes || null,
         items: onAccountTelegramItems(created.request?.sale_snapshot_json),
-      });
-      await db.run("UPDATE on_account_requests SET telegram_message_id = ? WHERE id = ?", [
-        telegramMessageId,
-        created.request_id,
-      ]);
-      created.request.telegram_message_id = telegramMessageId;
-    } catch (e) {
-      console.error("Telegram zimma send failed:", e.message);
-    }
-  }
+      }),
+    "Telegram zimma send failed"
+  );
+  if (!delivery) return null;
+  const telegramMessageId = await delivery;
+  if (telegramMessageId) created.request.telegram_message_id = telegramMessageId;
   return telegramMessageId;
 }
 
@@ -173,7 +185,13 @@ export async function createOnAccountRequest(db, params, options = {}) {
     employee: created.employee,
     totals: created.totals,
     pending_approval: true,
-    telegram: isZimmaTelegramConfigured() && !!telegramMessageId,
+    ...(await (await import("./telegramDelivery.js")).createDeliveryContract(
+      db,
+      "on_account_requests",
+      created.request_id,
+      isZimmaTelegramConfigured(),
+      telegramMessageId
+    )),
     message: "سُجّل طلب البيع على الذمة قيد المراجعة. لن يُكمَل البيع حتى موافقة المسؤول.",
   };
 }
@@ -422,6 +440,14 @@ export async function buildOnAccountRequestStatusPayload(db, row) {
     }
   }
 
+  const { readTelegramDelivery } = await import("./telegramDelivery.js");
+  payload.telegram_message_id = row.telegram_message_id || null;
+  payload.telegram_delivery = await readTelegramDelivery(
+    db,
+    "on_account_requests",
+    row.id,
+    row.telegram_message_id
+  );
   return payload;
 }
 

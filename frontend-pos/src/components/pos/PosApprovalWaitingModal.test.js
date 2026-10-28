@@ -8,10 +8,13 @@ if (typeof globalThis.IS_REACT_ACT_ENVIRONMENT === "undefined") {
 
 const mockGet = jest.fn();
 
+const mockPost = jest.fn();
+
 jest.mock("../../apiClient", () => ({
   __esModule: true,
   default: {
     get: (...args) => mockGet(...args),
+    post: (...args) => mockPost(...args),
   },
 }));
 
@@ -37,6 +40,7 @@ describe("PosApprovalWaitingModal minimized chip", () => {
 
   beforeEach(() => {
     mockGet.mockReset();
+    mockPost.mockReset();
     mockGet.mockResolvedValue({ data: { id: 1, status: "pending", telegram_message_id: 1 } });
     slot = document.createElement("div");
     slot.id = "pos-waiting-chip-slot";
@@ -131,4 +135,62 @@ describe("PosApprovalWaitingModal minimized chip", () => {
     expect(after.defaultPrevented).toBe(false);
     barcode.removeEventListener("keydown", seen);
   });
+
+  test("queued delivery stays open and a failed send can be retried without a new request", async () => {
+    mockGet.mockResolvedValue({
+      data: { id: 9, status: "pending", telegram_message_id: null, telegram_delivery: "queued" },
+    });
+    await act(async () => {
+      root.render(
+        <PosApprovalWaitingModal
+          open
+          requestId={9}
+          initialTelegram="queued"
+          apiPath="/api/advance-requests"
+          titlePrefix="طلب سلف"
+          statusLabels={{ pending: "بانتظار الموافقة" }}
+          onClose={() => {}}
+        />
+      );
+    });
+    await flush();
+    expect(container.textContent).toContain("جاري إرسال رسالة تيليجرام");
+    expect(container.textContent).not.toContain("حُفظ بدون تيليجرام");
+    const close = [...container.querySelectorAll("button")].find((b) => b.textContent === "—");
+    expect(close.disabled).toBe(true);
+
+    mockGet.mockResolvedValue({
+      data: { id: 9, status: "pending", telegram_message_id: null, telegram_delivery: "failed" },
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2600));
+    });
+    expect(container.textContent).toContain("تعذّر إرسال تيليجرام");
+    const retry = [...container.querySelectorAll("button")].find((b) => b.textContent.includes("إعادة الإرسال"));
+    expect(retry).toBeTruthy();
+    mockPost.mockResolvedValue({ data: { telegram_delivery: "queued" } });
+    mockGet.mockResolvedValue({
+      data: { id: 9, status: "pending", telegram_message_id: "41", telegram_delivery: "sent" },
+    });
+    await act(async () => {
+      retry.click();
+    });
+    await flush();
+    expect(mockPost).toHaveBeenCalledWith(
+      "/api/telegram/outbound/retry",
+      { kind: "advance", request_id: 9 },
+      expect.any(Object)
+    );
+    expect(container.textContent).toContain("بانتظار الموافقة عبر تيليجرام");
+    expect([...container.querySelectorAll("button")].find((b) => b.textContent === "—").disabled).toBe(true);
+
+    mockGet.mockResolvedValue({
+      data: { id: 9, status: "approved", telegram_message_id: "41", telegram_delivery: "sent" },
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2600));
+    });
+    const done = [...container.querySelectorAll("button")].find((b) => b.textContent === "إغلاق");
+    expect(done.disabled).toBe(false);
+  }, 10000);
 });

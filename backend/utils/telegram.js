@@ -245,6 +245,8 @@ export class TelegramApiError extends Error {
     this.errorCode = data?.error_code ?? null;
     this.description = description;
     this.method = method;
+    const retryAfter = Number(data?.parameters?.retry_after);
+    this.retryAfterSeconds = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null;
   }
 }
 
@@ -263,21 +265,45 @@ export function logApprovalStage(stage, fields = {}) {
   console.log(`[telegram-approval] ${parts.join(" ")}`);
 }
 
+function telegramHttpTimeoutMs() {
+  const configured = Number(process.env.TELEGRAM_HTTP_TIMEOUT_MS);
+  if (Number.isFinite(configured) && configured >= 1000 && configured <= 120000) return configured;
+  return 15000;
+}
+
+function openTelegramTimeout(ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  if (typeof timer.unref === "function") timer.unref();
+  return {
+    signal: controller.signal,
+    cancel() {
+      clearTimeout(timer);
+    },
+  };
+}
+
 async function telegramRequest(method, body, token) {
   if (!token) throw new Error("Telegram bot token not configured");
+  const timeout = openTelegramTimeout(telegramHttpTimeoutMs());
   let data;
   try {
     const res = await fetch(`${API_BASE}${token}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: timeout.signal,
     });
     data = await res.json();
   } catch (err) {
     const wrapped = new Error(redactTelegramText(err?.message || err));
     wrapped.errorCode = null;
+    wrapped.timedOut = err?.name === "AbortError" || err?.name === "TimeoutError";
     throw wrapped;
+  } finally {
+    timeout.cancel();
   }
+  // One HTTP attempt. Retry timing lives in telegramDelivery, which honors retry_after.
   if (!data.ok) throw new TelegramApiError(method, data);
   return data.result;
 }
