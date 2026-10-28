@@ -111,6 +111,28 @@ async function loadCogsByTransactionIds(db, transactionIds) {
   return map;
 }
 
+/**
+ * Historical sale COGS for transactions already assigned to a shop day.
+ * `unit_cost_at_sale` is the only cost source. A missing item row or a NULL
+ * snapshot makes that transaction unknown; live `products.cost` is not read.
+ * @param {object} db
+ * @param {object[]} transactions
+ */
+export async function snapshotSalesCogsForTransactions(db, transactions) {
+  const list = Array.isArray(transactions) ? transactions : [];
+  const cogsByTx = await loadCogsByTransactionIds(
+    db,
+    list.map((row) => row.id)
+  );
+  const byDay = new Map();
+  for (const row of list) {
+    const ymd = shopBusinessDayYmd(row);
+    if (!ymd) continue;
+    addCogsDay(byDay, ymd, cogsByTx.get(Number(row.id)));
+  }
+  return byDay;
+}
+
 /** Per-shop-day historical sale COGS for a date range. */
 export async function snapshotSalesCogsByDay(db, from, to) {
   const rows = await db.all(
@@ -125,17 +147,7 @@ export async function snapshotSalesCogsByDay(db, from, to) {
     businessDayRangeParams(from, to)
   );
   const matched = rows.filter((r) => rowMatchesShopDateRange(r, from, to));
-  const cogsByTx = await loadCogsByTransactionIds(
-    db,
-    matched.map((row) => row.id)
-  );
-  const byDay = new Map();
-  for (const row of matched) {
-    const ymd = shopBusinessDayYmd(row);
-    if (!ymd) continue;
-    addCogsDay(byDay, ymd, cogsByTx.get(Number(row.id)));
-  }
-  return byDay;
+  return snapshotSalesCogsForTransactions(db, matched);
 }
 
 export async function snapshotSalesCogsForRange(db, from, to) {
@@ -175,22 +187,15 @@ async function refundUnitCostLookup(db, refunds) {
   return costByKey;
 }
 
-/** Per-shop-day historical refund COGS reversal for a date range. */
-export async function snapshotRefundCogsByDay(db, from, to) {
-  const refunds = await db.all(
-    `SELECT r.items_json, r.original_transaction_id, r.created_at,
-            r.business_day AS business_day,
-            cs.business_day AS shift_business_day,
-            cs.start_time AS start_time
-     FROM refunds r
-     ${REFUND_BUSINESS_DAY_JOIN}
-     WHERE r.status = 'approved'
-       AND ${businessDayRangeClause("r", "cs")}`,
-    businessDayRangeParams(from, to)
-  );
-  const matched = refunds.filter((row) => rowMatchesShopDateRange(row, from, to));
+/**
+ * Historical refund COGS for approved refund rows already loaded.
+ * Attribution uses the refund's shop business day, not the original sale day.
+ * @param {object} db
+ * @param {object[]} refunds
+ */
+export async function snapshotRefundCogsForRefundRows(db, refunds) {
+  const matched = Array.isArray(refunds) ? refunds : [];
   const costByKey = await refundUnitCostLookup(db, matched);
-
   const byDay = new Map();
   for (const r of matched) {
     const ymd = shopBusinessDayYmd(r);
@@ -221,6 +226,23 @@ export async function snapshotRefundCogsByDay(db, from, to) {
     addCogsDay(byDay, ymd, known ? { known: true, cogs: dayCogs } : { known: false, cogs: null });
   }
   return byDay;
+}
+
+/** Per-shop-day historical refund COGS reversal for a date range. */
+export async function snapshotRefundCogsByDay(db, from, to) {
+  const refunds = await db.all(
+    `SELECT r.items_json, r.original_transaction_id, r.created_at,
+            r.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS start_time
+     FROM refunds r
+     ${REFUND_BUSINESS_DAY_JOIN}
+     WHERE r.status = 'approved'
+       AND ${businessDayRangeClause("r", "cs")}`,
+    businessDayRangeParams(from, to)
+  );
+  const matched = refunds.filter((row) => rowMatchesShopDateRange(row, from, to));
+  return snapshotRefundCogsForRefundRows(db, matched);
 }
 
 export async function snapshotRefundCogsForRange(db, from, to) {

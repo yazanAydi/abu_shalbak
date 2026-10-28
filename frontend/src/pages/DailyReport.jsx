@@ -238,9 +238,9 @@ export default function DailyReport() {
           : Promise.resolve({ data: [] });
         const closedShiftsPromise = canSeeShifts
           ? api
-              .get(`/api/shifts?status=closed&date_to=${todayStr}`, { headers, signal })
-              .catch(() => ({ data: [] }))
-          : Promise.resolve({ data: [] });
+              .get("/api/shifts/latest-closed", { headers, signal, params: { date_to: todayStr } })
+              .catch(() => ({ data: { shift: null } }))
+          : Promise.resolve({ data: { shift: null } });
         const lowStockPromise = api
           .get(
             `/api/reports/low-stock?threshold=${LOW_STOCK_THRESHOLD}&limit=${LOW_STOCK_WIDGET_LIMIT}`,
@@ -296,8 +296,12 @@ export default function DailyReport() {
         const open = Array.isArray(openShiftsRes.data) ? openShiftsRes.data : [];
         setOpenShifts(open);
 
-        const closed = Array.isArray(closedShiftsRes.data) ? closedShiftsRes.data : [];
-        setLastClosedShift(closed[0] || null);
+        const closedPayload = closedShiftsRes.data;
+        const closedShift =
+          closedPayload && typeof closedPayload === "object" && "shift" in closedPayload
+            ? closedPayload.shift
+            : null;
+        setLastClosedShift(closedShift || null);
 
         const lowStockPayload = lowStockRes.data;
         const lowStockProducts = Array.isArray(lowStockPayload?.products)

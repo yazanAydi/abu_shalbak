@@ -72,6 +72,58 @@ function parseDate(s) {
   return s.trim();
 }
 
+const SHIFT_LIST_ORDER = " ORDER BY datetime(COALESCE(s.end_time, s.start_time)) DESC, s.id DESC";
+
+/**
+ * Same status, cashier, and business-day filter as the shift-audit list.
+ * Shop-wide: store_id is not a filter. There is one operational shop, and
+ * multi-branch scoping is not a current feature.
+ */
+function shiftListFilter(query, { status } = {}) {
+  const resolvedStatus =
+    status !== undefined
+      ? status
+      : typeof query.status === "string" && ["open", "pending_count", "closed"].includes(query.status)
+        ? query.status
+        : null;
+  const cashierId =
+    query.cashier_id != null && String(query.cashier_id).trim() !== ""
+      ? Number(query.cashier_id)
+      : null;
+  const dateFrom = parseDate(query.date_from);
+  const dateTo = parseDate(query.date_to);
+  let sql = "";
+  const params = [];
+  if (resolvedStatus) {
+    sql += " AND s.status = ?";
+    params.push(resolvedStatus);
+  }
+  if (cashierId && !Number.isNaN(cashierId)) {
+    sql += " AND s.cashier_id = ?";
+    params.push(cashierId);
+  }
+  if (dateFrom || dateTo) {
+    const bounds = shopDaySqlBounds(dateFrom || "1970-01-01", dateTo || "2100-12-31");
+    const started = sqlUtcTimestampExpr("s.start_time");
+    sql += ` AND (
+      (s.business_day IS NOT NULL AND s.business_day >= ? AND s.business_day <= ?)
+      OR (s.business_day IS NULL AND ${started} >= datetime(?) AND ${started} <= datetime(?))
+    )`;
+    params.push(dateFrom || "1970-01-01", dateTo || "2100-12-31", bounds.startSql, bounds.endSql);
+  }
+  return { sql, params };
+}
+
+function presentClosedShiftSummary(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    cashier_name: row.cashier_name,
+    end_time: row.end_time ?? null,
+    variance: row.variance == null ? null : row.variance,
+  };
+}
+
 function alreadyHasOpenShiftResponse(res) {
   return res.status(409).json({ error: "لديك وردية مفتوحة بالفعل" });
 }
@@ -570,45 +622,31 @@ export function createShiftsRouter(db) {
     }
   );
 
-  router.get("/", requireAuth, requireShiftAudit, async (req, res) => {
-    const status =
-      typeof req.query.status === "string" &&
-      ["open", "pending_count", "closed"].includes(req.query.status)
-        ? req.query.status
-        : null;
-    const cashierId =
-      req.query.cashier_id != null && String(req.query.cashier_id).trim() !== ""
-        ? Number(req.query.cashier_id)
-        : null;
-    const dateFrom = parseDate(req.query.date_from);
-    const dateTo = parseDate(req.query.date_to);
+  router.get("/latest-closed", requireAuth, requireShiftAudit, async (req, res) => {
+    const filter = shiftListFilter(req.query, { status: "closed" });
+    const row = await db.get(
+      `SELECT s.id, u.username AS cashier_name, s.end_time, s.variance
+       FROM cashier_shifts s
+       JOIN users u ON u.id = s.cashier_id
+       WHERE 1=1${filter.sql}
+       ${SHIFT_LIST_ORDER}
+       LIMIT 1`,
+      filter.params
+    );
+    res.json({ shift: presentClosedShiftSummary(row) });
+  });
 
+  router.get("/", requireAuth, requireShiftAudit, async (req, res) => {
+    const filter = shiftListFilter(req.query);
     let sql = `
       SELECT s.id, s.cashier_id, u.username AS cashier_name, s.start_time, s.end_time,
              s.business_day, s.opening_cash, s.closing_cash, s.expected_cash, s.variance, s.status,
              (SELECT COUNT(*) FROM transactions t WHERE t.shift_id = s.id) AS sale_count
       FROM cashier_shifts s
       JOIN users u ON u.id = s.cashier_id
-      WHERE 1=1`;
-    const params = [];
-    if (status) {
-      sql += " AND s.status = ?";
-      params.push(status);
-    }
-    if (cashierId && !Number.isNaN(cashierId)) {
-      sql += " AND s.cashier_id = ?";
-      params.push(cashierId);
-    }
-    if (dateFrom || dateTo) {
-      const bounds = shopDaySqlBounds(dateFrom || "1970-01-01", dateTo || "2100-12-31");
-      const started = sqlUtcTimestampExpr("s.start_time");
-      sql += ` AND (
-        (s.business_day IS NOT NULL AND s.business_day >= ? AND s.business_day <= ?)
-        OR (s.business_day IS NULL AND ${started} >= datetime(?) AND ${started} <= datetime(?))
-      )`;
-      params.push(dateFrom || "1970-01-01", dateTo || "2100-12-31", bounds.startSql, bounds.endSql);
-    }
-    sql += " ORDER BY datetime(COALESCE(s.end_time, s.start_time)) DESC, s.id DESC";
+      WHERE 1=1${filter.sql}`;
+    const params = filter.params;
+    sql += SHIFT_LIST_ORDER;
     sql += listLimitSql(req.query, 100, req.user?.role).sql;
     const rows = await db.all(sql, params);
     for (const row of rows) {

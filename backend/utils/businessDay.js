@@ -195,7 +195,7 @@ export async function fetchTransactionsForShopDate(db, dateStr) {
  */
 export async function fetchRefundsForShopDate(db, dateStr) {
   const rows = await db.all(
-    `SELECT r.id, r.total, r.payment_method, r.created_at,
+    `SELECT r.id, r.total, r.payment_method, r.items_json, r.original_transaction_id, r.created_at,
             r.business_day AS business_day,
             cs.business_day AS shift_business_day,
             cs.start_time AS shift_start_time

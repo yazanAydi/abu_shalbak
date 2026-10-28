@@ -12,6 +12,7 @@ import {
   businessDayRangeClause,
   businessDayRangeParams,
   fetchRefundsForShopDate,
+  shopBusinessDayYmd,
   txMatchesShopDate,
 } from "./businessDay.js";
 
@@ -919,6 +920,68 @@ export async function computeShiftVisa(db, shiftId) {
 export async function sumShiftCardPayments(db, shiftId) {
   const visa = await computeShiftVisa(db, shiftId);
   return visa.visa_sales;
+}
+
+function emptyTenderDay() {
+  return { cash_total: 0, on_account_total: 0 };
+}
+
+/**
+ * Cash and on-account tender totals for each shop day in a range.
+ * One payment-line query, summed per line. Visa is not folded into cash.
+ * Card sales stay in aggregateVisaSalesByDay so a NIS equivalent is not
+ * replaced by the foreign amount.
+ */
+export async function aggregateTenderTotalsByDay(db, fromYmd, toYmd) {
+  const rows = await db.all(
+    `SELECT sp.payment_method, sp.amount,
+            t.created_at, t.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS shift_start_time
+     FROM sale_payments sp
+     INNER JOIN transactions t ON t.id = sp.transaction_id
+     ${TX_BUSINESS_DAY_JOIN}
+     WHERE ${businessDayRangeClause("t", "cs")}`,
+    businessDayRangeParams(fromYmd, toYmd)
+  );
+  const byDay = new Map();
+  for (const row of rows) {
+    const ymd = shopBusinessDayYmd(row);
+    if (!ymd || ymd < fromYmd || ymd > toYmd) continue;
+    const day = byDay.get(ymd) || emptyTenderDay();
+    const amt = round2(Number(row.amount) || 0);
+    if (row.payment_method === "cash") day.cash_total = round2(day.cash_total + amt);
+    else if (row.payment_method === "on_account") day.on_account_total = round2(day.on_account_total + amt);
+    byDay.set(ymd, day);
+  }
+  return byDay;
+}
+
+/**
+ * Visa sales tenders by shop day. Same NIS rule as aggregateVisaSalesForShopDate:
+ * COALESCE(nis_equivalent, amount), completed sales only, office invoices included.
+ */
+export async function aggregateVisaSalesByDay(db, fromYmd, toYmd) {
+  const rows = await db.all(
+    `SELECT COALESCE(sp.nis_equivalent, sp.amount) AS line_nis,
+            t.created_at, t.business_day AS business_day,
+            cs.business_day AS shift_business_day,
+            cs.start_time AS shift_start_time
+     FROM sale_payments sp
+     INNER JOIN transactions t ON t.id = sp.transaction_id
+     ${TX_BUSINESS_DAY_JOIN}
+     WHERE sp.payment_method = 'visa'
+       AND COALESCE(t.status, 'completed') = 'completed'
+       AND ${businessDayRangeClause("t", "cs")}`,
+    businessDayRangeParams(fromYmd, toYmd)
+  );
+  const byDay = new Map();
+  for (const row of rows) {
+    const ymd = shopBusinessDayYmd(row);
+    if (!ymd || ymd < fromYmd || ymd > toYmd) continue;
+    byDay.set(ymd, round2((byDay.get(ymd) || 0) + (Number(row.line_nis) || 0)));
+  }
+  return byDay;
 }
 
 /**

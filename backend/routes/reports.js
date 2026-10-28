@@ -3,10 +3,8 @@ import { requireAuth, requireReportsPermission, requireAnyReportsPermission } fr
 import { listShiftVisaActivity, queryVisaReport } from "../services/visaReconciliationService.js";
 import { computeShiftVisa } from "../utils/salePayments.js";
 import {
-  snapshotSalesCogsForRange,
-  snapshotRefundCogsForRange,
-  snapshotSalesCogsByDay,
-  snapshotRefundCogsByDay,
+  snapshotRefundCogsForRefundRows,
+  snapshotSalesCogsForTransactions,
 } from "../utils/cogs.js";
 import {
   aggregateSalesByPrice,
@@ -24,7 +22,12 @@ import {
   parseStatementDate,
 } from "../utils/accountStatementService.js";
 import XLSX from "xlsx";
-import { aggregatePaymentLinesForDate, aggregateVisaSalesForShopDate } from "../utils/salePayments.js";
+import {
+  aggregatePaymentLinesForDate,
+  aggregateTenderTotalsByDay,
+  aggregateVisaSalesByDay,
+  aggregateVisaSalesForShopDate,
+} from "../utils/salePayments.js";
 import {
   fetchRefundsForShopDate,
   fetchRefundsForShopDateRange,
@@ -90,7 +93,7 @@ function billedLineRevenue(it) {
   return round2(Number(it.line_gross) || 0);
 }
 
-async function aggregateDay(db, dateStr) {
+async function loadShopDay(db, dateStr) {
   const rows = await fetchTransactionsForShopDate(db, dateStr);
 
   const paymentAgg = await aggregatePaymentLinesForDate(db, dateStr);
@@ -174,44 +177,49 @@ async function aggregateDay(db, dateStr) {
   const net_card_total = visaDay.visa_net;
 
   return {
-    success: true,
-    date: dateStr,
-    total_sales: round2(total_sales),
-    rounding_adjustment: round2(rounding_adjustment),
-    item_revenue: round2(item_revenue),
-    total_tax: round2(total_tax),
-    total_net: round2(total_net),
-    total_transactions,
-    cash_transactions: paymentAgg.cash_transactions,
-    card_transactions: paymentAgg.card_transactions,
-    on_account_transactions: paymentAgg.on_account_transactions,
-    mixed_sales_count: paymentAgg.mixed_sales_count,
-    cash_total: round2(cash_total),
-    card_total: round2(card_total),
-    on_account_total: round2(on_account_total),
-    change_total: round2(change_total),
-    collections_by_currency: paymentAgg.collections_by_currency,
-    collections_grand_total_nis: paymentAgg.collections_grand_total_nis,
-    items_sold,
-    top_products,
-    refunds_total,
-    refund_count,
-    net_sales,
-    net_cash_total,
-    net_card_total,
-    visa_refunds: visaDay.visa_refunds,
-    visa_incomplete: visaDay.visa_incomplete,
+    report: {
+      success: true,
+      date: dateStr,
+      total_sales: round2(total_sales),
+      rounding_adjustment: round2(rounding_adjustment),
+      item_revenue: round2(item_revenue),
+      total_tax: round2(total_tax),
+      total_net: round2(total_net),
+      total_transactions,
+      cash_transactions: paymentAgg.cash_transactions,
+      card_transactions: paymentAgg.card_transactions,
+      on_account_transactions: paymentAgg.on_account_transactions,
+      mixed_sales_count: paymentAgg.mixed_sales_count,
+      cash_total: round2(cash_total),
+      card_total: round2(card_total),
+      on_account_total: round2(on_account_total),
+      change_total: round2(change_total),
+      collections_by_currency: paymentAgg.collections_by_currency,
+      collections_grand_total_nis: paymentAgg.collections_grand_total_nis,
+      items_sold,
+      top_products,
+      refunds_total,
+      refund_count,
+      net_sales,
+      net_cash_total,
+      net_card_total,
+      visa_refunds: visaDay.visa_refunds,
+      visa_incomplete: visaDay.visa_incomplete,
+    },
+    rows,
+    refunds: refundRows,
   };
 }
 
-async function aggregateDayProfit(db, dateStr) {
-  const base = await aggregateDay(db, dateStr);
-  // Historical COGS comes from sale-item snapshots, never current product cost,
-  // so changing a cost today cannot alter the profit of an old sale.
-  const cogsSales = await snapshotSalesCogsForRange(db, dateStr, dateStr);
-  const cogsRef = await snapshotRefundCogsForRange(db, dateStr, dateStr);
-  const unknown = !!(cogsSales.unknown || cogsRef.unknown);
-  const cost = unknown ? null : round2((cogsSales.cogs || 0) - (cogsRef.cogs || 0));
+async function aggregateDay(db, dateStr) {
+  return (await loadShopDay(db, dateStr)).report;
+}
+
+function profitFromSnapshots(dateStr, base, salesDay, refundDay) {
+  const sales = salesDay || { known: 0, unknown: false };
+  const refunds = refundDay || { known: 0, unknown: false };
+  const unknown = !!(sales.unknown || refunds.unknown);
+  const cost = unknown ? null : round2(sales.known - refunds.known);
   const profit = unknown ? null : round2(base.net_sales - cost);
   return {
     date: dateStr,
@@ -228,6 +236,22 @@ async function aggregateDayProfit(db, dateStr) {
   };
 }
 
+async function aggregateDayProfit(db, dateStr, preloaded = null) {
+  const loaded = preloaded || (await loadShopDay(db, dateStr));
+  // Historical COGS comes from sale-item snapshots, never current product cost,
+  // so changing a cost today cannot alter the profit of an old sale.
+  const [salesByDay, refundByDay] = await Promise.all([
+    snapshotSalesCogsForTransactions(db, loaded.rows),
+    snapshotRefundCogsForRefundRows(db, loaded.refunds),
+  ]);
+  return profitFromSnapshots(
+    dateStr,
+    loaded.report,
+    salesByDay.get(dateStr),
+    refundByDay.get(dateStr)
+  );
+}
+
 function emptyProfitDay(dateStr) {
   return {
     date: dateStr,
@@ -241,22 +265,45 @@ function emptyProfitDay(dateStr) {
     refunds_total: 0,
     refund_count: 0,
     items_sold: 0,
+    rounding_adjustment: 0,
+    item_revenue: 0,
   };
 }
 
-async function aggregateProfitRange(db, fromYmd, toYmd) {
+/** Chart series contract. Extra range fields stay off this object. */
+function toProfitSeriesDay(day) {
+  return {
+    date: day.date,
+    revenue: day.revenue,
+    cost: day.cost,
+    profit: day.profit,
+    cost_unknown: day.cost_unknown,
+    total_sales: day.total_sales,
+    net_sales: day.net_sales,
+    total_transactions: day.total_transactions,
+    refunds_total: day.refunds_total,
+    refund_count: day.refund_count,
+    items_sold: day.items_sold,
+  };
+}
+
+/**
+ * One pass over the range: sales, refunds, line items, and historical COGS.
+ * Payment tenders are not included; the range endpoint loads those separately
+ * so a join of items and payments cannot multiply either total.
+ */
+async function buildProfitDays(db, fromYmd, toYmd) {
   const dates = shopDateRange(fromYmd, toYmd);
   const days = new Map(dates.map((dateStr) => [dateStr, emptyProfitDay(dateStr)]));
-  const [txs, refunds, salesCogs, refundCogs] = await Promise.all([
+  const [txs, refunds] = await Promise.all([
     fetchTransactionsForShopDateRange(db, fromYmd, toYmd),
     fetchRefundsForShopDateRange(db, fromYmd, toYmd),
-    snapshotSalesCogsByDay(db, fromYmd, toYmd),
-    snapshotRefundCogsByDay(db, fromYmd, toYmd),
   ]);
-  const itemsByTx = await loadItemsByTransaction(
-    db,
-    txs.map((t) => t.id)
-  );
+  const [itemsByTx, salesCogs, refundCogs] = await Promise.all([
+    loadItemsByTransaction(db, txs.map((t) => t.id)),
+    snapshotSalesCogsForTransactions(db, txs),
+    snapshotRefundCogsForRefundRows(db, refunds),
+  ]);
 
   for (const t of txs) {
     const ymd = shopBusinessDayYmd(t);
@@ -264,14 +311,24 @@ async function aggregateProfitRange(db, fromYmd, toYmd) {
     if (!bucket) continue;
     bucket.total_transactions += 1;
     bucket.total_sales = round2(bucket.total_sales + Number(t.total));
+    bucket.rounding_adjustment = round2(
+      bucket.rounding_adjustment + (Number(t.rounding_adjustment) || 0)
+    );
     const txItems = itemsByTx.get(t.id) || [];
     if (txItems.length > 0) {
-      bucket.items_sold += txItems.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+      for (const it of txItems) {
+        bucket.items_sold += Number(it.quantity) || 0;
+        bucket.item_revenue = round2(bucket.item_revenue + billedLineRevenue(it));
+      }
     } else {
       try {
         const items = JSON.parse(t.items_json);
-        if (Array.isArray(items)) {
-          bucket.items_sold += items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+        if (!Array.isArray(items)) continue;
+        for (const it of items) {
+          const qty = Number(it.quantity) || 0;
+          const price = Number(it.price) || 0;
+          bucket.items_sold += qty;
+          bucket.item_revenue = round2(bucket.item_revenue + round2(qty * price));
         }
       } catch {
         /* ignore */
@@ -298,9 +355,16 @@ async function aggregateProfitRange(db, fromYmd, toYmd) {
     bucket.cost = cost;
     bucket.profit = unknown ? null : round2(bucket.net_sales - cost);
     bucket.cost_unknown = unknown;
+    bucket.rounding_adjustment = round2(bucket.rounding_adjustment);
+    bucket.item_revenue = round2(bucket.item_revenue);
   }
 
   return dates.map((dateStr) => days.get(dateStr));
+}
+
+async function aggregateProfitRange(db, fromYmd, toYmd) {
+  const days = await buildProfitDays(db, fromYmd, toYmd);
+  return days.map(toProfitSeriesDay);
 }
 
 export function createReportsRouter(db) {
@@ -482,13 +546,15 @@ export function createReportsRouter(db) {
     res.json({ success: true, days: out });
   });
 
+  // Shop-wide totals. store_id is not a filter; multi-branch scoping is not a current feature.
   router.get("/daily", dashboardOrSales, async (req, res) => {
     const date =
       typeof req.query.date === "string" && req.query.date.trim()
         ? req.query.date.trim()
         : shopTodayYmd();
-    const report = await aggregateDay(db, date);
-    const profit = await aggregateDayProfit(db, date);
+    const loaded = await loadShopDay(db, date);
+    const profit = await aggregateDayProfit(db, date, loaded);
+    const report = loaded.report;
     res.json({
       ...report,
       cost: profit.cost,
@@ -521,39 +587,44 @@ export function createReportsRouter(db) {
     let cash_total = 0;
     let card_total = 0;
     let on_account_total = 0;
-    const profitDays = await aggregateProfitRange(db, from, to);
-    const profitByDate = new Map(profitDays.map((d) => [d.date, d]));
+    const [profitDays, tendersByDay, visaByDay] = await Promise.all([
+      buildProfitDays(db, from, to),
+      aggregateTenderTotalsByDay(db, from, to),
+      aggregateVisaSalesByDay(db, from, to),
+    ]);
     const byDay = [];
-    for (const dateStr of dates) {
-      const r = await aggregateDay(db, dateStr);
-      const p = profitByDate.get(dateStr) || {};
-      total_sales = round2(total_sales + r.total_sales);
-      rounding_adjustment = round2(rounding_adjustment + (Number(r.rounding_adjustment) || 0));
-      item_revenue = round2(item_revenue + (Number(r.item_revenue) || 0));
-      total_transactions += r.total_transactions;
-      items_sold += r.items_sold;
-      net_sales = round2(net_sales + r.net_sales);
-      refunds_total = round2(refunds_total + r.refunds_total);
-      refund_count += r.refund_count;
-      cash_total = round2(cash_total + r.cash_total);
-      card_total = round2(card_total + r.card_total);
-      on_account_total = round2(on_account_total + r.on_account_total);
+    for (const day of profitDays) {
+      const tender = tendersByDay.get(day.date) || { cash_total: 0, on_account_total: 0 };
+      const dayCard = round2(visaByDay.get(day.date) || 0);
+      const dayCash = round2(tender.cash_total || 0);
+      const dayAccount = round2(tender.on_account_total || 0);
+      total_sales = round2(total_sales + day.total_sales);
+      rounding_adjustment = round2(rounding_adjustment + (Number(day.rounding_adjustment) || 0));
+      item_revenue = round2(item_revenue + (Number(day.item_revenue) || 0));
+      total_transactions += day.total_transactions;
+      items_sold += day.items_sold;
+      net_sales = round2(net_sales + day.net_sales);
+      refunds_total = round2(refunds_total + day.refunds_total);
+      refund_count += day.refund_count;
+      cash_total = round2(cash_total + dayCash);
+      card_total = round2(card_total + dayCard);
+      on_account_total = round2(on_account_total + dayAccount);
       byDay.push({
-        date: dateStr,
-        total_sales: r.total_sales,
-        rounding_adjustment: r.rounding_adjustment,
-        item_revenue: r.item_revenue,
-        transactions: r.total_transactions,
-        net_sales: r.net_sales,
-        refunds_total: r.refunds_total,
-        refund_count: r.refund_count,
-        items_sold: r.items_sold,
-        cash_total: r.cash_total,
-        card_total: r.card_total,
-        on_account_total: r.on_account_total,
-        cost: p.cost ?? null,
-        profit: p.profit ?? null,
-        cost_unknown: !!p.cost_unknown,
+        date: day.date,
+        total_sales: day.total_sales,
+        rounding_adjustment: day.rounding_adjustment,
+        item_revenue: day.item_revenue,
+        transactions: day.total_transactions,
+        net_sales: day.net_sales,
+        refunds_total: day.refunds_total,
+        refund_count: day.refund_count,
+        items_sold: day.items_sold,
+        cash_total: dayCash,
+        card_total: dayCard,
+        on_account_total: dayAccount,
+        cost: day.cost ?? null,
+        profit: day.profit ?? null,
+        cost_unknown: !!day.cost_unknown,
       });
     }
     const rangeUnknown = byDay.some((d) => d.cost_unknown);
