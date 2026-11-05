@@ -62,8 +62,6 @@ $files = @(
   "backend\utils\roles.js",
   "backend\services\cashierPayrollService.js"
 )
-& node (Join-Path $repo "scripts\cashier-print\check-package-files.mjs")
-if ($LASTEXITCODE -ne 0) { throw "Helper package is missing a required import" }
 foreach ($rel in $files) {
   $dest = Join-Path $outRoot $rel
   New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
@@ -150,6 +148,17 @@ if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 rejected a packaged scr
 
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path $outRoot -DestinationPath $zipPath -Force
+
+$verifyRoot = Join-Path ([IO.Path]::GetTempPath()) ("abo-receipt-zip-check-" + [guid]::NewGuid().ToString("N"))
+try {
+  Expand-Archive -LiteralPath $zipPath -DestinationPath $verifyRoot -Force
+  $packageDir = @(Get-ChildItem -LiteralPath $verifyRoot -Directory) | Select-Object -First 1
+  if (-not $packageDir) { throw "ZIP did not contain a package folder" }
+  & node (Join-Path $repo "scripts\cashier-print\check-package-files.mjs") $packageDir.FullName
+  if ($LASTEXITCODE -ne 0) { throw "ZIP is missing a module imported by the receipt helper" }
+} finally {
+  if (Test-Path -LiteralPath $verifyRoot) { Remove-Item -LiteralPath $verifyRoot -Recurse -Force }
+}
 
 Write-Host "Deliverable folder: $outRoot" -ForegroundColor Green
 Write-Host "Deliverable zip:    $zipPath" -ForegroundColor Green

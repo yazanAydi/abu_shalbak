@@ -12,6 +12,11 @@ function Write-ReceiptHelperLog([string]$InstallDir, [string]$Level, [string]$Me
     }
     $path = Join-Path $dir "receipt-print-helper-startup.log"
     Add-Content -LiteralPath $path -Value $line -Encoding utf8
+    $maxLines = 400
+    $existing = @(Get-Content -LiteralPath $path -ErrorAction SilentlyContinue)
+    if ($existing.Count -gt $maxLines) {
+      Set-Content -LiteralPath $path -Value ($existing | Select-Object -Last $maxLines) -Encoding utf8
+    }
   } catch {
     Write-Host ("{0:yyyy-MM-dd HH:mm:ss} [WARN] could not write startup log: {1}" -f (Get-Date), $_.Exception.Message)
   }
@@ -90,12 +95,38 @@ function Get-ReceiptHelperProcessIds([string]$InstallDir) {
   }
 }
 
-function Get-ReceiptHelperPort {
+function ConvertTo-ReceiptHelperPort([string]$Raw) {
   $parsed = 0
-  $raw = [string]$env:RECEIPT_PRINT_DIALOG_HELPER_PORT
-  if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 65535) {
+  $text = [string]$Raw
+  if ([string]::IsNullOrWhiteSpace($text)) { return 0 }
+  $text = $text.Trim().Trim([char]34).Trim([char]39)
+  if ([int]::TryParse($text, [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 65535) {
     return $parsed
   }
+  return 0
+}
+
+function Read-CashierPrintEnvValue([string]$EnvFile, [string]$Key) {
+  if (-not (Test-Path -LiteralPath $EnvFile)) { return "" }
+  foreach ($line in Get-Content -LiteralPath $EnvFile) {
+    $trim = [string]$line
+    if (-not $trim.Trim() -or $trim.Trim().StartsWith("#")) { continue }
+    $pattern = "^\s*" + [regex]::Escape($Key) + "\s*=\s*(.*)$"
+    if ($trim -match $pattern) {
+      return $Matches[1].Trim().Trim([char]34).Trim([char]39)
+    }
+  }
+  return ""
+}
+
+# Same order as the Node helper: an already-set process variable wins
+# (dotenv does not override it), then .env.cashier-print, then 17892.
+function Get-ReceiptHelperPort([string]$InstallDir) {
+  $fromProcess = ConvertTo-ReceiptHelperPort ([string]$env:RECEIPT_PRINT_DIALOG_HELPER_PORT)
+  if ($fromProcess -gt 0) { return $fromProcess }
+  $envFile = Join-Path $InstallDir ".env.cashier-print"
+  $fromFile = ConvertTo-ReceiptHelperPort (Read-CashierPrintEnvValue $envFile "RECEIPT_PRINT_DIALOG_HELPER_PORT")
+  if ($fromFile -gt 0) { return $fromFile }
   return 17892
 }
 

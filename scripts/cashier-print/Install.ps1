@@ -250,7 +250,7 @@ if (-not $SkipStartup) {
   & (Join-Path $InstallDir "Register-Startup.ps1") -InstallDir $InstallDir
 }
 & (Join-Path $InstallDir "Start-Helper.ps1") -InstallDir $InstallDir | Out-Null
-$listenPort = Get-ReceiptHelperPort
+$listenPort = Get-ReceiptHelperPort -InstallDir $InstallDir
 $health = Wait-HelperHealth $expectedVersion $listenPort
 
 if ($health.testMode) {

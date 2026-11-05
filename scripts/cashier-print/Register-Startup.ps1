@@ -5,6 +5,8 @@ param(
 )
 
 $taskName = $TaskName
+. (Join-Path $PSScriptRoot "HelperProcess.ps1")
+$listenPort = Get-ReceiptHelperPort -InstallDir $InstallDir
 $startScript = Join-Path $InstallDir "Start-Helper.ps1"
 if (-not (Test-Path -LiteralPath $startScript)) { throw "Missing $startScript" }
 
@@ -28,7 +30,7 @@ Register-ScheduledTask `
   -Trigger $trigger `
   -Settings $settings `
   -Principal $principal `
-  -Description "Print Abo Shalbak POS receipts on this cashier PC (127.0.0.1:17892)" `
+  -Description "Print Abo Shalbak POS receipts on this cashier PC (127.0.0.1:$listenPort)" `
   -Force | Out-Null
 $after = @(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)
 if ($after.Count -ne 1) {

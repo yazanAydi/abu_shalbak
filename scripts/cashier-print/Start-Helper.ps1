@@ -32,13 +32,12 @@ Write-ReceiptHelperLog $InstallDir "INFO" "start: begin install=$InstallDir"
 $running = Find-RunningReceiptHelper $InstallDir
 if ($running -gt 0) {
   Write-ReceiptHelperPidFile $InstallDir $running
-  $port = Get-ReceiptHelperPort
+  $port = Get-ReceiptHelperPort -InstallDir $InstallDir
   $healthy = Wait-ReceiptHelperHealth $InstallDir $running $null $port
-  if ($healthy) {
-    Write-ReceiptHelperLog $InstallDir "INFO" "SUCCESS helper already running pid=$running"
-  } else {
-    Write-ReceiptHelperLog $InstallDir "ERROR" "FAILURE helper process $running is running but health check failed"
+  if (-not $healthy) {
+    throw "Receipt helper pid $running failed its health check on port $port. See data\receipt-print-helper-startup.log"
   }
+  Write-ReceiptHelperLog $InstallDir "INFO" "SUCCESS helper already running pid=$running"
   Write-Output "already-running:$running"
   return
 }
@@ -63,7 +62,7 @@ if (-not $proc -or -not [int]::TryParse([string]$proc.Id, [ref]$helperPid) -or $
 Write-ReceiptHelperPidFile $InstallDir $helperPid
 Write-Output "started:$helperPid"
 
-$port = Get-ReceiptHelperPort
+$port = Get-ReceiptHelperPort -InstallDir $InstallDir
 if (-not (Wait-ReceiptHelperHealth $InstallDir $helperPid $proc $port)) {
   throw "Receipt helper failed to start. See data\receipt-print-helper-startup.log"
 }
