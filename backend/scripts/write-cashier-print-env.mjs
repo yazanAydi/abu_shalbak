@@ -23,7 +23,7 @@ export function readEnvMap(text) {
   return map;
 }
 
-export function buildCashierPrintEnv({ existingText = "", printer, posUrl, widthMm = "80", testSave = false }) {
+export function buildCashierPrintEnv({ existingText = "", printer, posUrl, widthMm = "", testSave = false }) {
   const origin = originFromPosUrl(posUrl);
   if (!origin) {
     throw Object.assign(new Error("عنوان نقطة البيع غير صالح"), { code: "BAD_POS_URL" });
@@ -79,7 +79,7 @@ if (isMain && process.argv.includes("--file")) {
     existingText: existing,
     printer: arg("--printer"),
     posUrl: arg("--pos-url"),
-    widthMm: arg("--width") || "80",
+    widthMm: arg("--width"),
     testSave: process.argv.includes("--test-save"),
   });
   fs.writeFileSync(file, text, "utf8");

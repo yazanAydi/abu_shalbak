@@ -11,6 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $SourceRoot = $PSScriptRoot
+. (Join-Path $SourceRoot "HelperProcess.ps1")
 $expectedVersion = (Get-Content -LiteralPath (Join-Path $SourceRoot "VERSION") -Raw).Trim()
 $nodeSrc = Join-Path $SourceRoot "runtime\node\node.exe"
 $writeEnv = Join-Path $SourceRoot "backend\scripts\write-cashier-print-env.mjs"
@@ -176,12 +177,13 @@ function Copy-HelperPayload([string]$from, [string]$to) {
   if ($code -ge 8) { throw "Failed to copy helper files (robocopy $code)" }
 }
 
-function Wait-HelperHealth([string]$version, [int]$seconds = 20) {
+function Wait-HelperHealth([string]$version, [int]$port, [int]$seconds = 20) {
   $deadline = (Get-Date).AddSeconds($seconds)
+  $uri = "http://127.0.0.1:$port/health"
   $last = $null
   while ((Get-Date) -lt $deadline) {
     try {
-      $last = Invoke-RestMethod -Uri "http://127.0.0.1:17892/health" -TimeoutSec 2
+      $last = Invoke-RestMethod -Uri $uri -TimeoutSec 2
       if ($last.ok -and $last.version -eq $version) { return $last }
     } catch {
       $last = $_.Exception.Message
@@ -196,6 +198,9 @@ if (-not (Test-Path -LiteralPath $nodeSrc)) {
 }
 if (-not (Test-Path -LiteralPath $writeEnv)) {
   throw "This folder is incomplete (missing write-cashier-print-env.mjs)."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot "HelperProcess.ps1"))) {
+  throw "This folder is incomplete (missing HelperProcess.ps1)."
 }
 
 $printers = @(Get-ReceiptPrinters)
@@ -245,14 +250,14 @@ if (-not $SkipStartup) {
   & (Join-Path $InstallDir "Register-Startup.ps1") -InstallDir $InstallDir
 }
 & (Join-Path $InstallDir "Start-Helper.ps1") -InstallDir $InstallDir | Out-Null
-Start-Sleep -Seconds 1
-$health = Wait-HelperHealth $expectedVersion
+$listenPort = Get-ReceiptHelperPort
+$health = Wait-HelperHealth $expectedVersion $listenPort
 
 if ($health.testMode) {
   $summary = @"
 وضع اختبار بدون طابعة — حفظ PDF (ليس طباعة ورق)
 
-المساعد يعمل على http://127.0.0.1:17892
+المساعد يعمل على http://127.0.0.1:$listenPort
 الإصدار: $($health.version)
 مجلد ملفات PDF: $($health.pdfDir)
 الأصل المسموح: $($health.allowedOrigins -join ', ')
@@ -261,7 +266,7 @@ if ($health.testMode) {
 "@
 } else {
   $summary = @"
-المساعد يعمل على http://127.0.0.1:17892
+المساعد يعمل على http://127.0.0.1:$listenPort
 الإصدار: $($health.version)
 الطابعة: $($health.printer)
 الأصل المسموح: $($health.allowedOrigins -join ', ')

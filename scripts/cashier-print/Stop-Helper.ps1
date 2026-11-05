@@ -1,16 +1,14 @@
-﻿param(
+﻿# Stop only this install's receipt helper. A missing or invalid pid is success.
+param(
   [string]$InstallDir = $PSScriptRoot
 )
 
-$pidFile = Join-Path $InstallDir "data\receipt-print-dialog-helper.pid"
-if (Test-Path $pidFile) {
-  $oldPid = (Get-Content $pidFile -Raw -ErrorAction SilentlyContinue).Trim()
-  if ($oldPid) {
-    Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
-  }
-  Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "HelperProcess.ps1")
+
+if (-not (Test-Path -LiteralPath $InstallDir)) {
+  throw "Install directory not found: $InstallDir"
 }
 
-Get-CimInstance Win32_Process |
-  Where-Object { $_.CommandLine -and $_.CommandLine -like "*receipt-print-dialog-helper.mjs*" } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Write-ReceiptHelperLog $InstallDir "INFO" "stop: begin install=$InstallDir"
+Stop-InstalledReceiptHelpers $InstallDir

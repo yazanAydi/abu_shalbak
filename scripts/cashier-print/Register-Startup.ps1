@@ -1,9 +1,10 @@
 ﻿# Start the helper at Windows sign-in for the signed-in cashier user.
 param(
-  [Parameter(Mandatory = $true)][string]$InstallDir
+  [Parameter(Mandatory = $true)][string]$InstallDir,
+  [string]$TaskName = "AboShalbakReceiptPrintDialogHelper"
 )
 
-$taskName = "AboShalbakReceiptPrintDialogHelper"
+$taskName = $TaskName
 $startScript = Join-Path $InstallDir "Start-Helper.ps1"
 if (-not (Test-Path -LiteralPath $startScript)) { throw "Missing $startScript" }
 
@@ -20,6 +21,7 @@ $settings = New-ScheduledTaskSettingsSet `
   -RestartInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
+$before = @(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)
 Register-ScheduledTask `
   -TaskName $taskName `
   -Action $action `
@@ -28,3 +30,12 @@ Register-ScheduledTask `
   -Principal $principal `
   -Description "Print Abo Shalbak POS receipts on this cashier PC (127.0.0.1:17892)" `
   -Force | Out-Null
+$after = @(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)
+if ($after.Count -ne 1) {
+  throw "Expected one scheduled task named $taskName, found $($after.Count)."
+}
+if ($before.Count -ge 1) {
+  Write-Host "Updated existing sign-in task $taskName."
+} else {
+  Write-Host "Registered sign-in task $taskName."
+}

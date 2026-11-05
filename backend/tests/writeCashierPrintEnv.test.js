@@ -20,6 +20,7 @@ describe("buildCashierPrintEnv", () => {
       posUrl: "http://10.0.0.5:3000/pos",
     });
     expect(text).toContain("RECEIPT_PAPER_SIZE=80mm");
+    expect(text).toContain("RECEIPT_WIDTH_MM=80");
     expect(text).toContain("RECEIPT_PRINTER=RONGTA 80mm Series Printer");
     expect(text).not.toMatch(/RECEIPT_PRINT_TEST_MODE=/);
   });
@@ -37,6 +38,16 @@ describe("buildCashierPrintEnv", () => {
     expect(printer).toBeNull();
     expect(text).toContain("RECEIPT_PRINT_TEST_MODE=save");
     expect(text).not.toMatch(/RECEIPT_PRINTER=/);
+  });
+
+  test("keeps an existing receipt width and helper port when the installer omits them", () => {
+    const { text } = buildCashierPrintEnv({
+      existingText: "RECEIPT_WIDTH_MM=58\nRECEIPT_PRINT_DIALOG_HELPER_PORT=17892\n",
+      printer: "RONGTA 80mm Series Printer",
+      posUrl: "http://127.0.0.1:3002/pos",
+    });
+    expect(text).toContain("RECEIPT_WIDTH_MM=58");
+    expect(text).toContain("RECEIPT_PRINT_DIALOG_HELPER_PORT=17892");
   });
 
   test("rejects a missing printer unless test-save is on", () => {

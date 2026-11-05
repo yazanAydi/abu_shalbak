@@ -14,6 +14,7 @@ $sourceTextFiles = @(
   (Join-Path $repo "scripts\cashier-print\Install.ps1"),
   (Join-Path $repo "scripts\cashier-print\Start-Helper.ps1"),
   (Join-Path $repo "scripts\cashier-print\Stop-Helper.ps1"),
+  (Join-Path $repo "scripts\cashier-print\HelperProcess.ps1"),
   (Join-Path $repo "scripts\cashier-print\Register-Startup.ps1"),
   (Join-Path $repo "scripts\cashier-print\README.txt"),
   (Join-Path $repo "backend\scripts\confirm-receipt-print-dialog.ps1")
@@ -55,8 +56,14 @@ $files = @(
   "backend\utils\money.js",
   "backend\utils\dbTx.js",
   "backend\utils\receiptPrintTiming.js",
-  "backend\utils\receiptPrintDialogMatch.js"
+  "backend\utils\receiptPrintDialogMatch.js",
+  "backend\utils\shopTime.js",
+  "backend\utils\httpError.js",
+  "backend\utils\roles.js",
+  "backend\services\cashierPayrollService.js"
 )
+& node (Join-Path $repo "scripts\cashier-print\check-package-files.mjs")
+if ($LASTEXITCODE -ne 0) { throw "Helper package is missing a required import" }
 foreach ($rel in $files) {
   $dest = Join-Path $outRoot $rel
   New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
@@ -67,6 +74,7 @@ Copy-Item (Join-Path $repo "scripts\cashier-print\Install.bat") (Join-Path $outR
 Copy-Item (Join-Path $repo "scripts\cashier-print\Install.ps1") (Join-Path $outRoot "Install.ps1") -Force
 Copy-Item (Join-Path $repo "scripts\cashier-print\Start-Helper.ps1") (Join-Path $outRoot "Start-Helper.ps1") -Force
 Copy-Item (Join-Path $repo "scripts\cashier-print\Stop-Helper.ps1") (Join-Path $outRoot "Stop-Helper.ps1") -Force
+Copy-Item (Join-Path $repo "scripts\cashier-print\HelperProcess.ps1") (Join-Path $outRoot "HelperProcess.ps1") -Force
 Copy-Item (Join-Path $repo "scripts\cashier-print\Register-Startup.ps1") (Join-Path $outRoot "Register-Startup.ps1") -Force
 Copy-Item (Join-Path $repo "scripts\cashier-print\README.txt") (Join-Path $outRoot "README.txt") -Force
 
@@ -121,6 +129,7 @@ $shippedText = @(
   (Join-Path $outRoot "Install.ps1"),
   (Join-Path $outRoot "Start-Helper.ps1"),
   (Join-Path $outRoot "Stop-Helper.ps1"),
+  (Join-Path $outRoot "HelperProcess.ps1"),
   (Join-Path $outRoot "Register-Startup.ps1"),
   (Join-Path $outRoot "README.txt"),
   (Join-Path $outRoot "backend\scripts\confirm-receipt-print-dialog.ps1")
@@ -132,6 +141,7 @@ $shippedPs1 = @(
   (Join-Path $outRoot "Install.ps1"),
   (Join-Path $outRoot "Start-Helper.ps1"),
   (Join-Path $outRoot "Stop-Helper.ps1"),
+  (Join-Path $outRoot "HelperProcess.ps1"),
   (Join-Path $outRoot "Register-Startup.ps1"),
   (Join-Path $outRoot "backend\scripts\confirm-receipt-print-dialog.ps1")
 )
