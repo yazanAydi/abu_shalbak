@@ -210,6 +210,29 @@ async function assertShiftsFree(db, shiftIds, exceptPeriodId = null) {
   }
 }
 
+function deviceHoursBeforeCutover(device) {
+  return {
+    applicable: true,
+    wage_setup_required: false,
+    before_cutover: true,
+    pay_from_attendance_hours: false,
+    attendance_authoritative: false,
+    calculation_final: false,
+    review_required: true,
+    recorded_hours: device.recorded_hours,
+    posted_hours: 0,
+    posted_pay: 0,
+    attendance_hours: 0,
+    attendance_sessions: device.sessions,
+    missing_snapshot_count: device.missing_snapshot_count,
+    warnings: [...new Set([...(device.warnings || []), "before_cutover"])],
+    warning_labels: [
+      ...(device.warning_labels || []),
+      "ساعات الجهاز ظاهرة للمراجعة. تُحتسب في الراتب من تاريخ الاعتماد فصاعداً.",
+    ],
+  };
+}
+
 export async function getPayrollPreview(db, employeeId, query = {}) {
   const periodFrom = requireYmd(query.period_from || query.from, "بداية فترة الراتب");
   const periodTo = requireYmd(query.period_to || query.to, "نهاية فترة الراتب");
@@ -233,15 +256,21 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
       hours = await composeCutoverPayrollHours(db, emp, { periodFrom, periodTo, kind, cutover });
     } else if (emp.wage_basis === "hourly") {
       const attendance = await previewHourlyAttendance(db, emp.id, periodFrom, periodTo);
-      hours = {
-        applicable: attendance.applicable,
-        ...attendance,
-        calculation_final: attendance.final === true,
-        review_required: attendance.final !== true,
-      };
+      if (attendance.applicable) {
+        hours = {
+          applicable: attendance.applicable,
+          ...attendance,
+          calculation_final: attendance.final === true,
+          review_required: attendance.final !== true,
+        };
+      } else {
+        const device = await buildPayableAttendance(db, emp.id, { from: periodFrom, to: periodTo });
+        hours = deviceHoursBeforeCutover(device);
+      }
     }
   } else if (emp.wage_basis === "daily") {
     const attendance = await buildPayableAttendance(db, emp.id, { from: periodFrom, to: periodTo });
+    const attendanceWarnings = (attendance.warnings || []).filter((code) => code !== "missing_snapshot");
     hours = {
       applicable: false,
       wage_basis: "daily",
@@ -251,8 +280,30 @@ export async function getPayrollPreview(db, employeeId, query = {}) {
       pay_from_attendance_hours: false,
       informational_sessions: attendance.sessions,
       attendance_hours: attendance.recorded_hours,
-      attendance_warnings: attendance.warnings,
-      attendance_warning_labels: attendance.warning_labels,
+      recorded_hours: attendance.recorded_hours,
+      posted_hours: 0,
+      posted_pay: 0,
+      attendance_warnings: attendanceWarnings,
+      attendance_warning_labels: (attendance.warning_labels || []).filter(
+        (label) => label !== "أجر الساعة غير محفوظ لجلسة الحضور"
+      ),
+    };
+  } else {
+    const attendance = await buildPayableAttendance(db, emp.id, { from: periodFrom, to: periodTo });
+    hours = {
+      ...attendance,
+      applicable: true,
+      wage_setup_required: true,
+      pay_from_attendance_hours: false,
+      attendance_authoritative: false,
+      calculation_final: false,
+      review_required: true,
+      payroll_source: "attendance_unconfigured",
+      warnings: [...new Set([...(attendance.warnings || []), "missing_hourly_setup"])],
+      warning_labels: [
+        ...(attendance.warning_labels || []),
+        "لم يُضبط أجر الساعة. الساعات المسجّلة ظاهرة، والأجر غير مكتمل حتى حفظ أجر الساعة أو تصحيح الجلسات الناقصة.",
+      ],
     };
   }
 
@@ -331,6 +382,12 @@ function inPayrollPeriod(date, from, to) {
   return /^\d{4}-\d{2}-\d{2}$/.test(day) && day >= from && day <= to;
 }
 
+function lineAmount(row) {
+  if (row?.included_in_final) return round2(Number(row.pay) || 0);
+  if ((row?.flags || []).includes("missing_snapshot")) return null;
+  return 0;
+}
+
 function wageLines(hours) {
   if (hours?.attendance_informational) {
     return (hours.informational_sessions || []).map((session) => ({
@@ -351,7 +408,7 @@ function wageLines(hours) {
       in_at: shift.start_time,
       out_at: shift.end_time,
       hours: shift.hours,
-      amount: shift.included_in_final ? round2(Number(shift.pay) || 0) : 0,
+      amount: lineAmount(shift),
       payable: Boolean(shift.included_in_final),
       status: shift.status,
     });
@@ -362,7 +419,7 @@ function wageLines(hours) {
       in_at: session.check_in_at,
       out_at: session.check_out_at,
       hours: session.hours,
-      amount: session.included_in_final ? round2(Number(session.pay) || 0) : 0,
+      amount: lineAmount(session),
       payable: Boolean(session.included_in_final),
       status: session.status,
     });
@@ -413,6 +470,8 @@ export function buildPayrollSummary({
       pos_affects_gross: false,
       advances_total: advancesTotal,
       debts_total: debtsTotal,
+      recorded_hours:
+        hours?.recorded_hours == null ? null : round2(Number(hours.recorded_hours) || 0),
       net_payable: null,
       warnings: [...new Set(warnings)],
       lines,
@@ -424,7 +483,8 @@ export function buildPayrollSummary({
 
   const payableHours = round2(Number(hours?.posted_hours) || 0);
   const gross = calculatedSalary != null ? calculatedSalary : round2(Number(hours?.posted_pay) || 0);
-  const missingRate = Number(hours?.missing_snapshot_count || 0) > 0;
+  const setupBlocksGross = hours?.wage_setup_required === true || hours?.before_cutover === true;
+  const missingRate = Number(hours?.missing_snapshot_count || 0) > 0 || setupBlocksGross;
   const wageApplies =
     kind === "cashier" || emp?.wage_basis === "hourly" || hours?.attendance_authoritative === true;
   const grossKnown = wageApplies && !missingRate && hours?.applicable !== false;
@@ -447,6 +507,7 @@ export function buildPayrollSummary({
     pos_affects_gross: false,
     advances_total: advancesTotal,
     debts_total: debtsTotal,
+    recorded_hours: hours?.recorded_hours == null ? null : round2(Number(hours.recorded_hours) || 0),
     net_payable: net,
     warnings: [...new Set(warnings.filter(Boolean))],
     lines,

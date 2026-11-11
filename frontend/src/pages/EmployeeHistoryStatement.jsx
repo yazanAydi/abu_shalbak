@@ -6,7 +6,6 @@ import { getAuthHeaders } from "../utils/auth";
 import { ils } from "../utils/format";
 import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
 import { printEmployeeHistoryStatement } from "../utils/employeeHistoryPrint";
-import { reconcileStaffEmployees } from "../utils/reconcileStaffEmployees";
 import {
   PageHeader,
   Button,
@@ -58,7 +57,6 @@ export default function EmployeeHistoryStatement() {
 
   const loadEmployees = useCallback(async () => {
     try {
-      await reconcileStaffEmployees();
       const { data } = await api.get("/api/employees", { headers: getAuthHeaders() });
       setEmployees(Array.isArray(data) ? data : []);
     } catch (e) {

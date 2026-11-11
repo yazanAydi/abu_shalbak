@@ -6,6 +6,9 @@ import {
   shopYmdRangeToUtcBounds,
 } from "../utils/shopTime.js";
 import { round2 } from "../utils/money.js";
+import { withTransaction } from "../utils/dbTx.js";
+import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
+import { writeEmployeeHourlyRateInTx } from "./employeeHourlyRate.js";
 
 export { round2 };
 
@@ -62,10 +65,12 @@ function parseDateYmd(s) {
 export async function listEmployees(db) {
   const placeholders = ATTENDANCE_ROLES.map(() => "?").join(", ");
   return db.all(
-    `SELECT id, username, role, hourly_rate
-     FROM users
-     WHERE role IN (${placeholders})
-     ORDER BY username COLLATE NOCASE`,
+    `SELECT u.id, u.username, u.role,
+            CASE WHEN e.hourly_rate IS NOT NULL THEN e.hourly_rate ELSE u.hourly_rate END AS hourly_rate
+     FROM users u
+     LEFT JOIN employees e ON e.user_id = u.id
+     WHERE u.role IN (${placeholders})
+     ORDER BY u.username COLLATE NOCASE`,
     ATTENDANCE_ROLES
   );
 }
@@ -95,7 +100,7 @@ export function readHourlyRateInput(body) {
  * @param {number} userId
  * @param {number} hourlyRate
  */
-export async function updateEmployeeHourlyRate(db, userId, hourlyRate) {
+export async function updateEmployeeHourlyRateInTx(db, userId, hourlyRate, req = null) {
   const id = Number(userId);
   if (!id) throw new HttpError(400, "المعرّف غير صالح");
 
@@ -110,11 +115,20 @@ export async function updateEmployeeHourlyRate(db, userId, hourlyRate) {
     throw new HttpError(400, "أجر الساعة يُحدَّد لموظفي المتجر فقط");
   }
 
-  await db.run("UPDATE users SET hourly_rate = ? WHERE id = ?", [round2(rate), id]);
-  return db.get(
-    "SELECT id, username, role, hourly_rate FROM users WHERE id = ?",
-    [id]
-  );
+  const written = await writeEmployeeHourlyRateInTx(db, { userId: id, rate: round2(rate) });
+  if (req) {
+    await logAudit(db, req, AUDIT_ACTIONS.EMPLOYEE_WAGE_BASIS, "users", id, {
+      hourly_rate: user.hourly_rate,
+    }, {
+      hourly_rate: written.hourly_rate,
+      employee_id: written.employee_id,
+    });
+  }
+  return db.get("SELECT id, username, role, hourly_rate FROM users WHERE id = ?", [id]);
+}
+
+export async function updateEmployeeHourlyRate(db, userId, hourlyRate, req = null) {
+  return withTransaction(db, () => updateEmployeeHourlyRateInTx(db, userId, hourlyRate, req));
 }
 
 /** @deprecated Use updateEmployeeHourlyRate */

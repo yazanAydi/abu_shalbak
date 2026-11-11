@@ -35,7 +35,7 @@ export function createPayrollRouter(db) {
       if (hourly_rate === undefined || hourly_rate === null || hourly_rate === "") {
         return res.status(400).json({ error: "أجر الساعة مطلوب" });
       }
-      const row = await updateEmployeeHourlyRate(db, req.params.id, hourly_rate);
+      const row = await updateEmployeeHourlyRate(db, req.params.id, hourly_rate, req);
       res.json(row);
     } catch (e) {
       next(e);

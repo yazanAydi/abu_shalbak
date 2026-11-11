@@ -13,6 +13,7 @@ import {
 } from "../services/attendanceDeviceImport.js";
 import { buildPayableAttendance } from "../services/payableAttendance.js";
 import { getDeviceAttendanceStatus, syncZkteco } from "../services/zktecoSync.js";
+import { payrollReadiness, resolveLiveHourlyRate } from "../services/employeeHourlyRate.js";
 
 async function deviceDirectory(db, deviceKey) {
   const users = await db.all(
@@ -22,12 +23,33 @@ async function deviceDirectory(db, deviceKey) {
     [deviceKey]
   );
   const mappings = await db.all(
-    `SELECT m.device_user_id, m.employee_id, e.name AS employee_name
+    `SELECT m.device_user_id, m.employee_id, e.name AS employee_name,
+            e.wage_basis, e.hourly_rate, e.daily_rate, u.hourly_rate AS linked_user_hourly_rate,
+            u.username, u.role
      FROM employee_device_mappings m
      JOIN employees e ON e.id = m.employee_id
+     LEFT JOIN users u ON u.id = e.user_id
      WHERE m.device_key = ? AND m.active = 1`,
     [deviceKey]
   );
+  const missingRows = await db.all(
+    `SELECT employee_id, COUNT(*) AS n
+     FROM attendance_interpreted_punches
+     WHERE status = 'active' AND punch_type = 'in'
+       AND (hourly_rate_snapshot IS NULL OR hourly_rate_snapshot <= 0)
+     GROUP BY employee_id`
+  );
+  const missingByEmployee = new Map(missingRows.map((row) => [Number(row.employee_id), Number(row.n) || 0]));
+  function readinessFor(link) {
+    if (!link) return payrollReadiness(null);
+    return payrollReadiness({
+      employee_id: link.employee_id,
+      wage_basis: link.wage_basis,
+      hourly_rate: link.hourly_rate,
+      linked_user_hourly_rate: link.linked_user_hourly_rate,
+      missing_snapshot_count: missingByEmployee.get(Number(link.employee_id)) || 0,
+    });
+  }
   const byUser = new Map(mappings.map((row) => [row.device_user_id, row]));
   const lastPunches = await db.all(
     `SELECT device_user_id, MAX(punched_at) AS last_punch_at
@@ -44,7 +66,10 @@ async function deviceDirectory(db, deviceKey) {
       display_name: row.display_name || "",
       employee_id: link?.employee_id ?? null,
       employee_name: link?.employee_name || null,
+      username: link?.username || null,
       mapped: Boolean(link),
+      hourly_rate: link ? resolveLiveHourlyRate(link) : null,
+      ...readinessFor(link),
       last_punch_at: punchByUser.get(row.device_user_id) || null,
     };
   });
@@ -55,7 +80,10 @@ async function deviceDirectory(db, deviceKey) {
       display_name: "",
       employee_id: link.employee_id,
       employee_name: link.employee_name,
+      username: link.username || null,
       mapped: true,
+      hourly_rate: resolveLiveHourlyRate(link),
+      ...readinessFor(link),
       last_punch_at: punchByUser.get(link.device_user_id) || null,
     });
   }

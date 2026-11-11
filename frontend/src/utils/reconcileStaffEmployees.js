@@ -1,14 +1,13 @@
 import api from "../apiClient";
+import { getAuthHeaders } from "./auth";
 
 /**
- * Idempotent staff-login backfill. Safe to call from office pages; 403 is ignored
- * when the signed-in user cannot manage accounts.
+ * Read-only review of staff logins and employee records.
+ * Does not create or link anyone.
  */
-export async function reconcileStaffEmployees() {
-  try {
-    const { data } = await api.post("/api/admin/users/reconcile-employees", {});
-    return data && typeof data === "object" ? data : null;
-  } catch {
-    return null;
-  }
+export async function reviewStaffEmployeeLinks() {
+  const { data } = await api.get("/api/admin/users/employee-link-review", {
+    headers: getAuthHeaders(),
+  });
+  return data && typeof data === "object" ? data : null;
 }

@@ -4,7 +4,7 @@ import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils } from "../utils/format";
 import { firstOfCurrentMonthYmd, todayYmd } from "../utils/reportDates";
-import { reconcileStaffEmployees } from "../utils/reconcileStaffEmployees";
+import AttendancePayrollRepair from "../components/AttendancePayrollRepair";
 import {
   formatHoursAr,
   formatDateTimeAr,
@@ -105,7 +105,6 @@ export default function EmployeeSalaries() {
 
   const loadEmployees = useCallback(async () => {
     try {
-      await reconcileStaffEmployees();
       const { data } = await api.get("/api/employees", { headers: getAuthHeaders() });
       setEmployees(Array.isArray(data) ? data : []);
     } catch (e) {
@@ -157,6 +156,9 @@ export default function EmployeeSalaries() {
   }, [preview, payAmount]);
 
   const summary = preview?.summary;
+  const summaryWarnings = (summary?.warnings || []).filter(
+    (label) => !(summary?.basis === "daily" && String(label).includes("أجر الساعة غير محفوظ"))
+  );
   const deductionAdvances = useMemo(
     () => preview?.summary?.advances || preview?.advances || [],
     [preview]
@@ -170,6 +172,9 @@ export default function EmployeeSalaries() {
     [payAmount, deductionAdvances, deductionDebts]
   );
   const hours = preview?.hours;
+  const informationalWarnings = (hours?.attendance_warning_labels || []).filter(
+    (label) => label !== "أجر الساعة غير محفوظ لجلسة الحضور"
+  );
   const isCashier = preview?.kind === "cashier";
   const cashierUserId = hours?.cashier_user_id;
   const liveHourlyRate = hours?.live_hourly_rate ?? preview?.live_hourly_rate;
@@ -313,7 +318,12 @@ export default function EmployeeSalaries() {
             <h3 className="ui-card__title">ملخص الراتب للفترة</h3>
             <div className="ui-stat-grid">
               <StatCard
-                label={summary.basis === "daily" ? "الأيام المستحقة" : "الساعات المستحقة"}
+                label="الساعات المسجّلة"
+                value={summary.recorded_hours == null ? "—" : formatHoursAr(summary.recorded_hours)}
+                icon="shifts"
+              />
+              <StatCard
+                label={summary.basis === "daily" ? "الأيام المستحقة" : "الساعات المحتسبة للأجر"}
                 value={
                   summary.basis === "daily"
                     ? summary.payable_days == null
@@ -348,8 +358,8 @@ export default function EmployeeSalaries() {
                 مدة وردية نقطة البيع: {formatHoursAr(summary.pos_hours)} — لا تُضاف إلى الراتب.
               </p>
             ) : null}
-            {(summary.warnings || []).length ? (
-              <Notice tone="warning">{summary.warnings.join(" · ")}</Notice>
+            {summaryWarnings.length ? (
+              <Notice tone="warning">{summaryWarnings.join(" · ")}</Notice>
             ) : null}
             <DataTable
               columns={
@@ -578,8 +588,8 @@ export default function EmployeeSalaries() {
                 <p className="ui-text-muted">
                   الأجر اليومي لا يُحسب من ساعات الحضور. الجلسات هنا للمراجعة فقط.
                 </p>
-                {(hours.attendance_warning_labels || []).length ? (
-                  <Notice tone="warning">{hours.attendance_warning_labels.join(" · ")}</Notice>
+                {informationalWarnings.length ? (
+                  <Notice tone="warning">{informationalWarnings.join(" · ")}</Notice>
                 ) : null}
                 <DataTable
                   columns={[
@@ -606,21 +616,31 @@ export default function EmployeeSalaries() {
             </Card>
           ) : null}
 
-          {!isCashier && hours?.attendance_authoritative ? (
+          {!isCashier && hours?.wage_basis !== "daily" && (hours?.attendance_authoritative || hours?.wage_setup_required || hours?.before_cutover || Number(hours?.recorded_hours) > 0) ? (
             <Card className="ui-mt-md">
               <CardBody>
                 <h3 className="ui-card__title">ساعات الحضور</h3>
+                <p>الساعات المسجّلة: {formatHoursAr(hours.recorded_hours)}</p>
                 <p>
-                  الساعات المحتسبة: {formatHoursAr(hours.attendance_hours)} — الأجر:{" "}
-                  <strong className="num">{ils(hours.posted_pay || 0)}</strong>
+                  الساعات المحتسبة للأجر: {formatHoursAr(hours.posted_hours)} — الأجر:{" "}
+                  <strong className="num">
+                    {hours.calculation_final ? ils(hours.posted_pay || 0) : "—"}
+                  </strong>
                   {hours.shift_hours ? ` — قبل الاعتماد: ${formatHoursAr(hours.shift_hours)}` : ""}
                 </p>
-                <p className="ui-text-muted">{hours.comparison_note}</p>
+                {hours.comparison_note ? <p className="ui-text-muted">{hours.comparison_note}</p> : null}
                 {(hours.warning_labels || []).length ? (
                   <Notice tone="warning">{hours.warning_labels.join(" · ")}</Notice>
                 ) : null}
               </CardBody>
             </Card>
+          ) : null}
+          {employeeId ? (
+            <AttendancePayrollRepair
+              employeeId={employeeId}
+              refreshKey={`${hours?.recorded_hours ?? ""}:${hours?.posted_hours ?? ""}:${hours?.posted_pay ?? ""}:${hours?.calculation_final ?? ""}`}
+              onChanged={loadPreview}
+            />
           ) : null}
 
           <div className="ui-stat-grid ui-mt-md">

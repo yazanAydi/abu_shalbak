@@ -5,6 +5,7 @@ import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 import { parseTimestampMs, round2 } from "./cashierPayrollService.js";
 import { parseAttendanceInstant } from "./attendanceSessionService.js";
 import { ATTENDANCE_TRACKED_ROLES, isAttendanceTrackableEmployee, isAttendanceTrackedRole } from "../utils/roles.js";
+import { payrollReadiness, resolveLiveHourlyRate } from "./employeeHourlyRate.js";
 import { hebronWallToUtcMs, normalizeWallClock } from "./zkteco/readOnlyAdapter.js";
 import { utcMsToSql } from "../utils/shopTime.js";
 
@@ -27,15 +28,13 @@ export function attendanceEventKey({ deviceKey, deviceUserId, wallClock, rawStat
 
 async function hourlySnapshot(db, employeeId) {
   const row = await db.get(
-    `SELECT u.hourly_rate
+    `SELECT e.hourly_rate, e.wage_basis, u.hourly_rate AS linked_user_hourly_rate
      FROM employees e
      LEFT JOIN users u ON u.id = e.user_id
      WHERE e.id = ?`,
     [employeeId]
   );
-  const rate = Number(row?.hourly_rate);
-  if (!Number.isFinite(rate) || rate <= 0) return null;
-  return round2(rate);
+  return resolveLiveHourlyRate(row);
 }
 
 async function insertDevicePunch(db, employeeId, eventId, punchedAt) {
@@ -312,18 +311,26 @@ export async function ensureAttendanceEmployee(db, { employeeId = null, userId =
 
 export async function listAttendanceTrackablePeople(db) {
   const employees = await db.all(
-    `SELECT e.id AS employee_id, e.name, e.active, e.wage_basis, e.daily_rate,
-            u.id AS user_id, u.role AS user_role, u.username
+    `SELECT e.id AS employee_id, e.name, e.active, e.wage_basis, e.daily_rate, e.hourly_rate,
+            u.id AS user_id, u.role AS user_role, u.username, u.hourly_rate AS linked_user_hourly_rate
      FROM employees e
      LEFT JOIN users u ON u.id = e.user_id
      ORDER BY e.active DESC, e.name COLLATE NOCASE, e.id`
   );
+  const missingRows = await db.all(
+    `SELECT employee_id, COUNT(*) AS n
+     FROM attendance_interpreted_punches
+     WHERE status = 'active' AND punch_type = 'in'
+       AND (hourly_rate_snapshot IS NULL OR hourly_rate_snapshot <= 0)
+     GROUP BY employee_id`
+  );
+  const missingByEmployee = new Map(missingRows.map((row) => [Number(row.employee_id), Number(row.n) || 0]));
   const people = [];
   const linkedUsers = new Set();
   for (const row of employees) {
     if (!isAttendanceTrackableEmployee(row)) continue;
     if (row.user_id) linkedUsers.add(Number(row.user_id));
-    people.push({
+    const person = {
       employee_id: row.employee_id,
       user_id: row.user_id ?? null,
       name: row.name,
@@ -331,8 +338,11 @@ export async function listAttendanceTrackablePeople(db) {
       username: row.username || null,
       wage_basis: row.wage_basis || null,
       daily_rate: row.daily_rate == null ? null : Number(row.daily_rate),
+      hourly_rate: resolveLiveHourlyRate(row),
+      missing_snapshot_count: missingByEmployee.get(Number(row.employee_id)) || 0,
       active: Number(row.active) === 1,
-    });
+    };
+    people.push({ ...person, ...payrollReadiness(person) });
   }
   const placeholders = ATTENDANCE_TRACKED_ROLES.map(() => "?").join(", ");
   const unlinked = await db.all(
@@ -343,7 +353,7 @@ export async function listAttendanceTrackablePeople(db) {
   );
   for (const user of unlinked) {
     if (linkedUsers.has(Number(user.id)) || !isAttendanceTrackedRole(user.role)) continue;
-    people.push({
+    const person = {
       employee_id: null,
       user_id: user.id,
       name: user.username,
@@ -351,8 +361,11 @@ export async function listAttendanceTrackablePeople(db) {
       username: user.username,
       wage_basis: null,
       daily_rate: null,
+      hourly_rate: null,
+      missing_snapshot_count: 0,
       active: true,
-    });
+    };
+    people.push({ ...person, ...payrollReadiness(person) });
   }
   return people;
 }

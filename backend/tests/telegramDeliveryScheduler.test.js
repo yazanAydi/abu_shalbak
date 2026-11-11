@@ -221,4 +221,41 @@ describe("Telegram retry scheduler and rate-limit deadline", () => {
         .telegram_message_id
     ).toBeFalsy();
   });
+
+  test("a retry wake that is already running does not send after shutdown when the clock reaches the deadline", async () => {
+    let sends = 0;
+    global.fetch = async (url) => {
+      if (!String(url).includes("/sendMessage")) throw new Error(`unexpected ${url}`);
+      sends += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          ok: false,
+          error_code: 429,
+          description: "Too Many Requests",
+          parameters: { retry_after: 300 },
+        }),
+      };
+    };
+    const created = await request(ctx.app)
+      .post("/api/v1/advance-requests")
+      .set(authHeader(cashierToken))
+      .send({ employee_id: employeeId, amount: 3, notes: "سباق الإيقاف" });
+    expect(created.status).toBe(201);
+    expect(sends).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stopTelegramDeliveryScheduler();
+    const row = await ctx.db.get(
+      "SELECT next_attempt_at FROM telegram_outbound WHERE request_id = ?",
+      [unwrap(created.body).request_id]
+    );
+    now = Date.parse(row.next_attempt_at);
+    await tick();
+    await tick();
+    expect(sends).toBe(1);
+    expect(
+      (await ctx.db.get("SELECT telegram_message_id FROM advance_requests WHERE id = ?", [unwrap(created.body).request_id]))
+        .telegram_message_id
+    ).toBeFalsy();
+  });
 });

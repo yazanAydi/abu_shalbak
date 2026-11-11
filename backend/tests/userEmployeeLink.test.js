@@ -309,19 +309,31 @@ describe("إدارة الحسابات ↔ employee records", () => {
     expect((await ctx.db.get("SELECT COUNT(*) AS n FROM employees")).n).toBe(beforeEmp.n);
   });
 
-  test("reconcile backfills unlinked staff by user_id without finance and is idempotent", async () => {
+  test("empty reconcile creates nothing and an explicit create links one cashier", async () => {
     const before = await financeSnapshot(ctx.db);
-    const first = await request(ctx.app)
+    const empty = await request(ctx.app)
       .post("/api/v1/admin/users/reconcile-employees")
       .set(authHeader(adminToken))
       .send({});
+    expect(empty.status).toBe(400);
+    expect((await financeSnapshot(ctx.db)).employees).toBe(before.employees);
+
+    const review = unwrap(
+      (await request(ctx.app).get("/api/v1/admin/users/employee-link-review").set(authHeader(adminToken))).body
+    );
+    expect(review.unlinked_users.some((row) => row.id === cashierId)).toBe(true);
+    expect(review.created_count).toBe(0);
+
+    const first = await request(ctx.app)
+      .post("/api/v1/admin/users/reconcile-employees")
+      .set(authHeader(adminToken))
+      .send({ actions: [{ user_id: cashierId, mode: "create" }] });
     expect(first.status).toBe(200);
     const body = unwrap(first.body);
-    expect(body.created_count).toBeGreaterThanOrEqual(1);
-    const forCashier = body.created.find((row) => row.user_id === cashierId);
-    expect(forCashier).toBeTruthy();
-    expect(forCashier.employee_id).toEqual(expect.any(Number));
-    expect(forCashier.employee_name).toBe("testcashier");
+    expect(body.created).toEqual([
+      expect.objectContaining({ user_id: cashierId, employee_name: "testcashier" }),
+    ]);
+    const forCashier = body.created[0];
 
     const listed = unwrap(
       (await request(ctx.app).get("/api/v1/employees").set(authHeader(adminToken))).body
@@ -333,7 +345,7 @@ describe("إدارة الحسابات ↔ employee records", () => {
     expect(pos.some((r) => r.id === forCashier.employee_id)).toBe(true);
 
     const afterCreate = await financeSnapshot(ctx.db);
-    expect(afterCreate.employees).toBe(before.employees + body.created_count);
+    expect(afterCreate.employees).toBe(before.employees + 1);
     expect(afterCreate.compensation).toBe(before.compensation);
     expect(afterCreate.openings).toBe(before.openings);
     expect(afterCreate.ledger).toBe(before.ledger);
@@ -344,7 +356,7 @@ describe("إدارة الحسابات ↔ employee records", () => {
     const again = await request(ctx.app)
       .post("/api/v1/admin/users/reconcile-employees")
       .set(authHeader(adminToken))
-      .send({});
+      .send({ actions: [{ user_id: cashierId, mode: "create" }] });
     expect(again.status).toBe(200);
     expect(unwrap(again.body).created_count).toBe(0);
     expect(unwrap(again.body).reused.some((row) => row.user_id === cashierId)).toBe(true);
@@ -366,20 +378,32 @@ describe("إدارة الحسابات ↔ employee records", () => {
     expect(rate.status).toBe(201);
     const beforeLed = await ctx.db.get("SELECT COUNT(*) AS n FROM employee_ledger_entries");
 
+    const beforeEmployees = (await ctx.db.get("SELECT COUNT(*) AS n FROM employees")).n;
+    const empty = await request(ctx.app)
+      .post("/api/v1/admin/users/reconcile-employees")
+      .set(authHeader(adminToken))
+      .send({});
+    expect(empty.status).toBe(400);
+    expect((await ctx.db.get("SELECT COUNT(*) AS n FROM employees")).n).toBe(beforeEmployees);
+
+    const review = unwrap(
+      (await request(ctx.app).get("/api/v1/admin/users/employee-link-review").set(authHeader(adminToken))).body
+    );
+    expect(
+      review.name_candidates.some((row) => row.employee_id === standing.id && row.user_id === ins.lastID)
+    ).toBe(true);
+
     const recon = unwrap(
       (
         await request(ctx.app)
           .post("/api/v1/admin/users/reconcile-employees")
           .set(authHeader(adminToken))
-          .send({})
+          .send({ actions: [{ user_id: ins.lastID, mode: "create" }] })
       ).body
     );
     const created = recon.created.find((row) => row.user_id === ins.lastID);
     expect(created).toBeTruthy();
     expect(created.employee_id).not.toBe(standing.id);
-    expect(recon.ambiguous.some((row) => row.employee_id === standing.id && row.reason === "name_collision")).toBe(
-      true
-    );
 
     const standingRow = await ctx.db.get("SELECT user_id FROM employees WHERE id = ?", [standing.id]);
     expect(standingRow.user_id).toBeNull();
@@ -552,9 +576,13 @@ describe("إدارة الحسابات ↔ employee records", () => {
     expect((await request(ctx.app).get("/api/v1/employees/staff-accounts").set(hdr)).status).toBe(
       403
     );
+    const beforeEmployees = (await ctx.db.get("SELECT COUNT(*) AS n FROM employees")).n;
+    const review = await request(ctx.app).get("/api/v1/admin/users/employee-link-review").set(hdr);
+    expect(review.status).toBe(200);
+    expect((await ctx.db.get("SELECT COUNT(*) AS n FROM employees")).n).toBe(beforeEmployees);
     const recon = await request(ctx.app).post("/api/v1/admin/users/reconcile-employees").set(hdr).send({});
-    expect(recon.status).toBe(200);
-    expect(unwrap(recon.body).created_count).toBeGreaterThanOrEqual(0);
+    expect(recon.status).toBe(400);
+    expect((await ctx.db.get("SELECT COUNT(*) AS n FROM employees")).n).toBe(beforeEmployees);
   });
 
   test("staff-accounts lists all attendance roles without creating rows", async () => {

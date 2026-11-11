@@ -11,6 +11,7 @@ import { cacheInvalidate } from "../utils/cache.js";
 import { incrementQueryCount, maybeLogSlowQuery } from "../utils/queryStats.js";
 import { openSqliteConnection } from "./sqliteDriver.js";
 import { assignStockCountDepartments } from "../utils/countDepartment.js";
+import { migrateEmployeeHourlyRateData } from "../services/employeeHourlyRate.js";
 
 function txKeyword(sql) {
   const s = String(sql || "").trim();
@@ -3391,6 +3392,9 @@ async function migrateAttendanceSessions(db) {
   if (!(await tableHasColumn(db, "employees", "daily_rate"))) {
     await db.run("ALTER TABLE employees ADD COLUMN daily_rate REAL");
   }
+  if (!(await tableHasColumn(db, "employees", "hourly_rate"))) {
+    await db.run("ALTER TABLE employees ADD COLUMN hourly_rate REAL");
+  }
   await db.exec(`
     CREATE TABLE IF NOT EXISTS attendance_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3995,6 +3999,7 @@ export async function initDatabase(dbPath) {
   await migrateOperationPrintJobs(db);
   await migrateAttendanceTables(db);
   await migrateAttendanceSessions(db);
+  await migrateEmployeeHourlyRateData(db);
   await migrateZkAttendance(db);
   await migrateStoresTable(db);
   await migrateStoreIdColumns(db);

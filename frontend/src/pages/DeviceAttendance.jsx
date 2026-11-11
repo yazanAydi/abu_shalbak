@@ -19,6 +19,7 @@ import {
   useToast,
 } from "../components/ui";
 import { apiErrorMessage } from "../utils/apiError";
+import AttendancePayrollRepair from "../components/AttendancePayrollRepair";
 
 function lastOfMonth(ymd) {
   if (!ymd) return todayYmd();
@@ -52,7 +53,9 @@ function personValue(person) {
 
 function personLabel(person) {
   const role = ROLE_LABELS[person.role] || "";
-  return role ? `${person.name} · ${role}` : person.name;
+  const account = person.username ? person.username : "بدون حساب دخول";
+  const id = person.employee_id ? `#${person.employee_id}` : "بلا سجل";
+  return [person.name, id, account, role].filter(Boolean).join(" · ");
 }
 
 export default function DeviceAttendance() {
@@ -116,6 +119,11 @@ export default function DeviceAttendance() {
     try {
       let body = { device_user_id: deviceUserId, active: false };
       if (value && String(value).startsWith("user:")) {
+        const createEmployee = window.confirm("لا يوجد سجل موظف لهذا الحساب. إنشاء سجل جديد وربطه بالجهاز؟");
+        if (!createEmployee) {
+          setBusy(false);
+          return;
+        }
         body = { device_user_id: deviceUserId, user_id: Number(String(value).slice(5)) };
       } else if (value) {
         body = { device_user_id: deviceUserId, employee_id: Number(value) };
@@ -192,6 +200,11 @@ export default function DeviceAttendance() {
 
   const users = status?.users || [];
   const unmapped = users.filter((row) => !row.mapped);
+  const selectedPerson = employees.find((emp) => String(emp.employee_id) === String(employeeId));
+  const dailyWage = selectedPerson?.wage_basis === "daily";
+  const detailWarnings = (detail?.warning_labels || []).filter(
+    (label) => !(dailyWage && label === "أجر الساعة غير محفوظ لجلسة الحضور")
+  );
 
   return (
     <div className="office-page" dir="rtl" lang="ar">
@@ -278,8 +291,13 @@ export default function DeviceAttendance() {
               },
               {
                 key: "mapped",
-                header: "الحالة",
+                header: "الربط",
                 render: (row) => (row.mapped ? "مربوط" : "غير مربوط"),
+              },
+              {
+                key: "payroll_readiness_label",
+                header: "جاهزية الأجر",
+                render: (row) => row.payroll_readiness_label || "—",
               },
             ]}
             rows={users}
@@ -314,10 +332,12 @@ export default function DeviceAttendance() {
       {detail ? (
         <Card className="ui-mt-md">
           <CardBody>
+            <p>الساعات المسجّلة: {formatHoursAr(detail.recorded_hours)}</p>
             <p>
-              الساعات المحتسبة: {formatHoursAr(detail.attendance_hours)} — الأجر: {ils(detail.posted_pay || 0)}
+              الساعات المحتسبة للأجر: {formatHoursAr(detail.posted_hours)} — الأجر:{" "}
+              {dailyWage ? "للعلم فقط" : detail.calculation_final ? ils(detail.posted_pay || 0) : "—"}
             </p>
-            {(detail.warning_labels || []).length ? <Notice tone="warning">{detail.warning_labels.join(" · ")}</Notice> : null}
+            {detailWarnings.length ? <Notice tone="warning">{detailWarnings.join(" · ")}</Notice> : null}
             <DataTable
               columns={[
                 { key: "check_in_at", header: "حضور", render: (row) => formatDateTimeAr(row.check_in_at) },
@@ -327,7 +347,12 @@ export default function DeviceAttendance() {
                   render: (row) => (row.check_out_at ? formatDateTimeAr(row.check_out_at) : "—"),
                 },
                 { key: "hours", header: "الساعات", render: (row) => formatHoursAr(row.hours) },
-                { key: "pay", header: "الأجر", render: (row) => ils(row.pay || 0) },
+                {
+                  key: "pay",
+                  header: "الأجر",
+                  render: (row) =>
+                    row.flags?.includes("missing_snapshot") || row.hourly_rate == null ? "—" : ils(row.pay || 0),
+                },
                 {
                   key: "status",
                   header: "الحالة",
@@ -386,6 +411,13 @@ export default function DeviceAttendance() {
             />
           </CardBody>
         </Card>
+      ) : null}
+      {employeeId ? (
+        <AttendancePayrollRepair
+          employeeId={employeeId}
+          refreshKey={`${detail?.recorded_hours ?? ""}:${detail?.posted_hours ?? ""}:${detail?.posted_pay ?? ""}:${detail?.attendance_sessions?.length ?? 0}`}
+          onChanged={loadDetail}
+        />
       ) : null}
     </div>
   );

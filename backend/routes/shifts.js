@@ -381,8 +381,11 @@ export function createShiftsRouter(db) {
         const businessDay = businessDayFromTimestamp(openedAt, settings.business_day_cutoff_hour);
         const ins = await db.run(
           `INSERT INTO cashier_shifts (cashier_id, opening_cash, status, hourly_rate_snapshot, start_time, business_day)
-           VALUES (?, ?, 'open', (SELECT hourly_rate FROM users WHERE id = ?), ?, ?)`,
-          [req.user.id, opening_cash, req.user.id, openedAt, businessDay]
+           VALUES (?, ?, 'open', COALESCE(
+             (SELECT e.hourly_rate FROM employees e WHERE e.user_id = ? AND e.hourly_rate IS NOT NULL),
+             (SELECT u.hourly_rate FROM users u WHERE u.id = ?)
+           ), ?, ?)`,
+          [req.user.id, opening_cash, req.user.id, req.user.id, openedAt, businessDay]
         );
         const shiftId = ins.lastID;
         await db.run(

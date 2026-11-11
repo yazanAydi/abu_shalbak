@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from "react";
 import api from "../apiClient";
 import { getAuthHeaders } from "../utils/auth";
 import { ils } from "../utils/format";
-import { reconcileStaffEmployees } from "../utils/reconcileStaffEmployees";
 import { isAttendanceRole } from "../utils/roles";
 import {
   Button,
@@ -15,6 +14,7 @@ import {
   Input,
   Select,
   Modal,
+  Notice,
   StatusPill,
   useToast,
 } from "../components/ui";
@@ -57,11 +57,15 @@ export default function EmployeeRecordsPanel() {
   const [hourlyRateDraft, setHourlyRateDraft] = useState("");
   const [wageBasis, setWageBasis] = useState("");
   const [dailyRateDraft, setDailyRateDraft] = useState("");
+  const [linkableUsers, setLinkableUsers] = useState([]);
+  const [linkUserId, setLinkUserId] = useState("");
+  const [relinkSourceId, setRelinkSourceId] = useState("");
+  const [relinkNote, setRelinkNote] = useState("");
+  const [relinkPreview, setRelinkPreview] = useState(null);
 
   const loadList = useCallback(async () => {
     setLoading(true);
     try {
-      await reconcileStaffEmployees();
       const { data } = await api.get("/api/employees", { headers: getAuthHeaders() });
       setRows(Array.isArray(data) ? data : []);
     } catch (e) {
@@ -91,6 +95,13 @@ export default function EmployeeRecordsPanel() {
       );
       setWageBasis(data.wage_basis || "");
       setDailyRateDraft(data.daily_rate != null ? String(data.daily_rate) : "");
+      setLinkUserId("");
+      setRelinkPreview(null);
+      const usersRes = await api.get("/api/employees/linkable-users", {
+        headers: getAuthHeaders(),
+        params: data.user_id ? { include_user_id: data.user_id } : undefined,
+      });
+      setLinkableUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
     } catch (e) {
       toast.error(apiErrorMessage(e, "فشل تحميل بيانات الموظف"));
     }
@@ -297,16 +308,23 @@ export default function EmployeeRecordsPanel() {
     },
     {
       key: "rate",
-      header: "المعدل الحالي",
-      render: (r) =>
-        r.current_compensation
-          ? `${TYPE_LABELS[r.current_compensation.compensation_type] || r.current_compensation.compensation_type} ${ils(r.current_compensation.amount)}`
-          : "—",
+      header: "الأجر الحالي",
+      render: (r) => {
+        if (r.wage_basis === "daily") return r.daily_rate != null ? `يومي ${ils(r.daily_rate)}` : "يومي";
+        if (r.hourly_rate != null && Number(r.hourly_rate) > 0) return `ساعة ${ils(r.hourly_rate)}`;
+        if (r.kind === "cashier") return "ساعة من الوردية";
+        return "—";
+      },
     },
     {
       key: "user",
       header: "الحساب",
-      render: (r) => (r.user_username ? r.user_username : "—"),
+      render: (r) => (r.user_username ? r.user_username : "بدون حساب دخول"),
+    },
+    {
+      key: "device",
+      header: "الجهاز",
+      render: (r) => (r.device_mapped ? "مربوط" : "غير مربوط"),
     },
     {
       key: "actions",
@@ -331,7 +349,7 @@ export default function EmployeeRecordsPanel() {
       <Card className="ui-mt-md">
         <CardBody>
           <p className="ui-text-muted" style={{ marginTop: 0 }}>
-            يمكن إضافة موظف بدون حساب دخول. حسابات الكاشير والرفوف والمخبز تظهر هنا تلقائياً.
+            يمكن إضافة موظف بدون حساب دخول وضبط أجر الساعة له. ربط الحساب اختيار صريح ولا يتم بالاسم.
           </p>
           <div className="ui-toolbar">
             <Button icon="plus" onClick={openCreate}>
@@ -367,7 +385,13 @@ export default function EmployeeRecordsPanel() {
               {detail.employment_duration ? ` · مدة العمل ${detail.employment_duration}` : ""}
               {detail.end_on ? ` · إلى ${detail.end_on}` : ""}
               {detail.phone ? ` · ${detail.phone}` : ""}
-              {detail.user_username ? ` · ${detail.user_username}` : ""}
+              {detail.user_username ? ` · ${detail.user_username}` : " · بدون حساب دخول"}
+              {detail.device_mapped ? ` · جهاز ${detail.device_user_id}` : " · بلا جهاز"}
+              {detail.wage_basis === "daily"
+                ? " · أجر يومي"
+                : detail.hourly_rate
+                  ? ` · أجر الساعة ${ils(detail.hourly_rate)}`
+                  : " · بلا أجر ساعة"}
               {detail.customer_name ? ` · ذمة: ${detail.customer_name}` : ""}
             </p>
 
@@ -375,7 +399,7 @@ export default function EmployeeRecordsPanel() {
               <>
                 <h3>أجر الساعة</h3>
                 <p className="ui-text-muted">
-                  راتب الكاشير = أجر الساعة × ساعات ورديات نقطة البيع. يُنسخ الأجر عند فتح الوردية التالية.
+                  قبل اعتماد البصمة يُحسب راتب الكاشير من ساعات ورديات نقطة البيع. من تاريخ الاعتماد تُحتسب ساعات البصمة، وساعات نقطة البيع للمقارنة فقط. يُنسخ الأجر عند فتح الوردية التالية.
                 </p>
                 <FormGrid>
                   <FormField label="أجر الساعة (₪)">
@@ -437,6 +461,145 @@ export default function EmployeeRecordsPanel() {
                     حفظ طريقة الأجر
                   </Button>
                 </div>
+                <p className="ui-text-muted">أجر الساعة يُحفظ على سجل الموظف ويمكن ضبطه بدون حساب دخول.</p>
+              </>
+            )}
+
+            <h3>حساب الدخول</h3>
+            {detail.user_id ? (
+              <p>مربوط بالحساب {detail.user_username}.</p>
+            ) : (
+              <>
+                <p className="ui-text-muted">بدون حساب دخول. يمكن ربط حساب كاشير أو مخبز أو رفوف غير مستخدم.</p>
+                <FormGrid>
+                  <FormField label="حساب غير مربوط">
+                    <Select value={linkUserId} onChange={(event) => setLinkUserId(event.target.value)}>
+                      <option value="">— بدون حساب دخول —</option>
+                      {linkableUsers.map((user) => (
+                        <option key={user.id} value={user.id}>
+                          {`${user.username} · #${user.id}`}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormField>
+                </FormGrid>
+                <Button
+                  variant="secondary"
+                  disabled={saving || !linkUserId}
+                  onClick={async () => {
+                    setSaving(true);
+                    try {
+                      await api.post(
+                        `/api/employees/${detail.id}/link-user`,
+                        { user_id: Number(linkUserId) },
+                        { headers: getAuthHeaders() }
+                      );
+                      toast.success("تم ربط الحساب");
+                      await loadDetail(detail.id);
+                      await loadList();
+                    } catch (error) {
+                      toast.error(apiErrorMessage(error, "فشل ربط الحساب"));
+                    } finally {
+                      setSaving(false);
+                    }
+                  }}
+                >
+                  ربط الحساب
+                </Button>
+                <h3>نقل حساب من سجل فارغ</h3>
+                <p className="ui-text-muted">
+                  ينقل حساب الدخول من سجل موظف بلا حركات إلى هذا السجل. يبقى رقم هذا الموظف وحضوره وراتبه كما هي.
+                </p>
+                <FormGrid>
+                  <FormField label="السجل الذي فيه الحساب">
+                    <Select
+                      value={relinkSourceId}
+                      onChange={(event) => {
+                        setRelinkSourceId(event.target.value);
+                        setRelinkPreview(null);
+                      }}
+                    >
+                      <option value="">— اختر —</option>
+                      {rows
+                        .filter((row) => row.user_id && row.id !== detail.id)
+                        .map((row) => (
+                          <option key={row.id} value={row.id}>
+                            {`#${row.id} · ${row.name} · ${row.user_username}`}
+                          </option>
+                        ))}
+                    </Select>
+                  </FormField>
+                  <FormField label="ملاحظة">
+                    <Input
+                      value={relinkNote}
+                      onChange={(event) => {
+                        setRelinkNote(event.target.value);
+                        setRelinkPreview(null);
+                      }}
+                    />
+                  </FormField>
+                </FormGrid>
+                <div className="ui-toolbar" style={{ gap: 8 }}>
+                  <Button
+                    variant="secondary"
+                    disabled={saving || !relinkSourceId || !relinkNote.trim()}
+                    onClick={async () => {
+                      setSaving(true);
+                      try {
+                        const { data } = await api.post(
+                          `/api/employees/${detail.id}/account-relink/preview`,
+                          { source_employee_id: Number(relinkSourceId), note: relinkNote.trim() },
+                          { headers: getAuthHeaders() }
+                        );
+                        setRelinkPreview(data);
+                      } catch (error) {
+                        setRelinkPreview(null);
+                        toast.error(apiErrorMessage(error, "فشلت معاينة النقل"));
+                      } finally {
+                        setSaving(false);
+                      }
+                    }}
+                  >
+                    معاينة النقل
+                  </Button>
+                  <Button
+                    disabled={saving || !relinkPreview?.preview_token || relinkPreview.blocked}
+                    onClick={async () => {
+                      setSaving(true);
+                      try {
+                        await api.post(
+                          `/api/employees/${detail.id}/account-relink`,
+                          {
+                            source_employee_id: Number(relinkSourceId),
+                            note: relinkNote.trim(),
+                            preview_token: relinkPreview.preview_token,
+                          },
+                          { headers: getAuthHeaders() }
+                        );
+                        toast.success("نُقل الحساب إلى هذا السجل");
+                        setRelinkNote("");
+                        setRelinkSourceId("");
+                        setRelinkPreview(null);
+                        await loadDetail(detail.id);
+                        await loadList();
+                      } catch (error) {
+                        toast.error(apiErrorMessage(error, "فشل نقل الحساب"));
+                      } finally {
+                        setSaving(false);
+                      }
+                    }}
+                  >
+                    تأكيد النقل
+                  </Button>
+                </div>
+                {relinkPreview?.blocked ? (
+                  <Notice tone="warning">{relinkPreview.blocks.map((row) => row.message).join(" · ")}</Notice>
+                ) : null}
+                {relinkPreview && !relinkPreview.blocked ? (
+                  <Notice tone="info">
+                    سيبقى الموظف #{relinkPreview.target.id} كما هو، ويُترك السجل #{relinkPreview.source.id} بلا حساب.
+                  </Notice>
+                ) : null}
               </>
             )}
 

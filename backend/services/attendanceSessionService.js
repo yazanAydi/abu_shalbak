@@ -5,6 +5,7 @@ import { businessDayFromTimestamp } from "../utils/businessDay.js";
 import { getAppSettings } from "../utils/settings.js";
 import { shopLocalParts, shopLocalToUtcMs, shopYmdFromTimestamp, utcMsToSql } from "../utils/shopTime.js";
 import { round2, shiftHours, shiftPay, parseTimestampMs } from "./cashierPayrollService.js";
+import { resolveLiveHourlyRate } from "./employeeHourlyRate.js";
 import { logAudit, AUDIT_ACTIONS } from "../utils/auditLog.js";
 
 export const ATTENDANCE_MAX_OPEN_MS = 12 * 60 * 60 * 1000;
@@ -108,13 +109,15 @@ async function hourlyEmployee(db, userId) {
   const id = Number(userId);
   if (!id) throw new HttpError(400, "المعرّف غير صالح");
   const user = await db.get(
-    `SELECT u.id, u.username, u.role, u.hourly_rate, e.id AS employee_id, e.wage_basis, e.daily_rate
+    `SELECT u.id, u.username, u.role, u.hourly_rate AS linked_user_hourly_rate,
+            e.hourly_rate, e.id AS employee_id, e.wage_basis, e.daily_rate
      FROM users u
      LEFT JOIN employees e ON e.user_id = u.id
      WHERE u.id = ?`,
     [id]
   );
   if (!user) throw new HttpError(404, "المستخدم غير موجود");
+  user.hourly_rate = resolveLiveHourlyRate(user);
   if (user.role === "cashier") {
     throw new HttpError(400, "الكاشير يُحتسب من ورديات نقطة البيع وليس من سجل الحضور هذا");
   }

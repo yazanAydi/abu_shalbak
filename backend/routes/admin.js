@@ -72,10 +72,11 @@ import {
   parseUserEmployeeLinkBody,
   setupEmployeeForStaffUser,
   reconcileStaffEmployeeIdentities,
-  setEmployeeWageBasis,
+  reviewStaffEmployeeLinks,
+  setEmployeeWageBasisInTx,
   deleteUserAccount,
 } from "../services/employeeService.js";
-import { readHourlyRateInput, updateEmployeeHourlyRate } from "../services/cashierPayrollService.js";
+import { readHourlyRateInput, updateEmployeeHourlyRateInTx } from "../services/cashierPayrollService.js";
 import { employeeHasOpenHourlySession } from "../services/attendanceSessionService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -698,9 +699,17 @@ export function createAdminRouter(db, dbPath) {
     res.json(await listUnlinkedEmployeesForAccountLink(db));
   });
 
+  router.get("/users/employee-link-review", async (_req, res, next) => {
+    try {
+      res.json(await reviewStaffEmployeeLinks(db));
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.post("/users/reconcile-employees", async (req, res, next) => {
     try {
-      res.json(await reconcileStaffEmployeeIdentities(db, req));
+      res.json(await reconcileStaffEmployeeIdentities(db, req, req.body || {}));
     } catch (e) {
       next(e);
     }
@@ -905,10 +914,10 @@ export function createAdminRouter(db, dbPath) {
           throw badRequest("لا يوجد سجل موظف لحفظ تاريخ بدء العمل");
         }
         if (hourlyRateInput.provided) {
-          await updateEmployeeHourlyRate(db, user.id, hourlyRateInput.value);
+          await updateEmployeeHourlyRateInTx(db, user.id, hourlyRateInput.value, req);
         }
         if (req.body?.wage_basis && attach.employee?.id) {
-          await setEmployeeWageBasis(db, attach.employee.id, req.body, req);
+          await setEmployeeWageBasisInTx(db, attach.employee.id, req.body, req);
         }
         return { user, attach };
       });
@@ -1045,11 +1054,11 @@ export function createAdminRouter(db, dbPath) {
           );
         }
         if (hourlyRateInput.provided) {
-          await updateEmployeeHourlyRate(db, id, hourlyRateInput.value);
+          await updateEmployeeHourlyRateInTx(db, id, hourlyRateInput.value, req);
         }
         if (wageBasis) {
           const linked = await db.get("SELECT id FROM employees WHERE user_id = ?", [id]);
-          if (linked) await setEmployeeWageBasis(db, linked.id, req.body, req);
+          if (linked) await setEmployeeWageBasisInTx(db, linked.id, req.body, req);
         }
         if (linkBody.start_on_provided) {
           const linked = await db.get("SELECT id FROM employees WHERE user_id = ?", [id]);

@@ -185,6 +185,9 @@ describe("payroll period summary", () => {
     expect(row.summary.lines[0].hours).toBe(8);
     expect(row.summary.lines[0].amount).toBeNull();
     expect(row.summary.lines[0].payable).toBe(false);
+    expect(row.summary.recorded_hours).toBe(8);
+    expect(row.summary.warnings.join(" ")).not.toContain("أجر الساعة غير محفوظ");
+    expect(row.hours.attendance_warning_labels.join(" ")).not.toContain("أجر الساعة غير محفوظ");
   });
 
   test("open and missing-checkout sessions do not add pay", async () => {

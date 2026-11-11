@@ -14,6 +14,7 @@ const retryTimers = new Map();
 const TIMER_SLICE_MS = 30_000;
 
 let nowFn = () => Date.now();
+let schedulerGeneration = 0;
 
 const DELIVERY_TABLES = new Set([
   "refund_requests",
@@ -58,6 +59,7 @@ function timerSliceMs(delayMs) {
 
 /** Drop in-memory claims and retry timers. Process shutdown and a simulated restart use this. */
 export function stopTelegramDeliveryScheduler() {
+  schedulerGeneration += 1;
   for (const entry of retryTimers.values()) clearTimeout(entry.timer);
   retryTimers.clear();
   inflight.clear();
@@ -152,24 +154,26 @@ async function recordFailure(db, table, requestId, err) {
   return { exhausted, delaySec, attempts };
 }
 
-function armRetry(db, delayMs) {
-  if (!retryTimersEnabled()) return;
+function armRetry(db, delayMs, generation = schedulerGeneration) {
+  if (!retryTimersEnabled() || generation !== schedulerGeneration) return;
   const waitMs = timerSliceMs(delayMs);
   const existing = retryTimers.get(db);
-  if (existing && existing.waitMs <= waitMs) return;
+  if (existing && existing.generation === generation && existing.waitMs <= waitMs) return;
   if (existing) clearTimeout(existing.timer);
   const timer = setTimeout(() => {
-    retryTimers.delete(db);
+    if (generation !== schedulerGeneration) return;
+    const current = retryTimers.get(db);
+    if (current?.timer === timer) retryTimers.delete(db);
     runDueTelegramRetries(db).catch((err) => {
       console.error("Telegram retry failed:", err?.message || err);
     });
   }, waitMs);
   if (typeof timer.unref === "function") timer.unref();
-  retryTimers.set(db, { timer, waitMs });
+  retryTimers.set(db, { timer, waitMs, generation });
 }
 
-async function armNextRetry(db) {
-  if (!retryTimersEnabled()) return;
+async function armNextRetry(db, generation = schedulerGeneration) {
+  if (!retryTimersEnabled() || generation !== schedulerGeneration) return;
   const rows = await db.all(
     `SELECT next_attempt_at FROM telegram_outbound
      WHERE state = 'queued' AND attempts > 0 AND next_attempt_at IS NOT NULL`
@@ -181,7 +185,7 @@ async function armNextRetry(db) {
     if (soonest == null || at < soonest) soonest = at;
   }
   if (soonest == null) return;
-  armRetry(db, soonest - deliveryNow());
+  armRetry(db, soonest - deliveryNow(), generation);
 }
 
 /** Re-arm from persisted deadlines after process startup. */
@@ -293,6 +297,7 @@ export async function createDeliveryContract(db, table, requestId, configured, m
 }
 
 export async function runDueTelegramRetries(db, nowMs = deliveryNow()) {
+  const generation = schedulerGeneration;
   const previous = nowFn;
   nowFn = () => nowMs;
   try {
@@ -302,8 +307,10 @@ export async function runDueTelegramRetries(db, nowMs = deliveryNow()) {
      FROM telegram_outbound
      WHERE state = 'queued' AND attempts > 0`
     );
+    if (generation !== schedulerGeneration) return 0;
     let sent = 0;
     for (const row of rows) {
+      if (generation !== schedulerGeneration) return sent;
       if (row.next_attempt_at && Date.parse(row.next_attempt_at) > nowMs) continue;
       try {
         if (await deliverOnePending(db, row.request_table, row.request_id)) sent += 1;
@@ -311,7 +318,8 @@ export async function runDueTelegramRetries(db, nowMs = deliveryNow()) {
         /* the failure is already stored */
       }
     }
-    await armNextRetry(db);
+    if (generation !== schedulerGeneration) return sent;
+    await armNextRetry(db, generation);
     return sent;
   } finally {
     nowFn = previous;

@@ -29,7 +29,6 @@ import {
   useToast,
 } from "../components/ui";
 import { pickExportColumns } from "../utils/reportExport";
-import { reconcileStaffEmployees } from "../utils/reconcileStaffEmployees";
 import { apiErrorMessage } from "../utils/apiError";
 
 const emptyForm = {
@@ -40,6 +39,8 @@ const emptyForm = {
   wage_basis: "",
   daily_rate: "",
   start_on: "",
+  identity: "create",
+  employee_id: "",
 };
 
 export default function UserManagement() {
@@ -59,19 +60,18 @@ export default function UserManagement() {
   const [editWageBasis, setEditWageBasis] = useState("");
   const [editDailyRate, setEditDailyRate] = useState("");
   const [editStartOn, setEditStartOn] = useState("");
+  const [review, setReview] = useState(null);
+  const [linkChoice, setLinkChoice] = useState({});
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const recon = await reconcileStaffEmployees();
-      const { data } = await api.get("/api/admin/users", { headers: getAuthHeaders() });
-      setUsers(Array.isArray(data) ? data : []);
-      if (recon?.created_count > 0) {
-        toast.success("أُضيفت حسابات الموظفين الناقصة");
-      }
-      if (recon?.ambiguous_count > 0) {
-        toast.info("وُجدت سجلات موظفين بنفس الاسم دون دمج. لم يُغيَّر تاريخها المالي.");
-      }
+      const [usersRes, reviewRes] = await Promise.all([
+        api.get("/api/admin/users", { headers: getAuthHeaders() }),
+        api.get("/api/admin/users/employee-link-review", { headers: getAuthHeaders() }),
+      ]);
+      setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
+      setReview(reviewRes.data || null);
     } catch (e) {
       toast.error(apiErrorMessage(e, "فشل التحميل"));
     } finally {
@@ -124,6 +124,14 @@ export default function UserManagement() {
         body.hourly_rate = Number(form.hourly_rate);
       }
       if (form.start_on) body.start_on = form.start_on;
+      if (isAttendanceRole(form.role) && form.identity === "link") {
+        if (!form.employee_id) {
+          toast.error("اختر سجل الموظف المراد ربطه");
+          setSaving(false);
+          return;
+        }
+        body.employee_id = Number(form.employee_id);
+      }
       await api.post("/api/admin/users", body, {
         headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       });
@@ -146,6 +154,36 @@ export default function UserManagement() {
     setEditWageBasis(u.wage_basis || "");
     setEditDailyRate(u.daily_rate != null ? String(u.daily_rate) : "");
     setEditStartOn(u.start_on || "");
+  }
+
+  async function applyStaffAction(userId, mode) {
+    const employeeId = linkChoice[userId];
+    if (mode === "link" && !employeeId) {
+      toast.error("اختر سجل الموظف المراد ربطه");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post(
+        "/api/admin/users/reconcile-employees",
+        {
+          actions: [
+            {
+              user_id: userId,
+              mode,
+              employee_id: mode === "link" ? Number(employeeId) : undefined,
+            },
+          ],
+        },
+        { headers: getAuthHeaders() }
+      );
+      toast.success(mode === "link" ? "تم ربط الحساب بسجل الموظف" : "أُنشئ سجل موظف لهذا الحساب");
+      await load();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "فشل حفظ الربط"));
+    } finally {
+      setSaving(false);
+    }
   }
 
   function cancelEdit() {
@@ -429,6 +467,38 @@ export default function UserManagement() {
                 ))}
               </Select>
             </FormField>
+            {isAttendanceRole(form.role) ? (
+              <FormField label="سجل الموظف" hint="اختر بنفسك. لن يُختار سجل لأن الاسم متطابق">
+                <Select
+                  value={form.identity}
+                  onChange={(e) => setForm((f) => ({ ...f, identity: e.target.value, employee_id: "" }))}
+                >
+                  <option value="create">إنشاء سجل موظف جديد</option>
+                  <option value="link">ربط بموظف موجود</option>
+                </Select>
+              </FormField>
+            ) : null}
+            {isAttendanceRole(form.role) && form.identity === "link" ? (
+              <FormField label="الموظف غير المربوط">
+                <Select
+                  value={form.employee_id}
+                  onChange={(e) => setForm((f) => ({ ...f, employee_id: e.target.value }))}
+                >
+                  <option value="">— اختر —</option>
+                  {(review?.unlinked_employees || []).map((emp) => (
+                    <option key={emp.id} value={emp.id}>
+                      {`#${emp.id} · ${emp.name} · ${
+                        emp.wage_basis === "daily"
+                          ? "أجر يومي"
+                          : emp.hourly_rate
+                            ? `ساعة ${emp.hourly_rate}`
+                            : "بلا أجر"
+                      }`}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+            ) : null}
             <FormField label="تاريخ بدء العمل" hint="اختياري. يُحفظ على سجل الموظف ولا يُفترض تاريخ اليوم إذا تُرك فارغاً">
               <Input
                 type="date"
@@ -482,6 +552,14 @@ export default function UserManagement() {
               </FormField>
             ) : null}
           </FormGrid>
+          {isAttendanceRole(form.role) &&
+          (review?.unlinked_employees || []).some(
+            (row) => String(row.name || "").trim().toLowerCase() === form.username.trim().toLowerCase()
+          ) ? (
+            <Notice tone="warning">
+              يوجد سجل موظف بنفس الاسم. اختره يدوياً إذا كان الشخص نفسه. لن يُدمج السجل تلقائياً.
+            </Notice>
+          ) : null}
           <PrimaryButton
             type="button"
             onClick={addUser}
@@ -492,6 +570,55 @@ export default function UserManagement() {
           </PrimaryButton>
         </CardBody>
       </Card>
+
+      {(review?.unlinked_users || []).length ? (
+        <Card>
+          <CardHeader title="حسابات بلا سجل موظف" />
+          <CardBody>
+            <p className="ui-text-muted">لا يُنشأ سجل عند فتح الصفحة. اختر إنشاء سجل جديد أو الربط بموظف موجود.</p>
+            {(review?.name_candidates || []).length ? (
+              <Notice tone="info">وُجدت أسماء متطابقة. لن يُدمج أي سجل تلقائياً.</Notice>
+            ) : null}
+            <DataTable
+              columns={[
+                { key: "username", header: "الحساب" },
+                { key: "role", header: "الدور", render: (row) => ROLE_LABELS_AR[row.role] || row.role },
+                {
+                  key: "employee",
+                  header: "موظف موجود",
+                  render: (row) => (
+                    <Select
+                      value={linkChoice[row.id] || ""}
+                      onChange={(event) => setLinkChoice((current) => ({ ...current, [row.id]: event.target.value }))}
+                    >
+                      <option value="">— اختر —</option>
+                      {(review?.unlinked_employees || []).map((emp) => (
+                        <option key={emp.id} value={emp.id}>{`#${emp.id} · ${emp.name}`}</option>
+                      ))}
+                    </Select>
+                  ),
+                },
+                {
+                  key: "actions",
+                  header: "",
+                  render: (row) => (
+                    <div className="ui-toolbar" style={{ gap: 8 }}>
+                      <SecondaryButton type="button" onClick={() => applyStaffAction(row.id, "create")} disabled={saving}>
+                        إنشاء سجل جديد
+                      </SecondaryButton>
+                      <PrimaryButton type="button" onClick={() => applyStaffAction(row.id, "link")} disabled={saving}>
+                        ربط
+                      </PrimaryButton>
+                    </div>
+                  ),
+                },
+              ]}
+              rows={review.unlinked_users}
+              empty="لا توجد حسابات بلا سجل"
+            />
+          </CardBody>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader title="المستخدمون" />

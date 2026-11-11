@@ -13,6 +13,7 @@ import {
 } from "./cashierPayrollService.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { listHourlySessionsForReport } from "./attendanceSessionService.js";
+import { resolveLiveHourlyRate } from "./employeeHourlyRate.js";
 const ROLE_LABELS_AR = {
   cashier: "كاشير",
   bakery_employee: "موظف مخبز",
@@ -462,7 +463,8 @@ export async function buildEmployeeAttendanceReport(db, { dateFrom, dateTo, user
   }
 
   const placeholders = attendanceRolePlaceholders();
-  let userSql = `SELECT u.id, u.username, u.role, u.hourly_rate, e.wage_basis, e.daily_rate
+  let userSql = `SELECT u.id, u.username, u.role, u.hourly_rate AS linked_user_hourly_rate,
+            e.hourly_rate, e.wage_basis, e.daily_rate
      FROM users u
      LEFT JOIN employees e ON e.user_id = u.id
      WHERE u.role IN (${placeholders})`;
@@ -480,6 +482,7 @@ export async function buildEmployeeAttendanceReport(db, { dateFrom, dateTo, user
   const employees = [];
 
   for (const user of users) {
+    user.hourly_rate = resolveLiveHourlyRate(user);
     let sessions = [];
     let punches = [];
     const hourlyBasis = user.role !== "cashier" && user.wage_basis === "hourly";

@@ -52,6 +52,14 @@ import {
   correctOfficeEmployeePayment,
   postOfficeEmployeePayment,
 } from "../services/employeePaymentService.js";
+import {
+  applyAccountRelink,
+  applyAttendanceRateCorrection,
+  attendanceDiagnostics,
+  attendanceDiagnosticsForEmployee,
+  previewAccountRelink,
+  previewAttendanceRateCorrection,
+} from "../services/attendancePayrollRepair.js";
 
 export function createEmployeesRouter(db) {
   const router = createSafeRouter();
@@ -77,6 +85,11 @@ export function createEmployeesRouter(db) {
 
   router.get("/debt-customers", requireAuth, requirePayroll, async (_req, res) => {
     res.json(await listDebtCustomers(db));
+  });
+
+  router.get("/attendance-diagnostics", requireAuth, requirePayroll, async (req, res) => {
+    const employeeId = req.query.employee_id ? Number(req.query.employee_id) : null;
+    res.json(await attendanceDiagnostics(db, employeeId));
   });
 
   router.post(
@@ -206,6 +219,26 @@ export function createEmployeesRouter(db) {
       res.json(employee);
     }
   );
+
+  router.get("/:id/attendance-diagnostics", requireAuth, requirePayroll, async (req, res) => {
+    res.json(await attendanceDiagnosticsForEmployee(db, req.params.id));
+  });
+
+  router.post("/:id/attendance-rate-correction/preview", requireAuth, requirePayroll, async (req, res) => {
+    res.json(await previewAttendanceRateCorrection(db, req.params.id, req.body || {}));
+  });
+
+  router.post("/:id/attendance-rate-correction", requireAuth, requirePayroll, async (req, res) => {
+    res.json(await applyAttendanceRateCorrection(db, req.params.id, req.body || {}, req));
+  });
+
+  router.post("/:id/account-relink/preview", requireAuth, requirePayroll, async (req, res) => {
+    res.json(await previewAccountRelink(db, req.params.id, req.body || {}));
+  });
+
+  router.post("/:id/account-relink", requireAuth, requirePayroll, async (req, res) => {
+    res.json(await applyAccountRelink(db, req.params.id, req.body || {}, req));
+  });
 
   router.post(
     "/:id/wage-basis",

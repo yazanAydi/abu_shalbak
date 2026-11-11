@@ -13,6 +13,11 @@ import {
   employeeDebtAccountInUse,
 } from "../utils/employeeCustomer.js";
 import { employeeHasOpenHourlySession } from "./attendanceSessionService.js";
+import {
+  syncLinkedRatesInTx,
+  withLiveHourlyRate,
+  writeEmployeeHourlyRateInTx,
+} from "./employeeHourlyRate.js";
 
 const COMPENSATION_TYPES = new Set(["monthly", "daily", "hourly"]);
 const OPENING_KINDS = new Set(["unpaid_salary", "prepaid_salary"]);
@@ -72,16 +77,21 @@ function assertDateRange(startOn, endOn) {
 }
 
 async function getEmployeeRow(db, id) {
-  return db.get(
-    `SELECT e.*, u.username AS user_username, u.role AS user_role, u.hourly_rate AS hourly_rate,
+  const row = await db.get(
+    `SELECT e.*, u.username AS user_username, u.role AS user_role,
+            u.hourly_rate AS linked_user_hourly_rate,
             c.name AS customer_name, c.customer_code AS customer_code,
-            c.balance AS customer_balance
+            c.balance AS customer_balance,
+            (SELECT m.device_user_id FROM employee_device_mappings m
+              WHERE m.employee_id = e.id AND m.active = 1
+              ORDER BY m.id DESC LIMIT 1) AS device_user_id
      FROM employees e
      LEFT JOIN users u ON u.id = e.user_id
      LEFT JOIN customers c ON c.id = e.customer_id
      WHERE e.id = ?`,
     [id]
   );
+  return withLiveHourlyRate(row);
 }
 
 export async function requireEmployee(db, id) {
@@ -256,7 +266,7 @@ export async function getUserAccount(db, id) {
 
 export async function listUnlinkedEmployeesForAccountLink(db) {
   const rows = await db.all(
-    `SELECT id, name, active
+    `SELECT id, name, active, wage_basis, hourly_rate, daily_rate
      FROM employees
      WHERE user_id IS NULL
      ORDER BY name COLLATE NOCASE, id`
@@ -265,6 +275,9 @@ export async function listUnlinkedEmployeesForAccountLink(db) {
     id: row.id,
     name: row.name,
     active: Number(row.active) === 1,
+    wage_basis: row.wage_basis || null,
+    hourly_rate: row.hourly_rate == null ? null : Number(row.hourly_rate),
+    daily_rate: row.daily_rate == null ? null : Number(row.daily_rate),
   }));
 }
 
@@ -328,6 +341,7 @@ export async function attachEmployeeIdentityToUserInTx(db, user, body = {}, { au
         emp.id,
       ]);
     }
+    await syncLinkedRatesInTx(db, emp.id);
     const updated = await getEmployeeRow(db, emp.id);
     return { employee: mapEmployeeIdentity(updated), created: false, linked: true };
   }
@@ -403,25 +417,93 @@ export async function setupEmployeeForStaffUser(db, userId, body, req) {
   return result;
 }
 
-/**
- * Idempotent backfill for staff logins that have no employees.user_id.
- * Reuses existing links, never matches or merges by name, and posts no finance.
- */
-export async function reconcileStaffEmployeeIdentities(db, req) {
+async function loadStaffLinkReview(db) {
   const placeholders = ATTENDANCE_ROLES.map(() => "?").join(", ");
-  const result = await withTransaction(db, async () => {
-    const staff = await db.all(
-      `SELECT id, username, role FROM users WHERE role IN (${placeholders}) ORDER BY id`,
-      ATTENDANCE_ROLES
+  const staff = await db.all(
+    `SELECT u.id, u.username, u.role, e.id AS employee_id
+     FROM users u
+     LEFT JOIN employees e ON e.user_id = u.id
+     WHERE u.role IN (${placeholders})
+     ORDER BY u.username COLLATE NOCASE, u.id`,
+    ATTENDANCE_ROLES
+  );
+  const unlinkedEmployees = await listUnlinkedEmployeesForAccountLink(db);
+  const staffByName = new Map();
+  for (const user of staff) {
+    staffByName.set(String(user.username || "").trim().toLowerCase(), user);
+  }
+  const nameCandidates = [];
+  for (const emp of unlinkedEmployees) {
+    const user = staffByName.get(String(emp.name || "").trim().toLowerCase());
+    if (!user) continue;
+    nameCandidates.push({
+      reason: "name_collision",
+      employee_id: emp.id,
+      employee_name: emp.name,
+      employee_active: emp.active,
+      user_id: user.id,
+      username: user.username,
+      role: user.role,
+    });
+  }
+  return {
+    unlinked_users: staff
+      .filter((user) => !user.employee_id)
+      .map((user) => ({ id: user.id, username: user.username, role: user.role })),
+    unlinked_employees: unlinkedEmployees,
+    name_candidates: nameCandidates,
+    ambiguous: nameCandidates,
+    created: [],
+    reused: [],
+    created_count: 0,
+    reused_count: 0,
+    ambiguous_count: nameCandidates.length,
+  };
+}
+
+/** Read-only. Does not create or link employee rows. */
+export async function reviewStaffEmployeeLinks(db) {
+  return loadStaffLinkReview(db);
+}
+
+/**
+ * Apply only the selections the office user sent.
+ * An empty body does not create employees.
+ */
+export async function reconcileStaffEmployeeIdentities(db, req, body = {}) {
+  const actions = Array.isArray(body?.actions) ? body.actions : null;
+  if (!actions || actions.length === 0) {
+    throw badRequest(
+      "حدد لكل حساب إنشاء سجل جديد أو الربط بموظف موجود. لا يُنشأ سجل تلقائياً.",
+      "EXPLICIT_SELECTION_REQUIRED"
     );
+  }
+  const result = await withTransaction(db, async () => {
     const created = [];
+    const linked = [];
     const reused = [];
-    for (const user of staff) {
+    for (const action of actions) {
+      const userId = Number(action?.user_id);
+      const mode = String(action?.mode || "").trim();
+      if (!userId || (mode !== "create" && mode !== "link")) {
+        throw badRequest("كل إجراء يحتاج حساباً وخيار إنشاء أو ربط");
+      }
+      const user = await db.get("SELECT id, username, role FROM users WHERE id = ?", [userId]);
+      if (!user) throw notFound("المستخدم غير موجود");
+      if (!isStaffAttendanceRole(user.role)) {
+        throw badRequest("إعداد سجل الموظف لحسابات الكاشير وموظف الرفوف وموظف المخبز فقط", "USER_NOT_STAFF");
+      }
+      if (mode === "link" && !Number(action.employee_id)) {
+        throw badRequest("اختر سجل الموظف المراد ربطه");
+      }
       const attach = await attachEmployeeIdentityToUserInTx(
         db,
         user,
-        { createdBy: req?.user?.id ?? null },
-        { autoCreate: true }
+        {
+          employee_id: mode === "link" ? Number(action.employee_id) : null,
+          createdBy: req?.user?.id ?? null,
+        },
+        { autoCreate: mode === "create" }
       );
       const row = {
         user_id: user.id,
@@ -429,33 +511,13 @@ export async function reconcileStaffEmployeeIdentities(db, req) {
         role: user.role,
         employee_id: attach.employee?.id ?? null,
         employee_name: attach.employee?.name ?? null,
+        mode,
       };
       if (attach.created) created.push(row);
+      else if (attach.linked) linked.push(row);
       else reused.push(row);
     }
-
-    const staffByName = new Map();
-    for (const user of staff) {
-      staffByName.set(String(user.username || "").trim().toLowerCase(), user);
-    }
-    const unlinked = await db.all(
-      `SELECT id, name, active FROM employees WHERE user_id IS NULL ORDER BY id`
-    );
-    const ambiguous = [];
-    for (const emp of unlinked) {
-      const user = staffByName.get(String(emp.name || "").trim().toLowerCase());
-      if (!user) continue;
-      ambiguous.push({
-        reason: "name_collision",
-        employee_id: emp.id,
-        employee_name: emp.name,
-        employee_active: Number(emp.active) === 1,
-        user_id: user.id,
-        username: user.username,
-        role: user.role,
-      });
-    }
-    return { created, reused, ambiguous };
+    return { created, linked, reused };
   });
 
   if (req) {
@@ -466,15 +528,24 @@ export async function reconcileStaffEmployeeIdentities(db, req) {
         source: "staff_reconcile",
       });
     }
+    for (const row of result.linked) {
+      await logAudit(db, req, AUDIT_ACTIONS.EMPLOYEE_CASHIER_LINK, "employees", row.employee_id, { user_id: null }, {
+        user_id: row.user_id,
+        username: row.username,
+        source: "staff_reconcile",
+      });
+    }
   }
 
   return {
     created: result.created,
+    linked: result.linked,
     reused: result.reused,
-    ambiguous: result.ambiguous,
+    ambiguous: [],
     created_count: result.created.length,
+    linked_count: result.linked.length,
     reused_count: result.reused.length,
-    ambiguous_count: result.ambiguous.length,
+    ambiguous_count: 0,
   };
 }
 
@@ -491,6 +562,7 @@ function mapEmployee(row, extras = {}) {
     user_username: row.user_username || null,
     user_role: row.user_role || null,
     hourly_rate: row.hourly_rate == null ? null : Number(row.hourly_rate),
+    stored_hourly_rate: row.stored_hourly_rate == null ? null : Number(row.stored_hourly_rate),
     wage_basis: row.wage_basis || null,
     daily_rate: row.daily_rate == null ? null : Number(row.daily_rate),
     customer_id: row.customer_id ?? null,
@@ -498,6 +570,8 @@ function mapEmployee(row, extras = {}) {
     customer_code: row.customer_code || null,
     customer_balance: row.customer_balance == null ? null : round2(Number(row.customer_balance)),
     kind: employeeKind(row),
+    device_user_id: row.device_user_id || null,
+    device_mapped: Boolean(row.device_user_id),
     created_by: row.created_by,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -578,9 +652,13 @@ export async function listLinkableUsers(db, { includeUserId = null } = {}) {
 
 export async function listEmployees(db, { active = "all" } = {}) {
   let sql = `
-    SELECT e.*, u.username AS user_username, u.role AS user_role, u.hourly_rate AS hourly_rate,
+    SELECT e.*, u.username AS user_username, u.role AS user_role,
+           u.hourly_rate AS linked_user_hourly_rate,
            c.name AS customer_name, c.customer_code AS customer_code,
-           c.balance AS customer_balance
+           c.balance AS customer_balance,
+           (SELECT m.device_user_id FROM employee_device_mappings m
+             WHERE m.employee_id = e.id AND m.active = 1
+             ORDER BY m.id DESC LIMIT 1) AS device_user_id
     FROM employees e
     LEFT JOIN users u ON u.id = e.user_id
     LEFT JOIN customers c ON c.id = e.customer_id
@@ -603,7 +681,7 @@ export async function listEmployees(db, { active = "all" } = {}) {
       [row.id]
     );
     out.push(
-      mapEmployee(row, {
+      mapEmployee(withLiveHourlyRate(row), {
         current_compensation: current ? mapCompensation(current) : null,
       })
     );
@@ -768,7 +846,7 @@ export async function addCompensation(db, employeeId, body, req) {
 
 const WAGE_BASIS = new Set(["daily", "hourly"]);
 
-export async function setEmployeeWageBasis(db, employeeId, body, req) {
+export async function setEmployeeWageBasisInTx(db, employeeId, body, req) {
   const emp = await requireEmployee(db, employeeId);
   if (employeeKind(emp) === "cashier") {
     throw badRequest("الكاشير يبقى على أجر الساعة من ورديات نقطة البيع", "CASHIER_WAGE_BASIS");
@@ -783,13 +861,13 @@ export async function setEmployeeWageBasis(db, employeeId, body, req) {
     }
   }
   let dailyRate = emp.daily_rate == null ? null : round2(Number(emp.daily_rate));
+  let hourlyRate = emp.stored_hourly_rate == null ? null : Number(emp.stored_hourly_rate);
   if (basis === "daily") {
     dailyRate = requirePositiveMoney(body?.daily_rate, "أجر اليوم");
   }
   if (basis === "hourly") {
-    if (!emp.user_id) throw badRequest("أجر الساعة يحتاج حساب حضور مربوطاً");
-    const rate = requirePositiveMoney(body?.hourly_rate ?? emp.hourly_rate, "أجر الساعة");
-    await db.run("UPDATE users SET hourly_rate = ? WHERE id = ?", [rate, emp.user_id]);
+    hourlyRate = requirePositiveMoney(body?.hourly_rate ?? emp.hourly_rate, "أجر الساعة");
+    await writeEmployeeHourlyRateInTx(db, { employeeId: emp.id, userId: emp.user_id, rate: hourlyRate });
   }
   await db.run("UPDATE employees SET wage_basis = ?, daily_rate = ?, updated_at = datetime('now') WHERE id = ?", [
     basis,
@@ -800,9 +878,18 @@ export async function setEmployeeWageBasis(db, employeeId, body, req) {
     await logAudit(db, req, AUDIT_ACTIONS.EMPLOYEE_WAGE_BASIS, "employees", emp.id, {
       wage_basis: emp.wage_basis,
       daily_rate: emp.daily_rate,
-    }, { wage_basis: basis, daily_rate: basis === "daily" ? dailyRate : emp.daily_rate });
+      hourly_rate: emp.stored_hourly_rate ?? null,
+    }, {
+      wage_basis: basis,
+      daily_rate: basis === "daily" ? dailyRate : emp.daily_rate,
+      hourly_rate: basis === "hourly" ? hourlyRate : emp.stored_hourly_rate ?? null,
+    });
   }
   return getEmployee(db, emp.id);
+}
+
+export async function setEmployeeWageBasis(db, employeeId, body, req) {
+  return withTransaction(db, () => setEmployeeWageBasisInTx(db, employeeId, body, req));
 }
 
 async function assertPrepaidCutover(db, employeeId, { amount, asOf, expenseId }) {
