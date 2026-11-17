@@ -516,6 +516,9 @@ async function migrateStockCountTables(db) {
   if (!(await tableHasColumn(db, "stock_count_lines", "expiry_date"))) {
     await db.run("ALTER TABLE stock_count_lines ADD COLUMN expiry_date TEXT");
   }
+  if (!(await tableHasColumn(db, "stock_count_lines", "count_unit_snapshot"))) {
+    await db.run("ALTER TABLE stock_count_lines ADD COLUMN count_unit_snapshot TEXT");
+  }
   if (!(await tableHasColumn(db, "stock_count_lines", "line_origin"))) {
     await db.run(
       "ALTER TABLE stock_count_lines ADD COLUMN line_origin TEXT NOT NULL DEFAULT 'current'"

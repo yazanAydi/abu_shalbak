@@ -53,6 +53,38 @@ function SystemQtyCell({ row, readOnly }) {
   );
 }
 
+function CountUnitCell({ row, readOnly, onChange }) {
+  const baseName = row.unit || (Number(row.quantity_conversion || 1) === 1 ? row.count_unit : "") || "الوحدة الأساسية";
+  const selected = row.count_unit_id == null ? "base" : String(row.count_unit_id);
+  const units = (row.count_units || []).filter((unit) => (
+    Number(unit.conversion_to_base) > 0
+    && !(Number(unit.conversion_to_base) === 1 && unit.unit_name === baseName)
+  ));
+  if (row.count_unit_id != null && !units.some((unit) => String(unit.id) === selected)) {
+    units.push({ id: row.count_unit_id, unit_name: row.count_unit || baseName,
+      conversion_to_base: row.quantity_conversion });
+  }
+  if (readOnly) return <span>{row.count_unit || baseName}</span>;
+  return (
+    <select
+      className="ui-input"
+      data-invoice-field="unit"
+      data-testid="count-unit"
+      aria-label="وحدة الجرد"
+      disabled={!row.product_id || !row.expiry_picture_loaded || row.picture_failed}
+      value={selected}
+      onChange={(e) => {
+        const unit = units.find((item) => String(item.id) === e.target.value);
+        onChange({ count_unit_id: unit?.id ?? null, count_unit: unit?.unit_name || baseName,
+          quantity_conversion: Number(unit?.conversion_to_base) || 1, count_unit_selected: true });
+      }}
+    >
+      <option value="base">{baseName}</option>
+      {units.map((unit) => <option key={unit.id} value={unit.id}>{unit.unit_name}</option>)}
+    </select>
+  );
+}
+
 function CountExpiryCell({ row, readOnly, onChange }) {
   const known = Array.isArray(row.known_expiries) ? row.known_expiries : [];
   const showChoices = !readOnly && (known.length > 1 || (known.length === 1 && !row.expiry_date));
@@ -196,6 +228,10 @@ export default function StockCountLineEditor({
         ...(firstPick ? {
           quantity_conversion: countedUnit ? conversion : 1,
           count_unit: countedUnit ? (product.matched_barcode_label || product.unit || "") : "",
+          count_unit_id: countedUnit && conversion !== 1 ? product.unit_id : null,
+          count_unit_selected: true,
+          count_units: [],
+          unit: product.unit || "",
         } : {}),
         ...(switching ? {
           expiry_date: "",
@@ -312,16 +348,18 @@ export default function StockCountLineEditor({
       <div className="ui-table-wrap">
         <table className="ui-table" data-testid="stock-count-lines">
           <colgroup>
-            <col style={{ width: "34%" }} />
+            <col style={{ width: "28%" }} />
+            <col style={{ width: "14%" }} />
             <col style={{ width: "16%" }} />
-            <col style={{ width: "16%" }} />
-            <col style={{ width: "26%" }} />
-            <col style={{ width: "8%" }} />
+            <col style={{ width: "14%" }} />
+            <col style={{ width: "22%" }} />
+            <col style={{ width: "6%" }} />
           </colgroup>
           <thead>
             <tr>
               <th>الصنف</th>
               <th>الكمية الحالية</th>
+              <th>الوحدة</th>
               <th>الكمية المعدودة</th>
               <th>تاريخ الصلاحية</th>
               <th></th>
@@ -330,7 +368,7 @@ export default function StockCountLineEditor({
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={5} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>
+                <td colSpan={6} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>
                   أضف أصنافاً عبر «إضافة صنف»
                 </td>
               </tr>
@@ -361,6 +399,9 @@ export default function StockCountLineEditor({
                 </td>
                 <td>
                   <SystemQtyCell row={it} readOnly={readOnly} />
+                </td>
+                <td>
+                  <CountUnitCell row={it} readOnly={readOnly} onChange={(patch) => updateRow(i, patch)} />
                 </td>
                 <td>
                   <QtyStepper

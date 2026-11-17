@@ -38,6 +38,25 @@ function row(partial) {
 }
 
 describe("stockCountEntry", () => {
+  test("a saved carton count reopens in its saved unit and converts to base exactly once", () => {
+    const saved = { product_id: 1, counted_qty: 12, system_qty: 18, unit: "حبة",
+      count_unit_snapshot: JSON.stringify({ unit_id: 72, unit_name: "كرتونة", conversion_to_base: 6 }) };
+    const reopened = editorRowFromCountLine(saved);
+    expect(reopened.counted_qty).toBe("2");
+    expect(reopened.count_unit).toBe("كرتونة");
+    expect(describeCountSystemQty(reopened, { preferSaved: true })).toMatchObject({ text: "3", unit: "كرتونة" });
+    expect(countLinePayload(reopened, null)).toMatchObject({ counted_qty: 12,
+      count_unit_snapshot: { unit_id: 72, conversion_to_base: 6 } });
+    expect(countLinePayload({ ...reopened, counted_qty: "0" }, null).counted_qty).toBe(0);
+    expect(countLinePayload({ ...reopened, counted_qty: "0.5" }, null).counted_qty).toBe(3);
+    const legacy = editorRowFromCountLine({ ...saved, count_unit_snapshot: null });
+    expect(legacy.counted_qty).toBe("12");
+    expect(legacy.quantity_conversion).toBe(1);
+    const tiny = editorRowFromCountLine({ ...saved, counted_qty: 0.000001,
+      count_unit_snapshot: JSON.stringify({ unit_id: 72, unit_name: "كرتونة", conversion_to_base: 100 }) });
+    expect(Number(tiny.counted_qty)).toBe(0.00000001);
+    expect(countLinePayload(tiny, null).counted_qty).toBe(0.000001);
+  });
   test("zero is a counted quantity and a blank field is not", () => {
     expect(countQtyEntered(0)).toBe(true);
     expect(countQtyEntered("0")).toBe(true);

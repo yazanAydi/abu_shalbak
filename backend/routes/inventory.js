@@ -140,10 +140,24 @@ function normalizeCountEntry(entry) {
   }
   const asked = entry?.expiry_verified === true || entry?.expiry_verified === 1;
   const expiryVerified = asked && batchSource === "dated" && Boolean(expiryDate);
-  return { batchSource, expiryDate, qty, warehouse_id: entry?.warehouse_id, expiryVerified };
+  return { batchSource, expiryDate, qty, warehouse_id: entry?.warehouse_id, expiryVerified,
+    countUnit: entry?.count_unit_snapshot };
 }
 
 async function saveCountLine(db, sessionId, product, entry) {
+  let unitSnapshot = null;
+  if (entry.countUnit != null) {
+    const requested = entry.countUnit;
+    if (typeof requested !== "object" || Array.isArray(requested)) throw badRequest("وحدة الجرد غير صالحة", "COUNT_UNIT_INVALID");
+    const unit = requested.unit_id == null
+      ? { id: null, unit_name: product.unit || "", conversion_to_base: 1 }
+      : await db.get("SELECT id, unit_name, conversion_to_base FROM product_units WHERE id = ? AND product_id = ?", [requested.unit_id, product.id]);
+    if (!unit || !Number.isFinite(Number(unit.conversion_to_base)) || !(Number(unit.conversion_to_base) > 0) || Number(requested.conversion_to_base) !== Number(unit.conversion_to_base)) {
+      throw badRequest("تغيرت وحدة الجرد أو معامل التحويل. أعد اختيار الوحدة قبل الحفظ", "COUNT_UNIT_INVALID");
+    }
+    unitSnapshot = JSON.stringify({ unit_id: unit.id, unit_name: unit.unit_name,
+      conversion_to_base: Number(unit.conversion_to_base) });
+  }
   const picture = await listPhysicalSources(db, product.id);
   const batchSource = entry.batchSource;
   const expiryDate = entry.expiryDate;
@@ -180,16 +194,16 @@ async function saveCountLine(db, sessionId, product, entry) {
   if (existing) {
     await db.run(
       `UPDATE stock_count_lines
-          SET system_qty = ?, counted_qty = ?, variance = ?, batch_source = ?, expiry_date = ?, warehouse_id = ?, expiry_verified = ?
+          SET system_qty = ?, counted_qty = ?, variance = ?, batch_source = ?, expiry_date = ?, warehouse_id = ?, expiry_verified = ?, count_unit_snapshot = ?
         WHERE id = ?`,
-      [systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, existing.id]
+      [systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, unitSnapshot, existing.id]
     );
   } else {
     await db.run(
       `INSERT INTO stock_count_lines
-         (session_id, product_id, system_qty, counted_qty, variance, batch_source, expiry_date, warehouse_id, expiry_verified)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [sessionId, product.id, systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0]
+         (session_id, product_id, system_qty, counted_qty, variance, batch_source, expiry_date, warehouse_id, expiry_verified, count_unit_snapshot)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sessionId, product.id, systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, unitSnapshot]
     );
   }
 }
@@ -465,7 +479,7 @@ export function createInventoryRouter(db) {
     try {
       const rawEntries = Array.isArray(req.body?.sources)
         ? req.body.sources
-        : [{ batch_source: req.body?.batch_source, expiry_date: req.body?.expiry_date, counted_qty: req.body?.counted_qty, warehouse_id: req.body?.warehouse_id }];
+        : [{ batch_source: req.body?.batch_source, expiry_date: req.body?.expiry_date, counted_qty: req.body?.counted_qty, warehouse_id: req.body?.warehouse_id, count_unit_snapshot: req.body?.count_unit_snapshot }];
       const entries = rawEntries.map((entry) => normalizeCountEntry(entry));
       const seen = new Set();
       for (const entry of entries) {
@@ -1152,6 +1166,10 @@ export function createInventoryRouter(db) {
       );
       if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
       const picture = await listPhysicalSources(db, productId);
+      const countUnits = await db.all(
+        "SELECT id, unit_name, conversion_to_base FROM product_units WHERE product_id = ? AND conversion_to_base > 0 ORDER BY is_default DESC, id",
+        [productId]
+      );
       const productExpiry = interpretExpiryInput(product.expiry_date);
       const { main } = await operationalWarehouses(db);
       const placed = await locationRows(db, productId);
@@ -1168,6 +1186,7 @@ export function createInventoryRouter(db) {
         name: product.name,
         barcode: product.barcode,
         unit: product.unit,
+        count_units: countUnits,
         product_expiry_date: productExpiry.ok ? productExpiry.date : null,
         main_warehouse_id: main?.id ?? null,
         locations: placed.map((row) => {

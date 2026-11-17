@@ -115,7 +115,7 @@ describe("StockCountLineEditor", () => {
       expiry_invalid: false,
     }]} />);
     const headers = [...container.querySelectorAll("thead th")].map((th) => th.textContent);
-    expect(headers.slice(0, 4)).toEqual(["الصنف", "الكمية الحالية", "الكمية المعدودة", "تاريخ الصلاحية"]);
+    expect(headers.slice(0, 5)).toEqual(["الصنف", "الكمية الحالية", "الوحدة", "الكمية المعدودة", "تاريخ الصلاحية"]);
     expect(container.textContent).not.toMatch(/رصيد النظام|الفرق|خصم البند|بونص|سعر/);
     const remove = container.querySelector("[aria-label='حذف']");
     expect(remove).toBeTruthy();
@@ -223,6 +223,33 @@ describe("StockCountLineEditor", () => {
       product.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
   }
+
+  test("unit defaults to the product unit and switching units compares stock without replacing the typed count", async () => {
+    api.get.mockResolvedValue({ data: {
+      has_dated_batches: false, product_stock: 12, unit: "حبة", sources: [],
+      count_units: [{ id: 71, unit_name: "حبة", conversion_to_base: 1 },
+        { id: 72, unit_name: "كرتونة", conversion_to_base: 6 }],
+    } });
+    render(<Harness />);
+    await pickMilk();
+    const unit = container.querySelector("[data-testid='count-unit']");
+    const quantity = container.querySelector("[data-testid='count-qty']");
+    expect(unit.value).toBe("base");
+    expect(unit.options[unit.selectedIndex].textContent).toBe("حبة");
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).toBe("12 حبة");
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(quantity, "2");
+      quantity.dispatchEvent(new Event("input", { bubbles: true }));
+      unit.value = "72";
+      unit.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(quantity.value).toBe("2");
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).toBe("2 كرتونة");
+    act(() => { unit.value = "base"; unit.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(quantity.value).toBe("2");
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).toBe("12 حبة");
+  });
 
   test("tapping a product focuses counted quantity inside the click without changing the count", async () => {
     render(<Harness />);

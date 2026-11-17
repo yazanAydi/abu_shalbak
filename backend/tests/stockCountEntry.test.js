@@ -85,6 +85,38 @@ describe("stock count entry rows", () => {
     return unwrap(session.body).id;
   }
 
+  test("count units are product-specific, saved as snapshots, and post base stock only once", async () => {
+    const product = await makeProduct("جرد كرتونة");
+    const other = await makeProduct("وحدة صنف آخر");
+    await ctx.db.run("UPDATE products SET unit = 'حبة' WHERE id = ?", [product.id]);
+    const carton = await ctx.db.run(
+      "INSERT INTO product_units (product_id,unit_name,conversion_to_base,price,cost) VALUES (?, 'كرتونة', 6, 48, 12)", [product.id]);
+    const foreign = await ctx.db.get("SELECT id FROM product_units WHERE product_id = ?", [other.id]);
+    await receive(product.id, 18, null);
+    const picture = unwrap((await request(ctx.app).get(`/api/v1/inventory/stock-sources?product_id=${product.id}`).set(authHeader(adminToken))).body);
+    expect(picture.count_units.find((u) => u.id === carton.lastID)).toEqual({ id: carton.lastID, unit_name: "كرتونة", conversion_to_base: 6 });
+    expect(picture.count_units.every((u) => !("price" in u) && !("cost" in u))).toBe(true);
+    const sessionId = await openCount();
+    const save = (unitId, conversion, qty = 12) => request(ctx.app)
+      .post(`/api/v1/inventory/counts/${sessionId}/lines`).set(authHeader(adminToken))
+      .send({ product_id: product.id, sources: [{ counted_qty: qty,
+        count_unit_snapshot: { unit_id: unitId, conversion_to_base: conversion } }] });
+    expect((await save(carton.lastID, 6)).status).toBe(200);
+    expect((await save(foreign.id, 1)).status).toBe(400);
+    expect((await save(carton.lastID, 100, 200)).status).toBe(400);
+    let line = await ctx.db.get("SELECT * FROM stock_count_lines WHERE session_id = ? AND product_id = ?", [sessionId, product.id]);
+    expect(line.counted_qty).toBe(12);
+    expect(JSON.parse(line.count_unit_snapshot)).toEqual({ unit_id: carton.lastID, unit_name: "كرتونة", conversion_to_base: 6 });
+    const reopened = unwrap((await request(ctx.app).get(`/api/v1/inventory/counts/${sessionId}`).set(authHeader(adminToken))).body);
+    expect(reopened.lines.find((l) => l.product_id === product.id).count_unit_snapshot).toBe(line.count_unit_snapshot);
+    // Subsequent catalog changes must not reinterpret a saved count at posting.
+    await ctx.db.run("UPDATE product_units SET conversion_to_base = 10 WHERE id = ?", [carton.lastID]);
+    expect((await request(ctx.app).post(`/api/v1/inventory/counts/${sessionId}/post`).set(authHeader(adminToken)).send({})).status).toBe(200);
+    expect((await ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock).toBe(12);
+    line = await ctx.db.get("SELECT * FROM stock_count_lines WHERE id = ?", [line.id]);
+    expect(JSON.parse(line.count_unit_snapshot).conversion_to_base).toBe(6);
+  });
+
   test("two expiry dates stay separate, a blank is undated, and the count replaces stock", async () => {
     const product = await makeProduct("جرد تاريخين");
     const later = addShopDays(shopTodayYmd(), 40);

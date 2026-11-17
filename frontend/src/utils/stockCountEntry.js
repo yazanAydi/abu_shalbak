@@ -80,12 +80,17 @@ export function emptyCountLine() {
 export function editorRowFromCountLine(line) {
   const dated = line?.batch_source === "dated";
   const parsed = interpretCountExpiry(dated ? line?.expiry_date : "");
+  let snapshot = null;
+  try { snapshot = JSON.parse(line?.count_unit_snapshot || "null"); } catch { /* older rows use the base unit */ }
+  const conversion = Number(snapshot?.conversion_to_base) > 0 ? Number(snapshot.conversion_to_base) : 1;
+  const savedQty = line?.counted_qty;
+  const displayQty = savedQty == null || savedQty === "" || conversion === 1 ? savedQty : Number(savedQty) / conversion;
   return {
     line_key: newInvoiceLineKey(),
     product_id: countProductId(line?.product_id),
     name: line?.name || "",
     barcode: line?.barcode || "",
-    counted_qty: countQtyInputValue(line?.counted_qty),
+    counted_qty: countQtyInputValue(displayQty),
     expiry_date: parsed.ok ? parsed.date : "",
     expiry_invalid: false,
     expiry_touched: true,
@@ -99,8 +104,10 @@ export function editorRowFromCountLine(line) {
     warehouse_id: line?.warehouse_id ?? null,
     stock_picture: null,
     unit: line?.unit || "",
-    count_unit: "",
-    quantity_conversion: 1,
+    count_unit: snapshot?.unit_name || "",
+    count_unit_id: snapshot?.unit_id ?? null,
+    count_unit_selected: Boolean(snapshot),
+    quantity_conversion: conversion,
   };
 }
 
@@ -127,7 +134,7 @@ function quantityInCountUnit(baseQty, row) {
 }
 
 function countUnitLabel(row) {
-  if (countConversion(row) !== 1 && row?.count_unit) return String(row.count_unit);
+  if (row?.count_unit) return String(row.count_unit);
   return String(row?.stock_picture?.unit || row?.unit || row?.count_unit || "").trim();
 }
 
@@ -263,6 +270,9 @@ export function countLinePayload(row, picture, { groupHasDated = false } = {}) {
   if (row?.expiry_verified === true && payload.batch_source === "dated" && payload.expiry_date) {
     payload.expiry_verified = true;
   }
+  if (row?.count_unit_selected) {
+    payload.count_unit_snapshot = { unit_id: row.count_unit_id ?? null, conversion_to_base: countConversion(row) };
+  }
   return payload;
 }
 
@@ -298,6 +308,7 @@ export function attachCountExpiryPicture(row, picture) {
     expiry_picture_loaded: true,
     picture_failed: false,
     unit: picture?.unit || row?.unit || "",
+    count_units: picture?.count_units || [],
     stock_picture: picture
       ? {
           has_dated_batches: Boolean(picture.has_dated_batches),

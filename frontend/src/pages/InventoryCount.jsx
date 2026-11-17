@@ -99,6 +99,7 @@ function ZeroProgress({ op, unavailable }) {
 
 const ENTRY_COLUMNS = [
   { key: "name", header: "الصنف", nameColumn: true, wrap: true },
+  { key: "unit", header: "الوحدة" },
   { key: "counted_qty", header: "الكمية المعدودة", className: "num" },
   {
     key: "expiry_date",
@@ -573,6 +574,7 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
   const reportRows = useMemo(
     () => draftLines.filter((row) => row.product_id).map((row) => ({
       name: row.name,
+      unit: row.count_unit || row.unit || row.stock_picture?.unit || "",
       counted_qty: row.counted_qty,
       expiry_date: row.expiry_date,
     })),
