@@ -1,5 +1,6 @@
 import { getAppSettings } from "../utils/settings.js";
 import { attachSupplierBreakdown } from "./stockSourceService.js";
+import { applyExpiryCycleToReportRows } from "./expiryReportCycle.js";
 import {
   isExpiryTelegramConfigured,
   buildExpiryAlertMessages,
@@ -60,6 +61,7 @@ export async function fetchNearExpiryItems(db, days, options = {}) {
             AND b.expiry_date IS NOT NULL AND TRIM(b.expiry_date) != ''
        ), 0)) AS stock,
        expiry_date, category,
+       COALESCE(inventory_scope, 'retail') AS inventory_scope,
        CAST(julianday(expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
      FROM products
      WHERE expiry_date IS NOT NULL AND expiry_date != ''
@@ -81,7 +83,8 @@ export async function fetchNearExpiryItems(db, days, options = {}) {
 
   const batches = await db.all(
     `SELECT b.id, b.batch_no, b.expiry_date, b.quantity,
-       p.name AS product_name, p.barcode, p.category,
+       p.id AS product_id, p.name AS product_name, p.barcode, p.category,
+       COALESCE(p.inventory_scope, 'retail') AS inventory_scope,
        CAST(julianday(b.expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
      FROM product_batches b
      JOIN products p ON p.id = b.product_id
@@ -105,13 +108,15 @@ export async function fetchNearExpiryItems(db, days, options = {}) {
  * so units already on a lot are not listed again. A remainder at or below
  * zero is omitted; dated quantities are not rewritten to hide it.
  */
-export async function listOfficeExpiryReport(db, {
-  days = 30,
-  membershipSql = "",
-  membershipParams = [],
-  limit = 500,
-  offset = 0,
-} = {}) {
+export async function listOfficeExpiryReport(db, options = {}) {
+  const normalized = typeof options === "number" ? { days: options } : (options || {});
+  const {
+    days = 30,
+    membershipSql = "",
+    membershipParams = [],
+    limit = 500,
+    offset = 0,
+  } = normalized;
   const d = Math.max(1, Math.min(365, Number(days) || 30));
   const cap = Math.max(1, Number(limit) || 500);
   const skip = Math.max(0, Number(offset) || 0);
@@ -119,6 +124,7 @@ export async function listOfficeExpiryReport(db, {
   const batches = await db.all(
     `SELECT b.id AS batch_id, b.batch_no, b.expiry_date, b.quantity,
             p.id AS product_id, p.barcode, p.name, p.unit, p.stock AS product_stock,
+            COALESCE(p.inventory_scope, 'retail') AS inventory_scope,
             CAST(julianday(b.expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry
      FROM product_batches b
      JOIN products p ON p.id = b.product_id
@@ -132,6 +138,7 @@ export async function listOfficeExpiryReport(db, {
 
   const products = await db.all(
     `SELECT p.id, p.barcode, p.name, p.unit, p.stock, p.expiry_date,
+            COALESCE(p.inventory_scope, 'retail') AS inventory_scope,
             CAST(julianday(p.expiry_date) - julianday('now') AS INTEGER) AS days_until_expiry,
             COALESCE((
               SELECT SUM(b.quantity) FROM product_batches b
@@ -158,6 +165,7 @@ export async function listOfficeExpiryReport(db, {
       row_key: `product:${row.id}`,
       source: "product",
       product_id: row.id,
+      inventory_scope: row.inventory_scope || "retail",
       barcode: row.barcode,
       name: row.name,
       unit: row.unit,
@@ -175,6 +183,7 @@ export async function listOfficeExpiryReport(db, {
       row_key: `batch:${row.batch_id}`,
       source: "batch",
       product_id: row.product_id,
+      inventory_scope: row.inventory_scope || "retail",
       barcode: row.barcode,
       name: row.name,
       unit: row.unit,
@@ -187,14 +196,15 @@ export async function listOfficeExpiryReport(db, {
     });
   }
 
-  rows.sort((a, b) => {
+  const visible = await applyExpiryCycleToReportRows(db, rows);
+  visible.sort((a, b) => {
     const dayDiff = Number(a.days_until_expiry) - Number(b.days_until_expiry);
     if (dayDiff !== 0) return dayDiff;
     const dateDiff = String(a.expiry_date).localeCompare(String(b.expiry_date));
     if (dateDiff !== 0) return dateDiff;
     return String(a.name).localeCompare(String(b.name));
   });
-  return attachSupplierBreakdown(db, rows.slice(skip, skip + cap));
+  return attachSupplierBreakdown(db, visible.slice(skip, skip + cap));
 }
 
 function summarizeItems(items) {

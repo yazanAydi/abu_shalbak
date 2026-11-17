@@ -15,6 +15,7 @@ import { UNDATED_BATCH_LABEL } from "../../utils/stockBatchLabels";
 import {
   attachCountExpiryPicture,
   countDocumentDepartment,
+  describeCountSystemQty,
   emptyCountLine,
   seedCountExpiry,
   validateCountLine,
@@ -40,6 +41,17 @@ function invalidTypedExpiry(el) {
   return !dmyToYmd(text);
 }
 
+function SystemQtyCell({ row, readOnly }) {
+  const view = describeCountSystemQty(row, { preferSaved: readOnly });
+  const label = view.unit && view.text !== "—" ? `${view.text} ${view.unit}` : view.text;
+  return (
+    <div className="count-system-qty" data-testid="count-system-qty" data-basis={view.basis || "none"}>
+      <span>{label}</span>
+      {view.note ? <span className="count-system-qty__note">{view.note}</span> : null}
+    </div>
+  );
+}
+
 function CountExpiryCell({ row, readOnly, onChange }) {
   const known = Array.isArray(row.known_expiries) ? row.known_expiries : [];
   const showChoices = !readOnly && (known.length > 1 || (known.length === 1 && !row.expiry_date));
@@ -55,6 +67,7 @@ function CountExpiryCell({ row, readOnly, onChange }) {
             expiry_date: e.target.value,
             expiry_touched: true,
             expiry_invalid: false,
+            expiry_verified: false,
           })}
         >
           <option value="">اختر تاريخاً مسجلاً</option>
@@ -71,10 +84,28 @@ function CountExpiryCell({ row, readOnly, onChange }) {
         keepInvalid
         readOnly={readOnly}
         value={row.expiry_date || ""}
-        onChange={(e) => onChange({ expiry_date: e.target.value, expiry_touched: true, expiry_invalid: false })}
+        onChange={(e) => onChange({
+          expiry_date: e.target.value,
+          expiry_touched: true,
+          expiry_invalid: false,
+          expiry_verified: false,
+        })}
         onInvalid={() => onChange({ expiry_invalid: true })}
       />
       <div className="purchase-item-editor__meta">فارغ = {UNDATED_BATCH_LABEL}</div>
+      {readOnly && !row.expiry_verified ? null : (
+        <label className="purchase-item-editor__meta" data-enter-nav-skip="true">
+          <input
+            type="checkbox"
+            data-testid="count-expiry-verified"
+            disabled={readOnly || !row.expiry_date}
+            checked={row.expiry_verified === true && Boolean(row.expiry_date)}
+            onChange={(e) => onChange({ expiry_verified: e.target.checked })}
+          />
+          {" "}
+          تم التحقق من التاريخ
+        </label>
+      )}
       {row.product_expiry ? (
         <div className="purchase-item-editor__meta" data-testid="count-product-expiry">
           تاريخ الصنف المسجل: {dateOnly(row.product_expiry)}
@@ -96,10 +127,21 @@ export default function StockCountLineEditor({
 }) {
   const [lineError, setLineError] = useState(null);
   const pendingFocusRef = useRef(null);
+  const pendingQtyFocusRef = useRef(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
   useEffect(() => {
+    if (pendingQtyFocusRef.current) {
+      const key = pendingQtyFocusRef.current;
+      const row = items.find((item) => item.line_key === key);
+      if (row?.product_id) {
+        pendingQtyFocusRef.current = null;
+        pendingFocusRef.current = null;
+        focusInvoiceField(key, "qty");
+      }
+      return;
+    }
     if (!pendingFocusRef.current) return;
     const key = pendingFocusRef.current;
     pendingFocusRef.current = null;
@@ -146,6 +188,9 @@ export default function StockCountLineEditor({
     }
     const previous = itemsRef.current[index];
     const switching = previous?.product_id && Number(previous.product_id) !== Number(product.id);
+    const firstPick = !previous?.product_id || switching;
+    const conversion = Number(product.conversion_to_base);
+    const countedUnit = product.unit_id != null && Number.isFinite(conversion) && conversion > 0;
     const requestId = Number(previous?.picture_request || 0) + 1;
     setItems((prev) => prev.map((row) => {
       if (row.line_key !== lineKey) return row;
@@ -153,13 +198,20 @@ export default function StockCountLineEditor({
         ...row,
         product_id: product.id,
         name: product.name || "",
-        barcode: product.barcode || "",
+        barcode: product.barcode || product.matched_barcode || "",
         picture_request: requestId,
         expiry_picture_loaded: false,
+        picture_failed: false,
+        stock_picture: null,
+        ...(firstPick ? {
+          quantity_conversion: countedUnit ? conversion : 1,
+          count_unit: countedUnit ? (product.matched_barcode_label || product.unit || "") : "",
+        } : {}),
         ...(switching ? {
           expiry_date: "",
           expiry_touched: false,
           expiry_invalid: false,
+          expiry_verified: false,
           known_expiries: [],
           product_expiry: "",
         } : {}),
@@ -181,7 +233,7 @@ export default function StockCountLineEditor({
     }).catch(() => {
       setItems((prev) => prev.map((row) => (
         row.line_key === lineKey && Number(row.picture_request) === requestId
-          ? { ...row, expiry_picture_loaded: true }
+          ? { ...row, expiry_picture_loaded: true, picture_failed: true, stock_picture: null }
           : row
       )));
     });
@@ -213,7 +265,7 @@ export default function StockCountLineEditor({
         if (!row.product_id || row.expiry_picture_loaded || row.picture_request) return row;
         if (!(row.product_id in byId)) return row;
         const picture = byId[row.product_id];
-        if (!picture) return { ...row, expiry_picture_loaded: true };
+        if (!picture) return { ...row, expiry_picture_loaded: true, picture_failed: true, stock_picture: null };
         return attachCountExpiryPicture(row, picture);
       }));
     })();
@@ -228,11 +280,14 @@ export default function StockCountLineEditor({
 
   return (
     <div
-      className="purchase-item-editor"
+      className="purchase-item-editor stock-count-editor"
       data-enter-nav="invoice-lines"
       data-testid="stock-count-editor"
       onKeyDownCapture={(e) => {
-        if (readOnly || e.key !== "Enter") return;
+        if (readOnly || (e.key !== "Enter" && e.key !== "Tab")) return;
+        const field = e.target?.getAttribute?.("data-invoice-field");
+        if (field === "product" && String(e.target.value || "").trim()) return;
+        if (e.key !== "Enter") return;
         if (isNativeDatePickerTarget(e.target)) return;
         if (invalidTypedExpiry(e.target)) {
           e.preventDefault();
@@ -258,6 +313,7 @@ export default function StockCountLineEditor({
       )}
       <p className="purchase-item-editor__hint">
         الكمية هي الموجودة فعلياً. فارغ في تاريخ الصلاحية يعني {UNDATED_BATCH_LABEL}، والصفر كمية معدودة.
+        علّم «تم التحقق من التاريخ» بعد مطابقة التاريخ على الرف. الكمية وحدها لا تُثبت تاريخ الصلاحية في التقرير.
       </p>
       {lineError?.message ? (
         <div className="purchase-item-editor__error">{lineError.message}</div>
@@ -265,14 +321,16 @@ export default function StockCountLineEditor({
       <div className="ui-table-wrap">
         <table className="ui-table" data-testid="stock-count-lines">
           <colgroup>
-            <col style={{ width: "46%" }} />
-            <col style={{ width: "22%" }} />
-            <col style={{ width: "24%" }} />
+            <col style={{ width: "34%" }} />
+            <col style={{ width: "16%" }} />
+            <col style={{ width: "16%" }} />
+            <col style={{ width: "26%" }} />
             <col style={{ width: "8%" }} />
           </colgroup>
           <thead>
             <tr>
               <th>الصنف</th>
+              <th>الكمية الحالية</th>
               <th>الكمية المعدودة</th>
               <th>تاريخ الصلاحية</th>
               <th></th>
@@ -281,7 +339,7 @@ export default function StockCountLineEditor({
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={4} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>
+                <td colSpan={5} style={{ textAlign: "center", color: "var(--office-panel-muted)", padding: "1rem" }}>
                   أضف أصنافاً عبر «إضافة صنف»
                 </td>
               </tr>
@@ -294,13 +352,21 @@ export default function StockCountLineEditor({
                     <InvoiceLineProductCell
                       value={it.product_id}
                       productName={it.name}
-                      onPick={(product) => applyProduct(i, product)}
+                      commitScan
+                      onPick={(product) => {
+                        const accepted = applyProduct(i, product);
+                        if (accepted) pendingQtyFocusRef.current = it.line_key;
+                        return accepted;
+                      }}
                       scope={membership ? null : scope}
                       membership={membership}
                       kind={membership ? "workspace" : null}
                       lineKey={it.line_key}
                     />
                   )}
+                </td>
+                <td>
+                  <SystemQtyCell row={it} readOnly={readOnly} />
                 </td>
                 <td>
                   <QtyStepper

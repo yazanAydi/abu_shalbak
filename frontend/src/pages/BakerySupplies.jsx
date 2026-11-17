@@ -53,6 +53,7 @@ import { pickExportColumns } from "../utils/reportExport";
 import { displayProductSku } from "../utils/entityCodeDisplay";
 import { handleEnterNavKeyDown } from "../utils/focusNavigation";
 import CameraBarcodeButton from "../components/barcode/CameraBarcodeButton";
+import ProductNumberField from "../components/products/ProductNumberField";
 import WeighedProductFields from "../components/products/WeighedProductFields";
 import { normalizeBarcode } from "../utils/barcode";
 import {
@@ -412,6 +413,7 @@ function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProduc
                   />
                 </div>
               </FormField>
+              <ProductNumberField />
               <FormField label="الاسم" required>
                 <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
               </FormField>
@@ -479,6 +481,7 @@ function SuppliesCatalog({ kind = "workspace", canWriteMaterials, canWriteProduc
       <EditProductModal
         open={!!editProduct}
         product={editProduct}
+        productNumberReadOnly
         onClose={() => setEditProduct(null)}
         onSaved={() => { setEditProduct(null); load(); }}
       />

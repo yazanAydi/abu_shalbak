@@ -549,4 +549,33 @@ describe("stock count entry rows", () => {
     expect((await balances(retail.id)).scope).toBe("retail");
     expect((await balances(bakery.id)).scope).toBe("bakery");
   });
+
+  test("stock sources expose each warehouse quantity instead of a company total", async () => {
+    const product = await makeProduct("جرد مستودعين");
+    await ctx.db.run("UPDATE products SET unit = ? WHERE id = ?", ["حبة", product.id]);
+    await receive(product.id, 10, "2027-08-01");
+    const places = await balances(product.id);
+    const main = places.places.find((row) => row[0] === "main");
+    expect(main).toBeTruthy();
+    const returnsWh = await ctx.db.get("SELECT id FROM warehouses WHERE type = 'returns'");
+    await ctx.db.run(
+      `INSERT INTO warehouse_batch_stock (warehouse_id, product_id, expiry_date, quantity)
+       VALUES (?, ?, '2027-08-01', 3)`,
+      [returnsWh.id, product.id]
+    );
+    const res = await request(ctx.app)
+      .get("/api/v1/inventory/stock-sources")
+      .query({ product_id: product.id })
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    const body = unwrap(res.body);
+    expect(body.unit).toBeTruthy();
+    expect(body.main_warehouse_id).toBeTruthy();
+    const dated = body.locations.filter((row) => row.expiry_date === "2027-08-01");
+    expect(dated.map((row) => [row.warehouse_type, row.quantity]).sort()).toEqual([
+      ["main", main[2]],
+      ["returns", 3],
+    ]);
+    expect(dated.reduce((sum, row) => sum + row.quantity, 0)).not.toBe(body.product_stock);
+  });
 });

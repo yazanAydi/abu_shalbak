@@ -359,6 +359,7 @@ export async function applyStockAdjustmentBatches(db, {
 /**
  * Set every dated lot to zero and record the undated remainder so the product
  * total can be moved to zero once by the caller. Rows and allocation history stay.
+ * Company-wide reset does not call this once per product; see zeroAllStockService.
  */
 export async function zeroProductBatchSources(db, productId) {
   const picture = await listPhysicalSources(db, productId);

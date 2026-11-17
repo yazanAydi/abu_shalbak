@@ -84,6 +84,32 @@
   min-width: 0;
 }
 
+.stock-count-editor .count-system-qty {
+  min-height: var(--control-h-sm, 2rem);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.stock-count-editor .count-system-qty__note {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--office-panel-muted);
+}
+
+@media (max-width: 720px) {
+  .stock-count-editor .ui-table-wrap {
+    overflow-x: auto;
+  }
+
+  .stock-count-editor .ui-table {
+    min-width: 36rem;
+  }
+}
+
 .purchase-item-editor .purchase-item-editor__total-final {
   font-weight: 600;
 }

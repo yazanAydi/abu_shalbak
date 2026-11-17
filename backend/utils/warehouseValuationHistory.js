@@ -62,6 +62,23 @@ import {
 
 const QTY_EPS = 0.0001;
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+const FAR_AS_OF = "9999-12-31";
+
+const valuationAccounting = {
+  historicalBuilds: 0,
+  depletionPasses: 0,
+  depletionProducts: 0,
+};
+
+export function valuationAccountingStats() {
+  return { ...valuationAccounting };
+}
+
+export function resetValuationAccountingStats() {
+  valuationAccounting.historicalBuilds = 0;
+  valuationAccounting.depletionPasses = 0;
+  valuationAccounting.depletionProducts = 0;
+}
 
 export const CURRENT_BASIS = "current_inventory_cost";
 export const RECORDED_BASIS = "recorded_posting";
@@ -706,7 +723,60 @@ function matchesSearch(product, query) {
   return name.includes(term) || barcode.includes(term) || sku.toLowerCase().includes(term);
 }
 
+/**
+ * Recorded-posting replay for one product. `posted` is in ledger id order.
+ * Queues are consumed; a purchase, sale, refund, or return key belongs to one product.
+ */
+function replayRecordedState(posted, { asOf, purchaseQueues, recordedMoney }) {
+  const state = { qty: 0, value: 0, unit: null, known: false, rounding_remainder: 0, unreconciled: false };
+  for (const row of posted) {
+    if (!row.day || row.day > asOf) continue;
+    const delta = num(row.quantity_delta);
+    const pid = Number(row.product_id);
+    if (row.movement_type === "purchase_receive") {
+      const inbound = takeQueued(purchaseQueues, row.reference_id, pid);
+      if (!inbound || (state.qty > QTY_EPS && !state.known)) {
+        state.known = false;
+        state.value = null;
+      } else {
+        state.value = round2((state.known ? state.value : 0) + inbound.value);
+        state.known = true;
+      }
+      state.qty += delta;
+    } else if (row.movement_type === "refund") {
+      const unit = takeQueued(recordedMoney.refundQueues, row.reference_id, pid);
+      if (unit == null || !state.known || state.value == null) {
+        state.known = false;
+        state.value = null;
+      } else {
+        state.value = round2(state.value + round2(Math.abs(delta) * unit));
+      }
+      state.qty += delta;
+    } else if (delta < 0) {
+      applyRecordedOutbound(state, snapshotRemoval(row, recordedMoney), delta);
+    } else if (!state.known || state.value == null) {
+      state.qty += delta;
+    } else if (row.unit_cost_after == null || row.cost_known === 0) {
+      state.known = false;
+      state.value = null;
+      state.qty += delta;
+    } else {
+      state.value = round2(state.value + round2(delta * num(row.unit_cost_after)));
+      state.qty += delta;
+    }
+    if (state.known && state.value != null && row.value_adjustment != null && row.value_adjustment !== "") {
+      state.value = round2(state.value + num(row.value_adjustment));
+      state.persisted_adjustment = round2((state.persisted_adjustment || 0) + num(row.value_adjustment));
+    }
+    if (state.known && state.value != null && Math.abs(state.qty) > QTY_EPS) {
+      state.unit = state.value / state.qty;
+    }
+  }
+  return state;
+}
+
 export async function buildHistoricalWarehouseValuation(db, options, asOf, shopDay, label = asOf) {
+  valuationAccounting.historicalBuilds += 1;
   const settings = await getAppSettings(db);
   const cutoffHour = settings.business_day_cutoff_hour;
   const warehouses = await loadWarehouses(db);
@@ -789,50 +859,12 @@ export async function buildHistoricalWarehouseValuation(db, options, asOf, shopD
       }
       continue;
     }
-    const state = { qty: 0, value: 0, unit: null, known: false, rounding_remainder: 0, unreconciled: false };
     const posted = [...rows].sort((a, b) => a.id - b.id);
-    for (const row of posted) {
-      if (!row.day || row.day > asOf) continue;
-      const delta = num(row.quantity_delta);
-      if (row.movement_type === "purchase_receive") {
-        const inbound = takeQueued(queues.purchaseQueues, row.reference_id, pid);
-        if (!inbound || (state.qty > QTY_EPS && !state.known)) {
-          state.known = false;
-          state.value = null;
-        } else {
-          state.value = round2((state.known ? state.value : 0) + inbound.value);
-          state.known = true;
-        }
-        state.qty += delta;
-      } else if (row.movement_type === "refund") {
-        const unit = takeQueued(recordedMoney.refundQueues, row.reference_id, pid);
-        if (unit == null || !state.known || state.value == null) {
-          state.known = false;
-          state.value = null;
-        } else {
-          state.value = round2(state.value + round2(Math.abs(delta) * unit));
-        }
-        state.qty += delta;
-      } else if (delta < 0) {
-        applyRecordedOutbound(state, snapshotRemoval(row, recordedMoney), delta);
-      } else if (!state.known || state.value == null) {
-        state.qty += delta;
-      } else if (row.unit_cost_after == null || row.cost_known === 0) {
-        state.known = false;
-        state.value = null;
-        state.qty += delta;
-      } else {
-        state.value = round2(state.value + round2(delta * num(row.unit_cost_after)));
-        state.qty += delta;
-      }
-      if (state.known && state.value != null && row.value_adjustment != null && row.value_adjustment !== "") {
-        state.value = round2(state.value + num(row.value_adjustment));
-        state.persisted_adjustment = round2((state.persisted_adjustment || 0) + num(row.value_adjustment));
-      }
-      if (state.known && state.value != null && Math.abs(state.qty) > QTY_EPS) {
-        state.unit = state.value / state.qty;
-      }
-    }
+    const state = replayRecordedState(posted, {
+      asOf,
+      purchaseQueues: queues.purchaseQueues,
+      recordedMoney,
+    });
     for (const row of posted) {
       if (row.value_adjustment == null || row.value_adjustment === "") continue;
       roundingAdjustments.push({
@@ -973,18 +1005,284 @@ export async function buildHistoricalWarehouseValuation(db, options, asOf, shopD
   return finalize(state);
 }
 
+function chunkIds(ids, size = 300) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+  return out;
+}
+
+function pushQueue(map, key, value) {
+  const list = map.get(key) || [];
+  list.push(value);
+  map.set(key, list);
+}
+
+async function loadDepletionQueues(db, productIds) {
+  const purchaseQueues = new Map();
+  const returnQueues = new Map();
+  const saleQueues = new Map();
+  const refundQueues = new Map();
+  const consumptionQueues = new Map();
+  for (const ids of chunkIds(productIds)) {
+    const marks = ids.map(() => "?").join(",");
+    const purchases = await db.all(
+      `SELECT i.id, i.invoice_id, i.product_id, i.quantity, i.base_quantity, i.line_total, i.total_cost, i.unit_cost
+         FROM purchase_invoice_items i
+         JOIN purchase_invoices inv ON inv.id = i.invoice_id
+        WHERE inv.status = 'posted' AND i.product_id IN (${marks})
+        ORDER BY i.id`,
+      ids
+    );
+    const returns = await db.all(
+      `SELECT i.id, i.return_id, i.product_id, i.quantity, i.base_quantity, i.line_total, i.total_cost, i.unit_cost
+         FROM purchase_return_items i
+         JOIN purchase_returns r ON r.id = i.return_id
+        WHERE r.status = 'posted' AND i.product_id IN (${marks})
+        ORDER BY i.id`,
+      ids
+    );
+    const sales = await db.all(
+      `SELECT id, transaction_id, product_id, unit_cost_at_sale, quantity
+         FROM transaction_items
+        WHERE product_id IN (${marks})
+        ORDER BY id`,
+      ids
+    );
+    const refunds = await db.all(
+      `SELECT r.id AS refund_id, ti.product_id, ti.unit_cost_at_sale
+         FROM refunds r
+         JOIN transaction_items ti ON ti.transaction_id = r.original_transaction_id
+        WHERE ti.product_id IN (${marks})
+        ORDER BY r.id, ti.id`,
+      ids
+    );
+    const consumptions = await db.all(
+      `SELECT id, consumption_id, product_id, line_cost
+         FROM shop_consumption_items
+        WHERE product_id IN (${marks})
+        ORDER BY id`,
+      ids
+    );
+    for (const row of purchases) {
+      pushQueue(purchaseQueues, queueKey(row.invoice_id, row.product_id), {
+        qty: purchaseBaseQty(row),
+        value: round2(purchaseLineGross(row)),
+      });
+    }
+    for (const row of returns) {
+      pushQueue(returnQueues, queueKey(row.return_id, row.product_id), {
+        qty: purchaseBaseQty(row),
+        value: round2(purchaseLineGross(row)),
+      });
+    }
+    for (const row of sales) {
+      pushQueue(
+        saleQueues,
+        queueKey(row.transaction_id, row.product_id),
+        row.unit_cost_at_sale == null ? null : round2(num(row.unit_cost_at_sale) * num(row.quantity))
+      );
+    }
+    for (const row of refunds) {
+      pushQueue(
+        refundQueues,
+        queueKey(row.refund_id, row.product_id),
+        row.unit_cost_at_sale == null ? null : num(row.unit_cost_at_sale)
+      );
+    }
+    for (const row of consumptions) {
+      pushQueue(
+        consumptionQueues,
+        queueKey(row.consumption_id, row.product_id),
+        row.line_cost == null ? null : round2(num(row.line_cost))
+      );
+    }
+  }
+  return { purchaseQueues, returnQueues, saleQueues, refundQueues, consumptionQueues };
+}
+
+async function loadDepletionLedger(db, productIds) {
+  const products = new Map();
+  const ledgerRows = [];
+  for (const ids of chunkIds(productIds)) {
+    const marks = ids.map(() => "?").join(",");
+    const productRows = await db.all(
+      `SELECT id, stock FROM products WHERE id IN (${marks})`,
+      ids
+    );
+    for (const row of productRows) products.set(Number(row.id), row);
+    const rows = await db.all(
+      `SELECT id, product_id, movement_type, quantity_delta, qty_before, reference_type, reference_id,
+              created_at, business_day, cost_known, unit_cost_after, value_adjustment
+         FROM inventory_ledger
+        WHERE product_id IN (${marks})
+        ORDER BY id`,
+      ids
+    );
+    ledgerRows.push(...rows);
+  }
+  return { products, ledgerRows };
+}
+
+const DEPLETION_REF_SQL = {
+  purchase_invoice: "SELECT id, invoice_date AS day FROM purchase_invoices WHERE id IN ({ids})",
+  purchase_return: "SELECT id, return_date AS day FROM purchase_returns WHERE id IN ({ids})",
+  stock_adjustment: "SELECT id, adjustment_date AS day FROM stock_adjustments WHERE id IN ({ids})",
+  inventory_receipt: "SELECT id, document_date AS day FROM inventory_documents WHERE id IN ({ids})",
+  inventory_issue: "SELECT id, document_date AS day FROM inventory_documents WHERE id IN ({ids})",
+  shop_consumption: "SELECT id, business_day AS day FROM shop_consumptions WHERE id IN ({ids})",
+  transaction: `SELECT t.id, COALESCE(cs.business_day, t.business_day) AS day
+                  FROM transactions t
+                  LEFT JOIN cashier_shifts cs ON cs.id = t.shift_id
+                 WHERE t.id IN ({ids})`,
+  refund: `SELECT r.id, COALESCE(r.business_day, cs.business_day) AS day
+             FROM refunds r
+             LEFT JOIN cashier_shifts cs ON cs.id = r.shift_id
+            WHERE r.id IN ({ids})`,
+  warehouse_transfer: "SELECT id, transfer_date AS day FROM warehouse_transfers WHERE id IN ({ids})",
+};
+
+async function loadAttributionForRows(db, rows) {
+  const idsByType = new Map();
+  for (const row of rows) {
+    const type = row.reference_type;
+    const id = Number(row.reference_id);
+    if (!type || !DEPLETION_REF_SQL[type] || !id) continue;
+    const list = idsByType.get(type) || [];
+    list.push(id);
+    idsByType.set(type, list);
+  }
+  const maps = {};
+  for (const [type, ids] of idsByType) {
+    const unique = [...new Set(ids)];
+    const map = new Map();
+    for (const chunk of chunkIds(unique)) {
+      const sql = DEPLETION_REF_SQL[type].replace("{ids}", chunk.map(() => "?").join(","));
+      const found = await db.all(sql, chunk);
+      for (const row of found) map.set(Number(row.id), ymd(row.day));
+    }
+    maps[type] = map;
+  }
+  return maps;
+}
+
+/**
+ * A far-future as-of includes every movement that has an inventory day.
+ * A stored business day is always one. Only rows without it need the document
+ * date, and only to decide inclusion. The replay order stays the ledger id.
+ */
+async function assignDepletionDays(db, rows) {
+  const missing = [];
+  for (const row of rows) {
+    const stored = ymd(row.business_day);
+    if (stored) row.day = stored;
+    else missing.push(row);
+  }
+  if (!missing.length) return;
+  const settings = await getAppSettings(db);
+  const maps = missing.length > 200
+    ? await loadAttributionMaps(db)
+    : await loadAttributionForRows(db, missing);
+  for (const row of missing) {
+    row.day = attributionDay(row, maps, settings.business_day_cutoff_hour);
+  }
+}
+
+function positiveGapFromState(state) {
+  if (!(state.known && state.value != null && Math.abs(state.qty) <= QTY_EPS)) return null;
+  if (!(Math.abs(state.value) > 0.001) || state.persisted_adjustment) return null;
+  if (!(Number(state.value) > 0.001)) return null;
+  return Number(state.value);
+}
+
+async function computePositiveDepletionGaps(db, productIds) {
+  const ids = [...new Set(productIds.map((id) => Number(id)).filter(Boolean))];
+  const gaps = new Map();
+  if (!ids.length) return gaps;
+  const { products, ledgerRows } = await loadDepletionLedger(db, ids);
+  await assignDepletionDays(db, ledgerRows);
+  const queues = await loadDepletionQueues(db, ids);
+  const recordedMoney = {
+    saleQueues: queues.saleQueues,
+    refundQueues: queues.refundQueues,
+    consumptionQueues: queues.consumptionQueues,
+    returnQueues: queues.returnQueues,
+  };
+  const byProduct = new Map();
+  const ledgerSum = new Map();
+  for (const row of ledgerRows) {
+    const pid = Number(row.product_id);
+    const list = byProduct.get(pid) || [];
+    list.push(row);
+    byProduct.set(pid, list);
+    ledgerSum.set(pid, num(ledgerSum.get(pid)) + num(row.quantity_delta));
+  }
+  let seen = 0;
+  for (const pid of ids) {
+    if (seen > 0 && seen % 400 === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    seen += 1;
+    const product = products.get(pid);
+    const rows = byProduct.get(pid) || [];
+    if (!product || !rows.length) continue;
+    rows.sort((a, b) => a.id - b.id);
+    const explained = Math.abs(num(rows[0].qty_before)) <= QTY_EPS;
+    const cacheGap = Math.abs(num(product.stock) - num(ledgerSum.get(pid))) > QTY_EPS;
+    if (!explained || cacheGap) continue;
+    const state = replayRecordedState(rows, {
+      asOf: FAR_AS_OF,
+      purchaseQueues: queues.purchaseQueues,
+      recordedMoney,
+    });
+    const gap = positiveGapFromState(state);
+    if (gap != null) gaps.set(pid, gap);
+  }
+  return gaps;
+}
+
+/** Positive rounding remainder at zero quantity for one product. Does not write. */
+export async function explainPositiveDepletionGap(db, productId) {
+  const gaps = await computePositiveDepletionGaps(db, [productId]);
+  const gap = gaps.get(Number(productId));
+  return gap == null ? null : gap;
+}
+
+/**
+ * Write the depletion remainder onto the movements that reached zero.
+ * One pass loads only those products. It does not build the company report.
+ */
+export async function applyDepletionForMovements(db, movements) {
+  const targets = [];
+  for (const movement of movements || []) {
+    const pid = Number(movement.productId);
+    const ledgerId = Number(movement.ledgerId);
+    if (!pid || !ledgerId) continue;
+    if (Math.abs(num(movement.qtyAfter)) > QTY_EPS) continue;
+    targets.push({ pid, ledgerId });
+  }
+  if (!targets.length) return 0;
+  valuationAccounting.depletionPasses += 1;
+  valuationAccounting.depletionProducts += new Set(targets.map((row) => row.pid)).size;
+  const gaps = await computePositiveDepletionGaps(db, targets.map((row) => row.pid));
+  let applied = 0;
+  for (const target of targets) {
+    const gap = gaps.get(target.pid);
+    if (!(gap > 0.001)) continue;
+    const updated = await db.run(
+      `UPDATE inventory_ledger SET value_adjustment = ? WHERE id = ? AND value_adjustment IS NULL`,
+      [round2(-gap), target.ledgerId]
+    );
+    applied += Number(updated?.changes) || 0;
+  }
+  return applied;
+}
+
 export async function syncDepletionAdjustment(db, { productId, ledgerId, qtyBefore, qtyAfter, movementType }) {
   const pid = Number(productId);
   const id = Number(ledgerId);
   if (!pid || !id) return;
   if (Math.abs(qtyAfter) <= QTY_EPS) {
-    const report = await buildHistoricalWarehouseValuation(db, {}, "9999-12-31", "9999-12-31", "9999-12-31");
-    const gap = (report.unexplained_rounding || []).find((row) => Number(row.product_id) === pid);
-    if (!gap || !(Number(gap.amount) > 0.001)) return;
-    await db.run(
-      `UPDATE inventory_ledger SET value_adjustment = ? WHERE id = ? AND value_adjustment IS NULL`,
-      [round2(-Number(gap.amount)), id]
-    );
+    await applyDepletionForMovements(db, [{ productId: pid, ledgerId: id, qtyAfter }]);
     return;
   }
   if (movementType === "refund" && Math.abs(qtyBefore) <= QTY_EPS && qtyAfter > QTY_EPS) {

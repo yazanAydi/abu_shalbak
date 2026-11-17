@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { searchProductsApi } from "../../utils/productSearch";
 import { displayProductSku } from "../../utils/entityCodeDisplay";
+import { normalizeBarcode } from "../../utils/barcode";
 import { focusNextField } from "../../utils/focusNavigation";
 
 /**
@@ -16,6 +17,7 @@ export default function InvoiceLineProductCell({
   kind = null,
   autoFocus = false,
   lineKey,
+  commitScan = false,
 }) {
   const [q, setQ] = useState(productName || "");
   const [results, setResults] = useState([]);
@@ -28,6 +30,8 @@ export default function InvoiceLineProductCell({
   const inputRef = useRef(null);
   const listRef = useRef(null);
   const listId = useId();
+  const pendingScanRef = useRef("");
+  const resultQueryRef = useRef("");
 
   const showList = open && dirty && q.trim() && !loading && results.length > 0;
 
@@ -88,9 +92,11 @@ export default function InvoiceLineProductCell({
                       ...(scope ? { scope } : {}),
                       ...(membership ? { membership, ...(kind ? { kind } : {}) } : {}),
                     });
+        resultQueryRef.current = term;
         setResults(rows);
         setHighlight(0);
       } catch {
+        resultQueryRef.current = term;
         setResults([]);
       } finally {
         setLoading(false);
@@ -111,7 +117,7 @@ export default function InvoiceLineProductCell({
     };
   }, [showList, results.length, placeMenu]);
 
-  function pickProduct(product) {
+  const pickProduct = useCallback((product, { deferFocus = false } = {}) => {
     if (!product) return;
     const accepted = onPick(product);
     if (accepted === false) {
@@ -125,10 +131,38 @@ export default function InvoiceLineProductCell({
     setDirty(false);
     setOpen(false);
     setResults([]);
-    requestAnimationFrame(() => {
-      if (inputRef.current) focusNextField(inputRef.current);
-    });
-  }
+    if (!deferFocus) {
+      requestAnimationFrame(() => {
+        if (inputRef.current) focusNextField(inputRef.current);
+      });
+    }
+  }, [onPick, productName]);
+
+  const resolveScan = useCallback((query, rows, highlighted) => {
+    const code = normalizeBarcode(query);
+    const isBarcode = /^\d{4,14}$/.test(code);
+    if (isBarcode) {
+      const hits = rows.filter((product) => (
+        [product?.matched_barcode, product?.barcode, product?.unit_barcode].some(
+          (value) => value && normalizeBarcode(value) === code
+        )
+      ));
+      if (hits.length === 1) pickProduct(hits[0], { deferFocus: true });
+      return;
+    }
+    if (rows.length > 0) {
+      const idx = highlighted >= 0 && highlighted < rows.length ? highlighted : 0;
+      pickProduct(rows[idx], { deferFocus: commitScan });
+    }
+  }, [commitScan, pickProduct]);
+
+  useEffect(() => {
+    if (!commitScan || loading) return;
+    const pending = pendingScanRef.current;
+    if (!pending || pending !== q.trim() || resultQueryRef.current !== pending) return;
+    pendingScanRef.current = "";
+    resolveScan(pending, results, highlight);
+  }, [commitScan, loading, q, results, highlight, resolveScan]);
 
   function onSearchKeyDown(e) {
     if (e.key === "ArrowDown") {
@@ -153,8 +187,20 @@ export default function InvoiceLineProductCell({
       }
       return;
     }
-    if (e.key !== "Enter" || e.defaultPrevented || e.repeat) return;
-    if (open && dirty && q.trim() && !loading && results.length > 0) {
+    const scanKey = e.key === "Enter" || (commitScan && e.key === "Tab");
+    if (!scanKey || e.defaultPrevented || e.repeat) return;
+    const query = q.trim();
+    if (commitScan && query) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (loading || resultQueryRef.current !== query) {
+        pendingScanRef.current = query;
+        return;
+      }
+      resolveScan(query, results, highlight);
+      return;
+    }
+    if (e.key === "Enter" && open && dirty && query && !loading && results.length > 0) {
       e.preventDefault();
       e.stopPropagation();
       const idx = highlight >= 0 && highlight < results.length ? highlight : 0;

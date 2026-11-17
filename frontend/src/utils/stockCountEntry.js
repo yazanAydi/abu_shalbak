@@ -64,9 +64,16 @@ export function emptyCountLine() {
     expiry_invalid: false,
     expiry_touched: false,
     expiry_picture_loaded: false,
+    picture_failed: false,
     known_expiries: [],
     product_expiry: "",
     picture_request: 0,
+    saved_system_qty: null,
+    warehouse_id: null,
+    stock_picture: null,
+    unit: "",
+    count_unit: "",
+    quantity_conversion: 1,
   };
 }
 
@@ -82,11 +89,137 @@ export function editorRowFromCountLine(line) {
     expiry_date: parsed.ok ? parsed.date : "",
     expiry_invalid: false,
     expiry_touched: true,
+    expiry_verified: dated && Number(line?.expiry_verified) === 1,
     expiry_picture_loaded: false,
+    picture_failed: false,
     known_expiries: [],
     product_expiry: "",
     picture_request: 0,
+    saved_system_qty: finiteCountQty(line?.system_qty),
+    warehouse_id: line?.warehouse_id ?? null,
+    stock_picture: null,
+    unit: line?.unit || "",
+    count_unit: "",
+    quantity_conversion: 1,
   };
+}
+
+function finiteCountQty(value) {
+  if (value == null || value === "") return null;
+  const qty = Number(value);
+  return Number.isFinite(qty) ? qty : null;
+}
+
+export function formatCountQty(value) {
+  const qty = Number(value);
+  if (!Number.isFinite(qty)) return "—";
+  const rounded = Math.round(qty * 1000) / 1000;
+  return Object.is(rounded, -0) ? "0" : String(rounded);
+}
+
+function countConversion(row) {
+  const conv = Number(row?.quantity_conversion);
+  return Number.isFinite(conv) && conv > 0 ? conv : 1;
+}
+
+function quantityInCountUnit(baseQty, row) {
+  return baseQty / countConversion(row);
+}
+
+function countUnitLabel(row) {
+  if (countConversion(row) !== 1 && row?.count_unit) return String(row.count_unit);
+  return String(row?.stock_picture?.unit || row?.unit || row?.count_unit || "").trim();
+}
+
+function expiryDatesMatch(left, right) {
+  const a = interpretCountExpiry(left);
+  const b = interpretCountExpiry(right);
+  return a.ok && b.ok && a.date === b.date;
+}
+
+function locationsForCount(picture, warehouseId) {
+  const locations = Array.isArray(picture?.locations) ? picture.locations : [];
+  if (!locations.length) return null;
+  if (warehouseId) {
+    return locations.filter((loc) => Number(loc.warehouse_id) === Number(warehouseId));
+  }
+  const ids = [...new Set(locations.map((loc) => Number(loc.warehouse_id)))];
+  if (ids.length === 1) return locations;
+  const mainId = Number(picture?.main_warehouse_id);
+  if (mainId) return locations.filter((loc) => Number(loc.warehouse_id) === mainId);
+  return undefined;
+}
+
+/**
+ * Quantity of this row's warehouse and expiry, in the product's stock unit.
+ * A specific source never falls back to the company-wide product total.
+ * `null` locations means warehouse placement is unknown.
+ * `undefined` means several warehouses exist and none can be chosen.
+ */
+export function liveSourceQuantity(picture, row) {
+  if (!picture) return { status: "missing" };
+  const parsed = interpretCountExpiry(row?.expiry_date);
+  if (!parsed.ok) return { status: "missing" };
+  const date = parsed.date;
+  const placed = locationsForCount(picture, row?.warehouse_id);
+  if (placed === undefined) return { status: "missing" };
+  if (placed) {
+    const hit = placed.find((loc) => expiryDatesMatch(loc.expiry_date, date));
+    const qty = hit ? Number(hit.quantity) : 0;
+    if (!Number.isFinite(qty)) return { status: "missing" };
+    return { status: "live", quantity: qty };
+  }
+  if (date) {
+    const source = (picture.sources || []).find(
+      (item) => item.batch_source === "dated" && expiryDatesMatch(item.expiry_date, date)
+    );
+    const qty = source ? Number(source.quantity) : 0;
+    if (!Number.isFinite(qty)) return { status: "missing" };
+    return { status: "live", quantity: qty };
+  }
+  if (picture.has_dated_batches) {
+    const undated = (picture.sources || []).find((item) => item.batch_source === "undated");
+    const qty = undated != null ? Number(undated.quantity) : Number(picture.unknown_quantity);
+    if (!Number.isFinite(qty)) return { status: "missing" };
+    return { status: "live", quantity: qty };
+  }
+  if (picture.product_stock == null || picture.product_stock === "") return { status: "missing" };
+  const stock = Number(picture.product_stock);
+  if (!Number.isFinite(stock)) return { status: "missing" };
+  return { status: "live", quantity: stock };
+}
+
+export const SAVED_COUNT_QTY_NOTE = "رصيد محفوظ";
+
+/** Read-only system quantity for one count row. Missing data stays "—", never 0. */
+export function describeCountSystemQty(row, { preferSaved = false } = {}) {
+  const blank = { text: "—", basis: null, unit: "", note: "" };
+  if (!countProductId(row?.product_id)) return blank;
+  const saved = finiteCountQty(row?.saved_system_qty);
+  const savedView = () => ({
+    text: formatCountQty(quantityInCountUnit(saved, row)),
+    basis: "saved",
+    unit: countUnitLabel(row),
+    note: SAVED_COUNT_QTY_NOTE,
+  });
+  if (preferSaved) return saved == null ? blank : savedView();
+  if (!row?.expiry_picture_loaded) return blank;
+  if (row?.picture_failed || !row?.stock_picture) return saved == null ? blank : savedView();
+  const live = liveSourceQuantity(row.stock_picture, row);
+  if (live.status !== "live") return saved == null ? blank : savedView();
+  return {
+    text: formatCountQty(quantityInCountUnit(live.quantity, row)),
+    basis: "live",
+    unit: countUnitLabel(row),
+    note: "",
+  };
+}
+
+function baseCountedQty(row) {
+  const qty = Number(row?.counted_qty);
+  const conv = countConversion(row);
+  if (conv === 1) return qty;
+  return Math.round(qty * conv * 1e6) / 1e6;
 }
 
 export function validateCountLine(row) {
@@ -117,14 +250,20 @@ function rowTouched(row) {
 }
 
 export function countLinePayload(row, picture, { groupHasDated = false } = {}) {
-  const qty = Number(row.counted_qty);
+  const qty = baseCountedQty(row);
   const expiry = interpretCountExpiry(row?.expiry_date);
   const date = expiry.ok ? expiry.date : "";
-  if (date) return { batch_source: "dated", expiry_date: date, counted_qty: qty };
-  if (picture?.has_dated_batches || groupHasDated) {
-    return { batch_source: "undated", expiry_date: null, counted_qty: qty };
+  let payload;
+  if (date) payload = { batch_source: "dated", expiry_date: date, counted_qty: qty };
+  else if (picture?.has_dated_batches || groupHasDated) {
+    payload = { batch_source: "undated", expiry_date: null, counted_qty: qty };
+  } else {
+    payload = { batch_source: null, expiry_date: null, counted_qty: qty };
   }
-  return { batch_source: null, expiry_date: null, counted_qty: qty };
+  if (row?.expiry_verified === true && payload.batch_source === "dated" && payload.expiry_date) {
+    payload.expiry_verified = true;
+  }
+  return payload;
 }
 
 export function countLinesPayload(list, picture) {
@@ -157,6 +296,19 @@ export function attachCountExpiryPicture(row, picture) {
     known_expiries: recordedCountExpiries(picture),
     product_expiry: recordedProductExpiry(picture),
     expiry_picture_loaded: true,
+    picture_failed: false,
+    unit: picture?.unit || row?.unit || "",
+    stock_picture: picture
+      ? {
+          has_dated_batches: Boolean(picture.has_dated_batches),
+          product_stock: picture.product_stock,
+          unknown_quantity: picture.unknown_quantity,
+          unit: picture.unit || "",
+          main_warehouse_id: picture.main_warehouse_id ?? null,
+          sources: picture.sources || [],
+          locations: picture.locations || [],
+        }
+      : null,
   };
 }
 

@@ -63,6 +63,28 @@ export function authHeader(token) {
   return { Authorization: `Bearer ${token}` };
 }
 
+/** Wait until a zero-all operation started by `res` commits or fails. */
+export async function waitForZeroAllStock(app, token, res) {
+  const body = res.body?.data ?? res.body;
+  if (body?.status === "completed") return body;
+  if (body?.products_zeroed != null && body?.status !== "running" && !body?.operation_id) return body;
+  const id = body?.operation_id;
+  if (!id) throw new Error("zero-all response has no operation id");
+  for (let i = 0; i < 400; i += 1) {
+    const status = await request(app)
+      .get("/api/v1/inventory/zero-all-stock/status")
+      .query({ operation_id: id })
+      .set(authHeader(token));
+    const data = status.body?.data ?? status.body;
+    if (data?.status === "completed") return data;
+    if (data?.status === "failed" || data?.status === "interrupted") {
+      throw new Error(data.stage_ar || data.status);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  throw new Error("zero-all operation timed out");
+}
+
 let checkoutKeySeq = 0;
 
 /** Unique checkout idempotency key for first-party tests. */

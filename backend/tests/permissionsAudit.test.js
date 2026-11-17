@@ -18,6 +18,7 @@ import {
   createTestEmployee,
   destroyTestContext,
   login,
+  waitForZeroAllStock,
   withCheckoutKey,
 } from "./helpers.js";
 import { invalidateUserCache, JWT_OPTIONS, JWT_SECRET } from "../middleware/auth.js";
@@ -1426,6 +1427,7 @@ describe("permissions audit — admin role bypasses custom permission keys", () 
       .set(authHeader(adminToken))
       .send({});
     expect(zeroOk.status).toBe(200);
+    await waitForZeroAllStock(ctx.app, adminToken, zeroOk);
     expect(await stockOf(ctx.db, ctx.productId)).toBe(0);
 
     const accountant = await createAccountantUser(ctx.db, {

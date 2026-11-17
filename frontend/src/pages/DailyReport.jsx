@@ -70,7 +70,6 @@ function mapDailyToTodaySummary(daily) {
     refund_amount: daily.refunds_total,
     on_account_total: daily.on_account_total,
     items_sold: daily.items_sold,
-    collections_by_currency: daily.collections_by_currency,
   };
 }
 
@@ -165,6 +164,7 @@ export default function DailyReport() {
   const [nearExpiryItems, setNearExpiryItems] = useState([]);
   const [nearExpiryTotal, setNearExpiryTotal] = useState(0);
   const [nearExpiryDays, setNearExpiryDays] = useState(7);
+  const [nearExpiryHoldMessage, setNearExpiryHoldMessage] = useState("");
   const [visaSummary, setVisaSummary] = useState(null);
 
   const dashboardAbortRef = useRef(null);
@@ -326,6 +326,9 @@ export default function DailyReport() {
           Number.isFinite(nearExpiryApiTotal) ? nearExpiryApiTotal : nearExpiryList.length
         );
         setNearExpiryDays(Number(nearExpiryPayload?.days_threshold) || 7);
+        setNearExpiryHoldMessage(
+          typeof nearExpiryPayload?.message === "string" ? nearExpiryPayload.message : ""
+        );
 
         setRecon(reconData);
         setVisaSummary(visaData?.summary ? { ...visaData.summary, from: visaData.from, to: visaData.to } : null);
@@ -428,6 +431,7 @@ export default function DailyReport() {
     openShiftsWithDuration: openShifts,
     lowStockCount: lowStockDisplayTotal,
     nearExpiryCount: nearExpiryTotal,
+    expiryHoldMessage: nearExpiryHoldMessage,
   });
 
   const topProductsPreview = topProducts.slice(0, 5);
@@ -494,28 +498,33 @@ export default function DailyReport() {
           />
           <StatCard
             label={`صلاحية قريبة (${nearExpiryDays} يوم)`}
-            value={nearExpiryTotal}
-            tone={nearExpiryTotal > 0 ? "orange" : "teal"}
-            alert={nearExpiryTotal > 0}
+            value={nearExpiryHoldMessage && nearExpiryTotal === 0 ? "—" : nearExpiryTotal}
+            tone={nearExpiryTotal > 0 || nearExpiryHoldMessage ? "orange" : "teal"}
+            alert={nearExpiryTotal > 0 || Boolean(nearExpiryHoldMessage)}
             icon="expiry"
           />
         </div>
       </div>
 
-      {nearExpiryTotal > 0 ? (
+      {nearExpiryTotal > 0 || nearExpiryHoldMessage ? (
         <Card className="dashboard-near-expiry-panel">
           <CardHeader
             title="أصناف قريبة من انتهاء الصلاحية"
             actions={
               <Link to="/expiry" className="dashboard-inline-link">
-                تقرير الصلاحية ({nearExpiryTotal})
+                تقرير الصلاحية{nearExpiryTotal > 0 ? ` (${nearExpiryTotal})` : ""}
               </Link>
             }
           />
           <CardBody>
-            <p className="dashboard-meta-line muted">
-              حسب فترة التنبيه في الإعدادات: {nearExpiryDays} يوم
-            </p>
+            {nearExpiryHoldMessage ? (
+              <Notice tone="warn">{nearExpiryHoldMessage}</Notice>
+            ) : (
+              <p className="dashboard-meta-line muted">
+                حسب فترة التنبيه في الإعدادات: {nearExpiryDays} يوم
+              </p>
+            )}
+            {nearExpiryTotal > 0 ? (
             <table className="data-table dashboard-near-expiry-table">
               <thead>
                 <tr>
@@ -547,6 +556,7 @@ export default function DailyReport() {
                 })}
               </tbody>
             </table>
+            ) : null}
             {nearExpiryTotal > nearExpiryItems.length ? (
               <p className="dashboard-top-products-more">
                 + {nearExpiryTotal - nearExpiryItems.length} أصناف أخرى —{" "}

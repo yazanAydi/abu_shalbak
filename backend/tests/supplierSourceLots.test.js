@@ -12,6 +12,7 @@ import {
   login,
   authHeader,
   withCheckoutKey,
+  waitForZeroAllStock,
 } from "./helpers.js";
 import { shopTodayYmd, shopYmdToUtcBounds } from "../utils/shopTime.js";
 import { ensureProductSourceLots, backfillAllSourceLots } from "../services/stockSourceService.js";
@@ -536,6 +537,7 @@ describe("supplier source lots", () => {
       .set(authHeader(shop.adminToken))
       .send({});
     expect(zeroed.status).toBe(200);
+    await waitForZeroAllStock(shop.ctx.app, shop.adminToken, zeroed);
     expect(await sourceLots(shop.ctx.db, product.id)).toEqual([]);
     expect(Number((await shop.ctx.db.get("SELECT stock FROM products WHERE id = ?", [product.id])).stock)).toBe(0);
   });

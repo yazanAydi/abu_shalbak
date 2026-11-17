@@ -860,5 +860,317 @@ describe("GET /finance/overview — refund COGS period and incomplete refunds", 
     expect(body.profit.cogs).toBeNull();
     expect(body.profit.grossProfit).toBeNull();
     expect(body.profit.operatingNetProfit).toBeNull();
+    expect(body.profit.costGap.refundsWithoutLines).toBe(1);
+    expect(body.profit.costGap.nullCostLines).toBe(0);
+  });
+});
+
+describe("GET /finance/overview — no activity, known cost, and missing cost", () => {
+  let ctx;
+  let adminToken;
+
+  beforeAll(async () => {
+    ctx = await createTestContext();
+    adminToken = (await login(ctx.app, "testadmin", "adminpass123", "office")).body.token;
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+  });
+
+  async function overview(from, to = from) {
+    const res = await request(ctx.app)
+      .get(`/api/v1/finance/overview?from=${from}&to=${to}`)
+      .set(authHeader(adminToken));
+    expect(res.status).toBe(200);
+    return unwrap(res.body);
+  }
+
+  async function shiftOn(day) {
+    const cashier = await ctx.db.get("SELECT id FROM users WHERE username = 'testcashier'");
+    const shift = await ctx.db.run(
+      `INSERT INTO cashier_shifts (cashier_id, opening_cash, status, start_time)
+       VALUES (?, 0, 'closed', ?)`,
+      [cashier.id, `${day} 10:00:00`]
+    );
+    return { cashierId: cashier.id, shiftId: shift.lastID };
+  }
+
+  async function insertSale(day, shift, { total, items, lines }) {
+    const tx = await ctx.db.run(
+      `INSERT INTO transactions
+         (cashier_id, items_json, subtotal, tax, total, discount, payment_method, shift_id, status, created_at)
+       VALUES (?, ?, ?, 0, ?, 0, 'cash', ?, 'completed', ?)`,
+      [shift.cashierId, JSON.stringify(items), total, total, shift.shiftId, `${day} 10:15:00`]
+    );
+    for (const line of lines) {
+      await ctx.db.run(
+        `INSERT INTO transaction_items
+           (transaction_id, product_id, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate,
+            unit_cost_at_sale, gross_profit)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)`,
+        [
+          tx.lastID,
+          line.product_id,
+          line.name,
+          line.quantity,
+          line.price,
+          line.line,
+          line.line,
+          line.cost,
+          line.profit,
+        ]
+      );
+    }
+    return tx.lastID;
+  }
+
+  async function insertRefund(day, shift, saleId, item, total) {
+    await ctx.db.run(
+      `INSERT INTO refunds (
+         original_transaction_id, items_json, subtotal, tax, total,
+         payment_method, reason, cashier_id, shift_id, status, approved_at, created_at
+       ) VALUES (?, ?, ?, 0, ?, 'cash', 'test', ?, ?, 'approved', ?, ?)`,
+      [
+        saleId,
+        JSON.stringify([item]),
+        total,
+        total,
+        shift.cashierId,
+        shift.shiftId,
+        `${day} 11:00:00`,
+        `${day} 11:00:00`,
+      ]
+    );
+  }
+
+  async function insertExpense(day, amount) {
+    await ctx.db.run(
+      `INSERT INTO operating_expenses (category, amount, paid_on, payment_method)
+       VALUES ('إيجار', ?, ?, 'cash')`,
+      [amount, day]
+    );
+  }
+
+  test("a day with no sales is a real zero, and an expense does not make it incomplete", async () => {
+    const empty = await overview("2026-04-01");
+    expect(empty.sales.net).toBe(0);
+    expect(empty.sales.transactionCount).toBe(0);
+    expect(empty.cogs_unknown).toBe(false);
+    expect(empty.profit.cogsKnown).toBe(true);
+    expect(empty.profit.cogs).toBe(0);
+    expect(empty.profit.grossProfit).toBe(0);
+    expect(empty.profit.grossMarginPercent).toBeNull();
+    expect(empty.profit.operatingExpenses).toBe(0);
+    expect(empty.profit.operatingNetProfit).toBe(0);
+    expect(empty.profit.costGap).toBeNull();
+
+    await insertExpense("2026-04-11", 4);
+    const withExpense = await overview("2026-04-11");
+    expect(withExpense.cogs_unknown).toBe(false);
+    expect(withExpense.profit.cogs).toBe(0);
+    expect(withExpense.profit.grossProfit).toBe(0);
+    expect(withExpense.profit.operatingExpenses).toBe(4);
+    expect(withExpense.profit.operatingNetProfit).toBe(-4);
+    expect(withExpense.profit.costGap).toBeNull();
+  });
+
+  test("known snapshot cost survives a refund whose price differs and a later product cost edit", async () => {
+    const day = "2026-04-02";
+    const shift = await shiftOn(day);
+    const saleId = await insertSale(day, shift, {
+      total: 20,
+      items: [{ product_id: ctx.productId, quantity: 2, price: 10 }],
+      lines: [{ product_id: ctx.productId, name: "صنف معروف", quantity: 2, price: 10, line: 20, cost: 6, profit: 8 }],
+    });
+    await insertRefund(
+      day,
+      shift,
+      saleId,
+      { product_id: ctx.productId, quantity: 1, price: 8, name: "صنف معروف" },
+      8
+    );
+    await insertExpense(day, 3);
+
+    const before = await overview(day);
+    expect(before.sales.gross).toBe(20);
+    expect(before.sales.refunds).toBe(8);
+    expect(before.sales.net).toBe(12);
+    expect(before.cogs_unknown).toBe(false);
+    expect(before.profit.cogs).toBe(6);
+    expect(before.profit.grossProfit).toBe(6);
+    expect(before.profit.grossMarginPercent).toBe(50);
+    expect(before.profit.operatingExpenses).toBe(3);
+    expect(before.profit.operatingNetProfit).toBe(3);
+    expect(before.profit.costGap).toBeNull();
+
+    await ctx.db.run("UPDATE products SET cost = 99 WHERE id = ?", [ctx.productId]);
+    const after = await overview(day);
+    expect(after.profit.cogs).toBe(6);
+    expect(after.profit.operatingNetProfit).toBe(3);
+    const saved = await ctx.db.get(
+      "SELECT unit_cost_at_sale FROM transaction_items WHERE transaction_id = ?",
+      [saleId]
+    );
+    expect(Number(saved.unit_cost_at_sale)).toBe(6);
+  });
+
+  test("an explicit zero snapshot stays zero through a refund and is not incomplete", async () => {
+    const day = "2026-04-03";
+    const shift = await shiftOn(day);
+    const saleId = await insertSale(day, shift, {
+      total: 20,
+      items: [{ product_id: ctx.productId, quantity: 2, price: 10 }],
+      lines: [{ product_id: ctx.productId, name: "مجاني", quantity: 2, price: 10, line: 20, cost: 0, profit: 20 }],
+    });
+    await insertRefund(
+      day,
+      shift,
+      saleId,
+      { product_id: ctx.productId, quantity: 1, price: 10, name: "مجاني" },
+      10
+    );
+    const body = await overview(day);
+    expect(body.sales.net).toBe(10);
+    expect(body.cogs_unknown).toBe(false);
+    expect(body.profit.cogs).toBe(0);
+    expect(body.profit.grossProfit).toBe(10);
+    expect(body.profit.grossMarginPercent).toBe(100);
+    expect(body.profit.operatingNetProfit).toBe(10);
+    expect(body.profit.costGap).toBeNull();
+  });
+
+  test("a null snapshot blocks gross and operating profit without using today's cost", async () => {
+    const day = "2026-04-04";
+    const shift = await shiftOn(day);
+    const saleId = await insertSale(day, shift, {
+      total: 10,
+      items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+      lines: [
+        {
+          product_id: ctx.productId,
+          name: "حافة تكلفة مفقودة",
+          quantity: 1,
+          price: 10,
+          line: 10,
+          cost: null,
+          profit: null,
+        },
+      ],
+    });
+    await insertExpense(day, 4);
+    await ctx.db.run("UPDATE products SET cost = 80, cost_known = 1 WHERE id = ?", [ctx.productId]);
+
+    const body = await overview(day);
+    expect(body.sales.net).toBe(10);
+    expect(body.cogs_unknown).toBe(true);
+    expect(body.profit.cogsKnown).toBe(false);
+    expect(body.profit.cogs).toBeNull();
+    expect(body.profit.grossProfit).toBeNull();
+    expect(body.profit.grossMarginPercent).toBeNull();
+    expect(body.profit.operatingExpenses).toBe(4);
+    expect(body.profit.operatingNetProfit).toBeNull();
+    expect(body.profit.costGap.nullCostLines).toBe(1);
+    expect(body.profit.costGap.nullCostTransactions).toBe(1);
+    expect(body.profit.costGap.productNames).toContain("حافة تكلفة مفقودة");
+    expect(body.profit.costGap.transactionIds).toContain(saleId);
+    const saved = await ctx.db.get(
+      "SELECT unit_cost_at_sale FROM transaction_items WHERE transaction_id = ?",
+      [saleId]
+    );
+    expect(saved.unit_cost_at_sale).toBeNull();
+  });
+
+  test("a sale with no saved lines stays incomplete and is not priced from the current cost", async () => {
+    const day = "2026-04-05";
+    const shift = await shiftOn(day);
+    await ctx.db.run("UPDATE products SET cost = 15 WHERE id = ?", [ctx.productId]);
+    const tx = await ctx.db.run(
+      `INSERT INTO transactions
+         (cashier_id, items_json, subtotal, tax, total, discount, payment_method, shift_id, status, created_at)
+       VALUES (?, ?, 15, 0, 15, 0, 'cash', ?, 'completed', ?)`,
+      [
+        shift.cashierId,
+        JSON.stringify([{ product_id: ctx.productId, quantity: 1, price: 15, name: "بلا بنود" }]),
+        shift.shiftId,
+        `${day} 10:15:00`,
+      ]
+    );
+    const body = await overview(day);
+    expect(body.sales.gross).toBe(15);
+    expect(body.profit.cogs).toBeNull();
+    expect(body.profit.grossProfit).toBeNull();
+    expect(body.profit.operatingNetProfit).toBeNull();
+    expect(body.profit.costGap.salesMissingItems).toBe(1);
+    expect(body.profit.costGap.nullCostLines).toBe(0);
+    expect(body.profit.costGap.transactionIds).toContain(tx.lastID);
+  });
+
+  test("one missing cost withholds the whole range, including a day whose cost is known", async () => {
+    const knownDay = "2026-04-06";
+    const missingDay = "2026-04-07";
+    const knownShift = await shiftOn(knownDay);
+    await insertSale(knownDay, knownShift, {
+      total: 20,
+      items: [{ product_id: ctx.productId, quantity: 2, price: 10 }],
+      lines: [{ product_id: ctx.productId, name: "معروف", quantity: 2, price: 10, line: 20, cost: 6, profit: 8 }],
+    });
+    const missingShift = await shiftOn(missingDay);
+    await insertSale(missingDay, missingShift, {
+      total: 10,
+      items: [{ product_id: ctx.productId, quantity: 1, price: 10 }],
+      lines: [
+        { product_id: ctx.productId, name: "ناقص", quantity: 1, price: 10, line: 10, cost: null, profit: null },
+      ],
+    });
+
+    const knownOnly = await overview(knownDay);
+    expect(knownOnly.profit.cogs).toBe(12);
+    expect(knownOnly.profit.grossProfit).toBe(8);
+    expect(knownOnly.cogs_unknown).toBe(false);
+
+    const both = await overview(knownDay, missingDay);
+    expect(both.sales.gross).toBe(30);
+    expect(both.profit.cogs).toBeNull();
+    expect(both.profit.grossProfit).toBeNull();
+    expect(both.profit.operatingNetProfit).toBeNull();
+    expect(both.profit.costGap.nullCostLines).toBe(1);
+    expect(both.profit.costGap.nullCostTransactions).toBe(1);
+  });
+
+  test("a refund that could match two different saved costs stays unknown", async () => {
+    const day = "2026-04-08";
+    const shift = await shiftOn(day);
+    const saleId = await insertSale(day, shift, {
+      total: 22,
+      items: [
+        { product_id: ctx.productId, quantity: 1, price: 10 },
+        { product_id: ctx.productId, quantity: 1, price: 12 },
+      ],
+      lines: [
+        { product_id: ctx.productId, name: "سطر أ", quantity: 1, price: 10, line: 10, cost: 4, profit: 6 },
+        { product_id: ctx.productId, name: "سطر ب", quantity: 1, price: 12, line: 12, cost: 9, profit: 3 },
+      ],
+    });
+    await insertRefund(
+      day,
+      shift,
+      saleId,
+      { product_id: ctx.productId, quantity: 1, price: 8, name: "سطر أ" },
+      8
+    );
+    await ctx.db.run("UPDATE products SET cost = 1 WHERE id = ?", [ctx.productId]);
+    const body = await overview(day);
+    expect(body.sales.net).toBe(14);
+    expect(body.cogs_unknown).toBe(true);
+    expect(body.profit.cogs).toBeNull();
+    expect(body.profit.grossProfit).toBeNull();
+    expect(body.profit.operatingNetProfit).toBeNull();
+    expect(body.profit.costGap.refundsUnmatched).toBe(1);
+    const costs = await ctx.db.all(
+      "SELECT unit_cost_at_sale FROM transaction_items WHERE transaction_id = ? ORDER BY unit_price",
+      [saleId]
+    );
+    expect(costs.map((row) => Number(row.unit_cost_at_sale))).toEqual([4, 9]);
   });
 });

@@ -9,6 +9,7 @@ import {
   login,
   authHeader,
   withCheckoutKey,
+  waitForZeroAllStock,
 } from "./helpers.js";
 import { listStockBatches } from "../services/stockBatchService.js";
 import { listOfficeExpiryReport } from "../services/expiryAlertService.js";
@@ -239,6 +240,7 @@ describe("remaining batch mutation paths", () => {
 
     const zeroed = await request(ctx.app).post("/api/v1/inventory/zero-all-stock").set(authHeader(adminToken)).send({});
     expect(zeroed.status).toBe(200);
+    await waitForZeroAllStock(ctx.app, adminToken, zeroed);
     listed = await listStockBatches(ctx.db, product.id);
     expect(listed.product_stock).toBe(0);
     const kept = await ctx.db.all(
@@ -268,6 +270,7 @@ describe("remaining batch mutation paths", () => {
 
     const again = await request(ctx.app).post("/api/v1/inventory/zero-all-stock").set(authHeader(adminToken)).send({});
     expect(again.status).toBe(200);
+    await waitForZeroAllStock(ctx.app, adminToken, again);
     const ledgerAfter = await ctx.db.get(
       "SELECT COUNT(*) AS n FROM inventory_ledger WHERE product_id = ? AND reference_type = 'zero_all_stock'",
       [product.id]

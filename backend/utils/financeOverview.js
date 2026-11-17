@@ -3,6 +3,8 @@ import {
   fetchTransactionsForShopDateRange,
 } from "./businessDay.js";
 import {
+  emptyCostGap,
+  mergeCostGap,
   snapshotRefundCogsForRange,
   snapshotSalesCogsForRange,
 } from "./cogs.js";
@@ -69,6 +71,7 @@ export async function buildFinanceOverview(db, from, to) {
   const refundCount = refunds.length;
 
   const cogsUnknown = !!(cogsSales.unknown || cogsRefunds.unknown);
+  const costGap = cogsUnknown ? mergeCostGap(mergeCostGap(emptyCostGap(), cogsSales.gap), cogsRefunds.gap) : null;
   const salesCogs = cogsUnknown ? null : cogsSales.cogs;
   const refundCogs = cogsUnknown ? null : cogsRefunds.cogs;
   const netCogs = cogsUnknown ? null : round2((cogsSales.cogs || 0) - (cogsRefunds.cogs || 0));
@@ -194,6 +197,7 @@ export async function buildFinanceOverview(db, from, to) {
       grossMarginPercent,
       operatingExpenses: opexTotal,
       operatingNetProfit,
+      costGap,
     },
     supplierPayments,
     purchases,

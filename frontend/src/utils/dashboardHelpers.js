@@ -191,6 +191,15 @@ export function buildDashboardAlerts(input) {
     });
   }
 
+  if (input.expiryHoldMessage) {
+    out.push({
+      severity: "warning",
+      title: "صلاحية بانتظار الجرد",
+      body: input.expiryHoldMessage,
+      link: `/expiry`,
+      linkLabel: "تقرير الصلاحية",
+    });
+  }
   if (Number(nearExpiryCount) > 0) {
     out.push({
       severity: "warning",

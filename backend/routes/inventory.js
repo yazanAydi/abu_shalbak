@@ -20,11 +20,24 @@ import {
 } from "../utils/countDepartment.js";
 import { resolveBakeryReportCategories } from "../services/bakeryReportService.js";
 import { bakeryMembershipSql, parseBakeryKind } from "../utils/bakeryMembership.js";
-import { assignDatedQuantityFromUnknown, listPhysicalSources, recordBatchAllocation, applyStockAdjustmentBatches, zeroProductBatchSources, moveUndatedOnMain, applyCountedDatedQuantity } from "../services/stockBatchService.js";
-import { operationalWarehouses } from "../services/warehouseBatchStock.js";
+import { assignDatedQuantityFromUnknown, listPhysicalSources, recordBatchAllocation, applyStockAdjustmentBatches, moveUndatedOnMain, applyCountedDatedQuantity } from "../services/stockBatchService.js";
+import {
+  diagnoseZeroAllStock,
+  parseZeroAllIdempotencyKey,
+  resolveZeroAllProgress,
+  runningZeroAllView,
+  startZeroAllStock,
+} from "../services/zeroAllStockService.js";
+import { locationRows, operationalWarehouses } from "../services/warehouseBatchStock.js";
 import { round6 } from "../utils/purchaseInventoryCost.js";
 import { badRequest } from "../utils/httpError.js";
 import { listOfficeExpiryReport } from "../services/expiryAlertService.js";
+import {
+  getExpiryReportCycle,
+  parseExpiryReportScope,
+  recordCountExpiryBaseline,
+  resetExpiryReportCycle,
+} from "../services/expiryReportCycle.js";
 import { assignUnknownSource } from "../services/stockSourceService.js";
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
 
@@ -124,7 +137,9 @@ function normalizeCountEntry(entry) {
   } else if (rawSource === "dated") {
     throw badRequest("تاريخ الصلاحية غير صالح", "INVALID_EXPIRY");
   }
-  return { batchSource, expiryDate, qty, warehouse_id: entry?.warehouse_id };
+  const asked = entry?.expiry_verified === true || entry?.expiry_verified === 1;
+  const expiryVerified = asked && batchSource === "dated" && Boolean(expiryDate);
+  return { batchSource, expiryDate, qty, warehouse_id: entry?.warehouse_id, expiryVerified };
 }
 
 async function saveCountLine(db, sessionId, product, entry) {
@@ -163,15 +178,17 @@ async function saveCountLine(db, sessionId, product, entry) {
   );
   if (existing) {
     await db.run(
-      "UPDATE stock_count_lines SET system_qty = ?, counted_qty = ?, variance = ?, batch_source = ?, expiry_date = ?, warehouse_id = ? WHERE id = ?",
-      [systemQty, qty, variance, batchSource, expiryDate, warehouseId, existing.id]
+      `UPDATE stock_count_lines
+          SET system_qty = ?, counted_qty = ?, variance = ?, batch_source = ?, expiry_date = ?, warehouse_id = ?, expiry_verified = ?
+        WHERE id = ?`,
+      [systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, existing.id]
     );
   } else {
     await db.run(
       `INSERT INTO stock_count_lines
-         (session_id, product_id, system_qty, counted_qty, variance, batch_source, expiry_date, warehouse_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [sessionId, product.id, systemQty, qty, variance, batchSource, expiryDate, warehouseId]
+         (session_id, product_id, system_qty, counted_qty, variance, batch_source, expiry_date, warehouse_id, expiry_verified)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sessionId, product.id, systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0]
     );
   }
 }
@@ -210,6 +227,13 @@ export function createInventoryRouter(db) {
   const requireExpiryOrBakery = requireAnyReportsPermission(db, "expiry", "bakery_supplies");
   const requireStockRead = requireAnyReportsPermission(db, "stock_count", "bakery_supplies", "bakery");
   const requireExpiryRead = requireAnyReportsPermission(db, "expiry", "bakery_supplies", "bakery");
+  const requireExpiryCycleRead = requireAnyReportsPermission(
+    db,
+    "expiry",
+    "stock_count",
+    "bakery_supplies",
+    "bakery"
+  );
 
   async function membershipProductFilter(req, alias = "p") {
     const raw = String(req.query?.membership || "").trim().toLowerCase();
@@ -518,6 +542,7 @@ export function createInventoryRouter(db) {
     }
 
     let postedLines = [];
+    let expiryBaseline = { verified: 0 };
     try {
       await withTransaction(db, async () => {
         const live = await db.get(
@@ -686,12 +711,21 @@ export function createInventoryRouter(db) {
             });
           }
         }
+        expiryBaseline = await recordCountExpiryBaseline(db, {
+          sessionId: session.id,
+          department: live.department,
+          lines,
+        });
         await db.run(
           "UPDATE stock_count_sessions SET status = 'posted', posted_at = datetime('now') WHERE id = ?",
           [session.id]
         );
       });
-      await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_COUNT, "stock_count_sessions", session.id, { status: "open" }, { status: "posted", lines: postedLines.length });
+      await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_COUNT, "stock_count_sessions", session.id, { status: "open" }, {
+        status: "posted",
+        lines: postedLines.length,
+        expiry_dates_verified: expiryBaseline.verified,
+      });
     } catch (e) {
       return next(e);
     }
@@ -749,8 +783,22 @@ export function createInventoryRouter(db) {
 
   // ───── Zero all product stock (from الجرد) ─────
 
+  router.get("/zero-all-stock/status", requireAuth, requireAdmin, requireStockCount, async (req, res, next) => {
+    try {
+      const operationId = req.query.operation_id ? String(req.query.operation_id) : "";
+      const progress = await resolveZeroAllProgress(db, operationId);
+      if (progress) return res.json(progress);
+      res.json(await diagnoseZeroAllStock(db));
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.post("/zero-all-stock", requireAuth, requireAdmin, requireStockCount, async (req, res, next) => {
     try {
+      const running = runningZeroAllView();
+      if (running) return res.json(running);
+
       const hash = await getZeroAllStockPasswordHash(db);
       if (hash) {
         const password =
@@ -762,39 +810,14 @@ export function createInventoryRouter(db) {
         }
       }
 
-      let productsZeroed = 0;
-      let skipped = 0;
-      await withTransaction(db, async () => {
-        const products = await db.all("SELECT id, stock FROM products");
-        for (const p of products) {
-          const stock = round6(Number(p.stock) || 0);
-          const batchesChanged = await zeroProductBatchSources(db, p.id);
-          if (stock === 0 && !batchesChanged) {
-            skipped += 1;
-            continue;
-          }
-          if (stock !== 0) {
-            await applyStockDelta(db, p.id, -stock, {
-              movementType: "count",
-              referenceType: "zero_all_stock",
-              userId: req.user.id,
-              notes: "تصفير كل الكميات",
-            });
-          }
-          productsZeroed += 1;
-        }
-      });
-      await logAudit(
-        db,
+      const result = await startZeroAllStock(db, {
+        userId: req.user.id,
         req,
-        AUDIT_ACTIONS.INVENTORY_COUNT,
-        "products",
-        null,
-        null,
-        { products_zeroed: productsZeroed, skipped }
-      );
-
-      res.json({ products_zeroed: productsZeroed, skipped });
+        idempotencyKey: parseZeroAllIdempotencyKey(
+          req.get("Idempotency-Key") || req.body?.idempotency_key || null
+        ),
+      });
+      res.json(result);
     } catch (e) {
       return next(e);
     }
@@ -818,6 +841,61 @@ export function createInventoryRouter(db) {
   });
 
   // ───── Expiry Reports ─────
+
+  router.get("/expiry-cycle", requireAuth, requireExpiryCycleRead, async (req, res, next) => {
+    try {
+      const scope = parseExpiryReportScope(req.query?.scope);
+      if (!scope) return res.status(400).json({ error: "حدد نطاق التقرير", code: "SCOPE_REQUIRED" });
+      res.json(await getExpiryReportCycle(db, scope));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post("/expiry-cycle/reset", requireAuth, requireStockOrBakery, async (req, res, next) => {
+    const scope = parseExpiryReportScope(req.body?.scope);
+    if (!scope) return res.status(400).json({ error: "حدد نطاق التقرير", code: "SCOPE_REQUIRED" });
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: "يلزم تأكيد إعادة الضبط", code: "CONFIRMATION_REQUIRED" });
+    }
+    const reason = String(req.body?.reason || "").trim();
+    if (reason.length < 3 || reason.length > 500) {
+      return res.status(400).json({ error: "اكتب سبب إعادة الضبط", code: "REASON_REQUIRED" });
+    }
+    try {
+      await assertCountDepartmentPermission(req, scope);
+    } catch (err) {
+      if (err?.status) return sendCountAuthError(res, err);
+      return next(err);
+    }
+    try {
+      await withTransaction(db, async () => {
+        const result = await resetExpiryReportCycle(db, {
+          scope,
+          reason,
+          userId: req.user.id,
+        });
+        await logAudit(
+          db,
+          req,
+          AUDIT_ACTIONS.EXPIRY_REPORT_RESET,
+          "expiry_report_cycles",
+          result.id,
+          null,
+          {
+            scope: result.scope,
+            reason: result.reason,
+            reset_at: result.reset_at,
+            business_day: result.business_day,
+            excluded: result.excluded,
+          }
+        );
+      });
+      res.status(201).json(await getExpiryReportCycle(db, scope));
+    } catch (e) {
+      next(e);
+    }
+  });
 
   router.get("/expiry", requireAuth, requireExpiryRead, async (req, res, next) => {
     try {
@@ -1074,12 +1152,33 @@ export function createInventoryRouter(db) {
       if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
       const picture = await listPhysicalSources(db, productId);
       const productExpiry = interpretExpiryInput(product.expiry_date);
+      const { main } = await operationalWarehouses(db);
+      const placed = await locationRows(db, productId);
+      const warehouseIds = [...new Set(placed.map((row) => Number(row.warehouse_id)).filter(Boolean))];
+      const warehouseRows = warehouseIds.length
+        ? await db.all(
+            `SELECT id, name, type FROM warehouses WHERE id IN (${warehouseIds.map(() => "?").join(", ")})`,
+            warehouseIds
+          )
+        : [];
+      const warehouseById = new Map(warehouseRows.map((row) => [Number(row.id), row]));
       res.json({
         ...picture,
         name: product.name,
         barcode: product.barcode,
         unit: product.unit,
         product_expiry_date: productExpiry.ok ? productExpiry.date : null,
+        main_warehouse_id: main?.id ?? null,
+        locations: placed.map((row) => {
+          const warehouse = warehouseById.get(Number(row.warehouse_id));
+          return {
+            warehouse_id: row.warehouse_id,
+            warehouse_name: warehouse?.name || "",
+            warehouse_type: warehouse?.type || "",
+            expiry_date: row.expiry_date,
+            quantity: row.quantity,
+          };
+        }),
       });
     } catch (e) {
       next(e);

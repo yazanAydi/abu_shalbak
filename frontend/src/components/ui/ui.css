@@ -1588,3 +1588,36 @@ a,
     width: 100%;
   }
 }
+
+.zero-progress {
+  margin-top: var(--space-3);
+}
+
+.zero-progress__stage,
+.zero-progress__count {
+  margin: 0 0 var(--space-2);
+  font-weight: 700;
+}
+
+.zero-progress__track {
+  height: 0.65rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--office-panel-border, #e5e7eb);
+}
+
+.zero-progress__bar {
+  height: 100%;
+  width: 0;
+  background: var(--office-danger, #b91c1c);
+}
+
+.zero-progress__bar.is-indeterminate {
+  width: 40%;
+  animation: zero-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes zero-progress-slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}

@@ -12,6 +12,8 @@ import {
   SUPPLIER_PAYMENTS_UNRECONCILED_AR,
   ZERO_PRICE_STOCK_AR,
   buildFinancePrintSummary,
+  financeCostGapDetails,
+  financeCostGapHeadline,
   hasNegativeInventoryValuation,
   isInventoryValuationIncomplete,
   ilsOrIncomplete,
@@ -74,6 +76,9 @@ export default function SupplierFinance() {
   useRegisterPageRefresh(loadOverview);
 
   const unknown = !!(overview?.cogs_unknown || overview?.profit?.cogsKnown === false);
+  const costGapHeadline = unknown ? financeCostGapHeadline(overview?.profit?.costGap) : "";
+  const costGapDetails = unknown ? financeCostGapDetails(overview?.profit?.costGap) : "";
+  const costGapHelp = [costGapHeadline, costGapDetails].filter(Boolean).join("\n") || INCOMPLETE_PROFIT_AR;
   const sales = overview?.sales;
   const profit = overview?.profit;
   const pay = overview?.supplierPayments;
@@ -157,7 +162,11 @@ export default function SupplierFinance() {
 
       {err ? <Notice tone="danger" details={errDetails}>{err}</Notice> : null}
 
-      {unknown ? <Notice tone="warn">{INCOMPLETE_PROFIT_AR}</Notice> : null}
+      {unknown ? (
+        <Notice tone="warn" details={costGapDetails || undefined} detailsLabel="التفاصيل">
+          {costGapHeadline || INCOMPLETE_PROFIT_AR}
+        </Notice>
+      ) : null}
       {payUnreconciled ? <Notice tone="warn">{SUPPLIER_PAYMENTS_UNRECONCILED_AR}</Notice> : null}
       {pos?.zeroPriceStockedCount > 0 ? <Notice tone="warn">{ZERO_PRICE_STOCK_AR}</Notice> : null}
       {inventoryNegative ? <Notice tone="warn">{NEGATIVE_INVENTORY_AR}</Notice> : null}
@@ -198,8 +207,8 @@ export default function SupplierFinance() {
             <StatCard
               label="تكلفة البضاعة المباعة"
               value={ilsOrIncomplete(profit.cogs, unknown)}
-              hint={unknown ? "تكلفة بعض المبيعات غير معروفة" : ""}
-              help="تكلفة تاريخية من لحظة البيع"
+              hint={unknown ? costGapHeadline || "تكلفة بعض المبيعات غير محفوظة" : ""}
+              help={unknown ? costGapHelp : "تكلفة تاريخية من لحظة البيع"}
               icon="finance"
               tone={unknown ? "orange" : "teal"}
               alert={unknown}
@@ -209,6 +218,7 @@ export default function SupplierFinance() {
               label="الربح الإجمالي"
               value={ilsOrIncomplete(profit.grossProfit, unknown)}
               hint={`هامش ${marginLabel(profit.grossMarginPercent, unknown)}`}
+              help={unknown ? costGapHelp : undefined}
               icon="finance"
               tone={unknown ? "orange" : "green"}
               alert={unknown}
@@ -224,7 +234,11 @@ export default function SupplierFinance() {
               label="صافي الربح التشغيلي"
               value={ilsOrIncomplete(profit.operatingNetProfit, unknown)}
               hint="بعد مصاريف التشغيل"
-              help="الربح الإجمالي − مصاريف التشغيل. دفعات الموردين خارج الحساب."
+              help={
+                unknown
+                  ? `${costGapHelp}\nالربح الإجمالي − مصاريف التشغيل. المصروف ظاهر، والخصم يتوقف لأن الربح الإجمالي غير مكتمل.`
+                  : "الربح الإجمالي − مصاريف التشغيل. دفعات الموردين خارج الحساب."
+              }
               icon="finance"
               tone={unknown ? "orange" : "teal"}
               alert={unknown}

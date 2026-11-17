@@ -4,6 +4,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  waitForZeroAllStock,
 } from "./helpers.js";
 
 describe("Inventory stock update", () => {
@@ -89,7 +90,7 @@ describe("Zero all product stock", () => {
       .set(authHeader(adminToken));
 
     expect(res.status).toBe(200);
-    const body = res.body?.data ?? res.body;
+    const body = await waitForZeroAllStock(ctx.app, adminToken, res);
     expect(body.products_zeroed).toBe(Number(beforeCounts.non_zero));
     expect(body.skipped).toBe(Number(beforeCounts.already_zero));
 

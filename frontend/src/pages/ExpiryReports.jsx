@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import api from "../apiClient";
 import { apiErrorMessage } from "../utils/apiError";
-import { getAuthHeaders } from "../utils/auth";
+import { getAuthHeaders, getUser } from "../utils/auth";
+import { userHasOfficePermission } from "../utils/accountantPermissions";
 import {
   PageHeader,
   ReportToolbar,
@@ -12,11 +13,13 @@ import {
   Button,
   FormField,
   Input,
+  Textarea,
   Modal,
+  Notice,
   useToast,
 } from "../components/ui";
 import { Batches } from "./Inventory";
-import { dateOnly, qty as fmtQty } from "../utils/format";
+import { dateOnly, formatDateTimeShopAr, qty as fmtQty } from "../utils/format";
 import { batchSourceLabel } from "../utils/stockBatchLabels";
 
 function expirySourceLabel(row) {
@@ -71,6 +74,17 @@ const LOW_STOCK_COLUMNS = [
 ];
 
 const LOW_STOCK_THRESHOLD = 5;
+const AWAITING_MESSAGE = "تمت إعادة ضبط تقرير الصلاحية. بانتظار اعتماد جرد بكميات وتواريخ صلاحية صحيحة.";
+const PARTIAL_MESSAGE = "تحقق جزئي: الأصناف التي اعتُمد جردها مع تاريخ صلاحية محقق ظاهرة في الجدول. بقية النطاق ما زالت خارج التقرير حتى يُتحقق من تواريخها، وهذا لا يعني أنه لا توجد أصناف منتهية.";
+
+function scopeLabel(scope) {
+  return scope === "bakery" ? "مواد المخبز" : "السوبرماركت";
+}
+
+function scopeDetail(cycle, scope) {
+  const when = cycle?.reset_at ? (formatDateTimeShopAr(cycle.reset_at) || cycle.reset_at) : "";
+  return `النطاق: ${scopeLabel(scope)}${when ? ` — ${when}` : ""}${cycle?.reset_reason ? ` — ${cycle.reset_reason}` : ""}`;
+}
 
 export default function ExpiryReports({ workspace = null }) {
   const isBakery = workspace === "bakery";
@@ -84,6 +98,16 @@ export default function ExpiryReports({ workspace = null }) {
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveRows, setMoveRows] = useState([]);
   const [moving, setMoving] = useState(false);
+  const [cycles, setCycles] = useState({ retail: null, bakery: null });
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetReason, setResetReason] = useState("");
+  const [resetChecked, setResetChecked] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const pageScope = isBakery ? "bakery" : "retail";
+  const user = getUser();
+  const canReset = isBakery
+    ? userHasOfficePermission(user, "stock_count") || userHasOfficePermission(user, "bakery_supplies")
+    : userHasOfficePermission(user, "stock_count");
   const [tab, setTab] = useState(() => {
     if (searchParams.get("tab") === "lowstock") return "lowstock";
     if (searchParams.get("tab") === "batches") return "batches";
@@ -99,8 +123,13 @@ export default function ExpiryReports({ workspace = null }) {
   const loadExpiry = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get(`/api/inventory/expiry?days=${days}${isBakery ? "&membership=bakery" : ""}`);
-      setRows(data);
+      const [report, retailCycle, bakeryCycle] = await Promise.all([
+        api.get(`/api/inventory/expiry?days=${days}${isBakery ? "&membership=bakery" : ""}`),
+        api.get("/api/inventory/expiry-cycle", { params: { scope: "retail" } }).catch(() => ({ data: null })),
+        api.get("/api/inventory/expiry-cycle", { params: { scope: "bakery" } }).catch(() => ({ data: null })),
+      ]);
+      setRows(Array.isArray(report.data) ? report.data : []);
+      setCycles({ retail: retailCycle.data, bakery: bakeryCycle.data });
     } catch {
       toast.error("تعذّر تحميل تقرير الصلاحية");
     } finally {
@@ -124,6 +153,48 @@ export default function ExpiryReports({ workspace = null }) {
     if (tab === "expiry") loadExpiry();
     else if (tab === "lowstock") loadLowStock();
   }, [tab, loadExpiry, loadLowStock]);
+
+  const heldScopes = ["retail", "bakery"].filter((scope) => {
+    const status = cycles[scope]?.status;
+    return status && status !== "active";
+  });
+  const awaitingScopes = heldScopes.filter((scope) => cycles[scope]?.status === "awaiting_count");
+  const partialScopes = heldScopes.filter((scope) => cycles[scope]?.status === "partial");
+  const reportHeld = heldScopes.length > 0;
+  const awaitingOnly = partialScopes.length === 0 && awaitingScopes.length > 0 && rows.length === 0;
+
+  function openReset() {
+    setResetReason("");
+    setResetChecked(false);
+    setResetOpen(true);
+  }
+
+  async function submitReset() {
+    const reason = resetReason.trim();
+    if (!resetChecked) {
+      toast.error("أكّد أنك تريد مسح دورة العرض");
+      return;
+    }
+    if (reason.length < 3) {
+      toast.error("اكتب سبب إعادة الضبط");
+      return;
+    }
+    setResetting(true);
+    try {
+      await api.post("/api/inventory/expiry-cycle/reset", {
+        scope: pageScope,
+        confirm: true,
+        reason,
+      });
+      toast.success("تمت إعادة ضبط دورة عرض تقرير الصلاحية");
+      setResetOpen(false);
+      await loadExpiry();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "تعذّر إعادة ضبط التقرير"));
+    } finally {
+      setResetting(false);
+    }
+  }
 
   async function openExpiredMove() {
     setMoving(true);
@@ -242,7 +313,7 @@ export default function ExpiryReports({ workspace = null }) {
             columns={reportConfig.columns}
             rows={reportConfig.rows}
             filename={reportConfig.filename}
-            disabled={loading}
+            disabled={loading || (tab === "expiry" && reportHeld && rows.length === 0)}
           />
           )
         }
@@ -258,6 +329,11 @@ export default function ExpiryReports({ workspace = null }) {
                 <Button onClick={loadExpiry} disabled={loading}>
                   بحث
                 </Button>
+                {canReset ? (
+                  <Button variant="outline" onClick={openReset} disabled={loading || resetting}>
+                    إعادة ضبط تقرير الصلاحية
+                  </Button>
+                ) : null}
                 <Button variant="outline" onClick={openExpiredMove} disabled={loading || moving}>
                   نقل المنتهي إلى مرتجعات
                 </Button>
@@ -275,19 +351,72 @@ export default function ExpiryReports({ workspace = null }) {
             </FormField>
           </FilterBar>
 
+          {awaitingScopes.map((scope) => (
+            <Notice key={`awaiting-${scope}`} tone="warn">
+              <div>{AWAITING_MESSAGE}</div>
+              <div>الحالة: بانتظار الجرد — {scopeDetail(cycles[scope], scope)}</div>
+            </Notice>
+          ))}
+          {partialScopes.map((scope) => (
+            <Notice key={`partial-${scope}`} tone="info">
+              <div>{PARTIAL_MESSAGE}</div>
+              <div>الحالة: تحقق جزئي — {scopeDetail(cycles[scope], scope)}</div>
+            </Notice>
+          ))}
+
+          {awaitingOnly ? null : (
           <DataTable
             columns={expiryColumns}
             rows={rows}
             rowKey={(r, i) => r.row_key ?? r.id ?? i}
             loading={loading}
-            empty="لا توجد منتجات منتهية أو قاربت على الانتهاء في هذه الفترة"
+            empty={partialScopes.length
+              ? "لا توجد أصناف محققة ضمن هذه الفترة. الأصناف التي لم يُتحقق من تاريخها ليست صفراً."
+              : "لا توجد منتجات منتهية أو قاربت على الانتهاء في هذه الفترة"}
             emptyIcon="expiry"
             rowClassName={(r) =>
               r.days_until_expiry < 0 ? "expired" : r.days_until_expiry <= 7 ? "expiring-soon" : ""
             }
           />
+          )}
         </>
       )}
+
+      <Modal
+        open={resetOpen}
+        title="إعادة ضبط تقرير الصلاحية"
+        onClose={() => { if (!resetting) setResetOpen(false); }}
+        footer={(
+          <>
+            <Button onClick={submitReset} disabled={resetting || !resetChecked || resetReason.trim().length < 3}>
+              إعادة ضبط
+            </Button>
+            <Button variant="secondary" onClick={() => setResetOpen(false)} disabled={resetting}>إلغاء</Button>
+          </>
+        )}
+      >
+        <p>النطاق: {scopeLabel(pageScope)}</p>
+        <p>سيُمسح التقرير الحالي من دورة العرض النشطة، ولن تبقى القيود السابقة في هذا التقرير.</p>
+        <p>يبقى عرض الصلاحية معلّقاً حتى يُعتمد جرد نهائي بكميات وتواريخ صلاحية تم التحقق منها.</p>
+        <p>كميات المخزون وسجلات المخزون الأصلية تبقى محفوظة. لا تُحذف الأصناف ولا الدفعات ولا تواريخ الصلاحية ولا حركات المخزون ولا السجلات المالية.</p>
+        <FormField label="سبب إعادة الضبط">
+          <Textarea
+            value={resetReason}
+            onChange={(e) => setResetReason(e.target.value)}
+            rows={3}
+            maxLength={500}
+          />
+        </FormField>
+        <label>
+          <input
+            type="checkbox"
+            checked={resetChecked}
+            onChange={(e) => setResetChecked(e.target.checked)}
+          />
+          {" "}
+          أؤكد مسح دورة العرض الحالية حتى اعتماد الجرد
+        </label>
+      </Modal>
 
       <Modal
         open={moveOpen}

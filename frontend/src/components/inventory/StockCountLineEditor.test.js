@@ -115,7 +115,7 @@ describe("StockCountLineEditor", () => {
       expiry_invalid: false,
     }]} />);
     const headers = [...container.querySelectorAll("thead th")].map((th) => th.textContent);
-    expect(headers.slice(0, 3)).toEqual(["الصنف", "الكمية المعدودة", "تاريخ الصلاحية"]);
+    expect(headers.slice(0, 4)).toEqual(["الصنف", "الكمية الحالية", "الكمية المعدودة", "تاريخ الصلاحية"]);
     expect(container.textContent).not.toMatch(/رصيد النظام|الفرق|خصم البند|بونص|سعر/);
     const remove = container.querySelector("[aria-label='حذف']");
     expect(remove).toBeTruthy();
@@ -330,5 +330,83 @@ describe("StockCountLineEditor", () => {
       release();
     });
     expect(container.querySelector("[data-invoice-field='expiry']").value).toBe("15/01/28");
+  });
+
+  test("shows the warehouse source quantity, keeps a blank count, and focuses it after a barcode", async () => {
+    searchProductsApi.mockResolvedValue([
+      { id: 7, name: "حليب", barcode: "1234567890123", stock: 40, sku: "12", unit: "حبة" },
+    ]);
+    api.get.mockImplementation(() => pictureResponse({
+      has_dated_batches: true,
+      product_stock: 40,
+      unit: "حبة",
+      main_warehouse_id: 1,
+      product_expiry_date: null,
+      sources: [
+        { batch_source: "dated", expiry_date: "2027-01-01", quantity: 13 },
+        { batch_source: "undated", expiry_date: null, quantity: 27 },
+      ],
+      locations: [
+        { warehouse_id: 1, warehouse_type: "main", expiry_date: "2027-01-01", quantity: 4 },
+        { warehouse_id: 2, warehouse_type: "returns", expiry_date: "2027-01-01", quantity: 9 },
+      ],
+    }));
+    render(<Harness />);
+    clickAdd();
+    const product = container.querySelector("[data-invoice-field='product']");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    act(() => {
+      setter.call(product, "1234567890123");
+      product.dispatchEvent(new Event("input", { bubbles: true }));
+      product.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelectorAll("[data-invoice-line]")).toHaveLength(1);
+    expect(container.querySelector("[data-invoice-field='qty']").value).toBe("");
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).toBe("—");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    expect(container.querySelector("[data-invoice-field='product']").value).toBe("حليب");
+    expect(container.querySelectorAll("[data-invoice-line]")).toHaveLength(1);
+    expect(document.activeElement).toBe(container.querySelector("[data-invoice-field='qty']"));
+    expect(container.querySelector("[data-invoice-field='qty']").value).toBe("");
+    expect(container.querySelector("[data-testid='count-expiry-verified']").checked).toBe(false);
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).toContain("4");
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).not.toContain("40");
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).not.toContain("13");
+
+    act(() => {
+      const again = container.querySelector("[data-invoice-field='product']");
+      setter.call(again, "1234567890123");
+      again.dispatchEvent(new Event("input", { bubbles: true }));
+      again.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    expect(container.querySelector("[data-invoice-field='qty']").value).toBe("");
+    expect(container.querySelector("[data-testid='count-expiry-verified']").checked).toBe(false);
+  });
+
+  test("an unknown barcode does not add a row or fill the count", async () => {
+    searchProductsApi.mockResolvedValue([]);
+    render(<Harness />);
+    clickAdd();
+    const product = container.querySelector("[data-invoice-field='product']");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    act(() => {
+      setter.call(product, "9999999999999");
+      product.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    act(() => {
+      product.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelectorAll("[data-invoice-line]")).toHaveLength(1);
+    expect(container.querySelector("[data-invoice-field='product']").value).toBe("9999999999999");
+    expect(container.querySelector("[data-invoice-field='qty']").value).toBe("");
+    expect(document.activeElement).not.toBe(container.querySelector("[data-invoice-field='qty']"));
   });
 });

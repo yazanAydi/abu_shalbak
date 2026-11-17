@@ -64,6 +64,7 @@ export async function addLedgerEntry(
     storeId = 1,
     businessDay = null,
     warehouseId = null,
+    deferDepletion = false,
   }
 ) {
   const pid = Number(productId);
@@ -125,13 +126,15 @@ export async function addLedgerEntry(
     ]
   );
 
-  await syncDepletionAdjustment(db, {
-    productId: pid,
-    ledgerId: ins.lastID,
-    qtyBefore,
-    qtyAfter,
-    movementType: type,
-  });
+  if (!deferDepletion) {
+    await syncDepletionAdjustment(db, {
+      productId: pid,
+      ledgerId: ins.lastID,
+      qtyBefore,
+      qtyAfter,
+      movementType: type,
+    });
+  }
 
   return { ledgerId: ins.lastID, qtyBefore, qtyAfter };
 }

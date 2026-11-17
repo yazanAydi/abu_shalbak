@@ -5,6 +5,7 @@ import {
   destroyTestContext,
   login,
   authHeader,
+  waitForZeroAllStock,
 } from "./helpers.js";
 import {
   getAppSettings,
@@ -97,6 +98,7 @@ describe("Zero-all-stock password", () => {
       .post("/api/v1/inventory/zero-all-stock")
       .set(authHeader(adminToken));
     expect(unsetOk.status).toBe(200);
+    await waitForZeroAllStock(ctx.app, adminToken, unsetOk);
 
     await ctx.db.run("UPDATE products SET stock = 50 WHERE id = ?", [ctx.productId]);
 
@@ -120,7 +122,7 @@ describe("Zero-all-stock password", () => {
       .post("/api/v1/inventory/zero-all-stock")
       .set({ ...authHeader(adminToken), "X-Confirm-Password": "zeropass" });
     expect(dedicatedOk.status).toBe(200);
-    const body = dedicatedOk.body.data ?? dedicatedOk.body;
+    const body = await waitForZeroAllStock(ctx.app, adminToken, dedicatedOk);
     expect(body.products_zeroed).toBeGreaterThanOrEqual(1);
   });
 
@@ -144,6 +146,7 @@ describe("Zero-all-stock password", () => {
       .post("/api/v1/inventory/zero-all-stock")
       .set({ ...authHeader(adminToken), "X-Confirm-Password": "newpass1" });
     expect(newOk.status).toBe(200);
+    await waitForZeroAllStock(ctx.app, adminToken, newOk);
   });
 
   test("clearing the dedicated password restores confirm-only zero-all", async () => {
@@ -163,12 +166,14 @@ describe("Zero-all-stock password", () => {
       .post("/api/v1/inventory/zero-all-stock")
       .set({ ...authHeader(adminToken), "X-Confirm-Password": "zeropass" });
     expect(dedicatedRejected.status).toBe(200);
+    await waitForZeroAllStock(ctx.app, adminToken, dedicatedRejected);
 
     await ctx.db.run("UPDATE products SET stock = 25 WHERE id = ?", [ctx.productId]);
     const confirmOnly = await request(ctx.app)
       .post("/api/v1/inventory/zero-all-stock")
       .set(authHeader(adminToken));
     expect(confirmOnly.status).toBe(200);
+    await waitForZeroAllStock(ctx.app, adminToken, confirmOnly);
   });
 
   test("audit logs record set/clear without the password or hash", async () => {

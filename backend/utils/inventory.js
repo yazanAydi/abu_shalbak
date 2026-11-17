@@ -63,6 +63,7 @@ export async function applyStockDelta(
     storeId = 1,
     businessDay = null,
     warehouseId = null,
+    deferDepletion = false,
   } = {}
 ) {
   const pid = Number(productId);
@@ -81,6 +82,7 @@ export async function applyStockDelta(
     storeId,
     businessDay,
     warehouseId,
+    deferDepletion,
   });
 }
 

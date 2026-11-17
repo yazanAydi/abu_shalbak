@@ -17,6 +17,10 @@ import {
   resolveExpiryAlertDays,
 } from "../services/expiryAlertService.js";
 import {
+  filterNearExpiryItems,
+  getExpiryReportCycleMap,
+} from "../services/expiryReportCycle.js";
+import {
   getAccountStatement,
   getAccountStatementExport,
   parseStatementDate,
@@ -462,7 +466,11 @@ export function createReportsRouter(db) {
   router.get("/near-expiry", dashboard, async (req, res) => {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
     const days = await resolveExpiryAlertDays(db);
-    const { products, batches } = await fetchNearExpiryItems(db, days);
+    const fetched = await fetchNearExpiryItems(db, days);
+    const [{ products, batches }, cycles] = await Promise.all([
+      filterNearExpiryItems(db, fetched),
+      getExpiryReportCycleMap(db),
+    ]);
 
     const items = [
       ...products.map((r) => ({
@@ -500,6 +508,11 @@ export function createReportsRouter(db) {
       total_count: totalCount,
       expired_count: expiredCount,
       items: items.slice(0, limit),
+      message: cycles.message,
+      cycles: {
+        retail: cycles.retail.status,
+        bakery: cycles.bakery.status,
+      },
     });
   });
 

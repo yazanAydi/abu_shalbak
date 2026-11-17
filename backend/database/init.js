@@ -646,6 +646,62 @@ async function migrateStockCountDepartments(db) {
   );
 }
 
+/**
+ * Expiry-report cycle. Reset closes the active reporting view only.
+ * Products, batches, dates, ledger rows, and money stay where they are.
+ */
+async function migrateExpiryReportCycles(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS expiry_report_cycles (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope         TEXT NOT NULL CHECK (scope IN ('retail', 'bakery')),
+      status        TEXT NOT NULL CHECK (status IN ('open', 'closed')),
+      reset_at      TEXT NOT NULL,
+      reset_by      INTEGER,
+      reset_reason  TEXT NOT NULL,
+      business_day  TEXT,
+      closed_at     TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_expiry_cycle_one_open
+      ON expiry_report_cycles(scope) WHERE status = 'open';
+
+    CREATE TABLE IF NOT EXISTS expiry_report_exclusions (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      cycle_id             INTEGER NOT NULL REFERENCES expiry_report_cycles(id),
+      scope                TEXT NOT NULL,
+      product_id           INTEGER NOT NULL,
+      warehouse_id         INTEGER NOT NULL DEFAULT 0,
+      source               TEXT NOT NULL CHECK (source IN ('batch', 'product')),
+      expiry_date          TEXT NOT NULL DEFAULT '',
+      status               TEXT NOT NULL DEFAULT 'excluded' CHECK (status IN ('excluded', 'verified')),
+      verified_session_id  INTEGER,
+      verified_at          TEXT,
+      UNIQUE(cycle_id, product_id, warehouse_id, source, expiry_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_expiry_excl_cycle
+      ON expiry_report_exclusions(cycle_id, product_id);
+
+    CREATE TABLE IF NOT EXISTS expiry_report_verifications (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      cycle_id      INTEGER NOT NULL REFERENCES expiry_report_cycles(id),
+      session_id    INTEGER NOT NULL,
+      product_id    INTEGER NOT NULL,
+      warehouse_id  INTEGER NOT NULL,
+      expiry_date   TEXT NOT NULL,
+      counted_qty   REAL NOT NULL,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(cycle_id, session_id, product_id, warehouse_id, expiry_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_expiry_ver_cycle ON expiry_report_verifications(cycle_id);
+  `);
+  if (!(await tableHasColumn(db, "stock_count_lines", "expiry_verified"))) {
+    await db.run(
+      "ALTER TABLE stock_count_lines ADD COLUMN expiry_verified INTEGER NOT NULL DEFAULT 0"
+    );
+  }
+}
+
 async function migrateTransactionsDiscount(db) {
   if (!(await tableHasColumn(db, "transactions", "discount"))) {
     await db.run("ALTER TABLE transactions ADD COLUMN discount REAL NOT NULL DEFAULT 0");
@@ -3796,6 +3852,26 @@ async function migrateStockSourceLots(db) {
   await backfillAllSourceLots(db);
 }
 
+async function migrateZeroAllStockRuns(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS zero_all_stock_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      idempotency_key TEXT,
+      products_zeroed INTEGER NOT NULL,
+      skipped INTEGER NOT NULL,
+      stock_movements INTEGER NOT NULL,
+      depletion_adjustments INTEGER NOT NULL DEFAULT 0,
+      valuation_rebuilds INTEGER NOT NULL DEFAULT 0,
+      depletion_passes INTEGER NOT NULL DEFAULT 0,
+      user_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_zero_all_stock_runs_key
+      ON zero_all_stock_runs(idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+  `);
+}
+
 export async function initDatabase(dbPath) {
   cacheInvalidate();
   const dir = path.dirname(path.resolve(dbPath));
@@ -4042,6 +4118,8 @@ export async function initDatabase(dbPath) {
   await migrateWarehouseBatchStock(db);
   await migrateStockSourceLots(db);
   await migrateStockCountDepartments(db);
+  await migrateExpiryReportCycles(db);
+  await migrateZeroAllStockRuns(db);
 
   await seedUsers(db);
   await seedSampleProducts(db);

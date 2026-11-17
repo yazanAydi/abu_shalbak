@@ -43,6 +43,60 @@ const SESSION_COLUMNS = [
   { key: "created_by_name", header: "بواسطة", value: (s) => s.created_by_name || "—" },
 ];
 
+const ZERO_OP_KEY = "abu-shalbak-zero-all-operation";
+
+function rememberZeroOperation(id) {
+  try {
+    if (id) sessionStorage.setItem(ZERO_OP_KEY, id);
+    else sessionStorage.removeItem(ZERO_OP_KEY);
+  } catch {
+    /* private mode */
+  }
+}
+
+function storedZeroOperation() {
+  try {
+    return sessionStorage.getItem(ZERO_OP_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function ZeroProgress({ op, unavailable }) {
+  if (unavailable && (!op || op.status === "running")) {
+    return <Notice tone="warn">حالة التصفير غير متاحة مؤقتًا.</Notice>;
+  }
+  if (!op || !op.stage) return null;
+  const pct = op.indeterminate || op.percent == null ? null : op.percent;
+  const showCount = op.processed != null && op.total != null && op.stage !== "preparing";
+  return (
+    <div className="zero-progress">
+      <p className="zero-progress__stage">{op.stage_ar}</p>
+      <div
+        className="zero-progress__track"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct == null ? undefined : pct}
+      >
+        <div
+          className={`zero-progress__bar${op.indeterminate ? " is-indeterminate" : ""}`}
+          style={op.indeterminate ? undefined : { width: `${pct || 0}%` }}
+        />
+      </div>
+      {showCount ? (
+        <p className="zero-progress__count">
+          {`تمت معالجة ${op.processed} من ${op.total} صنفًا`}
+          {pct != null ? ` — ${pct}%` : ""}
+        </p>
+      ) : null}
+      {op.status === "completed" ? (
+        <p className="zero-progress__count">{`تم تغيير ${op.products_changed ?? 0} صنفًا.`}</p>
+      ) : null}
+    </div>
+  );
+}
+
 const ENTRY_COLUMNS = [
   { key: "name", header: "الصنف", nameColumn: true, wrap: true },
   { key: "counted_qty", header: "الكمية المعدودة", className: "num" },
@@ -63,13 +117,88 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
   const [zeroPasswordSet, setZeroPasswordSet] = useState(false);
+  const [expiryCycle, setExpiryCycle] = useState(null);
   const [zeroModalOpen, setZeroModalOpen] = useState(false);
   const [zeroPassword, setZeroPassword] = useState("");
   const [zeroPasswordError, setZeroPasswordError] = useState(null);
+  const [zeroOp, setZeroOp] = useState(null);
+  const [zeroUnavailable, setZeroUnavailable] = useState(false);
   const loadedIdsRef = useRef(new Set());
+  const zeroFlightRef = useRef(false);
+  const zeroAttemptKeyRef = useRef("");
+  const zeroRunning = zeroOp?.status === "running";
   const scopeParams = useMemo(() => countScopeParams(scope, membership), [scope, membership]);
   const department = scopeParams.department;
   const departmentLabel = department === "bakery" ? "المخبز" : "السوبرماركت";
+
+  useEffect(() => {
+    if (!canZeroAllStock) return undefined;
+    let stop = false;
+    const stored = storedZeroOperation();
+    (async () => {
+      try {
+        const { data } = await api.get("/api/inventory/zero-all-stock/status", {
+          headers: getAuthHeaders(),
+          params: stored ? { operation_id: stored } : undefined,
+        });
+        if (stop || !data?.status) return;
+        if (data.status === "running") {
+          setZeroOp(data);
+          setZeroModalOpen(true);
+          setSaving(true);
+          zeroFlightRef.current = true;
+          rememberZeroOperation(data.operation_id);
+        } else if (stored && data.status === "completed") {
+          rememberZeroOperation("");
+          setMsg(`اكتمل التصفير. تم تغيير ${data.products_changed ?? 0} صنفًا.`);
+        } else if (stored && (data.status === "interrupted" || data.status === "failed")) {
+          rememberZeroOperation("");
+          setError(data.stage_ar || "انقطع التصفير قبل اكتماله. لم يُعاد تشغيله.");
+        }
+      } catch {
+        if (!stop && stored) setZeroUnavailable(true);
+      }
+    })();
+    return () => {
+      stop = true;
+    };
+  }, [canZeroAllStock]);
+
+  useEffect(() => {
+    if (!zeroRunning || !zeroOp?.operation_id) return undefined;
+    let stop = false;
+    let timer = 0;
+    const tick = async () => {
+      try {
+        const { data } = await api.get("/api/inventory/zero-all-stock/status", {
+          headers: getAuthHeaders(),
+          params: { operation_id: zeroOp.operation_id },
+        });
+        if (stop) return;
+        setZeroUnavailable(false);
+        setZeroOp(data);
+        if (data.status === "completed") {
+          rememberZeroOperation("");
+          zeroFlightRef.current = false;
+          setSaving(false);
+          setMsg(`اكتمل التصفير. تم تغيير ${data.products_changed ?? 0} صنفًا.`);
+        } else if (data.status === "failed" || data.status === "interrupted") {
+          rememberZeroOperation("");
+          zeroFlightRef.current = false;
+          setSaving(false);
+          setError(data.stage_ar || "انقطع التصفير قبل اكتماله. لم يُعاد تشغيله.");
+        }
+      } catch {
+        if (!stop) setZeroUnavailable(true);
+      }
+      if (!stop && zeroOp?.status === "running") timer = window.setTimeout(tick, 400);
+    };
+    timer = window.setTimeout(tick, 400);
+    return () => {
+      stop = true;
+      window.clearTimeout(timer);
+    };
+  }, [zeroRunning, zeroOp?.operation_id, zeroOp?.status]);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -105,6 +234,21 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/api/inventory/expiry-cycle", {
+      headers: getAuthHeaders(),
+      params: { scope: department },
+    }).then(({ data }) => {
+      if (!cancelled) setExpiryCycle(data || null);
+    }).catch(() => {
+      if (!cancelled) setExpiryCycle(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [department, activeSession?.status]);
 
   function applySession(data) {
     const rows = (data?.lines || []).map(editorRowFromCountLine);
@@ -334,32 +478,83 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
   }
 
   function closeZeroAllStock() {
-    if (saving) return;
+    if (zeroRunning) {
+      setZeroModalOpen(false);
+      return;
+    }
     setZeroModalOpen(false);
     setZeroPassword("");
     setZeroPasswordError(null);
   }
 
+  function zeroAttemptKey() {
+    if (!zeroAttemptKeyRef.current) {
+      const cryptoApi = window.crypto;
+      zeroAttemptKeyRef.current = cryptoApi && typeof cryptoApi.randomUUID === "function"
+        ? cryptoApi.randomUUID()
+        : `zero-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+    return zeroAttemptKeyRef.current;
+  }
+
   async function confirmZeroAllStock() {
+    if (zeroFlightRef.current || zeroRunning) return;
     if (zeroPasswordSet && !zeroPassword.trim()) {
       setZeroPasswordError("أدخل كلمة المرور للمتابعة");
       return;
     }
+    zeroFlightRef.current = true;
     setSaving(true);
     setError(null);
     setMsg(null);
     setZeroPasswordError(null);
+    setZeroUnavailable(false);
+    let keepRunning = false;
     try {
-      const headers = { ...getAuthHeaders() };
+      const headers = { ...getAuthHeaders(), "Idempotency-Key": zeroAttemptKey() };
       if (zeroPasswordSet) {
         headers["X-Confirm-Password"] = zeroPassword;
       }
       const { data } = await api.post("/api/inventory/zero-all-stock", {}, { headers });
-      const zeroed = data?.products_zeroed ?? 0;
-      setMsg(`تم تصفير كميات ${zeroed} منتج`);
-      setZeroModalOpen(false);
-      setZeroPassword("");
+      rememberZeroOperation(data?.operation_id);
+      setZeroOp(data);
+      if (data?.status === "running") {
+        keepRunning = true;
+        return;
+      }
+      if (data?.status === "completed") {
+        zeroAttemptKeyRef.current = "";
+        rememberZeroOperation("");
+        setMsg(`اكتمل التصفير. تم تغيير ${data.products_changed ?? 0} صنفًا.`);
+        setZeroModalOpen(false);
+        setZeroPassword("");
+      }
     } catch (e) {
+      if (!e?.response) {
+        setZeroUnavailable(true);
+        try {
+          const { data } = await api.get("/api/inventory/zero-all-stock/status", {
+            headers: getAuthHeaders(),
+            params: zeroAttemptKeyRef.current ? { operation_id: zeroAttemptKeyRef.current } : undefined,
+          });
+          if (data?.status === "running") {
+            keepRunning = true;
+            setZeroUnavailable(false);
+            setZeroOp(data);
+            rememberZeroOperation(data.operation_id);
+            return;
+          }
+          if (data?.status === "interrupted" || data?.status === "failed") {
+            setError(data.stage_ar || "انقطع التصفير قبل اكتماله. لم يُعاد تشغيله.");
+            return;
+          }
+        } catch {
+          setError("حالة التصفير غير متاحة مؤقتًا.");
+          return;
+        }
+        setError("حالة التصفير غير متاحة مؤقتًا.");
+        return;
+      }
       const message = apiErrorMessage(e, "فشل تصفير الكميات");
       if (zeroPasswordSet) {
         setZeroPasswordError(message);
@@ -368,7 +563,10 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
         setZeroModalOpen(false);
       }
     } finally {
-      setSaving(false);
+      if (!keepRunning) {
+        zeroFlightRef.current = false;
+        setSaving(false);
+      }
     }
   }
 
@@ -433,6 +631,9 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
     <>
       {error ? <Notice tone="danger">{error}</Notice> : null}
       {msg ? <Notice tone="success">{msg}</Notice> : null}
+      {zeroRunning && !zeroModalOpen ? (
+        <ZeroProgress op={zeroOp} unavailable={zeroUnavailable} />
+      ) : null}
 
       {activeSession ? (
         <div className="inventory-session">
@@ -446,7 +647,7 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
                   filename={reportConfig.filename}
                 />
                 {canZeroAllStock ? (
-                  <DangerButton type="button" onClick={openZeroAllStock} disabled={saving}>
+                  <DangerButton type="button" onClick={openZeroAllStock} disabled={saving || zeroRunning}>
                     تصفير كل الكميات
                   </DangerButton>
                 ) : null}
@@ -471,6 +672,12 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
             </p>
           </FilterBar>
 
+          {expiryCycle?.message ? (
+            <Notice tone="warn">
+              <div>{expiryCycle.message}</div>
+              <div>علّم «تم التحقق من التاريخ» على كل سطر طابقت تاريخه قبل الترحيل. ترحيل الكمية دون هذا التأكيد لا يعيد الصنف إلى تقرير الصلاحية.</div>
+            </Notice>
+          ) : null}
           <h3 className="ui-section">أسطر الجرد ({reportRows.length})</h3>
           <StockCountLineEditor
             items={draftLines}
@@ -482,12 +689,15 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
         </div>
       ) : (
         <div className="sessions-list">
+          {expiryCycle?.message ? (
+            <Notice tone="warn">{expiryCycle.message}</Notice>
+          ) : null}
           <FilterBar
             actions={
               <div className="ui-btn-group">
                 <PrimaryButton type="button" onClick={openNew}>فتح جلسة جرد جديدة</PrimaryButton>
                 {canZeroAllStock ? (
-                  <DangerButton type="button" onClick={openZeroAllStock} disabled={saving}>
+                  <DangerButton type="button" onClick={openZeroAllStock} disabled={saving || zeroRunning}>
                     تصفير كل الكميات
                   </DangerButton>
                 ) : null}
@@ -517,24 +727,27 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
         title="تصفير كل الكميات"
         footer={
           <>
-            <DangerButton type="button" onClick={confirmZeroAllStock} disabled={saving}>
-              {saving ? "جاري التصفير…" : "تأكيد التصفير"}
+            <DangerButton type="button" onClick={confirmZeroAllStock} disabled={saving || zeroRunning || zeroOp?.status === "completed"}>
+              {zeroRunning ? "جاري التصفير…" : "تأكيد التصفير"}
             </DangerButton>
-            <SecondaryButton type="button" onClick={closeZeroAllStock} disabled={saving}>
-              إلغاء
+            <SecondaryButton type="button" onClick={closeZeroAllStock} disabled={false}>
+              {zeroRunning ? "إخفاء" : "إلغاء"}
             </SecondaryButton>
           </>
         }
       >
-        <Notice tone="warn">
-          هل تريد تصفير كمية كل المنتجات؟ لا يمكن التراجع عن هذه الخطوة.
-        </Notice>
+        {!zeroOp ? (
+          <Notice tone="warn">
+            هل تريد تصفير كمية كل المنتجات؟ لا يمكن التراجع عن هذه الخطوة.
+          </Notice>
+        ) : null}
         {hasOpenSession ? (
           <Notice tone="info" className="ui-mt-md">
             يوجد جلسة جرد مفتوحة. ترحيل تلك الجلسة بعد التصفير قد يغيّر المخزون مرة أخرى.
           </Notice>
         ) : null}
-        {zeroPasswordSet ? (
+        {zeroOp ? <ZeroProgress op={zeroOp} unavailable={zeroUnavailable} /> : null}
+        {zeroPasswordSet && !zeroRunning ? (
           <form
             onSubmit={(e) => {
               e.preventDefault();

@@ -19,6 +19,7 @@ import {
   validateScaleSaleFields,
   weighedSalePayload,
 } from "../../utils/scaleProductForm";
+import ProductNumberField from "../../components/products/ProductNumberField";
 import CameraBarcodeButton from "../../components/barcode/CameraBarcodeButton";
 import { normalizeBarcode } from "../../utils/barcode";
 import { productSkuInputValue } from "../../utils/entityCodeDisplay";
@@ -77,7 +78,7 @@ function sameNumber(a, b) {
   return Number(na) === Number(nb);
 }
 
-function dirtyProductPayload(form, product) {
+function dirtyProductPayload(form, product, { includeSku = true } = {}) {
   const payload = {};
   const name = form.name.trim();
   const sku = form.sku.trim() || null;
@@ -92,7 +93,7 @@ function dirtyProductPayload(form, product) {
   const scale_only = sale.scale_only;
 
   if (!sameText(sale.barcode, product.barcode || null)) payload.barcode = sale.barcode;
-  if (!sameText(sku, productSkuInputValue(product.sku) || null)) payload.sku = sku;
+  if (includeSku && !sameText(sku, productSkuInputValue(product.sku) || null)) payload.sku = sku;
   if (!sameText(name, product.name)) payload.name = name;
   if (!sameNumber(price, product.price)) payload.price = price;
   if (!sameNumber(cost, product.cost ?? 0)) payload.cost = cost;
@@ -132,7 +133,13 @@ function dirtyProductPayload(form, product) {
   return payload;
 }
 
-export default function EditProductModal({ open, onClose, product, onSaved }) {
+export default function EditProductModal({
+  open,
+  onClose,
+  product,
+  onSaved,
+  productNumberReadOnly = false,
+}) {
   const toast = useToast();
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
@@ -174,7 +181,7 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
       return;
     }
 
-    const payload = dirtyProductPayload(form, product);
+    const payload = dirtyProductPayload(form, product, { includeSku: !productNumberReadOnly });
     if (Object.keys(payload).length === 0) {
       close();
       return;
@@ -230,18 +237,22 @@ export default function EditProductModal({ open, onClose, product, onSaved }) {
             />
           </div>
         </FormField>
-        <FormField label="الرقم" hint="رقم المنتج — مستقل عن الباركود">
-          <Input
-            value={form.sku}
-            inputMode="numeric"
-            autoComplete="off"
-            maxLength={11}
-            onChange={(e) => {
-              const raw = e.target.value.replace(/\D/g, "").slice(0, 11);
-              setForm({ ...form, sku: raw });
-            }}
-          />
-        </FormField>
+        {productNumberReadOnly ? (
+          <ProductNumberField sku={product?.sku} />
+        ) : (
+          <FormField label="الرقم" hint="رقم المنتج — مستقل عن الباركود">
+            <Input
+              value={form.sku}
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={11}
+              onChange={(e) => {
+                const raw = e.target.value.replace(/\D/g, "").slice(0, 11);
+                setForm({ ...form, sku: raw });
+              }}
+            />
+          </FormField>
+        )}
         <FormField label="الاسم" required>
           <Input
             value={form.name}

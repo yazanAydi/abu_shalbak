@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireOfficeRole } from "../middleware/auth.js";
-import { resolveExpiryAlertDays } from "../services/expiryAlertService.js";
+import { fetchNearExpiryItems, resolveExpiryAlertDays } from "../services/expiryAlertService.js";
+import { filterNearExpiryItems } from "../services/expiryReportCycle.js";
 import {
   hasAccountantPermission,
   NAV_PATH_PERMISSION_KEYS,
@@ -34,6 +35,33 @@ async function countNegativeStockRetail(db) {
 
 async function loadExpiryCounts(db) {
   const days = await resolveExpiryAlertDays(db);
+  const openCycle = await db.get(
+    "SELECT id FROM expiry_report_cycles WHERE status = 'open' LIMIT 1"
+  );
+  if (openCycle) {
+    const fetched = await fetchNearExpiryItems(db, days);
+    const visible = await filterNearExpiryItems(db, fetched);
+    const nearExpiry = visible.products.length + visible.batches.length;
+    const t = Math.max(0, Number(LOW_STOCK_THRESHOLD) || LOW_STOCK_THRESHOLD);
+    const lowStockOnlyRow = await db.get(
+      `SELECT COUNT(*) AS total FROM products
+       WHERE (
+         (min_stock IS NOT NULL AND stock <= min_stock)
+         OR (min_stock IS NULL AND stock <= ?)
+       )
+       AND COALESCE(inventory_scope, 'retail') = 'retail'
+       AND NOT (
+         expiry_date IS NOT NULL AND expiry_date != ''
+         AND stock > 0
+         AND julianday(expiry_date) <= julianday('now', '+' || ? || ' days')
+       )`,
+      [t, days]
+    );
+    return {
+      nearExpiry,
+      expiryPageAlerts: nearExpiry + (Number(lowStockOnlyRow?.total) || 0),
+    };
+  }
   const t = Math.max(0, Number(LOW_STOCK_THRESHOLD) || LOW_STOCK_THRESHOLD);
   const [productRow, batchRow, lowStockOnlyRow] = await Promise.all([
     db.get(

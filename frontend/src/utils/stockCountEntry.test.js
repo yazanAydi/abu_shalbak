@@ -2,6 +2,7 @@ import {
   countLinePayload,
   countLinesPayload,
   countQtyEntered,
+  describeCountSystemQty,
   countDocumentDepartment,
   countScopeParams,
   editorRowFromCountLine,
@@ -110,6 +111,22 @@ describe("stockCountEntry", () => {
     expect(missingCountSources(picture, rows.slice(0, 2)).map(sourceIdentity)).toEqual(["blank"]);
   });
 
+  test("only a checked dated line is sent as an expiry verification", () => {
+    const picture = { has_dated_batches: true, sources: [] };
+    const dated = row({ counted_qty: "2", expiry_date: "2027-04-01", expiry_verified: true });
+    expect(countLinePayload(dated, picture)).toEqual({
+      batch_source: "dated",
+      expiry_date: "2027-04-01",
+      counted_qty: 2,
+      expiry_verified: true,
+    });
+    expect(countLinePayload({ ...dated, expiry_verified: false }, picture).expiry_verified).toBeUndefined();
+    expect(countLinePayload(
+      row({ counted_qty: "2", expiry_date: "", expiry_verified: true }),
+      picture
+    ).expiry_verified).toBeUndefined();
+  });
+
   test("a product without dated batches accepts a first date and still counts undated stock", () => {
     const plain = { has_dated_batches: false, sources: [], product_stock: 10, product_expiry_date: "2031-01-15" };
     const dated = row({ line_key: "a", product_id: 2, name: "خبز", counted_qty: "10", expiry_date: "2027-01-15" });
@@ -158,6 +175,79 @@ describe("stockCountEntry", () => {
       expiry_date: "2028-08-08",
     });
     expect(seedCountExpiry(reopened, one).expiry_date).toBe("2028-08-08");
+  });
+
+  test("system quantity follows the selected source and warehouse, and never invents zero", () => {
+    const split = {
+      product_id: 1,
+      expiry_date: "2027-01-01",
+      expiry_picture_loaded: true,
+      stock_picture: {
+        has_dated_batches: true,
+        product_stock: 40,
+        unit: "حبة",
+        main_warehouse_id: 1,
+        sources: [{ batch_source: "dated", expiry_date: "2027-01-01", quantity: 13 }],
+        locations: [
+          { warehouse_id: 1, warehouse_type: "main", expiry_date: "2027-01-01", quantity: 4 },
+          { warehouse_id: 2, warehouse_type: "returns", expiry_date: "2027-01-01", quantity: 9 },
+        ],
+      },
+    };
+    expect(describeCountSystemQty(split)).toEqual({ text: "4", basis: "live", unit: "حبة", note: "" });
+    expect(describeCountSystemQty({ ...split, expiry_picture_loaded: false }).text).toBe("—");
+    expect(describeCountSystemQty({ ...split, product_id: null }).text).toBe("—");
+    expect(describeCountSystemQty({
+      ...split,
+      expiry_picture_loaded: false,
+      saved_system_qty: 0,
+    }, { preferSaved: true })).toEqual({ text: "0", basis: "saved", unit: "حبة", note: "رصيد محفوظ" });
+    expect(describeCountSystemQty({
+      product_id: 1,
+      expiry_date: "2027-01-01",
+      expiry_picture_loaded: true,
+      stock_picture: {
+        has_dated_batches: true,
+        product_stock: 40,
+        sources: [
+          { batch_source: "dated", expiry_date: "2027-01-01", quantity: 4 },
+          { batch_source: "undated", expiry_date: null, quantity: 36 },
+        ],
+        locations: [],
+      },
+    }).text).toBe("4");
+    expect(describeCountSystemQty({
+      product_id: 1,
+      expiry_date: "",
+      expiry_picture_loaded: true,
+      picture_failed: true,
+      stock_picture: null,
+    }).text).toBe("—");
+  });
+
+  test("a package unit converts the shown quantity and the saved base quantity", () => {
+    const row = {
+      product_id: 1,
+      expiry_date: "",
+      expiry_picture_loaded: true,
+      quantity_conversion: 6,
+      count_unit: "كرتونة",
+      counted_qty: "2",
+      stock_picture: {
+        has_dated_batches: true,
+        product_stock: 40,
+        unknown_quantity: 12,
+        unit: "حبة",
+        main_warehouse_id: 1,
+        sources: [{ batch_source: "undated", expiry_date: null, quantity: 12 }],
+        locations: [
+          { warehouse_id: 1, expiry_date: null, quantity: 12 },
+          { warehouse_id: 2, expiry_date: null, quantity: 6 },
+        ],
+      },
+    };
+    expect(describeCountSystemQty(row)).toMatchObject({ text: "2", unit: "كرتونة", basis: "live" });
+    expect(countLinePayload(row, row.stock_picture).counted_qty).toBe(12);
   });
 
   test("department search params and removed products stay scoped to the open editor", () => {
