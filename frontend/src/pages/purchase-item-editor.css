@@ -154,6 +154,22 @@
   z-index: 2;
 }
 
+.stock-count-editor .invoice-product-cell--duplicate .ui-input {
+  border-color: #b91c1c;
+  background: #fef2f2;
+  color: #7f1d1d;
+}
+
+.stock-count-editor .invoice-product-cell--duplicate .ui-input:focus {
+  box-shadow: 0 0 0 2px rgba(185, 28, 28, 0.2);
+}
+
+.invoice-product-cell__duplicate {
+  color: #b91c1c;
+  font-size: 0.75rem;
+  margin: 0.25rem 0 0;
+}
+
 .invoice-product-cell__list.search-dropdown,
 .invoice-product-cell__list {
   margin: 0;

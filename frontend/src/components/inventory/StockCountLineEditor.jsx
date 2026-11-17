@@ -162,6 +162,11 @@ export default function StockCountLineEditor({
   const pendingFocusRef = useRef(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const productOccurrences = new Map();
+  for (const row of items) {
+    const id = Number(row.product_id);
+    if (id > 0) productOccurrences.set(id, (productOccurrences.get(id) || 0) + 1);
+  }
 
   useEffect(() => {
     if (!pendingFocusRef.current) return;
@@ -381,6 +386,7 @@ export default function StockCountLineEditor({
                     <InvoiceLineProductCell
                       value={it.product_id}
                       productName={it.name}
+                      duplicate={(productOccurrences.get(Number(it.product_id)) || 0) > 1}
                       commitScan
                       onPick={(product) => {
                         const accepted = applyProduct(i, product);
