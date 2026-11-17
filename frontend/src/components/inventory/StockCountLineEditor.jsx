@@ -6,6 +6,7 @@ import { Button, Input } from "../ui";
 import { getAuthHeaders } from "../../utils/auth";
 import { dateOnly, dmyToYmd } from "../../utils/format";
 import { toLatinDigits } from "../../utils/forceLatinDigits";
+import { focusEditableOnTap } from "../../utils/focusEditableOnTap";
 import {
   focusInvoiceField,
   focusInvoiceProduct,
@@ -127,21 +128,10 @@ export default function StockCountLineEditor({
 }) {
   const [lineError, setLineError] = useState(null);
   const pendingFocusRef = useRef(null);
-  const pendingQtyFocusRef = useRef(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
   useEffect(() => {
-    if (pendingQtyFocusRef.current) {
-      const key = pendingQtyFocusRef.current;
-      const row = items.find((item) => item.line_key === key);
-      if (row?.product_id) {
-        pendingQtyFocusRef.current = null;
-        pendingFocusRef.current = null;
-        focusInvoiceField(key, "qty");
-      }
-      return;
-    }
     if (!pendingFocusRef.current) return;
     const key = pendingFocusRef.current;
     pendingFocusRef.current = null;
@@ -283,6 +273,7 @@ export default function StockCountLineEditor({
       className="purchase-item-editor stock-count-editor"
       data-enter-nav="invoice-lines"
       data-testid="stock-count-editor"
+      onClick={focusEditableOnTap}
       onKeyDownCapture={(e) => {
         if (readOnly || (e.key !== "Enter" && e.key !== "Tab")) return;
         const field = e.target?.getAttribute?.("data-invoice-field");
@@ -355,7 +346,10 @@ export default function StockCountLineEditor({
                       commitScan
                       onPick={(product) => {
                         const accepted = applyProduct(i, product);
-                        if (accepted) pendingQtyFocusRef.current = it.line_key;
+                        if (accepted) {
+                          pendingFocusRef.current = null;
+                          focusInvoiceField(it.line_key, "qty");
+                        }
                         return accepted;
                       }}
                       scope={membership ? null : scope}
@@ -373,6 +367,7 @@ export default function StockCountLineEditor({
                     className="ui-input"
                     min={0}
                     step="any"
+                    inputMode="decimal"
                     placeholder="لم يُجرَد"
                     value={it.counted_qty}
                     data-invoice-field="qty"

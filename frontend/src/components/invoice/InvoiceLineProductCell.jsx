@@ -131,12 +131,13 @@ export default function InvoiceLineProductCell({
     setDirty(false);
     setOpen(false);
     setResults([]);
-    if (!deferFocus) {
+    // Stock counts focus quantity synchronously in onPick, including touch taps.
+    if (!deferFocus && !commitScan) {
       requestAnimationFrame(() => {
         if (inputRef.current) focusNextField(inputRef.current);
       });
     }
-  }, [onPick, productName]);
+  }, [onPick, productName, commitScan]);
 
   const resolveScan = useCallback((query, rows, highlighted) => {
     const code = normalizeBarcode(query);
@@ -222,6 +223,7 @@ export default function InvoiceLineProductCell({
         value={q}
         placeholder="اسم أو باركود…"
         autoComplete="off"
+        inputMode="text"
         onChange={(e) => {
           setQ(e.target.value);
           setDirty(true);
@@ -249,8 +251,9 @@ export default function InvoiceLineProductCell({
                 onMouseEnter={() => setHighlight(i)}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  pickProduct(p);
+                  if (!commitScan) pickProduct(p);
                 }}
+                onClick={commitScan ? () => pickProduct(p) : undefined}
               >
                 <strong>{p.name}</strong>
                 <span>

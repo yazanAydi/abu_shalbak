@@ -224,6 +224,29 @@ describe("StockCountLineEditor", () => {
     });
   }
 
+  test("tapping a product focuses counted quantity inside the click without changing the count", async () => {
+    render(<Harness />);
+    clickAdd();
+    const product = container.querySelector("[data-invoice-field='product']");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    act(() => {
+      setter.call(product, "حلي");
+      product.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+    const option = document.querySelector(".invoice-product-cell__list li");
+    const quantity = container.querySelector("[data-testid='count-qty']");
+    await act(async () => {
+      option.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      option.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      // An effect/animation-frame focus would be too late for this assertion.
+      expect(document.activeElement).toBe(quantity);
+    });
+    expect(quantity.getAttribute("inputmode")).toBe("decimal");
+    expect(quantity.value).toBe("");
+    expect(container.querySelector("[data-testid='count-expiry-verified']").checked).toBe(false);
+  });
+
   test("one recorded batch prefills the expiry and a quantity edit keeps it", async () => {
     api.get.mockImplementation(() => pictureResponse({
       has_dated_batches: true,
