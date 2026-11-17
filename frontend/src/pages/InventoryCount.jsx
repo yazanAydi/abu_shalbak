@@ -26,7 +26,6 @@ import {
   countLinesPayload,
   countScopeParams,
   editorRowFromCountLine,
-  firstIncompleteCount,
   groupCountRows,
   removedProductIds,
   validateCountDraft,
@@ -413,7 +412,6 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
     if (blockUncommittedExpiry()) return;
     setError(null);
     setMsg(null);
-    let pictures;
     try {
       const localIssue = validateCountDraft(draftLines, null);
       if (localIssue) {
@@ -424,34 +422,16 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
         setError("لا توجد أسطر جرد");
         return;
       }
-      pictures = await loadPictures(draftLines);
-      const pictureIssue = validateCountDraft(draftLines, pictures);
-      if (pictureIssue) {
-        showDraftIssue(pictureIssue);
-        return;
-      }
-      const incomplete = firstIncompleteCount(draftLines, pictures);
-      if (incomplete) {
-        setError(incomplete.message);
-        return;
-      }
+
     } catch (e) {
       setError(apiErrorMessage(e, "فشل الترحيل"));
       return;
     }
-    if (!window.confirm("هل تريد ترحيل الجرد وتحديث المخزون؟ لا يمكن التراجع عن هذه الخطوة.")) return;
+    if (!window.confirm("هل تريد اعتماد الكميات والتواريخ المدخلة بدلاً من أرصدة الصنف وتواريخه القديمة في المستودع المعدود؟ لا يمكن التراجع عن هذه الخطوة.")) return;
     setSaving(true);
     try {
       const saved = await persistDraft(session, draftLines);
       if (!saved) return;
-      const incomplete = firstIncompleteCount(
-        (saved.saved?.lines || []).map(editorRowFromCountLine),
-        saved.pictures
-      );
-      if (incomplete) {
-        setError(incomplete.message);
-        return;
-      }
       await api.post(
         `/api/inventory/counts/${session.id}/post`,
         { department },

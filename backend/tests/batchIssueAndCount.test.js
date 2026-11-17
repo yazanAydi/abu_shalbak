@@ -376,9 +376,9 @@ describe("batch-aware issues and counts", () => {
     expect(Number(stock.stock)).toBe(10);
   });
 
-  test("incomplete, stale, and repeated counts do not post", async () => {
+  test("omitted dates are replaced while stale and repeated counts still do not post", async () => {
     const { product, later, earlier } = await separatedLots("جرد ناقص");
-    const sessionId = await openCount();
+    let sessionId = await openCount();
     const partial = await request(ctx.app)
       .post(`/api/v1/inventory/counts/${sessionId}/lines`)
       .set(authHeader(adminToken))
@@ -393,21 +393,22 @@ describe("batch-aware issues and counts", () => {
       .post(`/api/v1/inventory/counts/${sessionId}/post`)
       .set(authHeader(adminToken))
       .send({});
-    expect(incomplete.status).toBe(400);
-    expect(unwrap(incomplete.body).code || incomplete.body.code).toBe("INCOMPLETE_COUNT");
+    expect(incomplete.status).toBe(200);
     let listed = await listStockBatches(ctx.db, product.id);
-    expect(listed.product_stock).toBe(18);
+    expect(listed.product_stock).toBe(6);
+    expect(listed.rows.find((r) => r.expiry_date === later)?.quantity || 0).toBe(0);
+    await receive(product.id, 10, 40, later);
+    await receive(product.id, 2, 10, earlier);
+    sessionId = await openCount();
 
     await ctx.db.run("DELETE FROM stock_count_lines WHERE session_id = ?", [sessionId]);
     expect((await request(ctx.app)
       .post(`/api/v1/inventory/counts/${sessionId}/lines`)
       .set(authHeader(adminToken))
       .send(fullCount(product, later, earlier, { later: 10, earlier: 8, undated: 0 }))).status).toBe(200);
-    await ctx.db.run(
-      "UPDATE product_batches SET quantity = quantity - 1 WHERE product_id = ? AND expiry_date = ?",
-      [product.id, earlier]
-    );
-    await ctx.db.run("UPDATE products SET stock = stock - 1 WHERE id = ?", [product.id]);
+    const damaged = await issue(product, [{ product_id: product.id, unit_id: product.unitId,
+      quantity: 1, batch_source: "dated", expiry_date: earlier }]);
+    expect(damaged.status).toBe(201);
     const stale = await request(ctx.app)
       .post(`/api/v1/inventory/counts/${sessionId}/post`)
       .set(authHeader(adminToken))

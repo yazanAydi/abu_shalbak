@@ -6,12 +6,9 @@ import {
   countDocumentDepartment,
   countScopeParams,
   editorRowFromCountLine,
-  firstIncompleteCount,
   interpretCountExpiry,
-  missingCountSources,
   removedProductIds,
   seedCountExpiry,
-  sourceIdentity,
   validateCountDraft,
   validateCountLine,
 } from "./stockCountEntry";
@@ -89,7 +86,7 @@ describe("stockCountEntry", () => {
     }).expiry_date).toBe("2027-03-01");
   });
 
-  test("two expiry dates stay separate and omitted sources are not filled with zero", () => {
+  test("only entered expiry rows are sent even when historical sources are omitted", () => {
     const rows = [
       row({ line_key: "a", counted_qty: "3", expiry_date: "2027-01-01" }),
       row({ line_key: "b", counted_qty: "5", expiry_date: "2027-06-01" }),
@@ -99,8 +96,8 @@ describe("stockCountEntry", () => {
       { batch_source: "dated", expiry_date: "2027-01-01", counted_qty: 3 },
       { batch_source: "dated", expiry_date: "2027-06-01", counted_qty: 5 },
     ]);
-    expect(missingCountSources(picture, rows).map(sourceIdentity)).toEqual(["blank"]);
-    expect(firstIncompleteCount(rows, { 1: picture }).message).toMatch(/غير مكتمل/);
+    // Omitted recorded sources are replaced by the entered snapshot at posting.
+    expect(validateCountDraft(rows, { 1: picture })).toBeNull();
     expect(countLinePayload(rows[0], picture).counted_qty).not.toBe(0);
   });
 
@@ -112,7 +109,7 @@ describe("stockCountEntry", () => {
     expect(issue.message).toMatch(/لن يُحسب الجرد مرتين/);
   });
 
-  test("explicit zero completes an undated source and a new date stays available", () => {
+  test("explicit zero and a new date are accepted as entered", () => {
     const rows = [
       row({ line_key: "a", counted_qty: "3", expiry_date: "2027-01-01" }),
       row({ line_key: "b", counted_qty: "5", expiry_date: "2027-06-01" }),
@@ -120,14 +117,13 @@ describe("stockCountEntry", () => {
       row({ line_key: "d", counted_qty: "2", expiry_date: "2028-01-01" }),
     ];
     expect(validateCountDraft(rows, { 1: picture })).toBeNull();
-    expect(firstIncompleteCount(rows, { 1: picture })).toBeNull();
     expect(countLinesPayload(rows, picture)).toEqual([
       { batch_source: "dated", expiry_date: "2027-01-01", counted_qty: 3 },
       { batch_source: "dated", expiry_date: "2027-06-01", counted_qty: 5 },
       { batch_source: "undated", expiry_date: null, counted_qty: 0 },
       { batch_source: "dated", expiry_date: "2028-01-01", counted_qty: 2 },
     ]);
-    expect(missingCountSources(picture, rows.slice(0, 2)).map(sourceIdentity)).toEqual(["blank"]);
+    expect(validateCountDraft(rows.slice(0, 2), { 1: picture })).toBeNull();
   });
 
   test("only a checked dated line is sent as an expiry verification", () => {
@@ -155,9 +151,7 @@ describe("stockCountEntry", () => {
       { batch_source: "dated", expiry_date: "2027-01-15", counted_qty: 10 },
       { batch_source: "undated", expiry_date: null, counted_qty: 0 },
     ]);
-    expect(firstIncompleteCount([dated], { 2: plain })).toMatchObject({
-      missing: [expect.objectContaining({ batch_source: "undated", quantity: 10 })],
-    });
+    expect(validateCountDraft([dated], { 2: plain })).toBeNull();
     expect(countLinePayload({ ...dated, expiry_date: "" }, plain)).toEqual({
       batch_source: null,
       expiry_date: null,

@@ -1,3 +1,4 @@
+import { applyCountSnapshot } from "../services/countSnapshotService.js";
 import { STOCK_ZERO_EPS, stockQuantitySql } from "../utils/stockQuantity.js";
 import bcrypt from "bcrypt";
 import { createSafeRouter } from "../utils/asyncHandler.js";
@@ -21,7 +22,7 @@ import {
 } from "../utils/countDepartment.js";
 import { resolveBakeryReportCategories } from "../services/bakeryReportService.js";
 import { bakeryMembershipSql, parseBakeryKind } from "../utils/bakeryMembership.js";
-import { assignDatedQuantityFromUnknown, listPhysicalSources, recordBatchAllocation, applyStockAdjustmentBatches, moveUndatedOnMain, applyCountedDatedQuantity } from "../services/stockBatchService.js";
+import { assignDatedQuantityFromUnknown, listPhysicalSources, applyStockAdjustmentBatches } from "../services/stockBatchService.js";
 import {
   diagnoseZeroAllStock,
   parseZeroAllIdempotencyKey,
@@ -97,10 +98,6 @@ async function postAdjustmentLines(db, adj, items, userId) {
   }
 }
 
-function sameQty(a, b) {
-  return Math.abs(round6(a) - round6(b)) <= 1e-6;
-}
-
 function countSourceKey(batchSource, expiryDate) {
   if (batchSource === "dated") {
     const parsed = interpretExpiryInput(expiryDate);
@@ -159,16 +156,12 @@ async function saveCountLine(db, sessionId, product, entry) {
       conversion_to_base: Number(unit.conversion_to_base) });
   }
   const picture = await listPhysicalSources(db, product.id);
-  const batchSource = entry.batchSource;
+  const batchSource = entry.batchSource || (picture.has_dated_batches ? "undated" : null);
   const expiryDate = entry.expiryDate;
   const qty = entry.qty;
-  if (!batchSource && picture.has_dated_batches) {
-    throw badRequest(
-      "حدد الدفعة أو المخزون غير المحدد. لا يُختار مصدر تلقائياً",
-      "BATCH_SOURCE_REQUIRED"
-    );
-  }
-
+  const { main } = await operationalWarehouses(db);
+  const warehouseId = Number(entry.warehouse_id) || main?.id || null;
+  const locations = await locationRows(db, product.id);
   let systemQty;
   if (batchSource === "dated") {
     const source = picture.sources.find((row) => row.batch_source === "dated" && row.expiry_date === expiryDate);
@@ -180,9 +173,13 @@ async function saveCountLine(db, sessionId, product, entry) {
   } else {
     systemQty = Number(product.stock) || 0;
   }
+  if (locations.length) {
+    systemQty = locations.find((row) => row.warehouse_id === warehouseId && (row.expiry_date || "") === (expiryDate || ""))?.quantity || 0;
+  }
   const variance = round6(qty - systemQty);
-  const { main } = await operationalWarehouses(db);
-  const warehouseId = Number(entry.warehouse_id) || main?.id || null;
+  const sourceSnapshot = JSON.stringify(locations.length
+    ? locations.filter((row) => row.warehouse_id === warehouseId).map((row) => [row.expiry_date || "", row.quantity])
+    : (picture.has_dated_batches ? picture.sources : [{ expiry_date: null, quantity: product.stock }]).map((row) => [row.expiry_date || "", Number(row.quantity) || 0]));
   const existing = await db.get(
     `SELECT id FROM stock_count_lines
       WHERE session_id = ? AND product_id = ?
@@ -194,37 +191,20 @@ async function saveCountLine(db, sessionId, product, entry) {
   if (existing) {
     await db.run(
       `UPDATE stock_count_lines
-          SET system_qty = ?, counted_qty = ?, variance = ?, batch_source = ?, expiry_date = ?, warehouse_id = ?, expiry_verified = ?, count_unit_snapshot = ?
+          SET system_qty = ?, counted_qty = ?, variance = ?, batch_source = ?, expiry_date = ?, warehouse_id = ?, expiry_verified = ?, count_unit_snapshot = ?, stock_source_snapshot = ?
         WHERE id = ?`,
-      [systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, unitSnapshot, existing.id]
+      [systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, unitSnapshot, sourceSnapshot, existing.id]
     );
   } else {
     await db.run(
       `INSERT INTO stock_count_lines
-         (session_id, product_id, system_qty, counted_qty, variance, batch_source, expiry_date, warehouse_id, expiry_verified, count_unit_snapshot)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [sessionId, product.id, systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, unitSnapshot]
+         (session_id, product_id, system_qty, counted_qty, variance, batch_source, expiry_date, warehouse_id, expiry_verified, count_unit_snapshot, stock_source_snapshot)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sessionId, product.id, systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, unitSnapshot, sourceSnapshot]
     );
   }
 }
 
-function requiredCountSources(picture, stock) {
-  if (picture.has_dated_batches) return picture.sources || [];
-  const qty = Number(stock) || 0;
-  if (Math.abs(qty) <= 1e-6) return [];
-  return [{ batch_source: "undated", expiry_date: null, quantity: qty }];
-}
-
-async function recordCountParts(db, parts, { productId, sessionId, direction }) {
-  for (const part of parts) {
-    await recordBatchAllocation(db, part, {
-      productId,
-      direction,
-      referenceType: "stock_count",
-      referenceId: sessionId,
-    });
-  }
-}
 // Maps adjustment type -> ledger movement_type and sign of stock change.
 const ADJ_MOVEMENT = {
   in: { type: "adjust_in", sign: 1 },
@@ -601,130 +581,7 @@ export function createInventoryRouter(db) {
           byProduct.set(line.product_id, list);
         }
         for (const [productId, productLines] of byProduct) {
-          const picture = await listPhysicalSources(db, productId);
-          const product = await db.get("SELECT name, stock FROM products WHERE id = ?", [productId]);
-          const name = product?.name || String(productId);
-          const productLevel = !picture.has_dated_batches
-            && productLines.length === 1
-            && !productLines[0].batch_source;
-          if (productLevel) {
-            const liveStock = Number(product?.stock) || 0;
-            const counted = Number(productLines[0].counted_qty);
-            const delta = counted - liveStock;
-            await db.run(
-              "UPDATE stock_count_lines SET system_qty = ?, variance = ? WHERE id = ?",
-              [liveStock, delta, productLines[0].id]
-            );
-            if (delta !== 0) {
-              await moveUndatedOnMain(db, productId, delta);
-              await applyStockDelta(db, productId, delta, {
-                movementType: "count",
-                referenceType: "stock_count_session",
-                referenceId: session.id,
-                userId: req.user.id,
-                notes: `جرد #${session.id}`,
-              });
-            }
-            continue;
-          }
-
-          const seenKeys = new Set();
-          for (const line of productLines) {
-            const key = countSourceKey(line.batch_source, line.expiry_date);
-            if (seenKeys.has(key)) {
-              throw badRequest(
-                "سطر مكرر لنفس الصنف وتاريخ الصلاحية. لن يُحسب الجرد مرتين",
-                "DUPLICATE_SOURCE"
-              );
-            }
-            seenKeys.add(key);
-          }
-
-          const incomplete = `الجرد غير مكتمل للصنف ${name}. سجّل كمية لكل دفعة وللمخزون غير المحدد، بما فيها الصفر.`;
-          const stale = `تغير رصيد ${name} منذ حفظ الجرد. حدّث الكميات وأعد الجرد قبل الترحيل.`;
-          const matched = new Set();
-          for (const source of requiredCountSources(picture, product?.stock)) {
-            const key = countSourceKey(source.batch_source, source.expiry_date);
-            const line = productLines.find((row) => countSourceKey(row.batch_source, row.expiry_date) === key);
-            if (!line) throw badRequest(incomplete, "INCOMPLETE_COUNT");
-            if (!sameQty(source.quantity, line.system_qty)) throw badRequest(stale, "STALE_COUNT");
-            matched.add(key);
-          }
-          for (const line of productLines) {
-            const key = countSourceKey(line.batch_source, line.expiry_date);
-            if (matched.has(key)) continue;
-            const parsed = interpretExpiryInput(line.expiry_date);
-            if (line.batch_source !== "dated" || !parsed.ok || !parsed.date) {
-              throw badRequest(`سطر جرد لا يطابق مصدراً حالياً للصنف ${name}`, "COUNT_SHAPE");
-            }
-            const live = (picture.sources || []).find(
-              (row) => row.batch_source === "dated" && row.expiry_date === parsed.date
-            );
-            if (!sameQty(live ? Number(live.quantity) || 0 : 0, line.system_qty)) {
-              throw badRequest(stale, "STALE_COUNT");
-            }
-          }
-
-          const undatedLine = productLines.find((line) => line.batch_source === "undated");
-          const undatedPrev = undatedLine
-            ? (picture.has_dated_batches ? Number(picture.unknown_quantity) || 0 : Number(product?.stock) || 0)
-            : 0;
-          const undatedNext = undatedLine ? round6(undatedLine.counted_qty) : undatedPrev;
-          let undatedBudget = round6(Math.max(0, undatedPrev - undatedNext));
-          let fundedTotal = 0;
-          let countedTotal = 0;
-          for (const line of productLines) {
-            countedTotal = round6(countedTotal + round6(line.counted_qty));
-            if (line.batch_source !== "dated") continue;
-            const applied = await applyCountedDatedQuantity(
-              db,
-              productId,
-              line.expiry_date,
-              line.counted_qty,
-              { fundFromUndated: undatedBudget }
-            );
-            undatedBudget = round6(Math.max(0, undatedBudget - (applied.funded || 0)));
-            fundedTotal = round6(fundedTotal + (applied.funded || 0));
-            await db.run("UPDATE stock_count_lines SET variance = ? WHERE id = ?", [applied.delta, line.id]);
-            if (applied.delta !== 0) {
-              const rows = applied.parts?.length
-                ? applied.parts
-                : [{ expiry_date: applied.expiry_date, quantity: Math.abs(applied.delta) }];
-              await recordCountParts(db, rows, {
-                productId,
-                sessionId: session.id,
-                direction: applied.delta > 0 ? "in" : "out",
-              });
-            }
-          }
-          if (undatedLine) {
-            const rawDelta = round6(undatedNext - undatedPrev);
-            const warehouseDelta = round6(rawDelta + fundedTotal);
-            await db.run("UPDATE stock_count_lines SET variance = ? WHERE id = ?", [rawDelta, undatedLine.id]);
-            let parts = [];
-            if (warehouseDelta !== 0) parts = (await moveUndatedOnMain(db, productId, warehouseDelta)) || [];
-            if (rawDelta !== 0) {
-              const covered = round6(parts.reduce((sum, part) => sum + (Number(part.quantity) || 0), 0));
-              const rows = [...parts];
-              const missing = round6(Math.abs(rawDelta) - covered);
-              if (missing > 1e-9) rows.push({ expiry_date: null, quantity: missing });
-              await recordCountParts(db, rows, {
-                productId,
-                sessionId: session.id,
-                direction: rawDelta > 0 ? "in" : "out",
-              });
-            }
-          }
-          const stockDelta = round6(countedTotal - (Number(product?.stock) || 0));
-          if (stockDelta !== 0) {
-            await applyStockDelta(db, productId, stockDelta, {
-              movementType: "count",
-              referenceType: "stock_count_session",
-              referenceId: session.id,
-              userId: req.user.id,
-              notes: `جرد #${session.id}`,
-            });
-          }
+          await applyCountSnapshot(db, { productId, lines: productLines, sessionId: session.id, userId: req.user.id });
         }
         expiryBaseline = await recordCountExpiryBaseline(db, {
           sessionId: session.id,
@@ -735,11 +592,11 @@ export function createInventoryRouter(db) {
           "UPDATE stock_count_sessions SET status = 'posted', posted_at = datetime('now') WHERE id = ?",
           [session.id]
         );
-      });
-      await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_COUNT, "stock_count_sessions", session.id, { status: "open" }, {
-        status: "posted",
-        lines: postedLines.length,
-        expiry_dates_verified: expiryBaseline.verified,
+        await logAudit(db, req, AUDIT_ACTIONS.INVENTORY_COUNT, "stock_count_sessions", session.id, { status: "open" }, {
+          status: "posted",
+          lines: postedLines.length,
+          expiry_dates_verified: expiryBaseline.verified,
+        });
       });
     } catch (e) {
       return next(e);

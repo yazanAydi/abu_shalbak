@@ -404,34 +404,6 @@ export function validateCountDraft(rows, picturesByProductId = null) {
   return null;
 }
 
-export function missingCountSources(picture, rows) {
-  const seen = new Set((rows || []).map((row) => countRowIdentity(row)));
-  const anyDated = (rows || []).some((row) => countRowIdentity(row) !== "blank");
-  if (!picture?.has_dated_batches) {
-    if (!anyDated) return [];
-    const undatedQty = Number(picture.product_stock);
-    if (!Number.isFinite(undatedQty) || Math.abs(undatedQty) <= 1e-9) return [];
-    if (seen.has("blank")) return [];
-    return [{ batch_source: "undated", expiry_date: null, quantity: undatedQty }];
-  }
-  return (picture.sources || []).filter((source) => !seen.has(sourceIdentity(source)));
-}
-
-export function firstIncompleteCount(rows, picturesByProductId) {
-  for (const [productId, list] of groupCountRows(rows)) {
-    const missing = missingCountSources(picturesByProductId?.[productId], list);
-    if (missing.length) {
-      return {
-        productId,
-        name: list[0]?.name || "",
-        missing,
-        message: `الجرد غير مكتمل للصنف ${list[0]?.name || ""}. سجّل كمية لكل دفعة وللمخزون غير المحدد، بما فيها الصفر.`,
-      };
-    }
-  }
-  return null;
-}
-
 export function removedProductIds(loadedIds, rows) {
   const current = new Set(groupCountRows(rows).keys());
   const removed = [];

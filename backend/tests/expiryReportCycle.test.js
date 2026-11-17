@@ -357,7 +357,7 @@ describe("expiry report reset cycle", () => {
     await reset("retail", "فصل المستودع");
     const sessionId = await openCount("retail");
     await saveLines(sessionId, "retail", product.id, [
-      { batch_source: "dated", expiry_date: soon, counted_qty: 10, expiry_verified: true },
+      { batch_source: "dated", expiry_date: soon, counted_qty: 6, expiry_verified: true },
       { batch_source: "undated", expiry_date: null, counted_qty: 0 },
     ]);
     expect((await postCount(sessionId, "retail")).status).toBe(200);

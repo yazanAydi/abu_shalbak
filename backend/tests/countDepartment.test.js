@@ -335,7 +335,7 @@ describe("independent supermarket and bakery counts", () => {
     expect(await stockOf(market.id)).toBe(9);
   });
 
-  test("an incomplete bakery count does not block supermarket posting, and a failed post can be retried", async () => {
+  test("a stale bakery count does not block supermarket posting, and a failed post can be retried", async () => {
     const market = await makeProduct("سوق كامل", "retail", 20);
     const flour = await makeProduct("دقيق ناقص", "bakery", 10);
     await ctx.db.run(
@@ -357,6 +357,7 @@ describe("independent supermarket and bakery counts", () => {
         sources: [{ batch_source: "dated", expiry_date: "2034-01-01", counted_qty: 6 }],
       })).status).toBe(200);
 
+    await ctx.db.run("UPDATE products SET stock = 11 WHERE id = ?", [flour.id]);
     const [bakeryPost, marketPost] = await Promise.all([
       request(ctx.app)
         .post(`/api/v1/inventory/counts/${bakerySession.id}/post`)
@@ -368,10 +369,10 @@ describe("independent supermarket and bakery counts", () => {
         .send({ department: "retail" }),
     ]);
     expect(bakeryPost.status).toBe(400);
-    expect(unwrap(bakeryPost.body).code).toBe("INCOMPLETE_COUNT");
+    expect(unwrap(bakeryPost.body).code).toBe("STALE_COUNT");
     expect(marketPost.status).toBe(200);
     expect(await stockOf(market.id)).toBe(9);
-    expect(await stockOf(flour.id)).toBe(10);
+    expect(await stockOf(flour.id)).toBe(11);
     expect((await ctx.db.get("SELECT status FROM stock_count_sessions WHERE id = ?", [bakerySession.id])).status).toBe("open");
 
     const finished = await request(ctx.app)

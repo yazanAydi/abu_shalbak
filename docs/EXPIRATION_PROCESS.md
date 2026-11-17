@@ -10,7 +10,7 @@ In this codebase, **expiration is a monitoring and alerting system**, not an aut
 - Sends **daily Telegram alerts** for items nearing expiry (plus manual send from store settings)
 - Deducts dated lots on sale in earliest-expiry order, and restores the same lots on refund
 - Lets an inventory issue name the dated lot or the undated remainder it takes from
-- Lets a stock count record a quantity for every dated lot and for undated stock
+- Lets a stock count replace old dates with the quantities and dates actually counted
 
 It does **not** automatically remove expired stock or block checkout for expired products. A damage adjustment still uses ledger type `expiry_writeoff`, and it now reduces the lot or undated remainder the user names.
 
@@ -160,7 +160,7 @@ sequenceDiagram
 
 An inventory issue (every reason on that document, including damaged) writes ledger type `manual_adjustment`. When the product has dated lots, each line must name `batch_source`: `dated` with that lot's expiry, or `undated` with an explicit null expiry. A missing source is rejected. The named lot quantity, the allocation row, the product stock, and the ledger move in one transaction. A product with no dated lots keeps a product-only line and does not write a lot allocation.
 
-A stock count of a product with dated lots stores a counted quantity for every lot, including zero, and for undated stock. An empty input is not a count of zero. Posting replaces those sources with the counted quantities and writes one company stock movement for the net change. A reshuffle that keeps the same total writes lot allocation history and no company stock movement. If a source quantity changed after the line was saved, posting is rejected and the session stays open. A product with no dated lots still uses one counted quantity and the previous live-stock rule.
+A stock count stores the quantities and dates actually entered for each counted product and warehouse. Posting replaces that warehouse's source picture: unlisted old dates and undated stock become zero without requiring manual zero rows. An empty quantity is still not a count of zero. Other products and warehouses remain unchanged. A date reshuffle that keeps the same total writes allocation history without a company stock movement; a quantity change writes one net company movement. If a saved warehouse source picture changed, posting is rejected and the entire session stays open. Plain undated product-only counts retain the existing live-stock posting rule, including legacy balances awaiting warehouse reconciliation.
 
 Older issue lines have `batch_source` null. That null is not an undated allocation. A lot row is not deleted while it still has quantity or allocation history. A complete count is what reconciles a case where dated quantities already exceed on-hand stock; it does not invent an expiry or rewrite old documents.
 
@@ -216,3 +216,21 @@ stateDiagram-v2
 ## Key Takeaway
 
 The **expiration process** = **track dates → query with `julianday` → report in UI → notify via Telegram → optionally manual write-off**. Alerts inform staff; they do not change inventory. Operational response (discount, remove from shelf, write off) is manual outside the automated alert loop.
+
+
+## Stock counts replace the counted warehouse picture
+
+For each product included in a posted count, only the entered quantities and expiry
+dates remain in the counted warehouse. An omitted old date or undated remainder
+is reduced to zero automatically; staff do not need to add zero rows for old
+records. A blank entered date means the counted quantity is undated. Explicit
+zero is valid, but an empty counted-quantity field is still incomplete. Products
+not included in the session and other warehouses stay unchanged. Duplicate rows
+for the same product and expiry are still rejected.
+
+Posting records batch/source allocations and one net product stock correction,
+preserving receipt identity across corrected dates where stock is reassigned.
+Previous ledger entries, purchase documents and sale-cost snapshots are not
+rewritten. A stored source picture guards against movements after saving, and
+posting stays atomic. Expiry-report verification still requires an explicitly
+verified dated line; omitted dates are not marked verified.
