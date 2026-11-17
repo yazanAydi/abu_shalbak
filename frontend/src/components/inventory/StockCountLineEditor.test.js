@@ -5,6 +5,9 @@ import StockCountLineEditor from "./StockCountLineEditor";
 import { searchProductsApi } from "../../utils/productSearch";
 import api from "../../apiClient";
 
+const mockInfo = jest.fn();
+jest.mock("../ui/Toast", () => ({ useToast: () => ({ info: mockInfo }) }));
+
 if (typeof globalThis.IS_REACT_ACT_ENVIRONMENT === "undefined") {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 }
@@ -41,6 +44,7 @@ describe("StockCountLineEditor", () => {
   let root;
 
   beforeEach(() => {
+    mockInfo.mockClear();
     searchProductsApi.mockReset();
     searchProductsApi.mockResolvedValue([
       { id: 7, name: "حليب", barcode: "123456", stock: 4, sku: "12" },
@@ -225,27 +229,27 @@ describe("StockCountLineEditor", () => {
     });
   }
 
-  test("marks the original and every duplicate product, including different dates, and clears after removal", async () => {
+  test("notifies on another copy of a product with its existing row, without blocking expiry rows", async () => {
     render(<Harness initial={[
       { line_key: "duplicate-1", product_id: 7, name: "حليب", counted_qty: "2", expiry_date: "2027-01-01" },
       { line_key: "duplicate-2", product_id: 7, name: "حليب", counted_qty: "3", expiry_date: "2027-02-01" },
     ]} />);
     await act(async () => {});
-    expect(container.querySelectorAll(".invoice-product-cell--duplicate")).toHaveLength(2);
-    expect(container.querySelector("[data-invoice-line='duplicate-1'] .invoice-product-cell--duplicate")).toBeTruthy();
-    expect(container.querySelector("[data-invoice-line='duplicate-2'] .invoice-product-cell--duplicate")).toBeTruthy();
-    // Selecting another copy marks that copy as well, rather than only the last row.
+    expect(mockInfo).not.toHaveBeenCalled();
     await pickMilk({ last: true });
-    expect(container.querySelectorAll(".invoice-product-cell--duplicate")).toHaveLength(3);
-    const inputs = [...container.querySelectorAll("[data-invoice-field='product']")];
-    expect(inputs.every((input) => document.getElementById(input.getAttribute("aria-describedby"))?.textContent === "الصنف مكرر في الجرد")).toBe(true);
+    expect(mockInfo).toHaveBeenCalledWith("الصنف «حليب» موجود بالفعل في جلسة الجرد — السطر 1", 6000);
+    expect(container.querySelectorAll(".invoice-product-cell--duplicate")).toHaveLength(0);
+    expect(container.querySelectorAll("[data-invoice-line]")).toHaveLength(3);
     const quantities = [...container.querySelectorAll("[data-testid='count-qty']")];
     expect(quantities.map((input) => input.value)).toEqual(["2", "3", ""]);
     act(() => container.querySelectorAll("[aria-label='حذف']")[2].click());
-    expect(container.querySelectorAll(".invoice-product-cell--duplicate")).toHaveLength(2);
     act(() => container.querySelectorAll("[aria-label='حذف']")[1].click());
     expect(container.querySelectorAll(".invoice-product-cell--duplicate")).toHaveLength(0);
     expect(container.querySelector("[data-testid='count-qty']").value).toBe("2");
+    mockInfo.mockClear();
+    // Re-selecting the same product on its own existing row is not a duplicate.
+    await pickMilk();
+    expect(mockInfo).not.toHaveBeenCalled();
   });
 
   test("unit defaults to the product unit and switching units compares stock without replacing the typed count", async () => {

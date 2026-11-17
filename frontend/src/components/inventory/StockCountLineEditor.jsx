@@ -3,6 +3,7 @@ import api from "../../apiClient";
 import InvoiceLineProductCell from "../invoice/InvoiceLineProductCell";
 import QtyStepper from "../QtyStepper";
 import { Button, Input } from "../ui";
+import { useToast } from "../ui/Toast";
 import { getAuthHeaders } from "../../utils/auth";
 import { dateOnly, dmyToYmd } from "../../utils/format";
 import { toLatinDigits } from "../../utils/forceLatinDigits";
@@ -159,14 +160,10 @@ export default function StockCountLineEditor({
   membership = null,
 }) {
   const [lineError, setLineError] = useState(null);
+  const toast = useToast();
   const pendingFocusRef = useRef(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const productOccurrences = new Map();
-  for (const row of items) {
-    const id = Number(row.product_id);
-    if (id > 0) productOccurrences.set(id, (productOccurrences.get(id) || 0) + 1);
-  }
 
   useEffect(() => {
     if (!pendingFocusRef.current) return;
@@ -216,6 +213,12 @@ export default function StockCountLineEditor({
     const previous = itemsRef.current[index];
     const switching = previous?.product_id && Number(previous.product_id) !== Number(product.id);
     const firstPick = !previous?.product_id || switching;
+    const existingIndex = itemsRef.current.findIndex((row) => (
+      row.line_key !== lineKey && Number(row.product_id) === Number(product.id)
+    ));
+    if (existingIndex >= 0) {
+      toast.info(`الصنف «${product.name || ""}» موجود بالفعل في جلسة الجرد — السطر ${existingIndex + 1}`, 6000);
+    }
     const conversion = Number(product.conversion_to_base);
     const countedUnit = product.unit_id != null && Number.isFinite(conversion) && conversion > 0;
     const requestId = Number(previous?.picture_request || 0) + 1;
@@ -386,7 +389,6 @@ export default function StockCountLineEditor({
                     <InvoiceLineProductCell
                       value={it.product_id}
                       productName={it.name}
-                      duplicate={(productOccurrences.get(Number(it.product_id)) || 0) > 1}
                       commitScan
                       onPick={(product) => {
                         const accepted = applyProduct(i, product);

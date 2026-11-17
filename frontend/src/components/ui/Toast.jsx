@@ -35,7 +35,7 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="ui-toast-stack" dir="rtl">
+      <div className="ui-toast-stack" dir="rtl" aria-live="polite" aria-relevant="additions">
         {toasts.map((t) => (
           <div key={t.id} className={`ui-toast ui-toast--${t.type}`} onClick={() => dismiss(t.id)}>
             <Icon name={t.type === "error" ? "alert" : t.type === "success" ? "check" : "inbox"} />

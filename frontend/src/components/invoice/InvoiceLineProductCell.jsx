@@ -18,7 +18,6 @@ export default function InvoiceLineProductCell({
   autoFocus = false,
   lineKey,
   commitScan = false,
-  duplicate = false,
 }) {
   const [q, setQ] = useState(productName || "");
   const [results, setResults] = useState([]);
@@ -211,7 +210,7 @@ export default function InvoiceLineProductCell({
   }
 
   return (
-    <div className={`invoice-product-cell ${value ? "invoice-product-cell--picked" : ""} ${duplicate ? "invoice-product-cell--duplicate" : ""}`} ref={ref}>
+    <div className={`invoice-product-cell ${value ? "invoice-product-cell--picked" : ""}`} ref={ref}>
       <input
         ref={inputRef}
         className="ui-input"
@@ -219,7 +218,6 @@ export default function InvoiceLineProductCell({
         aria-expanded={Boolean(open && dirty && q.trim())}
         aria-controls={listId}
         aria-autocomplete="list"
-        aria-describedby={duplicate ? `${listId}-duplicate` : undefined}
         data-invoice-field="product"
         data-invoice-product={lineKey || ""}
         value={q}
@@ -234,9 +232,6 @@ export default function InvoiceLineProductCell({
         onFocus={() => setOpen(true)}
         onKeyDown={onSearchKeyDown}
       />
-      {duplicate ? (
-        <p id={`${listId}-duplicate`} className="invoice-product-cell__duplicate">الصنف مكرر في الجرد</p>
-      ) : null}
       {open && dirty && q.trim() && loading ? (
         <p className="invoice-product-cell__hint">جاري البحث…</p>
       ) : null}
