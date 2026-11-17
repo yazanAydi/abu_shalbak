@@ -5,17 +5,9 @@ import "./TodaysSummary.css";
  * @param {object} props
  * @param {object | null} props.today — /api/reports/today
  */
-function formatCurrencyAmount(symbol, amount) {
-  return `${symbol || "\u20AA"}${Number(amount || 0).toFixed(2)}`;
-}
-
 export default function TodaysSummary({ today }) {
   const hasSales = today && (Number(today.transaction_count) > 0 || Number(today.revenue) > 0);
   const hasAny = today != null;
-  const collections = Array.isArray(today?.collections_by_currency)
-    ? today.collections_by_currency
-    : [];
-  const showCollections = hasAny && collections.length > 0;
 
   return (
     <div className="today-summary" dir="rtl" lang="ar">
@@ -71,30 +63,6 @@ export default function TodaysSummary({ today }) {
           </div>
         </div>
       </div>
-
-      {showCollections ? (
-        <div className="today-collections">
-          <div className="today-collections-title">تحصيلات اليوم حسب العملة</div>
-          <div className="today-collections-grid">
-            {collections.map((c) => {
-              const isBase = String(c.code).toUpperCase() === "NIS";
-              return (
-                <div className="today-collection-card" key={c.code}>
-                  <div className="today-collection-code">{c.name || c.code}</div>
-                  <div className="today-collection-value">
-                    {formatCurrencyAmount(c.symbol, c.original_total)}
-                  </div>
-                  {!isBase ? (
-                    <div className="today-collection-sub">
-                      المعادل: {formatMoney(c.nis_total, true)}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
