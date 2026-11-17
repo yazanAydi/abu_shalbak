@@ -1,3 +1,4 @@
+import { qty } from "../../utils/format";
 import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import api from "../../apiClient";
@@ -118,7 +119,8 @@ export default function OfficeSideRail() {
           <>
             <ul className="office-side-rail-stock-list">
               {lowStock.map((p) => {
-                const displayStock = Number(p.stock) || 0;
+                const rawStock = Number(p.stock) || 0;
+                const displayStock = Math.abs(rawStock) < 1e-9 ? 0 : rawStock;
                 return (
                 <li key={p.id} title={p.name}>
                   <span className="office-side-rail-stock-name">{p.name}</span>
@@ -127,7 +129,7 @@ export default function OfficeSideRail() {
                       displayStock <= 0 ? " office-side-rail-stock-qty--zero" : ""
                     }`}
                   >
-                    {displayStock}
+                    {qty(displayStock, 6)}
                   </span>
                 </li>
                 );

@@ -1,3 +1,4 @@
+import { STOCK_ZERO_EPS, stockQuantitySql } from "../utils/stockQuantity.js";
 import { Router } from "express";
 import { requireAuth, requireOfficeRole } from "../middleware/auth.js";
 import { fetchNearExpiryItems, resolveExpiryAlertDays } from "../services/expiryAlertService.js";
@@ -15,8 +16,8 @@ async function countLowStockByScope(db, scope, threshold = LOW_STOCK_THRESHOLD) 
   const row = await db.get(
     `SELECT COUNT(*) AS total FROM products
      WHERE (
-       (min_stock IS NOT NULL AND stock <= min_stock)
-       OR (min_stock IS NULL AND stock <= ?)
+       (min_stock IS NOT NULL AND ${stockQuantitySql()} <= min_stock)
+       OR (min_stock IS NULL AND ${stockQuantitySql()} <= ?)
      )
      AND COALESCE(inventory_scope, 'retail') = ?`,
     [t, scope]
@@ -27,7 +28,7 @@ async function countLowStockByScope(db, scope, threshold = LOW_STOCK_THRESHOLD) 
 async function countNegativeStockRetail(db) {
   const row = await db.get(
     `SELECT COUNT(*) AS total FROM products
-     WHERE COALESCE(stock, 0) < 0
+     WHERE COALESCE(stock, 0) <= -${STOCK_ZERO_EPS}
        AND COALESCE(inventory_scope, 'retail') = 'retail'`
   );
   return Number(row?.total) || 0;
@@ -46,8 +47,8 @@ async function loadExpiryCounts(db) {
     const lowStockOnlyRow = await db.get(
       `SELECT COUNT(*) AS total FROM products
        WHERE (
-         (min_stock IS NOT NULL AND stock <= min_stock)
-         OR (min_stock IS NULL AND stock <= ?)
+         (min_stock IS NOT NULL AND ${stockQuantitySql()} <= min_stock)
+         OR (min_stock IS NULL AND ${stockQuantitySql()} <= ?)
        )
        AND COALESCE(inventory_scope, 'retail') = 'retail'
        AND NOT (
@@ -81,8 +82,8 @@ async function loadExpiryCounts(db) {
     db.get(
       `SELECT COUNT(*) AS total FROM products
        WHERE (
-         (min_stock IS NOT NULL AND stock <= min_stock)
-         OR (min_stock IS NULL AND stock <= ?)
+         (min_stock IS NOT NULL AND ${stockQuantitySql()} <= min_stock)
+         OR (min_stock IS NULL AND ${stockQuantitySql()} <= ?)
        )
        AND COALESCE(inventory_scope, 'retail') = 'retail'
        AND NOT (
@@ -220,14 +221,14 @@ export function createOfficeRouter(db) {
     const total = Object.values(byPath).reduce((sum, n) => sum + n, 0);
     const preview = showStock
       ? await db.all(
-          `SELECT id, name, stock, min_stock, barcode
+          `SELECT id, name, ${stockQuantitySql()} AS stock, min_stock, barcode
            FROM products
            WHERE (
-             (min_stock IS NOT NULL AND stock <= min_stock)
-             OR (min_stock IS NULL AND stock <= ?)
+             (min_stock IS NOT NULL AND ${stockQuantitySql()} <= min_stock)
+             OR (min_stock IS NULL AND ${stockQuantitySql()} <= ?)
            )
            AND COALESCE(inventory_scope, 'retail') = 'retail'
-           ORDER BY stock ASC, name ASC
+           ORDER BY ${stockQuantitySql()} ASC, name ASC
            LIMIT 10`,
           [LOW_STOCK_THRESHOLD]
         )

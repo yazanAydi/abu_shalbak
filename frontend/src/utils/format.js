@@ -32,9 +32,10 @@ export function num(n, digits = 2) {
   });
 }
 
-export function qty(n) {
-  const v = Number(n ?? 0);
-  return Number.isInteger(v) ? String(v) : v.toLocaleString("en-US", { maximumFractionDigits: 3 });
+export function qty(n, digits = 3) {
+  const raw = Number(n ?? 0);
+  const v = Math.abs(raw) < 1e-9 ? 0 : raw;
+  return Number.isInteger(v) ? String(v) : v.toLocaleString("en-US", { maximumFractionDigits: digits });
 }
 
 export function isWeighedProduct(product) {

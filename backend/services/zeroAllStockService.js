@@ -232,8 +232,8 @@ async function clearQuantities(db) {
       )`
   );
   await db.run("DELETE FROM warehouse_batch_stock");
-  await db.run("UPDATE product_batches SET quantity = 0 WHERE ABS(quantity) > ?", [LOT_EPS]);
-  await db.run("UPDATE stock_source_lots SET quantity = 0 WHERE ABS(quantity) > ?", [LOT_EPS]);
+  await db.run("UPDATE product_batches SET quantity = 0 WHERE quantity != 0");
+  await db.run("UPDATE stock_source_lots SET quantity = 0 WHERE quantity != 0");
 }
 
 function planReset(products, lots, batches, referenceId) {
@@ -260,7 +260,8 @@ function planReset(products, lots, batches, referenceId) {
   for (const product of products) {
     const pid = Number(product.id);
     const rawStock = Number(product.stock) || 0;
-    const stock = round6(rawStock);
+    // Cancel the stored binary value exactly, including sub-precision residues.
+    const stock = rawStock;
     const active = lotsByProduct.get(pid) || [];
     const dated = batchesByProduct.get(pid) || [];
     const allocations = [];

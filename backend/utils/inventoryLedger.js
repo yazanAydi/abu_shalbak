@@ -1,3 +1,4 @@
+import { STOCK_ZERO_EPS } from "./stockQuantity.js";
 import { syncDepletionAdjustment } from "./warehouseValuationHistory.js";
 import { businessDayFromTimestamp } from "./businessDay.js";
 import { isProductCostKnown } from "./productUnits.js";
@@ -81,8 +82,12 @@ export async function addLedgerEntry(
   }
 
   const qtyBefore = Number(product.stock) || 0;
-  const qtyAfter = qtyBefore + d;
-  const effectiveDelta = d;
+  const rawAfter = qtyBefore + d;
+  // Cancel normal-sized operands exactly when their difference is only binary noise.
+  // Preserve genuine negative balances and supported fractional quantities.
+  const qtyAfter = Math.abs(qtyBefore) >= STOCK_ZERO_EPS && Math.abs(rawAfter) < STOCK_ZERO_EPS
+    ? 0 : rawAfter;
+  const effectiveDelta = qtyAfter === 0 ? -qtyBefore : d;
 
   if (effectiveDelta !== 0) {
     await db.run("UPDATE products SET stock = stock + ? WHERE id = ?", [effectiveDelta, pid]);

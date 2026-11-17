@@ -1,3 +1,4 @@
+import { STOCK_ZERO_EPS, stockQuantitySql } from "../utils/stockQuantity.js";
 import bcrypt from "bcrypt";
 import { createSafeRouter } from "../utils/asyncHandler.js";
 import { requireAuth, requireAdmin, requireReportsPermission, requireAnyReportsPermission } from "../middleware/auth.js";
@@ -1227,11 +1228,11 @@ export function createInventoryRouter(db) {
     const { threshold = 10, scope } = req.query;
     const t = Math.max(0, Number(threshold) || 10);
     const membership = await membershipProductFilter(req, "");
-    let sql = `SELECT id, barcode, sku, name, unit, stock, category, min_stock,
+    let sql = `SELECT id, barcode, sku, name, unit, ${stockQuantitySql()} AS stock, category, min_stock,
                       COALESCE(inventory_scope, 'retail') AS inventory_scope
                FROM products WHERE (
-                 (min_stock IS NOT NULL AND stock <= min_stock)
-                 OR (min_stock IS NULL AND stock <= ?)
+                 (min_stock IS NOT NULL AND ${stockQuantitySql()} <= min_stock)
+                 OR (min_stock IS NULL AND ${stockQuantitySql()} <= ?)
                )`;
     const params = [t];
     if (membership.sql) {
@@ -1241,7 +1242,7 @@ export function createInventoryRouter(db) {
       sql += " AND COALESCE(inventory_scope, 'retail') = ?";
       params.push(scope);
     }
-    sql += " ORDER BY stock ASC, name";
+    sql += ` ORDER BY ${stockQuantitySql()} ASC, name`;
     sql += listLimitSql(req.query, 500).sql;
     const rows = await db.all(sql, params);
     res.json(rows);
@@ -1257,11 +1258,11 @@ export function createInventoryRouter(db) {
   router.get("/negative-stock", requireAuth, requireStockCount, async (req, res) => {
     const rows = await db.all(
       `SELECT id, barcode, name, unit, stock, category
-       FROM products WHERE COALESCE(stock, 0) < 0 ORDER BY stock ASC, name${listLimitSql(req.query, 500).sql}`
+       FROM products WHERE COALESCE(stock, 0) <= -${STOCK_ZERO_EPS} ORDER BY ${stockQuantitySql()} ASC, name${listLimitSql(req.query, 500).sql}`
     );
     // count stays the true total even when the row list is capped.
     const totalRow = await db.get(
-      "SELECT COUNT(*) AS c FROM products WHERE COALESCE(stock, 0) < 0"
+      `SELECT COUNT(*) AS c FROM products WHERE COALESCE(stock, 0) <= -${STOCK_ZERO_EPS}`
     );
     res.json({ count: Number(totalRow?.c) || 0, products: rows });
   });

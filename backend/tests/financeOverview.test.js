@@ -150,7 +150,7 @@ describe("GET /finance/overview — formulas and reconciliation", () => {
       `INSERT INTO transaction_items
          (transaction_id, product_id, name, quantity, unit_price, line_net, line_tax, line_gross, tax_rate, unit_cost_at_sale, gross_profit)
        VALUES (?, ?, 'Office line', 1, 15, 15, 0, 15, 0, 3, 12)`,
-      [ins.lastID]
+      [ins.lastID, ctx.productId]
     );
 
     const body = await overview();
