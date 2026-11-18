@@ -22,7 +22,9 @@ import { dateTime, dateOnly, dmyToYmd } from "../utils/format";
 import { toLatinDigits } from "../utils/forceLatinDigits";
 import { UNDATED_BATCH_LABEL } from "../utils/stockBatchLabels";
 import { focusInvoiceField } from "../utils/invoiceLineEntry";
+import { loadCountPictures } from "../utils/stockCountRequests";
 import {
+  attachCountExpiryPicture,
   countLinesPayload,
   countScopeParams,
   editorRowFromCountLine,
@@ -124,6 +126,7 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
   const [zeroOp, setZeroOp] = useState(null);
   const [zeroUnavailable, setZeroUnavailable] = useState(false);
   const loadedIdsRef = useRef(new Set());
+  const countFlightRef = useRef(false);
   const zeroFlightRef = useRef(false);
   const zeroAttemptKeyRef = useRef("");
   const zeroRunning = zeroOp?.status === "running";
@@ -250,8 +253,11 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
     };
   }, [department, activeSession?.status]);
 
-  function applySession(data) {
-    const rows = (data?.lines || []).map(editorRowFromCountLine);
+  function applySession(data, pictures = {}) {
+    const rows = (data?.lines || []).map((line) => {
+      const row = editorRowFromCountLine(line);
+      return pictures[row.product_id] ? attachCountExpiryPicture(row, pictures[row.product_id]) : row;
+    });
     setActiveSession(data);
     setDraftLines(rows);
     loadedIdsRef.current = new Set(rows.map((row) => row.product_id).filter(Boolean));
@@ -299,22 +305,18 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
     }
   }
 
-  async function loadPictures(rows) {
-    const ids = [...groupCountRows(rows).keys()];
-    const pictures = {};
-    await Promise.all(ids.map(async (id) => {
-      const { data } = await api.get("/api/inventory/stock-sources", {
-        headers: getAuthHeaders(),
-        params: { product_id: id },
-      });
-      pictures[id] = data;
-    }));
-    return pictures;
-  }
-
   function showDraftIssue(issue) {
     setError(issue.message);
     if (issue.line_key && issue.field) focusInvoiceField(issue.line_key, issue.field);
+  }
+
+  function blockPendingPictures() {
+    if (!draftLines.some((row) => row.product_id && !row.expiry_picture_loaded && !row.picture_failed)) return false;
+    // Product selection may still seed a recorded expiry. Capture the draft only
+    // after that read settles; a failed read can recover in the fresh save batch.
+    setMsg(null);
+    setError("انتظر اكتمال تحميل بيانات الأصناف، ثم اضغط حفظ الجرد أو ترحيل الجرد مرة أخرى.");
+    return true;
   }
 
   function blockUncommittedExpiry() {
@@ -350,38 +352,34 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
       setError("أضف صنفاً واحداً على الأقل");
       return null;
     }
-    const pictures = await loadPictures(rows);
+    const pictures = await loadCountPictures([...groups.keys()]);
     const pictureIssue = validateCountDraft(rows, pictures);
     if (pictureIssue) {
       showDraftIssue(pictureIssue);
       return null;
     }
 
-    for (const productId of removed) {
-      await api.post(
-        `/api/inventory/counts/${session.id}/lines`,
-        { product_id: productId, sources: [], department },
-        { headers: getAuthHeaders() }
-      );
-    }
-    for (const [productId, list] of groups) {
-      await api.post(
-        `/api/inventory/counts/${session.id}/lines`,
-        {
-          product_id: productId,
-          department,
-          sources: countLinesPayload(list, pictures[productId]),
-        },
-        { headers: getAuthHeaders() }
-      );
-    }
-    const saved = await loadSession(session.id);
+    const products = [
+      ...removed.map((productId) => ({ product_id: productId, sources: [] })),
+      ...[...groups].map(([productId, list]) => ({
+        product_id: productId,
+        sources: countLinesPayload(list, pictures[productId]),
+      })),
+    ];
+    const { data: saved } = await api.post(
+      `/api/inventory/counts/${session.id}/lines/bulk`,
+      { department, products },
+      { headers: getAuthHeaders() }
+    );
+    applySession(saved, pictures);
     return { pictures, saved };
   }
 
   async function saveDraft() {
-    if (!activeSession || activeSession.status !== "open" || saving) return false;
+    if (!activeSession || activeSession.status !== "open" || saving || countFlightRef.current) return false;
+    if (blockPendingPictures()) return false;
     if (blockUncommittedExpiry()) return false;
+    countFlightRef.current = true;
     setSaving(true);
     setError(null);
     setMsg(null);
@@ -392,23 +390,20 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
       return true;
     } catch (e) {
       setError(apiErrorMessage(e, "فشل الحفظ"));
-      try {
-        await loadSession(activeSession.id);
-      } catch {
-        /* keep the rows on screen if reload fails */
-      }
       return false;
     } finally {
+      countFlightRef.current = false;
       setSaving(false);
     }
   }
 
   async function postSession(session) {
-    if (!session || saving) return;
+    if (!session || session.status !== "open" || saving || countFlightRef.current) return;
     if (session.department && session.department !== department) {
       setError("جلسة الجرد لا تطابق هذا القسم");
       return;
     }
+    if (blockPendingPictures()) return;
     if (blockUncommittedExpiry()) return;
     setError(null);
     setMsg(null);
@@ -428,6 +423,7 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
       return;
     }
     if (!window.confirm("هل تريد اعتماد الكميات والتواريخ المدخلة بدلاً من أرصدة الصنف وتواريخه القديمة في المستودع المعدود؟ لا يمكن التراجع عن هذه الخطوة.")) return;
+    countFlightRef.current = true;
     setSaving(true);
     try {
       const saved = await persistDraft(session, draftLines);
@@ -445,6 +441,7 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
     } catch (e) {
       setError(apiErrorMessage(e, "فشل الترحيل"));
     } finally {
+      countFlightRef.current = false;
       setSaving(false);
     }
   }
@@ -604,6 +601,7 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
   ];
 
   function leaveSession() {
+    if (saving || countFlightRef.current) return;
     setActiveSession(null);
     setDraftLines([]);
     loadedIdsRef.current = new Set();
@@ -643,7 +641,7 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
                     ترحيل الجرد
                   </DangerButton>
                 ) : null}
-                <SecondaryButton type="button" onClick={leaveSession}>
+                <SecondaryButton type="button" onClick={leaveSession} disabled={saving}>
                   رجوع للقائمة
                 </SecondaryButton>
               </div>
@@ -653,6 +651,10 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
               جلسة جرد #{activeSession.id} — {departmentLabel} — {activeSession.status === "open" ? "مفتوحة" : activeSession.status === "posted" ? "مرحّلة" : "ملغاة"}
             </p>
           </FilterBar>
+
+          {saving && countFlightRef.current ? (
+            <Notice tone="info">جارٍ حفظ الجرد واعتماد البيانات، يرجى الانتظار…</Notice>
+          ) : null}
 
           {expiryCycle?.message ? (
             <Notice tone="warn">
@@ -664,7 +666,7 @@ export default function InventoryCount({ embedded = false, scope = "retail", mem
           <StockCountLineEditor
             items={draftLines}
             setItems={setDraftLines}
-            readOnly={activeSession.status !== "open"}
+            readOnly={saving || activeSession.status !== "open"}
             scope={scope}
             membership={membership}
           />

@@ -20,7 +20,7 @@ jest.mock("../../utils/productSearch", () => ({
 
 jest.mock("../../apiClient", () => ({
   __esModule: true,
-  default: { get: jest.fn() },
+  default: { get: jest.fn(), post: jest.fn() },
 }));
 
 function pictureResponse(body) {
@@ -50,6 +50,7 @@ describe("StockCountLineEditor", () => {
       { id: 7, name: "حليب", barcode: "123456", stock: 4, sku: "12" },
     ]);
     api.get.mockReset();
+    api.post.mockReset();
     api.get.mockImplementation(() => pictureResponse({
       has_dated_batches: false,
       product_stock: 0,
@@ -408,6 +409,103 @@ describe("StockCountLineEditor", () => {
       release();
     });
     expect(container.querySelector("[data-invoice-field='expiry']").value).toBe("15/01/28");
+  });
+
+  test.each([null, [], { product_id: 99 }])("a missing or mismatched picture is a failed read, not a product without expiry (%j)", async (data) => {
+    api.get.mockResolvedValue({ data });
+    render(<Harness />);
+    await pickMilk();
+    expect(container.querySelector("[data-testid='count-unit']").disabled).toBe(true);
+    expect(container.querySelector("[data-testid='count-no-expiry']")).toBeNull();
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).toBe("—");
+  });
+
+  test("editing a pending batch does not refetch its pictures and removed rows stay removed", async () => {
+    let release;
+    api.post.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    render(<Harness initial={[
+      { line_key: "pending-7", product_id: 7, name: "حليب", counted_qty: "2", expiry_date: "",
+        expiry_picture_loaded: false, picture_request: 0 },
+      { line_key: "pending-8", product_id: 8, name: "خبز", counted_qty: "3", expiry_date: "",
+        expiry_picture_loaded: false, picture_request: 0 },
+    ]} />);
+    expect(api.post).toHaveBeenCalledTimes(1);
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const quantity = container.querySelector("[data-testid='count-qty']");
+    const expiry = container.querySelector("[data-invoice-field='expiry']");
+    await act(async () => {
+      setter.call(quantity, "9");
+      quantity.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      setter.call(expiry, "15/01/28");
+      expiry.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelectorAll("[aria-label='حذف']")[1].click());
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(api.get).not.toHaveBeenCalled();
+    await act(async () => release({ data: { pictures: {
+      7: { product_stock: 20, has_dated_batches: true,
+        sources: [{ batch_source: "dated", expiry_date: "2027-04-01", quantity: 20 }] },
+      8: { product_stock: 30, has_dated_batches: false, sources: [] },
+    } } }));
+    expect(container.querySelectorAll("[data-invoice-line]")).toHaveLength(1);
+    expect(container.querySelector("[data-testid='count-qty']").value).toBe("9");
+    expect(container.querySelector("[data-invoice-field='expiry']").value).toBe("15/01/28");
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(api.get).not.toHaveBeenCalled();
+  });
+
+  test("unmount cancels outstanding source reads and ignores their later response", async () => {
+    let release;
+    let signal;
+    api.get.mockImplementation((_url, config) => {
+      signal = config.signal;
+      return new Promise((resolve) => { release = resolve; });
+    });
+    render(<Harness initial={[{
+      line_key: "pending-7", product_id: 7, name: "حليب", counted_qty: "2", expiry_date: "",
+      expiry_picture_loaded: false, picture_request: 0,
+    }]} />);
+    expect(signal.aborted).toBe(false);
+    render(<div>closed</div>);
+    expect(signal.aborted).toBe(true);
+    await act(async () => release({ data: { product_stock: 20, sources: [] } }));
+    expect(container.textContent).toBe("closed");
+  });
+
+  test("a pending source response cannot overwrite a product switched on the same row", async () => {
+    let release;
+    api.post.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    api.get.mockResolvedValue({ data: {
+      product_stock: 99, unit: "كغم", has_dated_batches: true,
+      sources: [{ batch_source: "dated", expiry_date: "2029-01-01", quantity: 99 }],
+    } });
+    searchProductsApi.mockResolvedValue([{ id: 9, name: "صنف جديد", unit: "كغم" }]);
+    render(<Harness initial={[
+      { line_key: "pending-7", product_id: 7, name: "حليب", counted_qty: "2", expiry_date: "",
+        expiry_picture_loaded: false, picture_request: 0 },
+      { line_key: "pending-8", product_id: 8, name: "خبز", counted_qty: "3", expiry_date: "",
+        expiry_picture_loaded: false, picture_request: 0 },
+    ]} />);
+    const product = container.querySelector("[data-invoice-field='product']");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(product, "جديد");
+      product.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+    await act(async () => product.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(api.get).toHaveBeenCalledTimes(1);
+    expect(api.post).toHaveBeenCalledTimes(1);
+    await act(async () => release({ data: { pictures: {
+      7: { product_stock: 20, unit: "حبة", has_dated_batches: true,
+        sources: [{ batch_source: "dated", expiry_date: "2027-04-01", quantity: 20 }] },
+      8: { product_stock: 30, has_dated_batches: false, sources: [] },
+    } } }));
+    expect(container.querySelector("[data-invoice-field='product']").value).toBe("صنف جديد");
+    expect(container.querySelector("[data-invoice-field='expiry']").value).toBe("01/01/29");
+    expect(container.querySelector("[data-testid='count-system-qty']").textContent).toBe("99 كغم");
+    expect(container.querySelector("[data-testid='count-qty']").value).toBe("2");
   });
 
   test("shows the warehouse source quantity, keeps a blank count, and focuses it after a barcode", async () => {

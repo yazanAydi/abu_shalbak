@@ -11,7 +11,7 @@ import { interpretExpiryInput } from "../utils/expiryDate.js";
 import { withTransaction } from "../utils/dbTx.js";
 import { listLimitSql } from "../utils/listQuery.js";
 import { getZeroAllStockPasswordHash } from "../utils/settings.js";
-import { forbidden, conflict } from "../utils/httpError.js";
+import { forbidden, conflict, notFound } from "../utils/httpError.js";
 import { userHasAccountantPermission } from "../utils/accountantPermissions.js";
 import {
   parseCountDepartment,
@@ -41,7 +41,28 @@ import {
   resetExpiryReportCycle,
 } from "../services/expiryReportCycle.js";
 import { assignUnknownSource } from "../services/stockSourceService.js";
+import { readPreferenceAls } from "../utils/queryStats.js";
 const ADJ_TYPES = ["in", "out", "damage", "consumption", "correction"];
+const MAX_COUNT_PRODUCTS = 1000;
+const MAX_COUNT_SOURCE_ROWS = 5000;
+const MAX_SOURCE_PICTURE_PRODUCTS = 100;
+
+// The better-sqlite3 adapter resolves each query as a microtask. Yield between
+// bounded groups so a large count does not starve incoming POS reads. The
+// surrounding transaction still holds the write queue until its atomic commit.
+async function yieldCountWork(index) {
+  if (index > 0 && index % 20 === 0) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+function positiveProductId(value) {
+  const id = Number(value);
+  if (!["number", "string"].includes(typeof value) || !Number.isSafeInteger(id) || id <= 0) {
+    throw badRequest("الصنف غير صالح", "VALIDATION_ERROR");
+  }
+  return id;
+}
 
 function adjustmentDelta(adjustmentType, quantity) {
   const qty = round6(quantity);
@@ -141,7 +162,31 @@ function normalizeCountEntry(entry) {
     countUnit: entry?.count_unit_snapshot };
 }
 
-async function saveCountLine(db, sessionId, product, entry) {
+function normalizeCountEntries(rawEntries) {
+  const entries = rawEntries.map((entry) => normalizeCountEntry(entry));
+  const seen = new Set();
+  for (const entry of entries) {
+    const key = countSourceKey(entry.batchSource, entry.expiryDate);
+    if (seen.has(key)) {
+      throw badRequest("سطر مكرر لنفس الصنف وتاريخ الصلاحية. لن يُحسب الجرد مرتين", "DUPLICATE_SOURCE");
+    }
+    seen.add(key);
+  }
+  if (entries.some((entry) => !entry.batchSource) && entries.length !== 1) {
+    throw badRequest("لا يُجمع جرد الصنف كاملاً مع جرد الدفعات", "COUNT_SHAPE");
+  }
+  return entries;
+}
+
+async function countProductContext(db, productId, warehouses = null) {
+  return {
+    picture: await listPhysicalSources(db, productId),
+    main: (warehouses || await operationalWarehouses(db)).main,
+    locations: await locationRows(db, productId),
+  };
+}
+
+async function saveCountLine(db, sessionId, product, entry, context = null) {
   let unitSnapshot = null;
   if (entry.countUnit != null) {
     const requested = entry.countUnit;
@@ -155,13 +200,11 @@ async function saveCountLine(db, sessionId, product, entry) {
     unitSnapshot = JSON.stringify({ unit_id: unit.id, unit_name: unit.unit_name,
       conversion_to_base: Number(unit.conversion_to_base) });
   }
-  const picture = await listPhysicalSources(db, product.id);
+  const { picture, main, locations } = context || await countProductContext(db, product.id);
   const batchSource = entry.batchSource || (picture.has_dated_batches ? "undated" : null);
   const expiryDate = entry.expiryDate;
   const qty = entry.qty;
-  const { main } = await operationalWarehouses(db);
   const warehouseId = Number(entry.warehouse_id) || main?.id || null;
-  const locations = await locationRows(db, product.id);
   let systemQty;
   if (batchSource === "dated") {
     const source = picture.sources.find((row) => row.batch_source === "dated" && row.expiry_date === expiryDate);
@@ -203,6 +246,64 @@ async function saveCountLine(db, sessionId, product, entry) {
       [sessionId, product.id, systemQty, qty, variance, batchSource, expiryDate, warehouseId, entry.expiryVerified ? 1 : 0, unitSnapshot, sourceSnapshot]
     );
   }
+}
+
+async function stockSourceWarehouses(db) {
+  const rows = await db.all(
+    "SELECT id, name, type, active FROM warehouses ORDER BY CASE type WHEN 'main' THEN 0 ELSE 1 END, id"
+  );
+  return {
+    main: rows.find((row) => row.type === "main" && Number(row.active) === 1) || null,
+    byId: new Map(rows.map((row) => [Number(row.id), row])),
+  };
+}
+
+async function stockSourcePicture(db, product, warehouses) {
+  const picture = await listPhysicalSources(db, product.id);
+  const countUnits = await db.all(
+    "SELECT id, unit_name, conversion_to_base FROM product_units WHERE product_id = ? AND conversion_to_base > 0 ORDER BY is_default DESC, id",
+    [product.id]
+  );
+  const productExpiry = interpretExpiryInput(product.expiry_date);
+  const placed = await locationRows(db, product.id);
+  return {
+    ...picture,
+    name: product.name,
+    barcode: product.barcode,
+    unit: product.unit,
+    count_units: countUnits,
+    product_expiry_date: productExpiry.ok ? productExpiry.date : null,
+    main_warehouse_id: warehouses.main?.id ?? null,
+    locations: placed.map((row) => {
+      const warehouse = warehouses.byId.get(Number(row.warehouse_id));
+      return {
+        warehouse_id: row.warehouse_id,
+        warehouse_name: warehouse?.name || "",
+        warehouse_type: warehouse?.type || "",
+        expiry_date: row.expiry_date,
+        quantity: row.quantity,
+      };
+    }),
+  };
+}
+
+async function joinedCountLines(db, sessionId, department = null) {
+  const params = [sessionId];
+  let scopeSql = "";
+  if (department) {
+    const match = countProductMatchSql(department, "p");
+    scopeSql = ` AND ${match.sql}`;
+    params.push(...match.params);
+  }
+  return db.all(
+    `SELECT scl.*, p.name, p.barcode, p.unit,
+            COALESCE(p.inventory_scope, 'retail') AS inventory_scope
+     FROM stock_count_lines scl
+     JOIN products p ON scl.product_id = p.id
+     WHERE scl.session_id = ?${scopeSql}
+     ORDER BY p.name, scl.id`,
+    params
+  );
 }
 
 // Maps adjustment type -> ledger movement_type and sign of stock change.
@@ -408,27 +509,88 @@ export function createInventoryRouter(db) {
       if (err?.status) return sendCountAuthError(res, err);
       return next(err);
     }
-    const params = [req.params.id];
-    let scopeSql = "";
-    if (!session.department) {
-      const match = countProductMatchSql(department, "p");
-      scopeSql = ` AND ${match.sql}`;
-      params.push(...match.params);
-    }
-    const lines = await db.all(
-      `SELECT scl.*, p.name, p.barcode, p.unit,
-              COALESCE(p.inventory_scope, 'retail') AS inventory_scope
-       FROM stock_count_lines scl
-       JOIN products p ON scl.product_id = p.id
-       WHERE scl.session_id = ?${scopeSql}
-       ORDER BY p.name, scl.id`,
-      params
-    );
+    const lines = await joinedCountLines(db, session.id, session.department ? null : department);
     res.json({
       ...session,
       lines,
       ...(session.department ? {} : { lines_filtered: true }),
     });
+  });
+
+  router.post("/counts/:id/lines/bulk", requireAuth, (req, res, next) => {
+    if (req.user?.role === "shelves_employee") return next();
+    return requireStockOrBakery(req, res, next);
+  }, async (req, res, next) => {
+    const rawDepartment = req.body?.department ?? req.query?.department;
+    const requested = parseCountDepartment(rawDepartment);
+    if (rawDepartment != null && !requested) {
+      return res.status(400).json({ error: "حدد قسم الجرد", code: "DEPARTMENT_REQUIRED" });
+    }
+    const session = await db.get("SELECT * FROM stock_count_sessions WHERE id = ?", [req.params.id]);
+    if (countWriteDenied(res, session, requested)) return;
+    if (session.status !== "open") {
+      return res.status(400).json({ error: "لا يمكن تعديل جلسة مغلقة", code: "SESSION_CLOSED" });
+    }
+    try {
+      await assertCountDepartmentPermission(req, session.department);
+      const products = req.body?.products;
+      if (!Array.isArray(products) || !products.length || products.length > MAX_COUNT_PRODUCTS) {
+        throw badRequest(`أرسل من 1 إلى ${MAX_COUNT_PRODUCTS} صنف في دفعة الجرد`, "VALIDATION_ERROR");
+      }
+      const seen = new Set();
+      let sourceCount = 0;
+      const changes = products.map((row) => {
+        const productId = positiveProductId(row?.product_id);
+        if (seen.has(productId)) throw badRequest("الصنف مكرر في دفعة الحفظ", "DUPLICATE_PRODUCT");
+        seen.add(productId);
+        if (!Array.isArray(row?.sources)) throw badRequest("أسطر الصنف مطلوبة", "VALIDATION_ERROR");
+        sourceCount += row.sources.length;
+        if (sourceCount > MAX_COUNT_SOURCE_ROWS) {
+          throw badRequest(`الحد الأقصى ${MAX_COUNT_SOURCE_ROWS} سطر جرد في الدفعة`, "VALIDATION_ERROR");
+        }
+        return { productId, entries: normalizeCountEntries(row.sources) };
+      });
+      const saved = await withTransaction(db, async () => {
+        const live = await db.get("SELECT * FROM stock_count_sessions WHERE id = ?", [session.id]);
+        if (!live || live.status !== "open" || live.department !== session.department) {
+          throw conflict("جلسة الجرد لا تطابق القسم المفتوح على الشاشة.", "COUNT_DEPARTMENT_MISMATCH");
+        }
+        const warehouses = await operationalWarehouses(db);
+        for (let index = 0; index < changes.length; index += 1) {
+          await yieldCountWork(index);
+          const { productId, entries } = changes[index];
+          const product = await db.get("SELECT * FROM products WHERE id = ?", [productId]);
+          if (!product) throw notFound("المنتج غير موجود");
+          const clearing = entries.length === 0;
+          const allowed = productFitsCountDepartment(classifyCountProduct(product), live.department);
+          if (!allowed && !clearing) {
+            throw badRequest(`الصنف ${product.name || ""} لا يتبع قسم هذا الجرد`, "COUNT_SCOPE");
+          }
+          if (allowed && !clearing && await otherOpenCountForProduct(db, live.id, product.id)) {
+            throw conflict("هذا الصنف موجود في جرد مفتوح آخر. لن يُغيَّر المخزون من الجردين معاً.", "COUNT_PRODUCT_OVERLAP");
+          }
+          await db.run("DELETE FROM stock_count_lines WHERE session_id = ? AND product_id = ?", [live.id, product.id]);
+          if (allowed && !clearing) {
+            const context = await countProductContext(db, product.id, warehouses);
+            for (let lineIndex = 0; lineIndex < entries.length; lineIndex += 1) {
+              await yieldCountWork(lineIndex);
+              await saveCountLine(db, live.id, product, entries[lineIndex], context);
+            }
+          }
+        }
+        return { ...live, lines: await joinedCountLines(db, live.id) };
+      });
+      return res.json(saved);
+    } catch (err) {
+      if (overlapCountConflict(err)) {
+        return res.status(409).json({
+          error: "هذا الصنف موجود في جرد مفتوح آخر. لن يُغيَّر المخزون من الجردين معاً.",
+          code: "COUNT_PRODUCT_OVERLAP",
+        });
+      }
+      if (err?.status) return res.status(err.status).json({ error: err.message, code: err.code || "VALIDATION_ERROR" });
+      return next(err);
+    }
   });
 
   router.post("/counts/:id/lines", requireAuth, (req, res, next) => {
@@ -460,19 +622,7 @@ export function createInventoryRouter(db) {
       const rawEntries = Array.isArray(req.body?.sources)
         ? req.body.sources
         : [{ batch_source: req.body?.batch_source, expiry_date: req.body?.expiry_date, counted_qty: req.body?.counted_qty, warehouse_id: req.body?.warehouse_id, count_unit_snapshot: req.body?.count_unit_snapshot }];
-      const entries = rawEntries.map((entry) => normalizeCountEntry(entry));
-      const seen = new Set();
-      for (const entry of entries) {
-        const key = countSourceKey(entry.batchSource, entry.expiryDate);
-        if (seen.has(key)) {
-          throw badRequest("سطر مكرر لنفس الصنف وتاريخ الصلاحية. لن يُحسب الجرد مرتين", "DUPLICATE_SOURCE");
-        }
-        seen.add(key);
-      }
-      const namesWholeProduct = entries.some((entry) => !entry.batchSource);
-      if (namesWholeProduct && entries.length !== 1) {
-        throw badRequest("لا يُجمع جرد الصنف كاملاً مع جرد الدفعات", "COUNT_SHAPE");
-      }
+      const entries = normalizeCountEntries(rawEntries);
       const clearing = Array.isArray(req.body?.sources) && entries.length === 0;
       await withTransaction(db, async () => {
         const live = await db.get(
@@ -501,9 +651,10 @@ export function createInventoryRouter(db) {
             [session.id, product.id]
           );
         }
-        if (allowed) {
+        if (allowed && entries.length) {
+          const context = await countProductContext(db, product.id);
           for (const entry of entries) {
-            await saveCountLine(db, session.id, product, entry);
+            await saveCountLine(db, session.id, product, entry, context);
           }
         }
       });
@@ -552,7 +703,9 @@ export function createInventoryRouter(db) {
           throw badRequest("لا توجد أسطر جرد", "EMPTY_SESSION");
         }
         const seenProducts = new Set();
-        for (const line of lines) {
+        for (let index = 0; index < lines.length; index += 1) {
+          await yieldCountWork(index);
+          const line = lines[index];
           const product = await db.get(
             "SELECT id, name, inventory_scope FROM products WHERE id = ?",
             [line.product_id]
@@ -580,7 +733,9 @@ export function createInventoryRouter(db) {
           list.push(line);
           byProduct.set(line.product_id, list);
         }
+        let productIndex = 0;
         for (const [productId, productLines] of byProduct) {
+          await yieldCountWork(productIndex++);
           await applyCountSnapshot(db, { productId, lines: productLines, sessionId: session.id, userId: req.user.id });
         }
         expiryBaseline = await recordCountExpiryBaseline(db, {
@@ -1013,6 +1168,38 @@ export function createInventoryRouter(db) {
     }
   });
 
+  router.post("/stock-sources/batch", requireAuth, requireStockRead, async (req, res, next) => {
+    try {
+      const rawIds = req.body?.product_ids;
+      if (!Array.isArray(rawIds) || !rawIds.length || rawIds.length > MAX_SOURCE_PICTURE_PRODUCTS) {
+        throw badRequest(`أرسل من 1 إلى ${MAX_SOURCE_PICTURE_PRODUCTS} صنف لقراءة المخزون`, "VALIDATION_ERROR");
+      }
+      const ids = [...new Set(rawIds.map(positiveProductId))];
+      // This is a read endpoint using POST only to bound the ID payload. Give
+      // it the same committed-stock read connection preference as GET.
+      const pictures = await readPreferenceAls.run({ readonly: true }, async () => {
+        const products = await db.all(
+          `SELECT id, name, barcode, stock, unit, expiry_date FROM products WHERE id IN (${ids.map(() => "?").join(",")})`,
+          ids
+        );
+        if (products.length !== ids.length) {
+          throw notFound("أحد المنتجات غير موجود");
+        }
+        const warehouses = await stockSourceWarehouses(db);
+        const result = {};
+        for (let index = 0; index < products.length; index += 1) {
+          await yieldCountWork(index);
+          const product = products[index];
+          result[product.id] = await stockSourcePicture(db, product, warehouses);
+        }
+        return result;
+      });
+      return res.json({ pictures });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
   router.get("/stock-sources", requireAuth, requireStockRead, async (req, res, next) => {
     try {
       const productId = Number(req.query.product_id);
@@ -1022,41 +1209,7 @@ export function createInventoryRouter(db) {
         [productId]
       );
       if (!product) return res.status(404).json({ error: "المنتج غير موجود", code: "NOT_FOUND" });
-      const picture = await listPhysicalSources(db, productId);
-      const countUnits = await db.all(
-        "SELECT id, unit_name, conversion_to_base FROM product_units WHERE product_id = ? AND conversion_to_base > 0 ORDER BY is_default DESC, id",
-        [productId]
-      );
-      const productExpiry = interpretExpiryInput(product.expiry_date);
-      const { main } = await operationalWarehouses(db);
-      const placed = await locationRows(db, productId);
-      const warehouseIds = [...new Set(placed.map((row) => Number(row.warehouse_id)).filter(Boolean))];
-      const warehouseRows = warehouseIds.length
-        ? await db.all(
-            `SELECT id, name, type FROM warehouses WHERE id IN (${warehouseIds.map(() => "?").join(", ")})`,
-            warehouseIds
-          )
-        : [];
-      const warehouseById = new Map(warehouseRows.map((row) => [Number(row.id), row]));
-      res.json({
-        ...picture,
-        name: product.name,
-        barcode: product.barcode,
-        unit: product.unit,
-        count_units: countUnits,
-        product_expiry_date: productExpiry.ok ? productExpiry.date : null,
-        main_warehouse_id: main?.id ?? null,
-        locations: placed.map((row) => {
-          const warehouse = warehouseById.get(Number(row.warehouse_id));
-          return {
-            warehouse_id: row.warehouse_id,
-            warehouse_name: warehouse?.name || "",
-            warehouse_type: warehouse?.type || "",
-            expiry_date: row.expiry_date,
-            quantity: row.quantity,
-          };
-        }),
-      });
+      res.json(await stockSourcePicture(db, product, await stockSourceWarehouses(db)));
     } catch (e) {
       next(e);
     }

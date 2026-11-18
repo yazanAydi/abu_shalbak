@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import api from "../../apiClient";
 import InvoiceLineProductCell from "../invoice/InvoiceLineProductCell";
 import QtyStepper from "../QtyStepper";
 import { Button, Input } from "../ui";
 import { useToast } from "../ui/Toast";
-import { getAuthHeaders } from "../../utils/auth";
+import { createCountPictureLoader } from "../../utils/stockCountRequests";
 import { dateOnly, dmyToYmd } from "../../utils/format";
 import { toLatinDigits } from "../../utils/forceLatinDigits";
 import { focusEditableOnTap } from "../../utils/focusEditableOnTap";
@@ -145,7 +144,7 @@ function CountExpiryCell({ row, readOnly, onChange }) {
           تاريخ الصنف المسجل: {dateOnly(row.product_expiry)}
         </div>
       ) : null}
-      {row.expiry_picture_loaded && !row.product_expiry && known.length === 0 ? (
+      {row.expiry_picture_loaded && !row.picture_failed && !row.product_expiry && known.length === 0 ? (
         <div className="purchase-item-editor__meta" data-testid="count-no-expiry">لا يوجد تاريخ مسجل</div>
       ) : null}
     </div>
@@ -164,6 +163,16 @@ export default function StockCountLineEditor({
   const pendingFocusRef = useRef(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const pictureLoaderRef = useRef(null);
+
+  useEffect(() => {
+    const loader = createCountPictureLoader();
+    pictureLoaderRef.current = loader;
+    return () => {
+      loader.dispose();
+      if (pictureLoaderRef.current === loader) pictureLoaderRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!pendingFocusRef.current) return;
@@ -252,10 +261,10 @@ export default function StockCountLineEditor({
       };
     }));
     setLineError(null);
-    api.get("/api/inventory/stock-sources", {
-      headers: getAuthHeaders(),
-      params: { product_id: product.id },
-    }).then(({ data }) => {
+    const loader = pictureLoaderRef.current;
+    loader.load([product.id]).then((pictures) => {
+      if (pictureLoaderRef.current !== loader) return;
+      const data = pictures[product.id];
       setItems((prev) => {
         const current = prev.find((row) => row.line_key === lineKey);
         if (!current || Number(current.picture_request) !== requestId) return prev;
@@ -265,6 +274,7 @@ export default function StockCountLineEditor({
         ));
       });
     }).catch(() => {
+      if (pictureLoaderRef.current !== loader) return;
       setItems((prev) => prev.map((row) => (
         row.line_key === lineKey && Number(row.picture_request) === requestId
           ? { ...row, expiry_picture_loaded: true, picture_failed: true, stock_picture: null }
@@ -274,39 +284,36 @@ export default function StockCountLineEditor({
     return true;
   }
 
+  const pendingPictureKey = [...new Set(items.filter((row) => (
+    row.product_id && row.expiry_picture_loaded === false && !row.picture_request
+  )).map((row) => Number(row.product_id)))].sort((a, b) => a - b).join(",");
+
   useEffect(() => {
-    const pending = items.filter((row) => (
-      row.product_id && row.expiry_picture_loaded === false && !row.picture_request
-    ));
-    if (!pending.length) return undefined;
-    let cancelled = false;
-    const ids = [...new Set(pending.map((row) => row.product_id))];
+    if (!pendingPictureKey) return;
+    const ids = pendingPictureKey.split(",").map(Number);
+    const loader = pictureLoaderRef.current;
     (async () => {
-      const byId = {};
-      await Promise.all(ids.map(async (id) => {
-        try {
-          const { data } = await api.get("/api/inventory/stock-sources", {
-            headers: getAuthHeaders(),
-            params: { product_id: id },
-          });
-          byId[id] = data;
-        } catch {
-          byId[id] = null;
-        }
-      }));
-      if (cancelled) return;
-      setItems((prev) => prev.map((row) => {
-        if (!row.product_id || row.expiry_picture_loaded || row.picture_request) return row;
-        if (!(row.product_id in byId)) return row;
-        const picture = byId[row.product_id];
-        if (!picture) return { ...row, expiry_picture_loaded: true, picture_failed: true, stock_picture: null };
-        return attachCountExpiryPicture(row, picture);
-      }));
+      let byId;
+      try {
+        byId = await loader.load(ids);
+      } catch {
+        byId = Object.fromEntries(ids.map((id) => [id, null]));
+      }
+      if (pictureLoaderRef.current !== loader) return;
+      setItems((prev) => {
+        let changed = false;
+        const next = prev.map((row) => {
+          if (!row.product_id || row.expiry_picture_loaded || row.picture_request) return row;
+          if (!(row.product_id in byId)) return row;
+          changed = true;
+          const picture = byId[row.product_id];
+          if (!picture) return { ...row, expiry_picture_loaded: true, picture_failed: true, stock_picture: null };
+          return attachCountExpiryPicture(row, picture);
+        });
+        return changed ? next : prev;
+      });
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [items, setItems]);
+  }, [pendingPictureKey, setItems]);
 
   function remove(index) {
     setItems((prev) => prev.filter((_, idx) => idx !== index));
